@@ -292,6 +292,7 @@ import createReplayPlaylistRoutes from './routes/replay-playlists.js';
 import createRumSessionsRoutes from './routes/rum-sessions.js';
 import createAuthRoutes from './routes/auth.js';
 import createMeTodosRoutes from './routes/me-todos.js';
+import createNotificationsRoutes from './routes/notifications.js';
 import createOrgTodosRoutes from './routes/org-todos.js';
 import createHubChatRoutes from './routes/hub-chat.js';
 import createProjectChatTriggerRoutes from './routes/project-chat-triggers.js';
@@ -2506,6 +2507,7 @@ app.use(
   }),
 );
 app.use(createMeTodosRoutes(routeDeps));
+app.use(createNotificationsRoutes(routeDeps));
 app.use(createOrgTodosRoutes(routeDeps));
 app.use(createHubChatRoutes(routeDeps));
 app.use(createProjectChatTriggerRoutes(routeDeps));

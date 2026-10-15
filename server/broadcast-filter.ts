@@ -86,6 +86,8 @@ const GOOGLE_CHAT_USER_EVENT_TYPES = new Set([
   'google_chat_events_status',
   'google_chat_mutes',
 ]);
+/** Bell inbox events: owner-only, and a missing owner denies. */
+const INBOX_EVENT_TYPES = new Set(['notification_read']);
 const SESSION_READ_SCOPED_EVENT_TYPES = new Set(['session-event', 'session-progress']);
 
 /**
@@ -161,9 +163,12 @@ export function shouldDeliverBroadcast(
   }
 
   // 3b-chat. Google Chat push events belong to one Hub user's Google account,
-  //    with no admin override. Unlike todos, a missing owner denies: these
-  //    are never meant to fan out.
-  if (typeof data.type === 'string' && GOOGLE_CHAT_USER_EVENT_TYPES.has(data.type)) {
+  //    and bell inbox events belong to one Hub user. No admin override, and
+  //    unlike todos a missing owner denies: these are never meant to fan out.
+  if (
+    typeof data.type === 'string' &&
+    (GOOGLE_CHAT_USER_EVENT_TYPES.has(data.type) || INBOX_EVENT_TYPES.has(data.type))
+  ) {
     const owner =
       typeof data.ownerUserId === 'string' && data.ownerUserId ? data.ownerUserId : null;
     return !!owner && stamp.userId === owner;

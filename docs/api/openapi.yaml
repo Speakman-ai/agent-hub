@@ -12421,6 +12421,64 @@ components:
         - created_at
         - updated_at
       description: A single project note row. Other users' private notes are never returned. List/search rows omit `content`.
+    NotificationsErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope for inbox routes.
+    InboxNotification:
+      type: object
+      properties:
+        id:
+          type: string
+        userId:
+          type: string
+        orgId:
+          type: string
+          nullable: true
+        projectId:
+          type: string
+          nullable: true
+        category:
+          type: string
+          description: Category id from the shared catalog.
+        title:
+          type: string
+        body:
+          type: string
+        route:
+          type: string
+          nullable: true
+          description: Client deep-link route.
+        data:
+          type: object
+          nullable: true
+          additionalProperties:
+            nullable: true
+        sourceKey:
+          type: string
+        createdAt:
+          type: string
+        readAt:
+          type: string
+          nullable: true
+      required:
+        - id
+        - userId
+        - orgId
+        - projectId
+        - category
+        - title
+        - body
+        - route
+        - data
+        - sourceKey
+        - createdAt
+        - readAt
+      description: One row in the caller's notification inbox.
     OrgTodosErrorResponse:
       type: object
       properties:
@@ -43031,6 +43089,158 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/NotesErrorResponse"
+  /api/notifications:
+    get:
+      tags:
+        - Notifications
+      summary: List the caller's inbox notifications, newest first (cursor paged)
+      parameters:
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            description: Page size, 1-100. Default 20.
+          required: false
+          description: Page size, 1-100. Default 20.
+          name: limit
+          in: query
+        - schema:
+            type: string
+            minLength: 1
+            description: "`nextCursor` from the previous page."
+          required: false
+          description: "`nextCursor` from the previous page."
+          name: cursor
+          in: query
+        - schema:
+            type: string
+            description: When true, return only unread rows.
+          required: false
+          description: When true, return only unread rows.
+          name: unread
+          in: query
+      responses:
+        "200":
+          description: One page of notifications.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/InboxNotification"
+                  nextCursor:
+                    type: string
+                    nullable: true
+                    description: Null on the last page.
+                required:
+                  - items
+                  - nextCursor
+        "400":
+          description: Invalid query.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationsErrorResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationsErrorResponse"
+  /api/notifications/unread-count:
+    get:
+      tags:
+        - Notifications
+      summary: Count the caller's unread notifications
+      responses:
+        "200":
+          description: Unread count.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count:
+                    type: integer
+                required:
+                  - count
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationsErrorResponse"
+  /api/notifications/{id}/read:
+    post:
+      tags:
+        - Notifications
+      summary: Mark one notification read
+      description: Idempotent. Emits a `notification_read` WebSocket event to the caller's clients when the row flips to read.
+      parameters:
+        - schema:
+            type: string
+            description: Notification id.
+          required: true
+          description: Notification id.
+          name: id
+          in: path
+      responses:
+        "200":
+          description: The notification and the new unread count.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  notification:
+                    $ref: "#/components/schemas/InboxNotification"
+                  unreadCount:
+                    type: integer
+                required:
+                  - notification
+                  - unreadCount
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationsErrorResponse"
+        "404":
+          description: Not found, or owned by another user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationsErrorResponse"
+  /api/notifications/read-all:
+    post:
+      tags:
+        - Notifications
+      summary: Mark all of the caller's notifications read
+      description: "Emits a `notification_read` WebSocket event (`all: true`) to the caller's clients when any row flipped."
+      responses:
+        "200":
+          description: Number of rows flipped to read.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  updated:
+                    type: integer
+                  unreadCount:
+                    type: integer
+                required:
+                  - updated
+                  - unreadCount
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationsErrorResponse"
   /api/orgs/{orgId}/todos:
     get:
       tags:
