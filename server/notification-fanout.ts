@@ -47,6 +47,7 @@ import {
   type PushDispatchDeps,
 } from './push.js';
 import { HUB_CHAT_MESSAGE_EVENT, mentionedUserIds } from './hub-chat-events.js';
+import { pushCategoryIdFor } from '../shared/utils/approvals.js';
 import { isLocalBundledServer } from './auth.js';
 import { getActiveOrgId } from './orgs.js';
 import { listMembersForOrg } from './memberships-store.js';
@@ -718,6 +719,7 @@ export async function handleBroadcastForNotifications(
         body: intent.body,
         // The category lets mobile gate foreground banners on the right pref.
         data: { ...intent.data, category: intent.category },
+        categoryId: pushCategoryIdFor(intent.category),
       }),
       deps,
     );

@@ -151,6 +151,16 @@ describe('presentLocalNotification', () => {
       trigger: null,
     });
   });
+  it('adds the approval category so the banner shows Allow once / Deny', async () => {
+    const Notifications = { scheduleNotificationAsync: vi.fn().mockResolvedValue('id-2') };
+    await presentLocalNotification(
+      { Notifications },
+      { title: 'T', body: 'B', data: { event: 'approval_requested', approval: { id: 'ap1' } } },
+    );
+    expect(Notifications.scheduleNotificationAsync.mock.calls[0][0].content).toMatchObject({
+      categoryIdentifier: 'approval_requested',
+    });
+  });
   it('returns null on scheduler errors', async () => {
     const Notifications = {
       scheduleNotificationAsync: vi.fn().mockRejectedValue(new Error('boom')),

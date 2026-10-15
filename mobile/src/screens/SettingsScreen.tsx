@@ -57,6 +57,7 @@ import MfaSettingsSection from '../components/settings/MfaSettingsSection';
 import SmtpSettingsSection from '../components/settings/SmtpSettingsSection';
 import GoogleConnectionSection from '../components/settings/GoogleConnectionSection';
 import BrowserProfilesSection from '../components/settings/BrowserProfilesSection';
+import ApprovalRulesSection from '../components/settings/ApprovalRulesSection';
 // Organizations (Server Connections) Tab
 function OrganizationsSection() {
   const { handleSwitchOrg } = useApp();
@@ -2169,6 +2170,7 @@ const SETTINGS_TABS = [
   { id: 'servers', label: 'Servers' },
   { id: 'account', label: 'Account' },
   { id: 'browser-profiles', label: 'Browser Profiles' },
+  { id: 'approvals', label: 'Approvals' },
   { id: 'global-api-keys', label: 'Global API Keys' },
   { id: 'github', label: 'GitHub' },
   { id: 'usage', label: 'Usage' },
@@ -2314,6 +2316,7 @@ export default function SettingsScreen({ route }: any) {
           {tab === 'servers' && <OrganizationsSection />}
           {tab === 'account' && <AccountSection />}
           {tab === 'browser-profiles' && <BrowserProfilesSection />}
+          {tab === 'approvals' && <ApprovalRulesSection />}
           {tab === 'global-api-keys' && <GlobalApiKeysSection />}
           {tab === 'github' && <GitHubSettingsSection />}
           {tab === 'usage' && <UsageSection />}

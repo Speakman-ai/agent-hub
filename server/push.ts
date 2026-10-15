@@ -42,6 +42,8 @@ export interface ExpoPushMessage {
   title: string;
   body: string;
   data?: Record<string, unknown>;
+  /** Device notification category, which supplies the action buttons. */
+  categoryId?: string;
 }
 
 interface ExpoPushReceipt {
@@ -463,7 +465,13 @@ export async function sendExpoPush(
  */
 export function buildMessages(
   tokens: DeviceTokenRowWithPrefs[],
-  payload: { title: string; body: string; data?: Record<string, unknown>; silent?: boolean },
+  payload: {
+    title: string;
+    body: string;
+    data?: Record<string, unknown>;
+    silent?: boolean;
+    categoryId?: string;
+  },
 ): ExpoPushMessage[] {
   return tokens.map((t) => ({
     to: t.token,
@@ -471,6 +479,7 @@ export function buildMessages(
     title: payload.title,
     body: payload.body,
     data: payload.data,
+    ...(payload.categoryId ? { categoryId: payload.categoryId } : {}),
   }));
 }
 

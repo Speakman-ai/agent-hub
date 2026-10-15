@@ -10,6 +10,7 @@ import { isDeadSessionResponse } from '@shared/utils/authErrorCodes';
 import type { SessionContextUsage } from '@shared/utils/contextUsage';
 import type { InboxNotification } from '@shared/utils/notificationInbox';
 import type { BrowserProfileWire } from '@shared/utils/browserProfiles';
+import type { ApprovalDecision, ApprovalRuleWire, ApprovalWire } from '@shared/utils/approvals';
 /** A machine error code (`no_pushable_commits`) rather than human copy. */
 const ERROR_CODE_RE = /^[a-z][a-z0-9]*(_[a-z0-9]+)*$/;
 /**
@@ -1277,6 +1278,21 @@ export const api = {
     ),
   deleteBrowserProfile: (profileId: string): Promise<{ ok: true }> =>
     fetchJSON(`/me/browser-profiles/${encodeURIComponent(profileId)}`, { method: 'DELETE' }),
+  // Approvals the signed-in user's agents asked for, and the rules "Always allow" saved.
+  listMyApprovals: (
+    params: { status?: ApprovalWire['status']; sessionId?: string } = {},
+  ): Promise<{ approvals: ApprovalWire[] }> => fetchJSON(`/me/approvals${infraQuery(params)}`),
+  answerApproval: (
+    approvalId: string,
+    decision: ApprovalDecision,
+  ): Promise<{ approval: ApprovalWire; ruleId: string | null }> =>
+    fetchJSON(`/me/approvals/${encodeURIComponent(approvalId)}/answer`, {
+      method: 'POST',
+      body: JSON.stringify({ decision }),
+    }),
+  listApprovalRules: (): Promise<{ rules: ApprovalRuleWire[] }> => fetchJSON('/me/approval-rules'),
+  deleteApprovalRule: (ruleId: string): Promise<{ ok: true }> =>
+    fetchJSON(`/me/approval-rules/${encodeURIComponent(ruleId)}`, { method: 'DELETE' }),
   // Agent Hub chat (/api/chat). The server acts as the signed-in user.
   hubChat: {
     members: () => fetchJSON('/chat/members'),

@@ -13,6 +13,8 @@ const testState = vi.hoisted(() => ({
   navigate: vi.fn(),
   openInboxNotification: vi.fn(),
   api: {
+    listMyApprovals: vi.fn(),
+    answerApproval: vi.fn(),
     notifications: {
       list: vi.fn(),
       unreadCount: vi.fn(),
@@ -178,5 +180,57 @@ describe('mobile notification inbox', () => {
     testState.api.notifications.list.mockResolvedValue({ items: [], nextCursor: null });
     const r = await render(<NotificationsScreen />);
     expect(texts(r).join('')).toContain('all caught up');
+  });
+});
+
+describe('mobile notification inbox: approval rows', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    const n = testState.api.notifications;
+    n.unreadCount.mockResolvedValue({ count: 1 });
+    n.list.mockResolvedValue({
+      items: [
+        {
+          ...row('ap-row', '2026-10-15T10:00:00Z'),
+          category: 'approval_requested',
+          data: { sessionId: 's1', approvalId: 'ap1', type: 'approval_requested' },
+        },
+        {
+          ...row('old', '2026-10-15T09:00:00Z'),
+          category: 'approval_requested',
+          data: { sessionId: 's1', approvalId: 'ap-gone', type: 'approval_requested' },
+        },
+      ],
+      nextCursor: null,
+    });
+    n.markRead.mockResolvedValue({ unreadCount: 0 });
+    testState.api.listMyApprovals.mockResolvedValue({
+      approvals: [{ id: 'ap1', status: 'pending', canRemember: false, requestedAt: 1 }],
+    });
+    testState.api.answerApproval.mockResolvedValue({ approval: { id: 'ap1' }, ruleId: null });
+    notificationInboxStore.reset(true);
+  });
+
+  const hosts = (r: ReactTestRenderer, id: string) =>
+    r.root.findAll((n) => n.props.testID === id && typeof n.type === 'string');
+
+  it('shows Allow once / Deny only on rows whose approval is pending', async () => {
+    const r = await render(<NotificationsScreen />);
+    expect(testState.api.listMyApprovals).toHaveBeenCalledWith({ status: 'pending' });
+    expect(hosts(r, 'notification-approval-ap-row')).toHaveLength(1);
+    expect(hosts(r, 'notification-approval-old')).toHaveLength(0);
+    expect(hosts(r, 'notification-approval-ap-row-allow_once')).toHaveLength(1);
+    expect(hosts(r, 'notification-approval-ap-row-always_allow')).toHaveLength(0);
+  });
+
+  it('answers from the row and marks it read', async () => {
+    const r = await render(<NotificationsScreen />);
+    await TestRenderer.act(async () => {
+      hosts(r, 'notification-approval-ap-row-allow_once')[0].props.onPress();
+    });
+    await flush();
+    expect(testState.api.answerApproval).toHaveBeenCalledWith('ap1', 'allow_once');
+    expect(hosts(r, 'notification-approval-ap-row')).toHaveLength(0);
+    expect(testState.api.notifications.markRead).toHaveBeenCalledWith('ap-row');
   });
 });

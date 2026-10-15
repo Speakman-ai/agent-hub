@@ -40,7 +40,7 @@ function defaults(category: NotificationCategoryId): StoredPrefs {
 interface Harness {
   deps: FanoutDeps;
   sentTo: () => string[];
-  sentMessages: Array<{ to: string; data?: Record<string, unknown> }>;
+  sentMessages: Array<{ to: string; data?: Record<string, unknown>; categoryId?: string }>;
   inserted: InsertNotificationInput[];
   broadcasts: Record<string, unknown>[];
 }
@@ -56,7 +56,8 @@ function harness(opts: {
   prefs?: Record<string, Partial<Record<NotificationCategoryId, StoredPrefs>>>;
 }): Harness {
   const sent: string[] = [];
-  const sentMessages: Array<{ to: string; data?: Record<string, unknown> }> = [];
+  const sentMessages: Array<{ to: string; data?: Record<string, unknown>; categoryId?: string }> =
+    [];
   const inserted: InsertNotificationInput[] = [];
   const seen = new Set<string>();
   const broadcasts: Record<string, unknown>[] = [];
@@ -64,6 +65,7 @@ function harness(opts: {
     const msgs = JSON.parse(String(init?.body)) as Array<{
       to: string;
       data?: Record<string, unknown>;
+      categoryId?: string;
     }>;
     sent.push(...msgs.map((m) => m.to));
     sentMessages.push(...msgs);
@@ -414,6 +416,34 @@ describe('mapBroadcastToNotification: approval requests', () => {
     ).toMatchObject({ recipients: { kind: 'session', sessionId: 's1' } });
     expect(mapBroadcastToNotification({ type: 'approval_requested', sessionId: 's1' })).toBeNull();
     expect(mapBroadcastToNotification({ type: 'approval_resolved', sessionId: 's1' })).toBeNull();
+  });
+
+  it('pushes with the approval categoryId so the device shows Allow once / Deny', async () => {
+    const h = harness({ tokens: [token('u1-phone', 'u1')], sessionOwner: 'u1' });
+    await handleBroadcastForNotifications(
+      {
+        type: 'approval_requested',
+        sessionId: 's1',
+        projectId: 'p1',
+        ownerUserId: 'u1',
+        approval: { id: 'ap1', action: 'send', target: 'mail' },
+      },
+      h.deps,
+    );
+    expect(h.sentMessages).toHaveLength(1);
+    expect(h.sentMessages[0]).toMatchObject({
+      categoryId: 'approval_requested',
+      data: { approvalId: 'ap1', category: 'approval_requested' },
+    });
+  });
+
+  it('leaves categoryId off pushes that have no actions', async () => {
+    const h = harness({ tokens: [token('u1-phone', 'u1')], projectUsers: ['u1'] });
+    await handleBroadcastForNotifications(
+      { type: 'card_moved', projectId: 'p1', cardId: 'c1', columnName: 'Review', moveId: 'm1' },
+      h.deps,
+    );
+    expect(h.sentMessages[0]).not.toHaveProperty('categoryId');
   });
 });
 

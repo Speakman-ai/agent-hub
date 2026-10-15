@@ -7,6 +7,8 @@ import { render, screen, fireEvent, waitFor, act, within } from '@testing-librar
     getNotificationUnreadCount: vi.fn(),
     markNotificationRead: vi.fn(),
     markAllNotificationsRead: vi.fn(),
+    listMyApprovals: vi.fn(),
+    answerApproval: vi.fn(),
   },
 }));
 
@@ -15,6 +17,7 @@ import NotificationBell, {
   NOTIFICATION_PAGE_SIZE,
   NOTIFICATION_WS_EVENT,
 } from './NotificationBell';
+import { APPROVAL_WS_EVENT } from './ApprovalActions';
 
 function n(id: string, over: Record<string, unknown> = {}) {
   return {
@@ -549,5 +552,90 @@ describe('NotificationBell', () => {
       expect(byTitle('Title c')).toHaveAttribute('data-unread', 'false');
       expect(byTitle('Title a')).toHaveAttribute('data-unread', 'true');
     });
+  });
+});
+
+describe('NotificationBell: approval rows', () => {
+  const approvalRow = n('ap-row', {
+    category: 'approval_requested',
+    title: 'Approve: send',
+    data: { sessionId: 's1', approvalId: 'ap1', type: 'approval_requested' },
+  });
+  const settledRow = n('old-row', {
+    category: 'approval_requested',
+    title: 'Approve: delete',
+    data: { sessionId: 's1', approvalId: 'ap-old', type: 'approval_requested' },
+  });
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    (api.getNotificationUnreadCount as any).mockResolvedValue({ count: 1 });
+    (api.listNotifications as any).mockResolvedValue({
+      items: [approvalRow, settledRow],
+      nextCursor: null,
+    });
+    (api.markNotificationRead as any).mockResolvedValue({ unreadCount: 0 });
+    (api.listMyApprovals as any).mockResolvedValue({
+      approvals: [{ id: 'ap1', status: 'pending', canRemember: false }],
+    });
+    (api.answerApproval as any).mockResolvedValue({ approval: { id: 'ap1' }, ruleId: null });
+  });
+
+  it('puts Allow once / Deny on rows whose approval is still pending', async () => {
+    setup();
+    fireEvent.click(screen.getByTestId('notification-bell'));
+    const actions = await screen.findAllByTestId('notification-approval-actions');
+    expect(actions).toHaveLength(1);
+    expect(within(actions[0]).getByTestId('notification-approval-allow_once')).toBeTruthy();
+    expect(within(actions[0]).getByTestId('notification-approval-deny')).toBeTruthy();
+    // canRemember is false, so there is no Always allow.
+    expect(within(actions[0]).queryByTestId('notification-approval-always_allow')).toBeNull();
+    expect(api.listMyApprovals).toHaveBeenCalledWith({ status: 'pending' });
+  });
+
+  it('answers from the row, marks it read and removes the buttons', async () => {
+    setup();
+    fireEvent.click(screen.getByTestId('notification-bell'));
+    fireEvent.click(await screen.findByTestId('notification-approval-deny'));
+    await waitFor(() => expect(api.answerApproval).toHaveBeenCalledWith('ap1', 'deny'));
+    await waitFor(() => expect(screen.queryByTestId('notification-approval-actions')).toBeNull());
+    expect(api.markNotificationRead).toHaveBeenCalledWith('ap-row');
+  });
+
+  it('a pending list in flight when the approval resolves does not restore the buttons', async () => {
+    let resolveList!: (v: unknown) => void;
+    (api.listMyApprovals as any).mockReturnValueOnce(
+      new Promise((res) => {
+        resolveList = res;
+      }),
+    );
+    setup();
+    fireEvent.click(screen.getByTestId('notification-bell'));
+    await screen.findAllByTestId('notification-row');
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(APPROVAL_WS_EVENT, {
+          detail: { type: 'approval_resolved', sessionId: 's1', approvalId: 'ap1' },
+        }),
+      );
+    });
+    await act(async () => {
+      resolveList({ approvals: [{ id: 'ap1', status: 'pending', canRemember: false }] });
+    });
+    expect(screen.queryByTestId('notification-approval-actions')).toBeNull();
+  });
+
+  it('drops the buttons when the approval resolves elsewhere', async () => {
+    setup();
+    fireEvent.click(screen.getByTestId('notification-bell'));
+    await screen.findByTestId('notification-approval-actions');
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(APPROVAL_WS_EVENT, {
+          detail: { type: 'approval_resolved', sessionId: 's1', approvalId: 'ap1' },
+        }),
+      );
+    });
+    expect(screen.queryByTestId('notification-approval-actions')).toBeNull();
   });
 });

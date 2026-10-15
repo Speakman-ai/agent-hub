@@ -31,6 +31,14 @@ import {
   type InboxFacts,
   type LocalWrite,
 } from '@shared/utils/notificationInbox';
+import {
+  APPROVAL_REQUESTED_EVENT,
+  APPROVAL_RESOLVED_EVENT,
+  approvalIdFromNotification,
+  reconcilePendingApprovals,
+  type ApprovalWire,
+} from '@shared/utils/approvals';
+import ApprovalActions, { APPROVAL_WS_EVENT } from './ApprovalActions';
 
 /** App re-dispatches `notification_created` / `notification_read` WS frames on this event. */
 export const NOTIFICATION_WS_EVENT = 'agenthub:notification';
@@ -77,6 +85,13 @@ export default function NotificationBell({
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [position, setPosition] = useState<PopoverPlacement | null>(null);
+  // Approvals still waiting for an answer; their rows get action buttons.
+  const [pendingApprovals, setPendingApprovals] = useState<Map<string, ApprovalWire>>(
+    () => new Map(),
+  );
+  const approvalSeq = useRef(0);
+  // Ids answered here or resolved over WS; a late list response can't revive them.
+  const settledApprovals = useRef<Set<string>>(new Set());
   const buttonRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   // A page request that resolves after a newer reset must not append stale rows.
@@ -196,13 +211,52 @@ export default function NotificationBell({
     return () => window.removeEventListener(NOTIFICATION_WS_EVENT, handler);
   }, [updateFacts]);
 
+  const loadPendingApprovals = useCallback(() => {
+    const seq = ++approvalSeq.current;
+    call(() => api.listMyApprovals({ status: 'pending' }))
+      .then((r) => {
+        if (seq === approvalSeq.current) {
+          const pending = reconcilePendingApprovals(r.approvals, settledApprovals.current);
+          setPendingApprovals(new Map(pending.map((a) => [a.id, a])));
+        }
+      })
+      .catch(() => {
+        if (seq === approvalSeq.current) setPendingApprovals(new Map());
+      });
+  }, []);
+
+  const dropPendingApproval = useCallback((id: string) => {
+    settledApprovals.current.add(id);
+    setPendingApprovals((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Map(prev);
+      next.delete(id);
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    const onEvent = (e: Event) => {
+      const data = (e as CustomEvent).detail as Record<string, unknown> | null;
+      if (!data) return;
+      if (data.type === APPROVAL_RESOLVED_EVENT && typeof data.approvalId === 'string') {
+        dropPendingApproval(data.approvalId);
+      } else if (data.type === APPROVAL_REQUESTED_EVENT && open) {
+        loadPendingApprovals();
+      }
+    };
+    window.addEventListener(APPROVAL_WS_EVENT, onEvent);
+    return () => window.removeEventListener(APPROVAL_WS_EVENT, onEvent);
+  }, [open, dropPendingApproval, loadPendingApprovals]);
+
   // Every open starts from the newest page so rows missed while closed (or
   // while the socket was down) show up.
   useEffect(() => {
     if (!open) return;
     refreshCount();
     void loadPage(null);
-  }, [open, loadPage, refreshCount]);
+    loadPendingApprovals();
+  }, [open, loadPage, refreshCount, loadPendingApprovals]);
 
   useLayoutEffect(() => {
     if (!open || !buttonRef.current) return;
@@ -281,6 +335,15 @@ export default function NotificationBell({
       setOpen(false);
       onOpenTarget(target);
     }
+  };
+
+  const markRowRead = (n: InboxNotification) => {
+    if (n.readAt) return;
+    runWrite(
+      { kind: 'read', id: n.id, createdAt: n.createdAt },
+      () => api.markNotificationRead(n.id),
+      'Could not mark the notification read.',
+    );
   };
 
   const handleMarkAllRead = () => {
@@ -380,6 +443,8 @@ export default function NotificationBell({
               <ul>
                 {items.map((n) => {
                   const unread = !n.readAt;
+                  const approvalId = approvalIdFromNotification(n);
+                  const approval = approvalId ? pendingApprovals.get(approvalId) : undefined;
                   return (
                     <li key={n.id}>
                       <button
@@ -411,6 +476,22 @@ export default function NotificationBell({
                           <p className="mt-0.5 text-xs text-gray-400 line-clamp-2">{n.body}</p>
                         )}
                       </button>
+                      {approval && (
+                        <div
+                          className="px-4 pb-3 -mt-1 border-b border-gray-800/70 border-l-2 border-l-indigo-500 bg-gray-800/30"
+                          data-testid="notification-approval-actions"
+                        >
+                          <ApprovalActions
+                            approval={approval}
+                            size="sm"
+                            testIdPrefix="notification-approval"
+                            onSettled={(id) => {
+                              dropPendingApproval(id);
+                              markRowRead(n);
+                            }}
+                          />
+                        </div>
+                      )}
                     </li>
                   );
                 })}

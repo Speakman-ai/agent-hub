@@ -18,6 +18,7 @@ import ChatMessage from '../components/ChatMessage';
 import StreamingMessage from '../components/StreamingMessage';
 import ThinkingIndicator from '../components/ThinkingIndicator';
 import MessageInput from '../components/MessageInput';
+import SessionApprovalCard from '../components/SessionApprovalCard';
 import SessionEngineModelSheet from '../components/SessionEngineModelSheet';
 import AgentSwitcher from '../components/AgentSwitcher';
 import DelegationPanel from '../components/DelegationPanel';
@@ -668,6 +669,7 @@ export default function ChatScreen({
             />
           </View>
         ) : null}
+        <SessionApprovalCard sessionId={activeSessionId ?? null} />
         {/* Input */}
         <MessageInput
           onSend={sendChat}

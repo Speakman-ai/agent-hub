@@ -9,6 +9,7 @@ import type { DeployTriggerEvent } from './deployTriggers';
 import type { InfraServicePackWire } from '@shared/utils/infraPacks';
 import type { InfraSpendTrendWire } from '@shared/utils/infraSpend';
 import type { BrowserProfileWire } from '@shared/utils/browserProfiles';
+import type { ApprovalDecision, ApprovalRuleWire, ApprovalWire } from '@shared/utils/approvals';
 import type { InfraFleetWire } from '@shared/utils/infraFleet';
 import type { InboxNotification } from './notificationTarget';
 import type { QuotaHeadroomResponse } from '@shared/utils/quotaHeadroom';
@@ -1084,6 +1085,19 @@ export const api = {
     ),
   deleteBrowserProfile: (profileId: string) =>
     fetchJSON<{ ok: true }>(`/me/browser-profiles/${encodeURIComponent(profileId)}`, {
+      method: 'DELETE',
+    }),
+  // Approvals the signed-in user's agents asked for, and the rules "Always allow" saved.
+  listMyApprovals: (params: { status?: ApprovalWire['status']; sessionId?: string } = {}) =>
+    fetchJSON<{ approvals: ApprovalWire[] }>(`/me/approvals${infraQuery(params)}`),
+  answerApproval: (approvalId: string, decision: ApprovalDecision) =>
+    fetchJSON<{ approval: ApprovalWire; ruleId: string | null }>(
+      `/me/approvals/${encodeURIComponent(approvalId)}/answer`,
+      { method: 'POST', body: JSON.stringify({ decision }) },
+    ),
+  listApprovalRules: () => fetchJSON<{ rules: ApprovalRuleWire[] }>('/me/approval-rules'),
+  deleteApprovalRule: (ruleId: string) =>
+    fetchJSON<{ ok: true }>(`/me/approval-rules/${encodeURIComponent(ruleId)}`, {
       method: 'DELETE',
     }),
   /** Persistent Hub assistant session for the signed-in user (get-or-create). */

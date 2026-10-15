@@ -52,6 +52,12 @@ import {
   notificationInboxStore,
 } from '../utils/notificationInboxInstance';
 import { NOTIFICATION_WS_EVENTS } from '../utils/notificationInboxStore';
+import { APPROVAL_WS_EVENTS } from '@shared/utils/approvals';
+import { approvalEvents } from '../utils/approvalEvents';
+import {
+  listenForNotificationResponses,
+  registerApprovalPushCategory,
+} from '../utils/approvalPush';
 import type { InboxNotification } from '@shared/utils/notificationInbox';
 import { foregroundBannerAllowed, loadNotificationPrefs } from '../utils/notificationPreferences';
 import { hubChatAccountGate, hubChatStore } from '../utils/hubChatInstance';
@@ -447,6 +453,10 @@ export function AppProvider({ children }: any) {
       }
       if (NOTIFICATION_WS_EVENTS.has(data.type)) {
         notificationInboxStore.handleWsEvent(data);
+        return;
+      }
+      if (APPROVAL_WS_EVENTS.has(data.type)) {
+        approvalEvents.emit(data);
         return;
       }
       const forActiveSession = data.sessionId && data.sessionId === activeSessionIdRef.current;
@@ -1278,6 +1288,8 @@ export function AppProvider({ children }: any) {
             },
           });
         }
+        // Lock-screen Allow once / Deny on approval pushes.
+        await registerApprovalPushCategory(Notifications);
         const Device = require('expo-device');
         const Constants = require('expo-constants').default;
         const { Platform } = require('react-native');
@@ -1365,40 +1377,27 @@ export function AppProvider({ children }: any) {
   //
   // Native modules are required lazily so Vitest (which only exercises
   // pure utils in `src/utils/`) never tries to resolve them.
+  // Cold start and the live listener can both see the same button press.
+  const answeredPushResponsesRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!configReady) return undefined;
-    let subscription: any = null;
-    let cancelled = false;
-    (async () => {
-      try {
-        const Notifications = require('expo-notifications');
-        // Cold-start: the app was launched by tapping a notification while
-        // it was backgrounded/killed. Apply once on mount.
-        if (typeof Notifications.getLastNotificationResponseAsync === 'function') {
-          try {
-            const last = await Notifications.getLastNotificationResponseAsync();
-            const data = last?.notification?.request?.content?.data;
-            if (!cancelled && data) applyNotificationRoute(data);
-          } catch {
-            /* non-fatal — listener still covers the warm-start path */
-          }
-        }
-        if (typeof Notifications.addNotificationResponseReceivedListener === 'function') {
-          subscription = Notifications.addNotificationResponseReceivedListener((response: any) => {
-            const data = response?.notification?.request?.content?.data;
-            if (data) applyNotificationRoute(data);
-          });
-        }
-      } catch {
-        /* expo-notifications unavailable — no-op */
-      }
-    })();
-    return () => {
-      cancelled = true;
-      if (subscription && typeof subscription.remove === 'function') {
-        subscription.remove();
-      }
-    };
+    let listener: { remove: () => void } | null = null;
+    try {
+      const Notifications = require('expo-notifications');
+      // An Allow once / Deny button answers the approval; a plain tap routes.
+      listener = listenForNotificationResponses(
+        Notifications,
+        {
+          answer: (id, decision) => api.answerApproval(id, decision),
+          route: (data) => applyNotificationRoute(data),
+          onAnswerFailed: (message) => Alert.alert('Could not answer the approval', message),
+        },
+        answeredPushResponsesRef.current,
+      );
+    } catch {
+      /* expo-notifications unavailable — no-op */
+    }
+    return () => listener?.remove();
   }, [configReady, applyNotificationRoute]);
   const refreshAgents = useCallback(() => {
     api.getAgents().then((data: any) => {

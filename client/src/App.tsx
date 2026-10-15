@@ -72,6 +72,8 @@ import AutopilotUnstickButton from './components/finalize/AutopilotUnstickButton
 import FinalizeAutomationSelect from './components/finalize/FinalizeAutomationSelect';
 import FinalizeChecksLiveBlock from './components/finalize/FinalizeChecksLiveBlock';
 import ResolveSessionPrBanner from './components/ResolveSessionPrBanner';
+import SessionApprovalBanner from './components/SessionApprovalBanner';
+import { APPROVAL_WS_EVENT } from './components/ApprovalActions';
 import {
   inferPrUrlFromSessionTitle,
   isResolvePrSessionTitle,
@@ -3243,6 +3245,12 @@ export default function App({ initialView }: any = {}) {
 
         case 'notification_read':
           window.dispatchEvent(new CustomEvent(NOTIFICATION_WS_EVENT, { detail: data }));
+          break;
+
+        // Session banner and bell rows refresh their pending approvals.
+        case 'approval_requested':
+        case 'approval_resolved':
+          window.dispatchEvent(new CustomEvent(APPROVAL_WS_EVENT, { detail: data }));
           break;
 
         // Support ticket queue
@@ -8191,6 +8199,7 @@ export default function App({ initialView }: any = {}) {
                             </button>
                           </div>
                         )}
+                        {activeSessionId && <SessionApprovalBanner sessionId={activeSessionId} />}
                         {messages.length > 0 &&
                         needsAutopilotSetup(activeSession) &&
                         activeSessionId ? (

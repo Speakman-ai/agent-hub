@@ -19,6 +19,7 @@ import AccountSection, { OrganizationSection } from './AccountSection';
 import JobQueueSection from './JobQueueSection';
 import NotificationPreferencesSection from './NotificationPreferencesSection';
 import BrowserProfilesSection from './BrowserProfilesSection';
+import ApprovalRulesSection from './ApprovalRulesSection';
 import GithubConnectionSection from './GithubConnectionSection';
 import PersonalOAuthConfigSection from './PersonalOAuthConfigSection';
 import GithubAppConfigSection from './GithubAppConfigSection';
@@ -132,6 +133,7 @@ import {
   Users,
   Bell,
   Cookie,
+  ShieldCheck,
 } from 'lucide-react';
 
 /** Grid of Lucide icon chips used as quick-pick agent avatars. */
@@ -5480,6 +5482,7 @@ const SETTINGS_TABS = [
   { id: 'account', iconName: 'UserCircle', text: 'Account' },
   { id: 'notifications', iconName: 'Bell', text: 'Notifications' },
   { id: 'browser-profiles', iconName: 'Cookie', text: 'Browser Profiles' },
+  { id: 'approvals', iconName: 'ShieldCheck', text: 'Approvals' },
   { id: 'organization', iconName: 'Users', text: 'Organization' },
   { id: 'orgs', iconName: 'Building2', text: 'Organizations' },
   // Host-wide Gemini API key (used for wiki embeddings; managed in
@@ -5519,6 +5522,7 @@ const SETTINGS_ICONS = {
   ClipboardCheck,
   Bell,
   Cookie,
+  ShieldCheck,
 } as Record<string, any>;
 
 function SettingsNavItem({ tab, active, onSelect }: any) {
@@ -5759,6 +5763,7 @@ export default function SettingsPage({
               {tab === 'account' && <AccountSection />}
               {tab === 'notifications' && <NotificationPreferencesSection />}
               {tab === 'browser-profiles' && <BrowserProfilesSection />}
+              {tab === 'approvals' && <ApprovalRulesSection />}
               {tab === 'organization' && isAdminPlus && <OrganizationSection />}
               {tab === 'claude-auth' && isAdminPlus && <GeminiAuthSection />}
               {tab === 'global-skills' && (

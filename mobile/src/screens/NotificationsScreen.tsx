@@ -17,6 +17,9 @@ import { useApp } from '../context/AppContext';
 import { colors } from '../theme/colors';
 import { relativeTime } from '../utils/time';
 import { notificationInboxStore, useNotificationInbox } from '../utils/notificationInboxInstance';
+import { approvalIdFromNotification } from '@shared/utils/approvals';
+import { usePendingApprovals } from '../hooks/usePendingApprovals';
+import ApprovalActions from '../components/ApprovalActions';
 
 /**
  * The bell inbox (mobile parity with the web bell popover): newest first,
@@ -29,6 +32,8 @@ export default function NotificationsScreen() {
   const { openSidebar } = useContext(SidebarContext);
   const { openInboxNotification } = useApp();
   const inbox = useNotificationInbox();
+  // Approval rows still waiting for an answer get action buttons.
+  const approvals = usePendingApprovals({ enabled: inbox.active });
 
   // Every visit starts from the newest page so rows missed while away (or
   // while the socket was down) show up.
@@ -50,11 +55,15 @@ export default function NotificationsScreen() {
     [openInboxNotification, navigation],
   );
 
+  const pendingById = new Map(approvals.pending.map((a) => [a.id, a]));
+
   const canMarkAll = inbox.unreadCount > 0 || inbox.items.some((n) => !n.readAt);
 
   const renderItem = ({ item: n }: { item: InboxNotification }) => {
     const unread = !n.readAt;
-    return (
+    const approvalId = approvalIdFromNotification(n);
+    const approval = approvalId ? pendingById.get(approvalId) : undefined;
+    const rowView = (
       <TouchableOpacity
         onPress={() => onRowPress(n)}
         style={[styles.row, unread ? styles.rowUnread : null]}
@@ -74,6 +83,25 @@ export default function NotificationsScreen() {
           </Text>
         ) : null}
       </TouchableOpacity>
+    );
+    if (!approval) return rowView;
+    return (
+      <View key={n.id}>
+        {rowView}
+        <View
+          style={[styles.approvalActions, unread ? styles.rowUnread : null]}
+          testID={`notification-approval-${n.id}`}
+        >
+          <ApprovalActions
+            approval={approval}
+            testIDPrefix={`notification-approval-${n.id}`}
+            onSettled={(id) => {
+              approvals.drop(id);
+              if (!n.readAt) notificationInboxStore.markRead(n);
+            }}
+          />
+        </View>
+      </View>
     );
   };
 
@@ -185,6 +213,14 @@ const styles = StyleSheet.create({
   row: {
     paddingHorizontal: 16,
     paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.gray800,
+    borderLeftWidth: 3,
+    borderLeftColor: 'transparent',
+  },
+  approvalActions: {
+    paddingHorizontal: 16,
+    paddingBottom: 12,
     borderBottomWidth: 1,
     borderBottomColor: colors.gray800,
     borderLeftWidth: 3,

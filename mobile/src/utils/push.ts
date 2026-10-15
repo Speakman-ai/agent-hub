@@ -20,6 +20,7 @@
  *     → returns { token, permissionStatus }
  *   - `presentLocalNotification({ Notifications }, { title, body, data })`
  */
+import { pushCategoryIdFor } from '@shared/utils/approvals';
 /**
  * Returns true iff the platform can receive real push notifications.
  * Simulators/emulators cannot. Callers that pass a stub Device can test
@@ -134,8 +135,10 @@ export async function registerForPushNotifications({
 export async function presentLocalNotification({ Notifications }: any, { title, body, data }: any) {
   if (!Notifications?.scheduleNotificationAsync) return null;
   try {
+    // Approval banners get the same Allow once / Deny buttons as the push.
+    const categoryIdentifier = pushCategoryIdFor(data?.event ?? data?.category);
     return await Notifications.scheduleNotificationAsync({
-      content: { title, body, data },
+      content: { title, body, data, ...(categoryIdentifier ? { categoryIdentifier } : {}) },
       trigger: null,
     });
   } catch (err: any) {
