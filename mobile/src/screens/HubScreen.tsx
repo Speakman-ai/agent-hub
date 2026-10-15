@@ -1,4 +1,4 @@
-import React, { useCallback, useContext, useEffect, useState } from 'react';
+import React, { useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { View, Text, TouchableOpacity, ScrollView, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -9,7 +9,6 @@ import { colors } from '../theme/colors';
 import HubIcon from '../components/HubIcon';
 import BrandLogo from '../components/BrandLogo';
 import DashboardHomeScreen from './DashboardHomeScreen';
-import DailySummaryScreen from './DailySummaryScreen';
 import DashboardScreen from './DashboardScreen';
 import TodosScreen from './TodosScreen';
 import CalendarScreen from './CalendarScreen';
@@ -18,18 +17,25 @@ import SupportOverviewScreen from './SupportOverviewScreen';
 import ChatScreen from './ChatScreen';
 import HubChatScreen, { CountBadge } from './HubChatScreen';
 import { useAccountScoped, useHubChatBadge } from '../hooks/useHubChat';
-import { DEFAULT_HUB_PANE, parseHubPane, type HubWorkspacePane } from '@shared/utils/hub';
+import {
+  DEFAULT_HUB_PANE,
+  isSummariesPaneAlias,
+  parseHubPane,
+  type HubWorkspacePane,
+} from '@shared/utils/hub';
 
 type HubTab = 'assistant' | HubWorkspacePane;
 
 function parseHubTab(value: unknown): HubTab {
-  return value === 'assistant' ? 'assistant' : parseHubPane(value);
+  if (value === 'assistant') return 'assistant';
+  // Links to the removed Daily Summary tab open the Summaries channel in Chat.
+  if (isSummariesPaneAlias(value)) return 'chat';
+  return parseHubPane(value);
 }
 
 const TABS: { id: HubTab; label: string; icon: string }[] = [
   { id: 'assistant', label: 'Assistant', icon: 'Bot' },
   { id: 'today', label: 'Dashboard', icon: 'LayoutGrid' },
-  { id: 'summary', label: 'Daily Summary', icon: 'ScrollText' },
   { id: 'org', label: 'Org', icon: 'BarChart3' },
   { id: 'todos', label: 'Todos', icon: 'ListTodo' },
   { id: 'calendar', label: 'Calendar', icon: 'CalendarDays' },
@@ -45,7 +51,6 @@ function HubBody({
   chatChannelId,
   chatOpenRequest,
   onChatChannelChange,
-  onOpenChatChannel,
 }: {
   tab: HubTab;
   navigation: any;
@@ -53,7 +58,6 @@ function HubBody({
   chatChannelId: string | null;
   chatOpenRequest: number;
   onChatChannelChange: (channelId: string | null) => void;
-  onOpenChatChannel: (channelId: string) => void;
 }) {
   const { clearHubChat } = useApp();
   switch (tab) {
@@ -90,14 +94,6 @@ function HubBody({
           }}
         />
       );
-    case 'summary':
-      return (
-        <DailySummaryScreen
-          navigation={navigation}
-          setTab={setTab}
-          onOpenChannel={onOpenChatChannel}
-        />
-      );
     case 'org':
       return <DashboardScreen />;
     case 'todos':
@@ -127,8 +123,8 @@ function HubBody({
 
 /**
  * Hub — mobile peer of the web Hub page. One drawer entry; assistant +
- * Dashboard / Daily Summary / Org / Todos / Calendar / Mail live
- * as tabs here.
+ * Dashboard / Org / Todos / Calendar / Mail / Chat / Support live as tabs
+ * here.
  */
 export default function HubScreen({ navigation, route }: any) {
   const sidebar = useContext(SidebarContext);
@@ -212,6 +208,30 @@ export default function HubScreen({ navigation, route }: any) {
     navigation?.setParams?.({ channelId: undefined });
   }, [route?.params?.channelId, navigation, openChatChannel]);
 
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const summariesLink =
+    isSummariesPaneAlias(route?.params?.tab) || isSummariesPaneAlias(route?.params?.pane);
+  useEffect(() => {
+    if (!summariesLink) return;
+    navigation?.setParams?.({ tab: 'chat', pane: undefined });
+    api.hubChat
+      .openSummaryChannel()
+      .then((res: any) => {
+        const id = res?.channel?.id;
+        if (mountedRef.current && typeof id === 'string' && id) openChatChannel(id);
+      })
+      .catch(() => {
+        // The Chat tab is already open; it falls back to its usual channel.
+      });
+  }, [summariesLink, navigation, openChatChannel]);
+
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
       <View style={styles.header}>
@@ -259,7 +279,6 @@ export default function HubScreen({ navigation, route }: any) {
           chatChannelId={chatChannelId}
           chatOpenRequest={chatOpenRequest}
           onChatChannelChange={onChatChannelChange}
-          onOpenChatChannel={openChatChannel}
         />
       </View>
     </SafeAreaView>

@@ -42,7 +42,7 @@ export function defaultHubModelForEngine(
 
 /**
  * Compact engine + model selects for Hub. The pick is per-user and applies
- * to Hub chat and Hub-level generation (Daily Summary).
+ * to Hub chat and Hub-level generation (chat digests).
  */
 export default function HubModelPicker({
   modelConfig,

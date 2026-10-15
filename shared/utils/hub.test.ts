@@ -8,6 +8,7 @@ import {
   isHubAssistantRole,
   isHubProjectId,
   isHubSystemProject,
+  isSummariesPaneAlias,
   parseHubPane,
 } from './hub';
 
@@ -31,7 +32,10 @@ describe('hub constants', () => {
 
   it('parses workspace panes and maps retired top-level views', () => {
     expect(parseHubPane('org')).toBe('org');
-    expect(parseHubPane('summary')).toBe('summary');
+    // The Daily Summary pane is gone; links to it are an alias for Summaries.
+    expect(parseHubPane('summary')).toBe(DEFAULT_HUB_PANE);
+    expect(isSummariesPaneAlias('summary')).toBe(true);
+    expect(isSummariesPaneAlias('chat')).toBe(false);
     expect(parseHubPane('support')).toBe('support');
     expect(parseHubPane('troubleshoot')).toBe(DEFAULT_HUB_PANE);
     expect(parseHubPane('nope')).toBe(DEFAULT_HUB_PANE);

@@ -27,7 +27,7 @@ vi.mock('../context/AppContext', () => ({
 }));
 const api = vi.hoisted(() => ({
   getHubSession: vi.fn().mockResolvedValue({}),
-  hubChat: { channels: vi.fn() },
+  hubChat: { channels: vi.fn(), openSummaryChannel: vi.fn() },
 }));
 vi.mock('../utils/api', () => ({ api }));
 vi.mock('../utils/hubChatInstance', async () => {
@@ -38,7 +38,6 @@ vi.mock('../components/HubIcon', () => ({ default: () => null }));
 vi.mock('../components/BrandLogo', () => ({ default: () => null }));
 for (const m of [
   './DashboardHomeScreen',
-  './DailySummaryScreen',
   './DashboardScreen',
   './TodosScreen',
   './CalendarScreen',
@@ -114,24 +113,24 @@ describe('HubScreen retained chat channel', () => {
     act(() => r.unmount());
   });
 
-  it('opens the Summaries channel from the Daily Summary history link', async () => {
+  it('opens the Summaries channel from an old Daily Summary tab link', async () => {
     api.hubChat.channels.mockResolvedValue({ channels: [], viewerUserId: 'u1' });
+    api.hubChat.openSummaryChannel.mockResolvedValue({ channel: { id: 'sum-1' } });
     await hubChatStore.reset(true, 'u1');
+    const setParams = vi.fn();
     let r: any;
     await act(async () => {
       r = TestRenderer.create(
         React.createElement(HubScreen, {
-          navigation: { setParams: vi.fn(), navigate: vi.fn() },
-          route: { params: {} },
+          navigation: { setParams, navigate: vi.fn() },
+          route: { params: { tab: 'summary' } },
         }),
       );
     });
-    await tab(r, 'summary');
-    const summary = r.root.find((n: any) => typeof n.props?.onOpenChannel === 'function');
-    await act(async () => {
-      summary.props.onOpenChannel('sum-1');
-    });
+    expect(api.hubChat.openSummaryChannel).toHaveBeenCalledTimes(1);
+    expect(setParams).toHaveBeenCalledWith({ tab: 'chat', pane: undefined });
     expect(shownChat(r)).toBe('sum-1');
+    expect(r.root.findAll((n: any) => n.props?.testID === 'hub-tab-summary')).toHaveLength(0);
     act(() => r.unmount());
   });
 });

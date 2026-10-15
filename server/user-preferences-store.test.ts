@@ -388,34 +388,35 @@ describe('user-preferences-store', () => {
     });
   });
 
-  it('round-trips hubDailySummary and drops an incomplete blob', () => {
+  it('drops a stored daily summary report on read and keeps the schedule', () => {
     const id = uuidv4();
     createUser({
       id,
       username: `u_${id.replace(/-/g, '').slice(0, 8)}`,
       passwordHash: 'x',
     });
-    const summary = {
-      date: '2026-08-19',
-      timeZone: 'America/Chicago',
-      markdown: '## Today\n- shipped Daily Summary',
-      engine: 'claude-code',
-      model: 'claude-opus-4-6',
-      generatedAt: '2026-08-19T18:00:00.000Z',
-    };
-    mergeUserPreferencesJson(id, { hubDailySummary: summary });
-    expect(getUserPreferencesRow(id).hubDailySummary).toEqual(summary);
-
-    mergeUserPreferencesJson(id, {
-      hubDailySummary: {
-        date: '',
-        markdown: '',
-        timeZone: '',
-        engine: '',
-        model: '',
-        generatedAt: '',
-      },
+    getOrgsDb()
+      .prepare('UPDATE users SET preferences_json = ? WHERE id = ?')
+      .run(
+        JSON.stringify({
+          hubDailySummary: {
+            date: '2026-08-19',
+            timeZone: 'UTC',
+            markdown: '## Today',
+            engine: 'claude-code',
+            model: 'claude-opus-4-6',
+            generatedAt: '2026-08-19T18:00:00.000Z',
+          },
+          hubDailySummarySchedule: { enabled: true, timeZone: 'UTC', times: ['08:00'] },
+        }),
+        id,
+      );
+    const loaded = getUserPreferencesRow(id) as Record<string, unknown>;
+    expect(loaded.hubDailySummary).toBeUndefined();
+    expect(loaded.hubDailySummarySchedule).toEqual({
+      enabled: true,
+      timeZone: 'UTC',
+      times: ['08:00'],
     });
-    expect(getUserPreferencesRow(id).hubDailySummary).toBeUndefined();
   });
 });

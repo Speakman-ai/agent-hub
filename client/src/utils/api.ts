@@ -254,37 +254,10 @@ export interface MeDashboardWire {
   google: DashboardGoogleWire;
 }
 
-export interface DailySummaryReportWire {
-  date: string;
-  timeZone: string;
-  markdown: string;
-  engine: string;
-  model: string;
-  generatedAt: string;
-}
-
 export interface VoiceTranscriptSummaryWire {
   summary: string;
   engine: string;
   model: string;
-}
-
-export interface DailySummaryWire {
-  date: string;
-  timeZone: string;
-  report: DailySummaryReportWire | null;
-  /** The caller's Summaries chat channel (GET only); null until a scheduled run posts. */
-  summaryChannelId?: string | null;
-}
-
-export interface DailySummaryScheduleWire {
-  enabled: boolean;
-  timeZone: string;
-  times: string[];
-}
-
-export interface DailySummaryScheduleResponseWire {
-  schedule: DailySummaryScheduleWire | null;
 }
 
 interface CreateTodoBody {
@@ -1106,12 +1079,6 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(body),
     }),
-  getDailySummary: (opts: { tz?: string } = {}) => {
-    const params = new URLSearchParams();
-    if (opts.tz) params.set('tz', opts.tz);
-    const qs = params.toString();
-    return fetchJSON<DailySummaryWire>(`/me/daily-summary${qs ? `?${qs}` : ''}`);
-  },
   /**
    * Summarize a dictated note with the caller's default model. The server
    * fails over across engines, so allow several one-shot attempts.
@@ -1122,22 +1089,6 @@ export const api = {
       body: JSON.stringify({ transcript }),
       timeout: 400_000,
       signal: opts.signal,
-    }),
-  generateDailySummary: (opts: { tz?: string } = {}) =>
-    fetchJSON<DailySummaryWire>('/me/daily-summary', {
-      method: 'POST',
-      body: JSON.stringify({ tz: opts.tz }),
-      // Generation spawns an LLM one-shot; the server allows up to
-      // GENERATE_TIMEOUT_MS (90s) for a large hub. The default 15s client
-      // timeout aborts long before that, so give it headroom past the server.
-      timeout: 120_000,
-    }),
-  getDailySummarySchedule: () =>
-    fetchJSON<DailySummaryScheduleResponseWire>('/me/daily-summary/schedule'),
-  setDailySummarySchedule: (schedule: { enabled: boolean; timeZone?: string; times: string[] }) =>
-    fetchJSON<DailySummaryScheduleResponseWire>('/me/daily-summary/schedule', {
-      method: 'PUT',
-      body: JSON.stringify(schedule),
     }),
   listGoogleCalendarEvents: ({
     calendarId,
@@ -1247,6 +1198,7 @@ export const api = {
     }) => fetchJSON('/chat/channels', { method: 'POST', body: JSON.stringify(data) }),
     openDm: (userId: string) =>
       fetchJSON('/chat/dms', { method: 'POST', body: JSON.stringify({ userId }) }),
+    openSummaryChannel: () => fetchJSON('/chat/summary-channel', { method: 'POST' }),
     updateChannel: (channelId: string, data: { name?: string; topic?: string | null }) =>
       fetchJSON(`/chat/channels/${encodeURIComponent(channelId)}`, {
         method: 'PATCH',

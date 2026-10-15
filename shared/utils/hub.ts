@@ -1,6 +1,6 @@
 /**
- * Hub — the org/user home surface (assistant + Dashboard / Daily Summary /
- * Org / Todos / Calendar / Mail / Chat / Support).
+ * Hub — the org/user home surface (assistant + Dashboard / Org / Todos /
+ * Calendar / Mail / Chat / Support).
  *
  * Constants and parsers shared by web, mobile, and the server so nav hashes,
  * the hidden Hub project, and the assistant agent id cannot drift.
@@ -15,7 +15,6 @@ export const HUB_SESSION_NAME = 'Hub';
 /** Workspace panes inside Hub (the assistant is a sibling column / tab, not a pane). */
 export const HUB_WORKSPACE_PANES = [
   'today',
-  'summary',
   'org',
   'todos',
   'calendar',
@@ -61,6 +60,16 @@ export function isHubWorkspacePane(value: unknown): value is HubWorkspacePane {
 
 export function parseHubPane(value: unknown): HubWorkspacePane {
   return isHubWorkspacePane(value) ? value : DEFAULT_HUB_PANE;
+}
+
+/**
+ * `#/hub/summary` was the Daily Summary pane. Summaries post to the user's
+ * Summaries chat channel now, so links to it open that channel.
+ */
+export const SUMMARIES_PANE_ALIAS = 'summary';
+
+export function isSummariesPaneAlias(value: unknown): boolean {
+  return value === SUMMARIES_PANE_ALIAS;
 }
 
 export function hubPaneFromLegacyView(view: string | null | undefined): HubWorkspacePane | null {

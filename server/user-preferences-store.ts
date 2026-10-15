@@ -25,10 +25,6 @@
  *                                   preference, but per-account rather than
  *                                   per-device so the sidebar looks the same on
  *                                   web, mobile, and Electron.
- *   - `hubDailySummary`           — last Hub Daily Summary for this user,
- *                                   keyed by local YYYY-MM-DD. Stale dates are
- *                                   treated as empty so the report clears
- *                                   every day.
  *
  * The map is stored on the `preferences_json` column so we don't have to
  * migrate the table every time a new preference is added. The column is
@@ -51,16 +47,6 @@ export interface AgentEngineOverride {
   model?: string;
 }
 
-export interface HubDailySummaryStored {
-  /** Caller's local calendar day (YYYY-MM-DD) the report belongs to. */
-  date: string;
-  timeZone: string;
-  markdown: string;
-  engine: string;
-  model: string;
-  generatedAt: string;
-}
-
 export interface UserPreferencesStored {
   agentEngineOverrides?: Record<string, AgentEngineOverride>;
   /** Per-agent per-user model pick (`{ [agentId]: modelId }`). */
@@ -69,13 +55,8 @@ export interface UserPreferencesStored {
   /** Project ids collapsed in the sidebar, de-duplicated and order-preserved. */
   sidebarCollapsedProjects?: string[];
   /**
-   * Last Hub Daily Summary generated for this user. Stale when `date` is not
-   * the caller's local today — GET/POST treat that as empty (clears each day).
-   */
-  hubDailySummary?: HubDailySummaryStored;
-  /**
-   * Auto-refresh schedule for the Hub Daily Summary: 1+ local times of day at
-   * which the Hub regenerates the report for this user. Absent when unscheduled.
+   * Daily summary times of day. Nothing writes it any more; the my_work digest
+   * migration converts it into a digest on the user's Summaries channel.
    */
   hubDailySummarySchedule?: HubDailySummarySchedule;
 }
@@ -137,30 +118,6 @@ function normalizeAgentModelOverrides(raw: unknown): Record<string, string> | un
   return Object.keys(out).length ? out : undefined;
 }
 
-const HUB_DAILY_SUMMARY_MAX_MARKDOWN = 100_000;
-const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
-
-function normalizeHubDailySummary(raw: unknown): HubDailySummaryStored | undefined {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
-  const obj = raw as Record<string, unknown>;
-  const date = typeof obj.date === 'string' ? obj.date.trim() : '';
-  const markdown = typeof obj.markdown === 'string' ? obj.markdown : '';
-  if (!DATE_ONLY_RE.test(date) || !markdown.trim()) return undefined;
-  const timeZone = typeof obj.timeZone === 'string' ? obj.timeZone.trim() : '';
-  const engine = typeof obj.engine === 'string' ? obj.engine.trim() : '';
-  const model = typeof obj.model === 'string' ? obj.model.trim() : '';
-  const generatedAt = typeof obj.generatedAt === 'string' ? obj.generatedAt.trim() : '';
-  if (!generatedAt) return undefined;
-  return {
-    date,
-    timeZone: timeZone || 'UTC',
-    markdown: markdown.slice(0, HUB_DAILY_SUMMARY_MAX_MARKDOWN),
-    engine,
-    model,
-    generatedAt,
-  };
-}
-
 function parsePrefsJson(raw: string | null): UserPreferencesStored {
   if (!raw?.trim()) return {};
   try {
@@ -177,8 +134,6 @@ function parsePrefsJson(raw: string | null): UserPreferencesStored {
     }
     const collapsed = normalizeSidebarCollapsedProjects(obj.sidebarCollapsedProjects);
     if (collapsed) result.sidebarCollapsedProjects = collapsed;
-    const summary = normalizeHubDailySummary(obj.hubDailySummary);
-    if (summary) result.hubDailySummary = summary;
     const schedule = normalizeDailySummarySchedule(obj.hubDailySummarySchedule);
     if (schedule) result.hubDailySummarySchedule = schedule;
     return result;
@@ -231,9 +186,6 @@ export function replaceUserPreferencesJson(userId: string, prefs: UserPreference
   }
   if (prefs.sidebarCollapsedProjects && prefs.sidebarCollapsedProjects.length > 0) {
     stored.sidebarCollapsedProjects = prefs.sidebarCollapsedProjects;
-  }
-  if (prefs.hubDailySummary) {
-    stored.hubDailySummary = prefs.hubDailySummary;
   }
   if (prefs.hubDailySummarySchedule) {
     stored.hubDailySummarySchedule = prefs.hubDailySummarySchedule;
@@ -317,9 +269,6 @@ function mergePreferences(
     next.sidebarCollapsedProjects = partial.sidebarCollapsedProjects.length
       ? partial.sidebarCollapsedProjects
       : undefined;
-  }
-  if ('hubDailySummary' in partial) {
-    next.hubDailySummary = normalizeHubDailySummary(partial.hubDailySummary);
   }
   if ('hubDailySummarySchedule' in partial) {
     next.hubDailySummarySchedule = normalizeDailySummarySchedule(partial.hubDailySummarySchedule);

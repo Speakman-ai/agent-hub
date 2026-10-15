@@ -80,7 +80,7 @@ const HubModelResponse = registerComponent(
       model: z.string(),
     })
     .openapi({
-      description: 'Engine and model for Hub chats, Daily Summary, and other Hub-level generation.',
+      description: 'Engine and model for Hub chats, chat digests, and other Hub-level generation.',
     }),
 );
 
@@ -90,7 +90,7 @@ registerPath({
   tags: ['Hub'],
   summary: "Read the caller's Hub engine and model",
   description:
-    "Resolved from the caller's per-user Hub assistant override, else the hidden Hub agent defaults. Daily Summary and other Hub generation use this pick.",
+    "Resolved from the caller's per-user Hub assistant override, else the hidden Hub agent defaults. Chat digests and other Hub generation use this pick.",
   responses: {
     200: {
       description: 'Resolved Hub engine and model.',
@@ -106,7 +106,7 @@ registerPath({
   tags: ['Hub'],
   summary: "Set the caller's Hub engine and model",
   description:
-    "Persists a per-user override on the hidden Hub assistant and updates the caller's live Hub session. Daily Summary generation uses the same pick.",
+    "Persists a per-user override on the hidden Hub assistant and updates the caller's live Hub session. Chat digests use the same pick.",
   request: {
     body: {
       content: jsonContent(

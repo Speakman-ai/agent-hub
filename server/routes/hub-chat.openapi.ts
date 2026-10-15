@@ -467,6 +467,18 @@ registerPath({
 });
 
 registerPath({
+  method: 'post',
+  path: '/api/chat/summary-channel',
+  tags: [TAG],
+  summary: "Open (get or create) the caller's Summaries channel",
+  responses: {
+    200: { description: 'The existing Summaries channel.', content: jsonContent(channelEnvelope) },
+    201: { description: 'A new Summaries channel.', content: jsonContent(channelEnvelope) },
+    ...common,
+  },
+});
+
+registerPath({
   method: 'get',
   path: '/api/chat/channels/{channelId}',
   tags: [TAG],

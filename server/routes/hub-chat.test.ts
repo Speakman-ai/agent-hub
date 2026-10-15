@@ -165,6 +165,31 @@ describe('private channels and DMs', () => {
   });
 });
 
+describe('Summaries channel', () => {
+  it('opens one private Summaries channel per user and keeps others out', async () => {
+    const first = await request(as({ userId: alice }))
+      .post('/api/chat/summary-channel')
+      .expect(201);
+    expect(first.body.channel).toMatchObject({ kind: 'summary', name: 'Summaries' });
+    const again = await request(as({ userId: alice }))
+      .post('/api/chat/summary-channel')
+      .expect(200);
+    expect(again.body.channel.id).toBe(first.body.channel.id);
+
+    const bobs = await request(as({ userId: bob }))
+      .post('/api/chat/summary-channel')
+      .expect(201);
+    expect(bobs.body.channel.id).not.toBe(first.body.channel.id);
+    await request(as({ userId: bob }))
+      .get(`/api/chat/channels/${first.body.channel.id}/messages`)
+      .expect(404);
+  });
+
+  it('requires a signed-in user', async () => {
+    await request(as({})).post('/api/chat/summary-channel').expect(401);
+  });
+});
+
 describe('public channels', () => {
   it('can be browsed and read, but posting needs a join', async () => {
     const ch = await makeChannel(alice, { name: 'general', topic: 'all hands' });

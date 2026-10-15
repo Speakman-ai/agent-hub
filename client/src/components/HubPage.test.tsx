@@ -5,7 +5,6 @@ import HubPage, { HUB_ASSISTANT_COLLAPSED_KEY } from './HubPage';
 const panes = {
   assistant: <span>a</span>,
   today: <span>today-body</span>,
-  summary: <span>summary-body</span>,
   org: <span>org-body</span>,
   todos: <span>todos-body</span>,
   calendar: <span>calendar-body</span>,
@@ -37,7 +36,6 @@ describe('HubPage', () => {
         onPaneChange={onPaneChange}
         assistant={<div>assistant-body</div>}
         today={<div>today-body</div>}
-        summary={<div>summary-body</div>}
         org={<div>org-body</div>}
         todos={<div>todos-body</div>}
         calendar={<div>calendar-body</div>}
@@ -53,14 +51,12 @@ describe('HubPage', () => {
     expect(screen.getByText('today-body')).toBeInTheDocument();
     expect(screen.getByText('assistant-body')).toBeInTheDocument();
     expect(screen.getByTestId('hub-pane-today')).toHaveTextContent('Dashboard');
-    expect(screen.getByTestId('hub-pane-summary')).toHaveTextContent('Daily Summary');
+    expect(screen.queryByTestId('hub-pane-summary')).not.toBeInTheDocument();
     expect(screen.getByTestId('hub-pane-support')).toHaveTextContent('Support');
     expect(screen.queryByTestId('hub-pane-troubleshoot')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('hub-pane-org'));
     expect(onPaneChange).toHaveBeenCalledWith('org');
-    fireEvent.click(screen.getByTestId('hub-pane-summary'));
-    expect(onPaneChange).toHaveBeenCalledWith('summary');
     fireEvent.click(screen.getByTestId('hub-pane-support'));
     expect(onPaneChange).toHaveBeenCalledWith('support');
   });
@@ -82,10 +78,6 @@ describe('HubPage', () => {
 
     rerender(<HubPage pane="todos" onPaneChange={() => undefined} {...panes} />);
     expect(screen.getByText('todos-body')).toBeInTheDocument();
-
-    rerender(<HubPage pane="summary" onPaneChange={() => undefined} {...panes} />);
-    expect(screen.getByText('summary-body')).toBeInTheDocument();
-    expect(screen.queryByText('todos-body')).not.toBeInTheDocument();
   });
 
   it('wraps the workspace pane in a bounded flex column so flex-1 pane roots can scroll', () => {

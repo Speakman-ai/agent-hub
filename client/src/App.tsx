@@ -100,7 +100,6 @@ import { HubChatRefOpenContext, type HubChatRefOpenHandler } from './components/
 import { useGoogleChatPush, useGoogleChatPushBootstrap } from './utils/googleChatPush';
 import TodosPage from './components/TodosPage';
 import PersonalDashboard from './components/PersonalDashboard';
-import DailySummaryPage from './components/DailySummaryPage';
 import HubPage from './components/HubPage';
 import HubModelPicker, { defaultHubModelForEngine } from './components/HubModelPicker';
 import HubClearChatButton from './components/HubClearChatButton';
@@ -177,6 +176,7 @@ import {
   pendingLessonCountsSnapshot,
 } from '@shared/utils/pendingLessonCounts';
 import { api } from './utils/api';
+import { openSummariesChannel } from './utils/summariesChannel';
 import { shouldSuppressToast } from './utils/toastPolicy';
 import { canCompleteInstanceOnboarding, getAuthRecord } from './utils/auth';
 import { createRefreshScheduler, kanbanEventTargetsProject } from '@shared/utils/kanbanRefresh';
@@ -1052,6 +1052,10 @@ export default function App({ initialView }: any = {}) {
         setChatPaneSide('hub');
         focusHubChatMessage(route.chatChannelId, route.chatMessageId || null);
         consumeChatFocusRoute();
+      } else if (pane === 'chat' && route?.openSummaries) {
+        setChatPaneSide('hub');
+        consumeChatFocusRoute();
+        void openSummariesChannel();
       }
     }
     if (view === 'wiki') setWikiProjectId(route?.projectId || null);
@@ -1075,10 +1079,16 @@ export default function App({ initialView }: any = {}) {
   // A Hub Chat message link opened in a fresh tab.
   useEffect(() => {
     const route = initialNavigationRef.current;
-    if (initialView || route?.hubPane !== 'chat' || !route?.chatChannelId) return;
-    setChatPaneSide('hub');
-    focusHubChatMessage(route.chatChannelId, route.chatMessageId || null);
-    consumeChatFocusRoute();
+    if (initialView || route?.hubPane !== 'chat') return;
+    if (route.chatChannelId) {
+      setChatPaneSide('hub');
+      focusHubChatMessage(route.chatChannelId, route.chatMessageId || null);
+      consumeChatFocusRoute();
+    } else if (route.openSummaries) {
+      setChatPaneSide('hub');
+      consumeChatFocusRoute();
+      void openSummariesChannel();
+    }
   }, [initialView]);
 
   useEffect(() => {
@@ -7195,28 +7205,6 @@ export default function App({ initialView }: any = {}) {
                         setCurrentView(`kanban:${projectId}`);
                         setSidebarOpen(false);
                       }}
-                    />
-                  }
-                  summary={
-                    <DailySummaryPage
-                      onOpenCard={(projectId, cardId) => {
-                        setKanbanFocusCardId(cardId);
-                        setCurrentView(`kanban:${projectId}`);
-                        setSidebarOpen(false);
-                      }}
-                      onOpenSession={(agentId, sessionId) => {
-                        focusAgentSession(agentId, sessionId);
-                      }}
-                      onOpenTodos={() => {
-                        setCurrentView('hub');
-                        setHubPane('todos');
-                        setHubMobileTab('todos');
-                      }}
-                      onOpenProject={(projectId) => {
-                        setCurrentView(`kanban:${projectId}`);
-                        setSidebarOpen(false);
-                      }}
-                      onOpenChannel={openHubChatChannel}
                     />
                   }
                   org={

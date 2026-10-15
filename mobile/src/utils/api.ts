@@ -1269,6 +1269,7 @@ export const api = {
     }) => fetchJSON('/chat/channels', { method: 'POST', body: JSON.stringify(data) }),
     openDm: (userId: string) =>
       fetchJSON('/chat/dms', { method: 'POST', body: JSON.stringify({ userId }) }),
+    openSummaryChannel: () => fetchJSON('/chat/summary-channel', { method: 'POST' }),
     updateChannel: (channelId: string, data: { name?: string; topic?: string | null }) =>
       fetchJSON(`/chat/channels/${encodeURIComponent(channelId)}`, {
         method: 'PATCH',
@@ -1381,17 +1382,6 @@ export const api = {
   getHubModel: () => fetchJSON('/me/hub-model'),
   putHubModel: (body: { engine: string; model: string }) =>
     fetchJSON('/me/hub-model', { method: 'PUT', body: JSON.stringify(body) }),
-  getDailySummary: (opts: { tz?: string } = {}) => {
-    const params = new URLSearchParams();
-    if (opts.tz) params.set('tz', opts.tz);
-    const qs = params.toString();
-    return fetchJSON(`/me/daily-summary${qs ? `?${qs}` : ''}`);
-  },
-  generateDailySummary: (opts: { tz?: string } = {}) =>
-    fetchJSON('/me/daily-summary', { method: 'POST', body: JSON.stringify({ tz: opts.tz }) }),
-  getDailySummarySchedule: () => fetchJSON('/me/daily-summary/schedule'),
-  setDailySummarySchedule: (schedule: { enabled: boolean; timeZone?: string; times: string[] }) =>
-    fetchJSON('/me/daily-summary/schedule', { method: 'PUT', body: JSON.stringify(schedule) }),
   // Per-user Google connection (Settings -> Account). Never returns tokens.
   getGoogleStatus: () => fetchJSON('/auth/google/status'),
   // Returns { authorizeUrl }; the caller opens it in the system browser.

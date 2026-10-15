@@ -1,6 +1,7 @@
 import {
   DEFAULT_HUB_PANE,
   hubPaneFromLegacyView,
+  isSummariesPaneAlias,
   parseHubPane,
   type HubWorkspacePane,
 } from '@shared/utils/hub';
@@ -45,6 +46,11 @@ export type NavigationState = {
    */
   chatChannelId?: string | null;
   chatMessageId?: string | null;
+  /**
+   * Hub Chat pane only: open the caller's Summaries channel. Set by links to
+   * the removed Daily Summary pane; never written back to the hash.
+   */
+  openSummaries?: boolean;
 };
 
 function cleanSegment(value: any) {
@@ -85,9 +91,13 @@ export function parseNavigationHash(hash?: any): NavigationState | null {
   let view = segments[0];
   let projectId: string | null = null;
   let hubPane: HubWorkspacePane | null = null;
+  let openSummaries = false;
 
   if (view === 'view' && segments[1]) {
     view = segments[1];
+  } else if (view === 'hub' && isSummariesPaneAlias(segments[1])) {
+    hubPane = 'chat';
+    openSummaries = true;
   } else if (view === 'hub') {
     hubPane = parseHubPane(segments[1] || DEFAULT_HUB_PANE);
     view = 'hub';
@@ -122,6 +132,7 @@ export function parseNavigationHash(hash?: any): NavigationState | null {
     ticketId: cleanSegment(params.get('ticket')),
     hubPane: view === 'hub' ? hubPane || DEFAULT_HUB_PANE : null,
     ...(chatChannelId ? { chatChannelId, chatMessageId: cleanSegment(params.get('message')) } : {}),
+    ...(openSummaries && !chatChannelId ? { openSummaries: true } : {}),
   };
 }
 
@@ -133,7 +144,7 @@ export function parseNavigationHash(hash?: any): NavigationState | null {
 export function consumeChatFocusRoute(): void {
   if (typeof window === 'undefined' || !window.history) return;
   const route = parseNavigationHash(window.location.hash);
-  if (!route?.chatChannelId) return;
+  if (!route?.chatChannelId && !route?.openSummaries) return;
   const hash = buildNavigationHash(route);
   window.history.replaceState(
     window.history.state,

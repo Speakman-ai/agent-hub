@@ -10,7 +10,6 @@ import {
   MessagesSquare,
   PanelRightClose,
   PanelRightOpen,
-  ScrollText,
 } from 'lucide-react';
 import BrandLogo from './BrandLogo';
 import { formatUnreadCount } from '../utils/googleChatPush';
@@ -26,7 +25,6 @@ const PANE_META: Record<
   { label: string; icon: typeof Briefcase; testId: string }
 > = {
   today: { label: 'Dashboard', icon: Briefcase, testId: 'hub-pane-today' },
-  summary: { label: 'Daily Summary', icon: ScrollText, testId: 'hub-pane-summary' },
   org: { label: 'Org', icon: BarChart3, testId: 'hub-pane-org' },
   todos: { label: 'Todos', icon: ListTodo, testId: 'hub-pane-todos' },
   calendar: { label: 'Calendar', icon: CalendarDays, testId: 'hub-pane-calendar' },
@@ -41,7 +39,6 @@ export interface HubPageProps {
   /** Compact assistant column (desktop) / Assistant tab body (mobile). */
   assistant: ReactNode;
   today: ReactNode;
-  summary: ReactNode;
   org: ReactNode;
   todos: ReactNode;
   calendar: ReactNode;
@@ -84,16 +81,11 @@ function writeAssistantCollapsed(collapsed: boolean): void {
 
 function workspaceBody(
   active: HubWorkspacePane,
-  panes: Pick<
-    HubPageProps,
-    'today' | 'summary' | 'org' | 'todos' | 'calendar' | 'mail' | 'chat' | 'support'
-  >,
+  panes: Pick<HubPageProps, 'today' | 'org' | 'todos' | 'calendar' | 'mail' | 'chat' | 'support'>,
 ): ReactNode {
   switch (active) {
     case 'today':
       return panes.today;
-    case 'summary':
-      return panes.summary;
     case 'org':
       return panes.org;
     case 'todos':
@@ -121,7 +113,6 @@ export default function HubPage({
   onPaneChange,
   assistant,
   today,
-  summary,
   org,
   todos,
   calendar,
@@ -144,7 +135,6 @@ export default function HubPage({
   }, []);
   const workspace = workspaceBody(active, {
     today,
-    summary,
     org,
     todos,
     calendar,
@@ -232,7 +222,7 @@ export default function HubPage({
           )}
         </header>
         {/* Flex column so pane roots using `flex-1` (org/todos/calendar/mail) get a
-            bounded height and can scroll; `h-full` panes (today/summary) still resolve
+            bounded height and can scroll; `h-full` panes (today) still resolve
             against this bounded box. Without `flex`, `flex-1` is inert and pane content
             overflows this `overflow-hidden` wrapper with no scrollbar. */}
         <div className="flex-1 min-h-0 overflow-hidden flex flex-col">{workspace}</div>

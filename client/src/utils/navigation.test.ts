@@ -145,13 +145,15 @@ describe('navigation defaults', () => {
   it('round-trips Hub panes', () => {
     expect(buildNavigationHash({ view: 'hub', hubPane: 'today' })).toBe('');
     expect(buildNavigationHash({ view: 'hub', hubPane: 'org' })).toBe('#/hub/org');
-    expect(buildNavigationHash({ view: 'hub', hubPane: 'summary' })).toBe('#/hub/summary');
     expect(parseNavigationHash('#/hub')).toMatchObject({ view: 'hub', hubPane: 'today' });
     expect(parseNavigationHash('#/hub/mail')).toMatchObject({ view: 'hub', hubPane: 'mail' });
+    // The removed Daily Summary pane opens the Summaries channel in Chat.
     expect(parseNavigationHash('#/hub/summary')).toMatchObject({
       view: 'hub',
-      hubPane: 'summary',
+      hubPane: 'chat',
+      openSummaries: true,
     });
+    expect(buildNavigationHash(parseNavigationHash('#/hub/summary')!)).toBe('#/hub/chat');
     expect(parseNavigationHash('#/hub/troubleshoot')).toMatchObject({
       view: 'hub',
       hubPane: 'today',
@@ -345,5 +347,11 @@ describe('Hub Chat message links', () => {
     expect(buildNavigationHash({ view: 'hub', hubPane: 'chat', chatChannelId: 'gen' })).toBe(
       '#/hub/chat',
     );
+  });
+
+  it('replaces an old Daily Summary link with the Chat pane once applied', () => {
+    window.history.replaceState(null, '', '/#/hub/summary');
+    consumeChatFocusRoute();
+    expect(window.location.hash).toBe('#/hub/chat');
   });
 });

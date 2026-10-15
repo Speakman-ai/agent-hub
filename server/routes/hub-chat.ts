@@ -120,6 +120,7 @@ import {
   splitDigestCron,
 } from '../../shared/utils/chatDigest.js';
 import { isValidTimeZone } from '../daily-summary-schedule.js';
+import { getOrCreateSummaryChannel } from '../hub-chat-summaries.js';
 import {
   buildRefViewer,
   resolveBodyRefs,
@@ -610,6 +611,16 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
       return;
     }
     const { channel, created } = getOrCreateDm(caller.orgId, caller.userId, body.userId);
+    if (created) emitChannelUpdate(channel, 'created');
+    res.status(created ? 201 : 200).json({ channel: channelBody(caller, channel) });
+  });
+
+  // The caller's Summaries channel, created on first use. Old Daily Summary
+  // links land here, and it is where a my_work digest can be added.
+  router.post('/api/chat/summary-channel', (req: Request, res: Response) => {
+    const caller = requireCaller(req, res);
+    if (!caller) return;
+    const { channel, created } = getOrCreateSummaryChannel(caller.orgId, caller.userId);
     if (created) emitChannelUpdate(channel, 'created');
     res.status(created ? 201 : 200).json({ channel: channelBody(caller, channel) });
   });
