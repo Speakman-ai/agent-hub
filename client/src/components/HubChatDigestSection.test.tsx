@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { DEFAULT_CHAT_DIGEST_INSTRUCTIONS } from '@shared/utils/chatDigest';
 
 vi.mock('../utils/api', () => ({
   api: {
@@ -9,6 +10,7 @@ vi.mock('../utils/api', () => ({
       createDigest: vi.fn(),
       updateDigest: vi.fn(),
       removeDigest: vi.fn(),
+      runDigest: vi.fn(),
     },
   },
 }));
@@ -47,62 +49,155 @@ beforeEach(() => {
   ]);
 });
 
-describe('HubChatDigestSection', () => {
-  it('schedules a project digest with the chosen preset', async () => {
-    hubChat.digests!.mockResolvedValue({ digests: [] });
-    hubChat.createDigest!.mockResolvedValue({ digest: saved });
-    render(<HubChatDigestSection channelId="c1" channelProjectId={null} />);
+const renderSection = () => render(<HubChatDigestSection channelId="c1" channelProjectId={null} />);
 
-    await screen.findByText('No digest scheduled.');
-    fireEvent.change(screen.getByLabelText('Digest scope'), { target: { value: 'project' } });
-    await waitFor(() => expect(screen.getByLabelText('Digest project')).not.toBeDisabled());
-    fireEvent.change(screen.getByLabelText('Digest project'), { target: { value: 'web' } });
-    fireEvent.change(screen.getByLabelText('Digest schedule preset'), {
-      target: { value: '2' },
+describe('HubChatDigestSection', () => {
+  it('lists every digest with its name, schedule, and status', async () => {
+    hubChat.digests!.mockResolvedValue({
+      digests: [saved, { ...saved, id: 'd2', name: 'Standup', scope: 'channel', projectIds: [] }],
     });
+    renderSection();
+
+    expect(await screen.findByText('Project digest')).toBeInTheDocument();
+    expect(screen.getByText('Standup')).toBeInTheDocument();
+    expect(screen.getAllByTestId('hub-chat-digest-status')[0]).toHaveTextContent(
+      /nothing new, skipped posting/,
+    );
+  });
+
+  it('adds a second digest next to an existing one', async () => {
+    hubChat.digests!.mockResolvedValue({ digests: [saved] });
+    hubChat.createDigest!.mockResolvedValue({
+      digest: { ...saved, id: 'd2', name: 'Standup', scope: 'channel', projectIds: [] },
+    });
+    renderSection();
+
+    fireEvent.click(await screen.findByRole('button', { name: /Add digest/ }));
+    fireEvent.change(screen.getByLabelText('Digest name'), { target: { value: 'Standup' } });
     fireEvent.change(screen.getByLabelText('Digest timezone'), { target: { value: 'UTC' } });
     fireEvent.click(screen.getByRole('button', { name: 'Schedule digest' }));
 
     await waitFor(() =>
       expect(hubChat.createDigest).toHaveBeenCalledWith('c1', {
-        name: undefined,
+        name: 'Standup',
         enabled: true,
-        cron: '0 17 * * *',
+        cron: '0 9 * * 1-5',
         timeZone: 'UTC',
-        scope: 'project',
-        projectIds: ['web'],
+        scope: 'channel',
+        projectIds: [],
+        prompt: null,
       }),
     );
-    expect(await screen.findByText(/nothing new, skipped posting/)).toBeInTheDocument();
+    expect(await screen.findByTestId('hub-chat-digest-d2')).toBeInTheDocument();
+    expect(screen.getByTestId('hub-chat-digest-d1')).toBeInTheDocument();
+    expect(hubChat.updateDigest).not.toHaveBeenCalled();
   });
 
-  it('edits the existing digest by id, keeping its name', async () => {
+  it('saves a digest covering several projects', async () => {
     hubChat.digests!.mockResolvedValue({ digests: [saved] });
-    hubChat.updateDigest!.mockResolvedValue({ digest: { ...saved, cron: '0 9 * * 1' } });
-    render(<HubChatDigestSection channelId="c1" channelProjectId={null} />);
+    hubChat.updateDigest!.mockResolvedValue({ digest: { ...saved, projectIds: ['web', 'api'] } });
+    renderSection();
 
-    await screen.findByRole('button', { name: 'Save digest' });
-    fireEvent.change(screen.getByLabelText('Digest schedule preset'), {
-      target: { value: '4' },
-    });
+    fireEvent.click(await screen.findByText('Project digest'));
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'API' }));
+    expect(screen.getByRole('checkbox', { name: 'Web' })).toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: 'Save digest' }));
+
+    await waitFor(() =>
+      expect(hubChat.updateDigest).toHaveBeenCalledWith(
+        'c1',
+        'd1',
+        expect.objectContaining({
+          name: 'Project digest',
+          scope: 'project',
+          projectIds: ['web', 'api'],
+        }),
+      ),
+    );
+  });
+
+  it('saves a custom prompt and shows the default instructions as placeholder', async () => {
+    hubChat.digests!.mockResolvedValue({ digests: [saved] });
+    hubChat.updateDigest!.mockResolvedValue({ digest: { ...saved, prompt: 'Only list risks.' } });
+    renderSection();
+
+    fireEvent.click(await screen.findByText('Project digest'));
+    const prompt = screen.getByLabelText('Digest instructions');
+    expect(prompt).toHaveAttribute('placeholder', DEFAULT_CHAT_DIGEST_INSTRUCTIONS);
+    fireEvent.change(prompt, { target: { value: '  Only list risks.  ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save digest' }));
+
+    await waitFor(() =>
+      expect(hubChat.updateDigest).toHaveBeenCalledWith(
+        'c1',
+        'd1',
+        expect.objectContaining({ prompt: 'Only list risks.' }),
+      ),
+    );
+  });
+
+  it('sends null to restore the default prompt when cleared', async () => {
+    hubChat.digests!.mockResolvedValue({ digests: [{ ...saved, prompt: 'Old' }] });
+    hubChat.updateDigest!.mockResolvedValue({ digest: saved });
+    renderSection();
+
+    fireEvent.click(await screen.findByText('Project digest'));
+    fireEvent.change(screen.getByLabelText('Digest instructions'), { target: { value: '' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save digest' }));
     await waitFor(() =>
       expect(hubChat.updateDigest).toHaveBeenCalledWith(
         'c1',
         'd1',
-        expect.objectContaining({ name: 'Project digest', cron: '0 9 * * 1', projectIds: ['web'] }),
+        expect.objectContaining({ prompt: null }),
       ),
     );
-    expect(hubChat.createDigest).not.toHaveBeenCalled();
   });
 
-  it('removes an existing digest by id', async () => {
+  it('runs a digest now and shows the outcome', async () => {
+    hubChat.digests!.mockResolvedValue({ digests: [saved] });
+    hubChat.runDigest!.mockResolvedValue({
+      result: { status: 'posted', messageId: 'm1' },
+      digest: { ...saved, lastStatus: 'posted' },
+    });
+    renderSection();
+
+    fireEvent.click(await screen.findByText('Project digest'));
+    fireEvent.click(screen.getByRole('button', { name: 'Run now' }));
+    expect(await screen.findByText('Posted a digest.')).toBeInTheDocument();
+    expect(hubChat.runDigest).toHaveBeenCalledWith('c1', 'd1');
+    expect(screen.getByTestId('hub-chat-digest-status')).toHaveTextContent(/posted a digest/);
+  });
+
+  it('renders a failed save inline on that digest only', async () => {
+    hubChat.digests!.mockResolvedValue({
+      digests: [saved, { ...saved, id: 'd2', name: 'Standup', scope: 'channel', projectIds: [] }],
+    });
+    hubChat.updateDigest!.mockRejectedValue(new Error('Invalid cron expression'));
+    renderSection();
+
+    fireEvent.click(await screen.findByText('Standup'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save digest' }));
+    const card = screen.getByTestId('hub-chat-digest-d2');
+    expect(await within(card).findByRole('alert')).toHaveTextContent('Invalid cron expression');
+    expect(within(screen.getByTestId('hub-chat-digest-d1')).queryByRole('alert')).toBeNull();
+  });
+
+  it('removes a digest by id', async () => {
     hubChat.digests!.mockResolvedValue({ digests: [saved] });
     hubChat.removeDigest!.mockResolvedValue({ ok: true });
-    render(<HubChatDigestSection channelId="c1" channelProjectId={null} />);
+    renderSection();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Remove' }));
-    await screen.findByText('No digest scheduled.');
+    fireEvent.click(await screen.findByText('Project digest'));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    await screen.findByText('No digests scheduled.');
     expect(hubChat.removeDigest).toHaveBeenCalledWith('c1', 'd1');
+  });
+
+  it('disables Add digest at the per-channel cap', async () => {
+    hubChat.digests!.mockResolvedValue({
+      digests: Array.from({ length: 10 }, (_, i) => ({ ...saved, id: `d${i}` })),
+    });
+    renderSection();
+    expect(await screen.findByRole('button', { name: /Add digest/ })).toBeDisabled();
   });
 });

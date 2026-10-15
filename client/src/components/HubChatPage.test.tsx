@@ -1202,7 +1202,7 @@ describe('HubChatPage settings saves in flight', () => {
     const dialog = await openGeneralSettings();
     await within(dialog).findByTestId('hub-chat-settings-members');
     fireEvent.click(within(dialog).getByLabelText('carol'));
-    fireEvent.click(within(dialog).getByRole('button', { name: /^Add/ }));
+    fireEvent.click(within(dialog).getByRole('button', { name: /^Add( \d+)?$/ }));
     fireEvent.click(within(dialog).getByLabelText('dave'));
     await act(async () => {
       add.resolve({

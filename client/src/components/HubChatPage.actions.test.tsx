@@ -249,27 +249,33 @@ describe('HubChatPage message links', () => {
     useHistory(500);
     act(() => focusHubChatMessage('gen', 'm400'));
     render(<HubChatPage />);
-    await waitFor(() => expect(rowById('m400').dataset.highlighted).toBe('true'));
+    await waitFor(() => expect(rowById('m400').dataset.highlighted).toBe('true'), {
+      timeout: 10_000,
+    });
     act(() => focusHubChatMessage('gen', 'm5'));
-    await waitFor(() => expect(rowById('m5').dataset.highlighted).toBe('true'));
+    await waitFor(() => expect(rowById('m5').dataset.highlighted).toBe('true'), {
+      timeout: 10_000,
+    });
     expect(screen.queryByText(GONE)).toBeNull();
-  });
+    // Renders hundreds of rows; a CPU-capped runner needs far more than the default.
+  }, 30_000);
 
   it('offers to keep loading when the message is further back than one step', async () => {
     // 10 pages of 100 per step: m50 is 1,100 messages behind the latest page.
     useHistory(1200);
     act(() => focusHubChatMessage('gen', 'm50'));
     render(<HubChatPage />);
-    const banner = await screen.findByTestId('hub-chat-seek-pending', {}, { timeout: 10_000 });
+    const banner = await screen.findByTestId('hub-chat-seek-pending', {}, { timeout: 30_000 });
     expect(banner.textContent).toContain('messages further back');
     expect(screen.queryByText(GONE)).toBeNull();
 
     fireEvent.click(within(banner).getByText('Keep loading'));
     await waitFor(() => expect(rowById('m50').dataset.highlighted).toBe('true'), {
-      timeout: 10_000,
+      timeout: 30_000,
     });
     expect(screen.queryByTestId('hub-chat-seek-pending')).toBeNull();
-  }, 30_000);
+    // Renders over a thousand rows; ~13s even on an idle 8-core machine.
+  }, 90_000);
 
   it('reports a missing message without paging through the history', async () => {
     useHistory(500);
