@@ -36800,6 +36800,40 @@ paths:
                     type: string
                     nullable: true
                     description: "Agent channels: the session the post was handed to, when it started."
+                  mentionSessions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        agentId:
+                          type: string
+                        sessionId:
+                          type: string
+                          nullable: true
+                      required:
+                        - agentId
+                        - sessionId
+                    description: "Channels, groups and DMs: each `@agent` the post dispatched (at most 3) and the poster-owned session it runs in. Null when it failed to start; the channel gets a notice."
+                  mentionNotices:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        agentId:
+                          type: string
+                        code:
+                          type: string
+                          enum:
+                            - mention_forbidden
+                            - mention_not_eligible
+                            - mention_limit
+                        message:
+                          type: string
+                      required:
+                        - agentId
+                        - code
+                        - message
+                    description: Mentions that were not dispatched. Shown only to the poster (also sent live as `hub_chat_notice`) and never stored.
                 required:
                   - message
         "400":

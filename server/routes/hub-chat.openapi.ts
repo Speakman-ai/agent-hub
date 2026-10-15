@@ -592,6 +592,26 @@ registerPath({
           agentSessionId: z.string().nullable().optional().openapi({
             description: 'Agent channels: the session the post was handed to, when it started.',
           }),
+          mentionSessions: z
+            .array(z.object({ agentId: z.string(), sessionId: z.string().nullable() }))
+            .optional()
+            .openapi({
+              description:
+                'Channels, groups and DMs: each `@agent` the post dispatched (at most 3) and the poster-owned session it runs in. Null when it failed to start; the channel gets a notice.',
+            }),
+          mentionNotices: z
+            .array(
+              z.object({
+                agentId: z.string(),
+                code: z.enum(['mention_forbidden', 'mention_not_eligible', 'mention_limit']),
+                message: z.string(),
+              }),
+            )
+            .optional()
+            .openapi({
+              description:
+                'Mentions that were not dispatched. Shown only to the poster (also sent live as `hub_chat_notice`) and never stored.',
+            }),
         }),
       ),
     },

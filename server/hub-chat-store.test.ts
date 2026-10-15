@@ -49,6 +49,7 @@ describe('hub chat schema', () => {
       'hub_chat_daily_summary_migrations',
       'hub_chat_digests',
       'hub_chat_members',
+      'hub_chat_mention_sessions',
       'hub_chat_messages',
       'hub_chat_pins',
       'hub_chat_reactions',

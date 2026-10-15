@@ -21,6 +21,11 @@ export const HUB_CHAT_CHANNEL_UPDATE_EVENT = 'hub_chat_channel_update';
  * place and unread state is untouched.
  */
 export const HUB_CHAT_MESSAGE_META_EVENT = 'hub_chat_message_meta';
+/**
+ * A notice for one user only, never stored: e.g. an `@agent` mention that was
+ * not dispatched because the poster cannot use that agent.
+ */
+export const HUB_CHAT_NOTICE_EVENT = 'hub_chat_notice';
 
 export const HUB_CHAT_EVENT_TYPES: ReadonlySet<string> = new Set([
   HUB_CHAT_MESSAGE_EVENT,
@@ -28,6 +33,7 @@ export const HUB_CHAT_EVENT_TYPES: ReadonlySet<string> = new Set([
   HUB_CHAT_READ_EVENT,
   HUB_CHAT_CHANNEL_UPDATE_EVENT,
   HUB_CHAT_MESSAGE_META_EVENT,
+  HUB_CHAT_NOTICE_EVENT,
 ]);
 
 export type HubChatChannelUpdateReason =

@@ -32,20 +32,30 @@ import {
   shapeMessageMeta,
 } from '../hub-chat-broadcast.js';
 import { locateChatMarkdownCode } from '../hub-chat-markdown.js';
-import { hubChatRefsToPlainText } from '../../shared/utils/hubChatRefTokens.js';
+import {
+  hubChatRefsToPlainText,
+  parseHubChatRefTokens,
+} from '../../shared/utils/hubChatRefTokens.js';
 import { channelLabel } from '../../shared/utils/hubChat.js';
 import {
   agentChannelState,
   reserveAgentChannelTurn,
+  reserveMentionTurn,
   runAgentChannelPost,
+  runMentionPost,
+  MAX_MENTION_DISPATCHES,
+  MENTION_DISPATCH_KINDS,
+  type MentionTarget,
 } from '../hub-chat-agent-channels.js';
 import { getDb } from '../db.js';
 import { syncChatReadToInbox } from '../hub-chat-inbox-sync.js';
 import type {
+  Agent,
   HubChatChannelRow,
   HubChatChannelSummary,
   HubChatMemberRow,
   HubChatMessageRow,
+  Project,
   RouteDeps,
 } from '../types.js';
 import {
@@ -134,6 +144,7 @@ import {
   HUB_CHAT_MESSAGE_EVENT,
   HUB_CHAT_MESSAGE_META_EVENT,
   HUB_CHAT_MESSAGE_UPDATE_EVENT,
+  HUB_CHAT_NOTICE_EVENT,
   HUB_CHAT_READ_EVENT,
   recipientsOf,
   type HubChatChannelUpdateReason,
@@ -439,9 +450,81 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
     return { projectId: project.id, agentId: agent.id, agentName: agent.name || agent.id };
   }
 
+  function canUseProject(caller: Caller, projectId: string | null): boolean {
+    const project = projectId ? (deps.findProject?.(projectId) ?? null) : null;
+    return Boolean(
+      project &&
+      !isHubSystemProject(project) &&
+      canViewProject(project, refViewer(caller).visibility),
+    );
+  }
+
   function canUseAgentProject(caller: Caller, channel: HubChatChannelRow): boolean {
-    const project = channel.project_id ? (deps.findProject?.(channel.project_id) ?? null) : null;
-    return Boolean(project && canViewProject(project, refViewer(caller).visibility));
+    return canUseProject(caller, channel.project_id);
+  }
+
+  interface MentionNotice {
+    agentId: string;
+    code: 'mention_forbidden' | 'mention_not_eligible' | 'mention_limit';
+    message: string;
+  }
+
+  /**
+   * The agents an `@agent` post dispatches, in body order, and a notice for
+   * each mention it does not. Read from the raw body because a mention the
+   * poster cannot use is flattened to plain text before it is stored. Hidden
+   * and unknown agents get the same notice, so it leaks nothing.
+   */
+  function mentionTargets(
+    caller: Caller,
+    rawBody: string,
+  ): { targets: MentionTarget[]; notices: MentionNotice[] } {
+    const targets: MentionTarget[] = [];
+    const notices: MentionNotice[] = [];
+    const seen = new Set<string>();
+    for (const t of parseHubChatRefTokens(rawBody, locateChatMarkdownCode)) {
+      if (t.kind !== 'agent' || seen.has(t.targetId)) continue;
+      seen.add(t.targetId);
+      const label = `@${t.label}`;
+      let hit: { project: Project; agent: Agent } | null = null;
+      for (const project of deps.getProjects?.() ?? []) {
+        const agent = project.agents?.find((a) => a.id === t.targetId);
+        if (agent) {
+          hit = { project, agent };
+          break;
+        }
+      }
+      if (!hit || !canUseProject(caller, hit.project.id)) {
+        notices.push({
+          agentId: t.targetId,
+          code: 'mention_forbidden',
+          message: `${label} was not asked: you need access to its project to use it.`,
+        });
+        continue;
+      }
+      if (!isEligibleBackgroundSessionAgent(hit.agent)) {
+        notices.push({
+          agentId: t.targetId,
+          code: 'mention_not_eligible',
+          message: `${label} cannot answer chat mentions.`,
+        });
+        continue;
+      }
+      if (targets.length >= MAX_MENTION_DISPATCHES) {
+        notices.push({
+          agentId: t.targetId,
+          code: 'mention_limit',
+          message: `${label} was not asked: a message can ask at most ${MAX_MENTION_DISPATCHES} agents.`,
+        });
+        continue;
+      }
+      targets.push({
+        agentId: hit.agent.id,
+        agentName: hit.agent.name || hit.agent.id,
+        projectId: hit.project.id,
+      });
+    }
+    return { targets, notices };
   }
 
   router.get('/api/chat/members', (req: Request, res: Response) => {
@@ -753,12 +836,17 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
       return;
     }
     const resolved = resolveBodyRefs(refLookups, refViewer(caller), body.body);
-    // A member's post in an agent channel runs in its session. Agent posts
-    // (chat.sh) never do, so two agents cannot loop on each other.
+    // A member's post in an agent channel runs in its session; an `@agent` in
+    // any other channel dispatches that agent. Agent posts (chat.sh, relayed
+    // replies) never do either, so agents cannot loop on each other.
     const runsAgent = m.channel.kind === 'agent' && !caller.agentId;
-    // The post and its agent turn are stored together, so a stored post is
+    const mentions =
+      !caller.agentId && MENTION_DISPATCH_KINDS.has(m.channel.kind)
+        ? mentionTargets(caller, body.body)
+        : { targets: [], notices: [] };
+    // The post and its agent turns are stored together, so a stored post is
     // never left without the record that gets it answered.
-    const { message, turnId } = getDb().transaction(() => {
+    const { message, turnId, mentionTurns } = getDb().transaction(() => {
       const message = appendMessage({
         channelId: m.channel.id,
         authorKind: caller.agentId ? 'agent' : 'user',
@@ -767,7 +855,14 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
         body: resolved.body,
         refs: resolved.refs,
       });
-      return { message, turnId: runsAgent ? reserveAgentChannelTurn(m.channel) : null };
+      return {
+        message,
+        turnId: runsAgent ? reserveAgentChannelTurn(m.channel) : null,
+        mentionTurns: mentions.targets.map((target) => ({
+          target,
+          turnId: reserveMentionTurn(m.channel, target, caller.userId),
+        })),
+      };
     })();
     emitMessage(HUB_CHAT_MESSAGE_EVENT, m.channel, message);
     // The author's read pointer moved past their own message. An agent's post
@@ -781,7 +876,30 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
           body: resolved.body,
         }).sessionId
       : null;
-    res.status(201).json({ message: shapeMessage(message), agentSessionId });
+    const mentionSessions = mentionTurns.map(({ target, turnId: mentionTurnId }) => ({
+      agentId: target.agentId,
+      sessionId: runMentionPost({
+        channel: m.channel,
+        turnId: mentionTurnId,
+        target,
+        posterUserId: caller.userId,
+        message,
+      }).sessionId,
+    }));
+    for (const notice of mentions.notices) {
+      emit(HUB_CHAT_NOTICE_EVENT, [caller.userId], {
+        orgId: caller.orgId,
+        channelId: m.channel.id,
+        messageId: message.id,
+        ...notice,
+      });
+    }
+    res.status(201).json({
+      message: shapeMessage(message),
+      agentSessionId,
+      mentionSessions,
+      mentionNotices: mentions.notices,
+    });
   });
 
   // Resolves a message link to its channel and seq, so a client can load the

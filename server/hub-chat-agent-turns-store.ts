@@ -15,19 +15,28 @@ export interface AgentTurnRow {
   reply_message_id: string | null;
   reply_content: string | null;
   created_at: string;
+  /** Mention turns: the agent that answers. NULL on agent-channel turns. */
+  agent_id?: string | null;
+  project_id?: string | null;
 }
 
 function db(): Database.Database {
   return getDb();
 }
 
-export function insertAgentTurn(turnId: string, channelId: string, sessionId: string | null): void {
+export function insertAgentTurn(
+  turnId: string,
+  channelId: string,
+  sessionId: string | null,
+  agent: { agentId: string; projectId: string } | null = null,
+): void {
   db()
     .prepare(
-      `INSERT OR IGNORE INTO hub_chat_agent_turns (turn_id, channel_id, session_id)
-       VALUES (?, ?, ?)`,
+      `INSERT OR IGNORE INTO hub_chat_agent_turns
+         (turn_id, channel_id, session_id, agent_id, project_id)
+       VALUES (?, ?, ?, ?, ?)`,
     )
-    .run(turnId, channelId, sessionId);
+    .run(turnId, channelId, sessionId, agent?.agentId ?? null, agent?.projectId ?? null);
 }
 
 export function getAgentTurn(turnId: string): AgentTurnRow | null {
@@ -118,4 +127,34 @@ export function setSessionCurrentTurn(sessionId: string, turnId: string): void {
 
 export function clearSessionCurrentTurn(sessionId: string): void {
   db().prepare('DELETE FROM hub_chat_agent_session_turns WHERE session_id = ?').run(sessionId);
+}
+
+/** The session a poster's mentions of an agent in a channel run in. */
+export function getMentionSession(
+  channelId: string,
+  agentId: string,
+  userId: string,
+): string | null {
+  const row = db()
+    .prepare(
+      `SELECT session_id FROM hub_chat_mention_sessions
+       WHERE channel_id = ? AND agent_id = ? AND user_id = ?`,
+    )
+    .get(channelId, agentId, userId) as { session_id: string } | undefined;
+  return row?.session_id ?? null;
+}
+
+export function setMentionSession(
+  channelId: string,
+  agentId: string,
+  userId: string,
+  sessionId: string,
+): void {
+  db()
+    .prepare(
+      `INSERT INTO hub_chat_mention_sessions (channel_id, agent_id, user_id, session_id)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(channel_id, agent_id, user_id) DO UPDATE SET session_id = excluded.session_id`,
+    )
+    .run(channelId, agentId, userId, sessionId);
 }

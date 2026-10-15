@@ -194,6 +194,18 @@ export const HUB_CHAT_SCHEMA = `
     session_id  TEXT PRIMARY KEY,
     turn_id     TEXT NOT NULL
   );
+
+  -- Agent mentions outside agent channels: the session a poster's mentions of
+  -- one agent in one channel run in. Owned by the poster, reused across their
+  -- later mentions there.
+  CREATE TABLE IF NOT EXISTS hub_chat_mention_sessions (
+    channel_id  TEXT NOT NULL REFERENCES hub_chat_channels(id) ON DELETE CASCADE,
+    agent_id    TEXT NOT NULL,
+    user_id     TEXT NOT NULL,
+    session_id  TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (channel_id, agent_id, user_id)
+  );
 `;
 
 /**
@@ -209,6 +221,9 @@ export const HUB_CHAT_COLUMN_MIGRATIONS: ReadonlyArray<string> = [
   // Bumped on every reaction or pin change, so a client holding two copies of
   // a message (a history page and a live update) keeps the newer reactions.
   'ALTER TABLE hub_chat_messages ADD COLUMN meta_rev INTEGER NOT NULL DEFAULT 0',
+  // Mention turns name the agent that answers; NULL means the channel's agent.
+  'ALTER TABLE hub_chat_agent_turns ADD COLUMN agent_id TEXT',
+  'ALTER TABLE hub_chat_agent_turns ADD COLUMN project_id TEXT',
 ];
 
 const LEGACY_DIGESTS_TABLE = 'hub_chat_channel_digests';
