@@ -16,6 +16,8 @@ import ForwardSessionModal, { filterForwardTargets } from './ForwardSessionModal
 import SessionStateIcon from './SessionStateIcon';
 import SessionEngineModelSheet from './SessionEngineModelSheet';
 import { truncateSessionId } from '../utils/sessionId';
+import { useNavigation } from '@react-navigation/native';
+import NotificationBell from './NotificationBell';
 type TopBarProps = {
   /** Opens an Agent Hub chat channel (from the session's chat backlinks). */
   onOpenChatChannel?: (channelId: string) => void;
@@ -38,6 +40,7 @@ export default function TopBar({ onOpenChatChannel }: TopBarProps = {}) {
     handleOpenHandoffSession,
   } = useApp();
   const { openSidebar } = useContext(SidebarContext);
+  const navigation = useNavigation<any>();
   const [showPicker, setShowPicker] = useState(false);
   const [showForward, setShowForward] = useState(false);
   const [summarizing, setSummarizing] = useState(false);
@@ -109,6 +112,11 @@ export default function TopBar({ onOpenChatChannel }: TopBarProps = {}) {
         <TouchableOpacity style={styles.menuButton} onPress={openSidebar}>
           <AppIcon name="menu" size={24} color={colors.gray400} />
         </TouchableOpacity>
+        <NotificationBell
+          onPress={() => navigation.navigate('Notifications')}
+          buttonStyle={styles.bellButton}
+          testID="topbar-notification-bell"
+        />
         {activeAgent && (
           <View style={styles.agentInfo}>
             <View style={[styles.agentDot, { backgroundColor: activeAgent.color }]} />
@@ -364,6 +372,10 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: colors.gray300,
     fontFamily: 'monospace',
+  },
+  bellButton: {
+    padding: 6,
+    marginRight: 4,
   },
   right: {
     flexDirection: 'row',

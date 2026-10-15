@@ -8,6 +8,7 @@ import { getToken as getJwt, clearToken } from './auth';
 import { normalizeSessionMessagesResponse } from '@shared/utils/sessionMessagesResponse';
 import { isDeadSessionResponse } from '@shared/utils/authErrorCodes';
 import type { SessionContextUsage } from '@shared/utils/contextUsage';
+import type { InboxNotification } from '@shared/utils/notificationInbox';
 /** A machine error code (`no_pushable_commits`) rather than human copy. */
 const ERROR_CODE_RE = /^[a-z][a-z0-9]*(_[a-z0-9]+)*$/;
 /**
@@ -2291,6 +2292,24 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ enabledEvents }),
     }),
+  // Notification inbox (the bell)
+  notifications: {
+    list: (params: { limit?: number; cursor?: string | null } = {}) =>
+      fetchJSON(
+        `/notifications${infraQuery({ limit: params.limit, cursor: params.cursor ?? undefined })}`,
+      ) as Promise<{ items: InboxNotification[]; nextCursor: string | null }>,
+    unreadCount: () => fetchJSON('/notifications/unread-count') as Promise<{ count: number }>,
+    markRead: (id: string) =>
+      fetchJSON(`/notifications/${encodeURIComponent(id)}/read`, {
+        method: 'POST',
+      }) as Promise<{ notification: InboxNotification; unreadCount: number }>,
+    markAllRead: () =>
+      fetchJSON('/notifications/read-all', { method: 'POST' }) as Promise<{
+        updated: number;
+        unreadCount: number;
+        readAt: string;
+      }>,
+  },
   // Wiki
   getWikiPages: (projectId: any) => fetchJSON(`/projects/${projectId}/wiki`),
   getWikiPage: (projectId: any, slug: any) => fetchJSON(`/projects/${projectId}/wiki/${slug}`),

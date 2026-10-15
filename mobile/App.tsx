@@ -24,6 +24,7 @@ import DashboardScreen from './src/screens/DashboardScreen';
 import DashboardHomeScreen from './src/screens/DashboardHomeScreen';
 import HubScreen from './src/screens/HubScreen';
 import TodosScreen from './src/screens/TodosScreen';
+import NotificationsScreen from './src/screens/NotificationsScreen';
 import WikiScreen from './src/screens/WikiScreen';
 import NotesScreen from './src/screens/NotesScreen';
 import PullRequestsScreen from './src/screens/PullRequestsScreen';
@@ -242,6 +243,7 @@ function AppContent() {
             <Stack.Screen name="Home" component={DashboardHomeScreen} />
             <Stack.Screen name="Dashboard" component={DashboardScreen} />
             <Stack.Screen name="Todos" component={TodosScreen} />
+            <Stack.Screen name="Notifications" component={NotificationsScreen} />
             <Stack.Screen name="Skills" component={SkillsScreen} />
             <Stack.Screen name="Settings" component={SettingsScreen} />
             <Stack.Screen name="Kanban" component={KanbanScreen} />

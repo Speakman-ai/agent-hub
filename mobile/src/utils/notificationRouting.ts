@@ -7,8 +7,10 @@
  * @typedef {{ kind: 'pulls', projectId: string | null, prNumber: number | null }} PullsRoute
  * @typedef {{ kind: 'infra', projectId: string, alertId: string | null }} InfraRoute
  * @typedef {{ kind: 'hubChat', channelId: string }} HubChatRoute
- * @typedef {ChatRoute | KanbanRoute | SupportRoute | PullsRoute | InfraRoute | HubChatRoute} Route
+ * @typedef {{ kind: 'deployments', projectId: string }} DeploymentsRoute
+ * @typedef {ChatRoute | KanbanRoute | SupportRoute | PullsRoute | InfraRoute | HubChatRoute | DeploymentsRoute} Route
  */
+import type { InboxNotification } from '@shared/utils/notificationInbox';
 /**
  * @param {Record<string, unknown> | null | undefined} data
  * @returns {string | null}
@@ -50,16 +52,20 @@ export function routeNotificationTap(data: any, ctx: any = {}) {
   const event = resolveEventKey(data);
   if (!event) return null;
   const sessions = Array.isArray(ctx.sessions) ? ctx.sessions : [];
+  const chat = () => {
+    const sessionId = resolveSessionId(null, data);
+    if (!sessionId) return null;
+    const payloadAgentId = typeof data.agentId === 'string' ? data.agentId : null;
+    const agentId = payloadAgentId || resolveAgentIdForSession(sessionId, sessions);
+    return { kind: 'chat' as const, agentId, sessionId };
+  };
   switch (event) {
     case 'awaiting_feedback':
+    case 'session_completed':
     case 'ready_to_push':
-    case 'pushed': {
-      const sessionId = resolveSessionId(null, data);
-      if (!sessionId) return null;
-      const payloadAgentId = typeof data.agentId === 'string' ? data.agentId : null;
-      const agentId = payloadAgentId || resolveAgentIdForSession(sessionId, sessions);
-      return { kind: 'chat', agentId, sessionId };
-    }
+    case 'pushed':
+    case 'finalize_failed':
+      return chat();
     case 'support_ticket_created': {
       const projectId = typeof data.projectId === 'string' ? data.projectId : null;
       if (!projectId) return null;
@@ -71,7 +77,8 @@ export function routeNotificationTap(data: any, ctx: any = {}) {
             : null;
       return { kind: 'support', projectId, ticketId };
     }
-    case 'review_assigned_to_you': {
+    case 'review_assigned_to_you':
+    case 'escalation': {
       const projectId = typeof data.projectId === 'string' ? data.projectId : null;
       const cardId = typeof data.cardId === 'string' ? data.cardId : null;
       const prNumber = typeof data.prNumber === 'number' ? data.prNumber : null;
@@ -80,7 +87,8 @@ export function routeNotificationTap(data: any, ctx: any = {}) {
       if (projectId) return { kind: 'kanban', projectId, cardId: null };
       return null;
     }
-    case 'pr_merged': {
+    case 'pr_merged':
+    case 'card_assigned_to_you': {
       return {
         kind: 'kanban',
         projectId: typeof data.projectId === 'string' ? data.projectId : null,
@@ -101,15 +109,148 @@ export function routeNotificationTap(data: any, ctx: any = {}) {
         alertId: typeof data.alertId === 'string' ? data.alertId : null,
       };
     }
-    case 'chat_message': {
+    case 'chat_message':
+    case 'dm':
+    case 'mention': {
       // An Agent Hub chat push: open that channel on the Hub's Chat tab.
       const channelId = typeof data.channelId === 'string' ? data.channelId : null;
       if (!channelId) return null;
       return { kind: 'hubChat', channelId };
     }
+    case 'deploy_outcome': {
+      const projectId = typeof data.projectId === 'string' ? data.projectId : null;
+      if (!projectId) return null;
+      return { kind: 'deployments', projectId };
+    }
+    default:
+      // Inbox rows of a category this build doesn't know still open their
+      // session when they carry one, like the web bell.
+      return ctx.sessionFallback ? chat() : null;
+  }
+}
+
+/**
+ * The tap payload for a bell inbox row, so a row and a push banner for the
+ * same event route identically. The row's category is the event key; its
+ * project id fills in when `data` doesn't carry one. A string PR number
+ * (the web bell accepts those) is normalized to the number the router needs.
+ */
+export function inboxNotificationTapData(n: InboxNotification): Record<string, unknown> {
+  const data: Record<string, unknown> = { ...(n.data ?? {}) };
+  const out: Record<string, unknown> = { ...data, event: n.category, type: n.category };
+  if (typeof data.projectId !== 'string' || !data.projectId) {
+    if (n.projectId) out.projectId = n.projectId;
+  }
+  if (typeof data.prNumber === 'string') {
+    const pr = Number.parseInt(data.prNumber, 10);
+    out.prNumber = Number.isFinite(pr) && pr > 0 ? pr : null;
+  }
+  return out;
+}
+
+function linkSegment(v: string | null | undefined): string | null {
+  const s = typeof v === 'string' ? v.trim() : '';
+  return s || null;
+}
+
+function linkPositiveInt(v: string | null | undefined): number | null {
+  const n = Number.parseInt(String(v ?? ''), 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * Parse a web deep link (an inbox row's `route`) into a mobile route. Accepts
+ * the web hash grammar (`#/pulls/<project>?pr=3`, `#/support/<project>?ticket=t`,
+ * `#/deployments/<project>`, `#/kanban:<project>?card=c`, `#/infra:<project>`,
+ * `#/hub/chat?channel=c`) and the shareable path form
+ * (`/projects/<project>/board?card=c`, `/projects/<project>/pulls/3`). Returns
+ * null for anything with no mobile screen, so the caller falls back to the
+ * category and data payload.
+ */
+export function routeFromWebLink(link: unknown) {
+  if (typeof link !== 'string') return null;
+  let raw = link.trim();
+  if (raw.startsWith('#')) raw = raw.slice(1);
+  if (raw.startsWith('/')) raw = raw.slice(1);
+  if (!raw) return null;
+  const [path, query = ''] = raw.split('?');
+  const params = new URLSearchParams(query);
+  const segs = path
+    .split('/')
+    .map((part) => {
+      try {
+        return decodeURIComponent(part);
+      } catch {
+        return '';
+      }
+    })
+    .filter(Boolean);
+  if (segs.length === 0) return null;
+
+  let view = segs[0];
+  let projectId: string | null = null;
+  let rest = segs.slice(1);
+  if (view === 'projects' && segs[1] && segs[2]) {
+    projectId = segs[1];
+    view = segs[2] === 'board' || segs[2] === 'kanban' ? 'kanban' : segs[2];
+    rest = segs.slice(3);
+  } else if (view === 'view' && segs[1]) {
+    view = segs[1];
+    rest = segs.slice(2);
+  } else {
+    const colon = view.indexOf(':');
+    if (colon > 0) {
+      projectId = linkSegment(view.slice(colon + 1));
+      view = view.slice(0, colon);
+    } else if (view !== 'hub' && segs[1]) {
+      projectId = segs[1];
+      rest = segs.slice(2);
+    }
+  }
+  projectId = linkSegment(params.get('project')) ?? projectId;
+
+  switch (view) {
+    case 'kanban':
+      return projectId
+        ? { kind: 'kanban' as const, projectId, cardId: linkSegment(params.get('card')) }
+        : null;
+    case 'pulls':
+      return projectId
+        ? {
+            kind: 'pulls' as const,
+            projectId,
+            prNumber: linkPositiveInt(params.get('pr') ?? rest[0]),
+          }
+        : null;
+    case 'support':
+      return projectId
+        ? { kind: 'support' as const, projectId, ticketId: linkSegment(params.get('ticket')) }
+        : null;
+    case 'deployments':
+      return projectId ? { kind: 'deployments' as const, projectId } : null;
+    case 'infra':
+      return projectId
+        ? { kind: 'infra' as const, projectId, alertId: linkSegment(params.get('alert')) }
+        : null;
+    case 'hub': {
+      const channelId = segs[1] === 'chat' ? linkSegment(params.get('channel')) : null;
+      return channelId ? { kind: 'hubChat' as const, channelId } : null;
+    }
     default:
       return null;
   }
+}
+
+/**
+ * Where tapping a bell inbox row goes, or null when it carries nothing to
+ * open. An explicit `route` the app can open wins, like the web bell;
+ * otherwise the category and its data payload decide.
+ */
+export function routeInboxNotification(n: InboxNotification, ctx: any = {}) {
+  return (
+    routeFromWebLink(n.route) ??
+    routeNotificationTap(inboxNotificationTapData(n), { ...ctx, sessionFallback: true })
+  );
 }
 /**
  * Map a routed notification tap to a React Navigation `(screen, params)`
@@ -167,6 +308,8 @@ export function notificationRouteToNavigation(route: any) {
       };
     case 'hubChat':
       return { screen: 'Hub', params: { tab: 'chat', channelId: route.channelId } };
+    case 'deployments':
+      return { screen: 'Deployments', params: { projectId: route.projectId } };
     default:
       return null;
   }

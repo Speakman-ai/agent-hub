@@ -42,7 +42,17 @@ import {
 } from '../utils/sessionSelection';
 import { registerForPushNotifications, presentLocalNotification } from '../utils/push';
 import { mapBroadcastToNotification } from '../utils/ticketNotifications';
-import { routeNotificationTap, notificationRouteToNavigation } from '../utils/notificationRouting';
+import {
+  routeNotificationTap,
+  routeInboxNotification,
+  notificationRouteToNavigation,
+} from '../utils/notificationRouting';
+import {
+  notificationInboxAccountGate,
+  notificationInboxStore,
+} from '../utils/notificationInboxInstance';
+import { NOTIFICATION_WS_EVENTS } from '../utils/notificationInboxStore';
+import type { InboxNotification } from '@shared/utils/notificationInbox';
 import { hubChatAccountGate, hubChatStore } from '../utils/hubChatInstance';
 import { HUB_CHAT_WS_EVENTS } from '../utils/hubChatStore';
 import { uploadAttachments } from '../utils/uploadAttachments';
@@ -423,6 +433,10 @@ export function AppProvider({ children }: any) {
       presentForegroundFor(data);
       if (HUB_CHAT_WS_EVENTS.has(data.type)) {
         hubChatStore.handleWsEvent(data);
+        return;
+      }
+      if (NOTIFICATION_WS_EVENTS.has(data.type)) {
+        notificationInboxStore.handleWsEvent(data);
         return;
       }
       const forActiveSession = data.sessionId && data.sessionId === activeSessionIdRef.current;
@@ -1182,11 +1196,9 @@ export function AppProvider({ children }: any) {
     const signedIn = configReady && !needsAuth && !needsSetup;
     const userId = getAuthRecord()?.user?.id ?? null;
     const orgId = getActiveOrg()?.id ?? '';
-    hubChatAccountGate.update({
-      account: signedIn ? `${getApiBaseUrl() ?? ''}|${userId ?? ''}|${orgId}` : null,
-      userId,
-      connected,
-    });
+    const account = signedIn ? `${getApiBaseUrl() ?? ''}|${userId ?? ''}|${orgId}` : null;
+    hubChatAccountGate.update({ account, userId, connected });
+    notificationInboxAccountGate.update({ account, userId, connected });
   }, [configReady, needsAuth, needsSetup, connected]);
   // Foreground banner for DMs and mentions (remote pushes are hidden while
   // the app is open), with the same rule as the web desktop notice.
@@ -1265,8 +1277,7 @@ export function AppProvider({ children }: any) {
   // The routing decision is fully pure (`routeNotificationTap`); only the
   // side-effects — state updates, `navigatorRef.current(screen, params)` —
   // live here.
-  const applyNotificationRoute = useCallback((data: any) => {
-    const route = routeNotificationTap(data, { sessions: sessionsRef.current });
+  const applyRoute = useCallback((route: any) => {
     if (!route) return;
     switch (route.kind) {
       case 'chat': {
@@ -1286,7 +1297,8 @@ export function AppProvider({ children }: any) {
       case 'support':
       case 'pulls':
       case 'infra':
-      case 'hubChat': {
+      case 'hubChat':
+      case 'deployments': {
         // Navigator-driven kinds share one param mapper (screen + params,
         // including the `pulls` PR number and the `infra` alert id).
         const nav = notificationRouteToNavigation(route);
@@ -1297,6 +1309,24 @@ export function AppProvider({ children }: any) {
         break;
     }
   }, []);
+  const applyNotificationRoute = useCallback(
+    (data: any) => applyRoute(routeNotificationTap(data, { sessions: sessionsRef.current })),
+    [applyRoute],
+  );
+  /**
+   * Tap on a bell inbox row: mark it read and open what it points at.
+   * Returns the route taken (null when the row carries nothing to open), so
+   * the caller can switch to the Chat screen for session rows.
+   */
+  const openInboxNotification = useCallback(
+    (n: InboxNotification) => {
+      notificationInboxStore.markRead(n);
+      const route = routeInboxNotification(n, { sessions: sessionsRef.current });
+      applyRoute(route);
+      return route;
+    },
+    [applyRoute],
+  );
   // Register a notification-response listener so tapping a banner (whether
   // presented in foreground by `presentLocalNotification` or delivered as a
   // remote Expo push) navigates to the right screen. Also consume any
@@ -1735,6 +1765,7 @@ export function AppProvider({ children }: any) {
           // configuration changes, so nothing of it stays on screen and no
           // response still in flight for it can land afterwards.
           hubChatAccountGate.invalidate();
+          notificationInboxAccountGate.invalidate();
           const { switchOrg } = require('../utils/orgs');
           await switchOrg(orgId);
         },
@@ -1762,6 +1793,7 @@ export function AppProvider({ children }: any) {
           // Chat stays empty until the new org's connection is up; the gate
           // loads it then (and drops anything that slipped in meanwhile).
           hubChatAccountGate.invalidate();
+          notificationInboxAccountGate.invalidate();
           // Reconnect WebSocket to new org
           reconnectRef.current();
           // Re-probe the new server's auth mode so notification owner-scoping
@@ -2659,6 +2691,7 @@ export function AppProvider({ children }: any) {
     // Navigation bridge — App.js calls this once the NavigationContainer
     // ref is mounted so the notification-tap listener can open screens.
     registerNavigator,
+    openInboxNotification,
     subscribeInitialBuild,
     subscribeSideBarEvents,
   };

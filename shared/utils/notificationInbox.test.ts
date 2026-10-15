@@ -18,8 +18,8 @@ import {
   withWriteFailed,
   newestCreatedAt,
   type InboxFacts,
+  type InboxNotification,
 } from './notificationInbox';
-import type { InboxNotification } from './notificationTarget';
 
 function n(id: string, createdAt: string, readAt: string | null = null): InboxNotification {
   return {

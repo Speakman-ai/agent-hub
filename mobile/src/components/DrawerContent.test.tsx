@@ -95,6 +95,7 @@ vi.mock('@shared/utils/sidebarProjectCollapse', async () => {
   };
 });
 vi.mock('./BugReportButton', () => ({ default: nativeHost('BugReportButton') }));
+vi.mock('./NotificationBell', () => ({ default: nativeHost('NotificationBell') }));
 vi.mock('./BrandLogo', () => ({ default: nativeHost('BrandLogo') }));
 vi.mock('./HubIcon', () => ({ default: nativeHost('HubIcon') }));
 vi.mock('./SessionStateIcon', () => ({ default: nativeHost('SessionStateIcon') }));
@@ -152,6 +153,16 @@ describe('mobile DrawerContent collapsed-project hydration', () => {
   });
 
   let putRequests: Array<{ resolve: () => void }> = [];
+
+  it('opens the notification inbox from the header bell', async () => {
+    const nav = navigation();
+    const renderer = await renderDrawer(nav);
+    TestRenderer.act(() =>
+      renderer.root.findByProps({ testID: 'drawer-notification-bell' }).props.onPress(),
+    );
+    expect(nav.navigate).toHaveBeenCalledWith('Notifications');
+    expect(nav.closeDrawer).toHaveBeenCalled();
+  });
 
   it('does not paint project rows before the AsyncStorage cache resolves', async () => {
     const cache = deferred<string[]>();

@@ -5,6 +5,7 @@
 import {
   AlertCircle,
   ArrowUpCircle,
+  Bell,
   Bug,
   Check,
   CheckCircle,
@@ -49,6 +50,7 @@ import {
   Trash2,
   Download,
   Package,
+  Settings,
 } from 'lucide-react-native';
 /** @type {Record<string, React.ComponentType<{ size?: number, color?: string, strokeWidth?: number, style?: object }>>} */
 export const APP_LUCIDE_ICONS: Record<string, any> = {
@@ -107,6 +109,8 @@ export const APP_LUCIDE_ICONS: Record<string, any> = {
   'download-outline': Download,
   'cube-outline': Package,
   'archive-outline': Package,
+  'notifications-outline': Bell,
+  'settings-outline': Settings,
 };
 /**
  * @param {string} name

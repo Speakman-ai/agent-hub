@@ -5,6 +5,9 @@ import {
   resolveAgentIdForSession,
   routeNotificationTap,
   notificationRouteToNavigation,
+  routeInboxNotification,
+  routeFromWebLink,
+  inboxNotificationTapData,
 } from './notificationRouting';
 describe('resolveEventKey', () => {
   it('prefers `event` over `type` when both are present', () => {
@@ -266,5 +269,183 @@ describe('routeNotificationTap — Agent Hub chat', () => {
   });
   it('drops a chat tap without a channel id', () => {
     expect(routeNotificationTap({ event: 'chat_message' })).toBeNull();
+  });
+});
+
+describe('routeInboxNotification — bell inbox rows', () => {
+  const row = (category: string, data: Record<string, unknown> | null, projectId = 'p1') => ({
+    id: 'n1',
+    userId: 'u1',
+    orgId: null,
+    projectId,
+    category,
+    title: 't',
+    body: '',
+    route: null,
+    data,
+    sourceKey: 'k',
+    createdAt: '2026-10-15T10:00:00Z',
+    readAt: null,
+  });
+
+  it('opens the session for every session category', () => {
+    for (const c of [
+      'awaiting_feedback',
+      'session_completed',
+      'ready_to_push',
+      'pushed',
+      'finalize_failed',
+    ]) {
+      expect(routeInboxNotification(row(c, { sessionId: 's1', agentId: 'a1' }))).toEqual({
+        kind: 'chat',
+        agentId: 'a1',
+        sessionId: 's1',
+      });
+    }
+  });
+
+  it('resolves the agent from loaded sessions when the row lacks it', () => {
+    const sessions = [{ id: 's1', agent_id: 'a9' }];
+    expect(
+      routeInboxNotification(row('session_completed', { sessionId: 's1' }), { sessions }),
+    ).toEqual({ kind: 'chat', agentId: 'a9', sessionId: 's1' });
+  });
+
+  it('falls back to the row project id for card and board categories', () => {
+    expect(routeInboxNotification(row('card_assigned_to_you', { cardId: 'c1' }))).toEqual({
+      kind: 'kanban',
+      projectId: 'p1',
+      cardId: 'c1',
+    });
+    expect(routeInboxNotification(row('escalation', { cardId: 'c2' }))).toEqual({
+      kind: 'kanban',
+      projectId: 'p1',
+      cardId: 'c2',
+    });
+  });
+
+  it('accepts a string PR number', () => {
+    expect(routeInboxNotification(row('review_assigned_to_you', { prNumber: '42' }))).toEqual({
+      kind: 'pulls',
+      projectId: 'p1',
+      prNumber: 42,
+    });
+  });
+
+  it('opens Hub chat for DMs and mentions', () => {
+    for (const c of ['dm', 'mention']) {
+      expect(routeInboxNotification(row(c, { channelId: 'ch1', messageId: 'm1' }))).toEqual({
+        kind: 'hubChat',
+        channelId: 'ch1',
+      });
+    }
+  });
+
+  it('opens Deployments for deploy outcomes', () => {
+    const route = routeInboxNotification(row('deploy_outcome', {}));
+    expect(route).toEqual({ kind: 'deployments', projectId: 'p1' });
+    expect(notificationRouteToNavigation(route)).toEqual({
+      screen: 'Deployments',
+      params: { projectId: 'p1' },
+    });
+  });
+
+  it('opens infra alerts on the Alerts tab', () => {
+    expect(routeInboxNotification(row('infra_alert', { alertId: 'al1' }))).toEqual({
+      kind: 'infra',
+      projectId: 'p1',
+      alertId: 'al1',
+    });
+  });
+
+  it('opens the session for an unknown category that carries one, else nothing', () => {
+    expect(routeInboxNotification(row('something_new', { sessionId: 's1' }))).toEqual({
+      kind: 'chat',
+      agentId: null,
+      sessionId: 's1',
+    });
+    expect(routeInboxNotification(row('something_new', null))).toBeNull();
+  });
+
+  it('keeps push taps of unknown events inert', () => {
+    expect(routeNotificationTap({ type: 'something_new', sessionId: 's1' })).toBeNull();
+  });
+
+  it('uses the category as the event key even when data carries its own', () => {
+    expect(inboxNotificationTapData(row('dm', { event: 'other', channelId: 'c' }))).toMatchObject({
+      event: 'dm',
+      type: 'dm',
+      projectId: 'p1',
+    });
+  });
+});
+
+describe('routeInboxNotification — explicit route', () => {
+  const routeOnly = (route: string | null, category = 'something_new') => ({
+    id: 'n1',
+    userId: 'u1',
+    orgId: null,
+    projectId: null,
+    category,
+    title: 't',
+    body: '',
+    route,
+    data: null,
+    sourceKey: 'k',
+    createdAt: '2026-10-15T10:00:00Z',
+    readAt: null,
+  });
+
+  it('opens a row whose target lives only in its route', () => {
+    expect(routeInboxNotification(routeOnly('#/pulls/p1?pr=7', 'pr_merged'))).toEqual({
+      kind: 'pulls',
+      projectId: 'p1',
+      prNumber: 7,
+    });
+    expect(routeInboxNotification(routeOnly('#/hub/chat?channel=ch1&message=m1', 'dm'))).toEqual({
+      kind: 'hubChat',
+      channelId: 'ch1',
+    });
+  });
+
+  it('prefers the route over the data payload', () => {
+    const n = { ...routeOnly('#/support/p2?ticket=t9'), data: { sessionId: 's1' } };
+    expect(routeInboxNotification(n)).toEqual({ kind: 'support', projectId: 'p2', ticketId: 't9' });
+  });
+
+  it('falls back to category and data when the route has no mobile screen', () => {
+    const n = {
+      ...routeOnly('#/design?design=d1', 'awaiting_feedback'),
+      data: { sessionId: 's1' },
+    };
+    expect(routeInboxNotification(n)).toEqual({ kind: 'chat', agentId: null, sessionId: 's1' });
+  });
+
+  it('parses the web hash and path link forms', () => {
+    expect(routeFromWebLink('#/kanban:p1?card=c1')).toEqual({
+      kind: 'kanban',
+      projectId: 'p1',
+      cardId: 'c1',
+    });
+    expect(routeFromWebLink('/projects/p1/board?card=c2')).toEqual({
+      kind: 'kanban',
+      projectId: 'p1',
+      cardId: 'c2',
+    });
+    expect(routeFromWebLink('/projects/p1/pulls/306')).toEqual({
+      kind: 'pulls',
+      projectId: 'p1',
+      prNumber: 306,
+    });
+    expect(routeFromWebLink('#/deployments/p1')).toEqual({ kind: 'deployments', projectId: 'p1' });
+    expect(routeFromWebLink('#/infra:p1')).toEqual({
+      kind: 'infra',
+      projectId: 'p1',
+      alertId: null,
+    });
+    expect(routeFromWebLink('#/hub/chat')).toBeNull();
+    expect(routeFromWebLink('#/pulls')).toBeNull();
+    expect(routeFromWebLink('')).toBeNull();
+    expect(routeFromWebLink(null)).toBeNull();
   });
 });

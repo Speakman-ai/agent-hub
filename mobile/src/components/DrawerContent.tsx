@@ -42,6 +42,7 @@ import { deriveSessionState } from '../utils/deriveSessionState';
 import SessionStateIcon from './SessionStateIcon';
 import HubIcon from './HubIcon';
 import BugReportButton from './BugReportButton';
+import NotificationBell from './NotificationBell';
 import BrandLogo from './BrandLogo';
 import { useHubChatBadge } from '../hooks/useHubChat';
 
@@ -665,6 +666,14 @@ export default function DrawerContent({ navigation }: any) {
               {connected ? '● Connected' : reconnecting ? '● Reconnecting…' : '● Disconnected'}
             </Text>
           </Pressable>
+          <NotificationBell
+            onPress={() => {
+              navigation.navigate('Notifications');
+              navigation.closeDrawer();
+            }}
+            buttonStyle={styles.bugReportButton}
+            testID="drawer-notification-bell"
+          />
           <BugReportButton
             projectId={bugReportProjectId}
             agentId={activeAgentId || ''}

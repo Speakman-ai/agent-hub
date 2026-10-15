@@ -1,4 +1,18 @@
-import type { InboxNotification } from './notificationTarget';
+/** One row of the caller's bell inbox, as `/api/notifications` returns it. */
+export interface InboxNotification {
+  id: string;
+  userId: string;
+  orgId: string | null;
+  projectId: string | null;
+  category: string;
+  title: string;
+  body: string;
+  route: string | null;
+  data: Record<string, unknown> | null;
+  sourceKey: string;
+  createdAt: string;
+  readAt: string | null;
+}
 
 /**
  * Bell inbox state as a set of facts that the rows and badge are derived

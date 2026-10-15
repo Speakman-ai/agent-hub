@@ -30,7 +30,7 @@ import {
   countRequestOverlapsWrite,
   type InboxFacts,
   type LocalWrite,
-} from '../utils/notificationInbox';
+} from '@shared/utils/notificationInbox';
 
 /** App re-dispatches `notification_created` / `notification_read` WS frames on this event. */
 export const NOTIFICATION_WS_EVENT = 'agenthub:notification';
