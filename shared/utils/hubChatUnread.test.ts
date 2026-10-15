@@ -97,7 +97,13 @@ describe('hubChatNoticeFor', () => {
       channel({ kind: 'dm', name: '' }),
       opts,
     );
-    expect(notice).toEqual({ channelId: 'c1', messageId: 'm1', title: 'bob', body: 'ping' });
+    expect(notice).toEqual({
+      channelId: 'c1',
+      messageId: 'm1',
+      title: 'bob',
+      body: 'ping',
+      category: 'dm',
+    });
   });
 
   it('announces a summary post under the channel name', () => {
@@ -114,6 +120,7 @@ describe('hubChatNoticeFor', () => {
       messageId: 'm1',
       title: 'Summaries',
       body: 'Busy day',
+      category: 'dm',
     });
   });
 
@@ -132,6 +139,7 @@ describe('hubChatNoticeFor', () => {
     );
     expect(notice?.title).toBe('bob · #general');
     expect(notice?.body).toBe('hey @alice');
+    expect(notice?.category).toBe('mention');
   });
 
   it('stays quiet for a plain channel message, even at notify level all', () => {

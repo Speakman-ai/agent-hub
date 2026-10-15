@@ -221,13 +221,9 @@ import {
   shouldFocusTerminalJob,
   type BackgroundShellsBySession,
 } from './utils/backgroundShells';
-import {
-  awaitingInputNotification,
-  cardStartedNotification,
-  cardReviewNotification,
-  prReadyNotification,
-  sessionCompleteNotification,
-} from './utils/ticketNotifications';
+import { cardStartedNotification, cardReviewNotification } from './utils/ticketNotifications';
+import { desktopNoticeForNotificationCreated, toastAllowed } from './utils/notificationDesktop';
+import { loadNotificationPrefs } from './utils/notificationPrefsStore';
 import {
   MessageCircle,
   Info,
@@ -766,6 +762,9 @@ export default function App({ initialView }: any = {}) {
   };
   // Desktop notifications (Electron native / Web Notifications API)
   const { notify } = useDesktopNotifications();
+  // Assigned where Hub Chat state lives; read by the `notification_created`
+  // handler so a DM in the open channel raises no OS notice.
+  const isViewingHubChatChannelRef = useRef<(channelId: string) => boolean>(() => false);
   // Kanban board refresh trigger
   const [kanbanRefreshKey, setKanbanRefreshKey] = useState(0);
   const [kanbanSearchQuery, setKanbanSearchQuery] = useState('');
@@ -2039,27 +2038,19 @@ export default function App({ initialView }: any = {}) {
             })
           ) {
             const session = sessionsRef.current.find((s: any) => s.id === sid);
-            const agent = agentsRef.current.find(
-              (a: any) => a.id === (data.agentId || session?.agent_id),
-            );
-            const askCount = Array.isArray(data.askIds) ? data.askIds.length : 1;
-            const { title, body } = awaitingInputNotification({
-              agentName: agent?.name,
-              sessionName: session?.name || data.sessionName,
-              askCount,
-            });
-            setToasts((toasts: any) => [
-              ...toasts,
-              {
-                id: `awaiting-input-${sid}-${Date.now()}`,
-                type: 'info',
-                message: session?.name || data.sessionName || 'Agent waiting for input',
-                duration: 10000,
-                onClick: () =>
-                  focusAgentSessionRef.current?.(data.agentId || session?.agent_id, sid),
-              },
-            ]);
-            notify({ title, body, type: 'info' });
+            if (toastAllowed('awaiting_feedback')) {
+              setToasts((toasts: any) => [
+                ...toasts,
+                {
+                  id: `awaiting-input-${sid}-${Date.now()}`,
+                  type: 'info',
+                  message: session?.name || data.sessionName || 'Agent waiting for input',
+                  duration: 10000,
+                  onClick: () =>
+                    focusAgentSessionRef.current?.(data.agentId || session?.agent_id, sid),
+                },
+              ]);
+            }
           }
           break;
         }
@@ -2357,37 +2348,26 @@ export default function App({ initialView }: any = {}) {
               });
             }
           }
-          // Desktop notification + toast for completed background sessions.
+          // Toast for completed background sessions (the OS notice comes from
+          // `notification_created`).
           // Scope to the session owner: on a shared project the `done` event
           // fans out to every client, so without this gate a user gets toasts
           // (that 404 on click) for another account's session. Mirrors the
           // server-side push scoping in push.ts.
           if (!forActiveSession && data.message && !isSessionOwnedByOtherUser(data.ownerUserId)) {
             const session = sessionsRef.current.find((s: any) => s.id === data.sessionId);
-            const agent = session
-              ? agentsRef.current.find((a: any) => a.id === session.agent_id)
-              : null;
-            const agentName = agent?.name || 'Agent';
-            const preview =
-              typeof data.message.content === 'string'
-                ? data.message.content.replace(/\n+/g, ' ').trim()
-                : undefined;
-            const { title, body } = sessionCompleteNotification({
-              agentName,
-              sessionName: session?.name,
-              preview,
-            });
-            setToasts((prev: any) => [
-              ...prev,
-              {
-                id: `session-done-${data.sessionId}-${Date.now()}`,
-                type: 'success',
-                message: session?.name || 'Session completed',
-                duration: 10000,
-                onClick: () => focusAgentSessionRef.current?.(session?.agent_id, data.sessionId),
-              },
-            ]);
-            notify({ title, body, type: 'success' });
+            if (toastAllowed('session_completed')) {
+              setToasts((prev: any) => [
+                ...prev,
+                {
+                  id: `session-done-${data.sessionId}-${Date.now()}`,
+                  type: 'success',
+                  message: session?.name || 'Session completed',
+                  duration: 10000,
+                  onClick: () => focusAgentSessionRef.current?.(session?.agent_id, data.sessionId),
+                },
+              ]);
+            }
           }
           // Re-tally the Changes badge at turn end (and refresh an open diff
           // pane) so it reflects every file touched during the turn — the
@@ -2413,23 +2393,18 @@ export default function App({ initialView }: any = {}) {
           // Only notify on a fresh prompt — avoids re-firing on reconnect/replay.
           if (!alreadyPrompted) {
             const session = sessionsRef.current.find((s: any) => s.id === data.sessionId);
-            const agent = agentsRef.current.find((a: any) => a.id === data.agentId);
-            const { title, body } = prReadyNotification({
-              agentName: agent?.name,
-              sessionName: session?.name,
-              branch: data.branch,
-            });
-            setToasts((prev: any) => [
-              ...prev,
-              {
-                id: `pr-ready-${data.sessionId}-${Date.now()}`,
-                type: 'info',
-                message: session?.name || 'Changes ready for PR',
-                duration: 10000,
-                onClick: () => focusAgentSessionRef.current?.(data.agentId, data.sessionId),
-              },
-            ]);
-            notify({ title, body, type: 'info' });
+            if (toastAllowed('ready_to_push')) {
+              setToasts((prev: any) => [
+                ...prev,
+                {
+                  id: `pr-ready-${data.sessionId}-${Date.now()}`,
+                  type: 'info',
+                  message: session?.name || 'Changes ready for PR',
+                  duration: 10000,
+                  onClick: () => focusAgentSessionRef.current?.(data.agentId, data.sessionId),
+                },
+              ]);
+            }
           }
           break;
         }
@@ -3233,8 +3208,8 @@ export default function App({ initialView }: any = {}) {
               },
             ]);
             notify({ title, body, type: 'info' });
-          } else if (colLower === 'review') {
-            const { title, body } = cardReviewNotification(data);
+          } else if (colLower === 'review' && toastAllowed('review_assigned_to_you')) {
+            const { body } = cardReviewNotification(data);
             setToasts((prev: any) => [
               ...prev,
               {
@@ -3245,10 +3220,25 @@ export default function App({ initialView }: any = {}) {
                 onClick: canNavigateCardToast ? navigateCardToast : undefined,
               },
             ]);
-            notify({ title, body, type: 'info' });
           }
           break;
         }
+
+        // Inbox rows feed the bell and are the single source of OS notices
+        // for catalog categories, so web and Electron notify on the same
+        // events as push.
+        case 'notification_created': {
+          window.dispatchEvent(new CustomEvent(NOTIFICATION_WS_EVENT, { detail: data }));
+          const notice = desktopNoticeForNotificationCreated(data, {
+            isViewingChannel: (id) => isViewingHubChatChannelRef.current(id),
+          });
+          if (notice) notify({ ...notice, type: 'info' });
+          break;
+        }
+
+        case 'notification_read':
+          window.dispatchEvent(new CustomEvent(NOTIFICATION_WS_EVENT, { detail: data }));
+          break;
 
         // Support ticket queue
         case 'support_ticket_created': {
@@ -3387,10 +3377,6 @@ export default function App({ initialView }: any = {}) {
         // rather than on its next poll, without subscribing to the WS directly.
         // The broadcast fans out to every client, so the listener filters by
         // projectId before refetching.
-        case 'notification_created':
-        case 'notification_read':
-          window.dispatchEvent(new CustomEvent(NOTIFICATION_WS_EVENT, { detail: data }));
-          break;
         case 'infra_health_event':
           window.dispatchEvent(new CustomEvent('infra_health_event', { detail: data }));
           break;
@@ -3884,15 +3870,24 @@ export default function App({ initialView }: any = {}) {
   useEffect(() => {
     if (connected) setHubChatReady(true);
   }, [connected]);
+  // Toasts and desktop notices read the stored prefs; refresh them on every
+  // (re)connect so a change saved on another device applies here too.
+  useEffect(() => {
+    if (connected) loadNotificationPrefs();
+  }, [connected]);
+  isViewingHubChatChannelRef.current = (channelId: string) =>
+    chatPaneOpenRef.current &&
+    effectiveChatPaneSide(getChatPaneSide(), chatEnabledRef.current) === 'hub' &&
+    document.visibilityState !== 'hidden' &&
+    getHubChatSession().selectedId === channelId;
   const hubChatUnread = useHubChatUnread({
     enabled: hubChatReady,
     userId: chatUserId,
-    isViewingChannel: (channelId) =>
-      chatPaneOpenRef.current &&
-      effectiveChatPaneSide(getChatPaneSide(), chatEnabledRef.current) === 'hub' &&
-      document.visibilityState !== 'hidden' &&
-      getHubChatSession().selectedId === channelId,
+    isViewingChannel: isViewingHubChatChannelRef.current,
+    // Toast only: the OS notice for DMs and mentions comes from
+    // `notification_created`, like every other category.
     onNotify: (notice) => {
+      if (!toastAllowed(notice.category)) return;
       setToasts((prev: any) => [
         ...prev,
         {
@@ -3903,7 +3898,6 @@ export default function App({ initialView }: any = {}) {
           onClick: () => openHubChatChannel(notice.channelId),
         },
       ]);
-      notify({ title: notice.title, body: notice.body });
     },
   });
   // The pinned Agent Hub DM renders the Hub assistant session. It takes over

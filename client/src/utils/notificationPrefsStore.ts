@@ -201,3 +201,16 @@ export function resetNotificationPrefsStoreForTests(): void {
   state = fresh(null);
   emit();
 }
+
+/**
+ * Whether the signed-in user wants `category` on `channel`. Before the stored
+ * matrix loads this answers with the catalog default. Ids outside the catalog
+ * are not user-configurable and always pass.
+ */
+export function isNotificationChannelEnabled(
+  category: string,
+  channel: NotificationChannel,
+): boolean {
+  if (currentOwner() !== state.owner) return catalogDefaults()[category]?.[channel] ?? true;
+  return getSnapshot().prefs[category]?.[channel] ?? true;
+}

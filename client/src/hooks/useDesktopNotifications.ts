@@ -7,6 +7,7 @@
  */
 
 import { useCallback, useRef } from 'react';
+import { isNotificationChannelEnabled } from '../utils/notificationPrefsStore';
 
 /**
  * Check if we're running inside Electron.
@@ -28,6 +29,7 @@ function isBrowserNotificationAvailable() {
  * @property {string} [body] - Notification body text
  * @property {'info'|'success'|'error'|'warning'} [type='info'] - Notification type
  * @property {boolean} [silent=false] - Suppress notification sound
+ * @property {string} [category] - Notification category id; gates on the desktop pref
  */
 
 /**
@@ -67,7 +69,9 @@ export function sendDesktopNotification({ title, body, type = 'info', silent = f
  * Hook that returns a stable `notify` function for desktop notifications.
  *
  * Only fires when the window is not focused (background notifications),
- * so it won't annoy users who are already looking at the app.
+ * so it won't annoy users who are already looking at the app. A notice tagged
+ * with a notification `category` is dropped when the user turned that
+ * category's desktop channel off.
  *
  * @returns {{ notify: (options: NotificationOptions) => void, isSupported: boolean }}
  */
@@ -80,9 +84,10 @@ export function useDesktopNotifications() {
 
   const notify = useCallback(
     /** @param {NotificationOptions} options */
-    ({ title, body, type = 'info', silent = false }: any) => {
+    ({ title, body, type = 'info', silent = false, category }: any) => {
       // Only notify when the app window is in the background
       if (document.hasFocus()) return;
+      if (category && !isNotificationChannelEnabled(category, 'desktop')) return;
 
       sendDesktopNotification({ title, body, type, silent });
     },

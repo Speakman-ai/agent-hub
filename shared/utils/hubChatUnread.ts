@@ -40,6 +40,8 @@ export interface HubChatNotice {
   messageId: string;
   title: string;
   body: string;
+  /** Notification category whose prefs gate this notice. */
+  category: 'dm' | 'mention';
 }
 
 const MAX_BODY = 120;
@@ -54,7 +56,7 @@ export function plainChatText(body: string): string {
 }
 
 /**
- * The desktop notice for a live Agent Hub message, or null when it should
+ * The in-app notice for a live Agent Hub message, or null when it should
  * stay quiet. Only DMs and mentions of the viewer notify. Own posts, deleted
  * messages, the channel on screen, muted channels and notify level `none`
  * never do; mute wins over a mention.
@@ -91,5 +93,6 @@ export function hubChatNoticeFor(
     messageId: message.id,
     title,
     body: plainChatText(message.body),
+    category: direct ? 'dm' : 'mention',
   };
 }

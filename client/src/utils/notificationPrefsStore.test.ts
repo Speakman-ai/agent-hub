@@ -3,6 +3,7 @@ import { api } from './api';
 import { getUserEmail } from './auth';
 import {
   getSnapshot,
+  isNotificationChannelEnabled,
   loadNotificationPrefs,
   saveNotificationPrefs,
   resetNotificationPrefsStoreForTests,
@@ -48,5 +49,36 @@ describe('notificationPrefsStore', () => {
     await flush();
     expect(api.updateNotificationPreferences).toHaveBeenCalledTimes(1);
     expect(getSnapshot().loaded).toBe(false);
+  });
+
+  it('answers channel checks with catalog defaults before the matrix loads', () => {
+    expect(isNotificationChannelEnabled('awaiting_feedback', 'desktop')).toBe(true);
+    expect(isNotificationChannelEnabled('session_completed', 'desktop')).toBe(false);
+    expect(isNotificationChannelEnabled('session_completed', 'in_app')).toBe(true);
+    expect(isNotificationChannelEnabled('not_a_category', 'desktop')).toBe(true);
+  });
+
+  it('answers channel checks from the stored matrix and local edits', async () => {
+    (api.getNotificationPreferences as any).mockResolvedValue({
+      ...empty,
+      categories: [{ category: 'awaiting_feedback', in_app: true, desktop: false, push: true }],
+    });
+    (api.updateNotificationPreferences as any).mockReturnValue(new Promise(() => {}));
+    loadNotificationPrefs();
+    await flush();
+    expect(isNotificationChannelEnabled('awaiting_feedback', 'desktop')).toBe(false);
+    saveNotificationPrefs({ awaiting_feedback: { in_app: false } });
+    expect(isNotificationChannelEnabled('awaiting_feedback', 'in_app')).toBe(false);
+  });
+
+  it("never applies another user's matrix", async () => {
+    (api.getNotificationPreferences as any).mockResolvedValue({
+      ...empty,
+      categories: [{ category: 'awaiting_feedback', in_app: true, desktop: false, push: true }],
+    });
+    loadNotificationPrefs();
+    await flush();
+    vi.mocked(getUserEmail).mockReturnValue('b@example.com');
+    expect(isNotificationChannelEnabled('awaiting_feedback', 'desktop')).toBe(true);
   });
 });
