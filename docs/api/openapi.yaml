@@ -43717,68 +43717,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MiscErrorResponse"
-  /api/devices/{token}/preferences:
-    put:
-      tags:
-        - Devices
-      summary: Update per-event push preferences
-      description: '`enabledEvents: null` clears the preference (legacy "all events" behaviour). Unknown event names are stripped server-side.'
-      parameters:
-        - schema:
-            type: string
-          required: true
-          name: token
-          in: path
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                enabledEvents:
-                  type: array
-                  nullable: true
-                  items:
-                    type: string
-                    enum:
-                      - awaiting_feedback
-                      - ready_to_push
-                      - pushed
-                      - support_ticket_created
-                      - review_assigned_to_you
-                      - pr_merged
-                      - infra_alert
-                      - chat_message
-      responses:
-        "200":
-          description: Updated.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                  enabledEvents:
-                    type: array
-                    nullable: true
-                    items:
-                      type: string
-                required:
-                  - ok
-                  - enabledEvents
-        "400":
-          description: enabledEvents must be an array or null.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MiscErrorResponse"
-        "404":
-          description: Token not registered.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MiscErrorResponse"
   /api/usage:
     get:
       tags:

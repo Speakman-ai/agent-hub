@@ -206,33 +206,6 @@ export default function createMiscRoutes(deps: RouteDeps): Router {
     });
   });
 
-  // Update per-event push preferences for a token. Body: `{ enabledEvents:
-  // string[] | null }`. `null` / omitted → clear preferences (all events
-  // enabled, the legacy default). Unknown event names are stripped so a
-  // malformed client can't permanently disable anything.
-  router.put('/api/devices/:token/preferences', (req: Request, res: Response) => {
-    const body = req.body as { enabledEvents?: string[] | null };
-    const row = stmts.getDeviceToken.get(req.params.token) as
-      | { token: string; user_id: string | null }
-      | undefined;
-    if (!row || !mayAccessToken(req, row))
-      return res.status(404).json({ error: 'Token not registered' });
-
-    if (body.enabledEvents == null) {
-      stmts.setDeviceTokenPreferences.run(null, req.params.token);
-      return res.json({ ok: true, enabledEvents: null });
-    }
-    if (!Array.isArray(body.enabledEvents)) {
-      return res.status(400).json({ error: 'enabledEvents must be an array or null' });
-    }
-    const allowed = new Set<string>(PUSH_EVENT_TYPES);
-    const cleaned = body.enabledEvents.filter(
-      (x): x is string => typeof x === 'string' && allowed.has(x),
-    );
-    stmts.setDeviceTokenPreferences.run(JSON.stringify(cleaned), req.params.token);
-    res.json({ ok: true, enabledEvents: cleaned });
-  });
-
   router.get('/api/usage', (_req: Request, res: Response) => {
     try {
       // Cost aggregation lives in `server/usage-aggregation.ts`. It

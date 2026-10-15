@@ -5620,9 +5620,6 @@ function initDb(dataDir: string): void {
       "UPDATE device_tokens SET last_used = datetime('now') WHERE token = ?",
     ),
     getDeviceToken: db.prepare('SELECT * FROM device_tokens WHERE token = ?'),
-    setDeviceTokenPreferences: db.prepare(
-      'UPDATE device_tokens SET enabled_events = ? WHERE token = ?',
-    ),
 
     // Kanban boards
     getKanbanBoard: db.prepare('SELECT * FROM kanban_boards WHERE project_id = ? LIMIT 1'),

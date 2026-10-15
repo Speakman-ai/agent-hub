@@ -191,7 +191,7 @@ export function categoryChannelDefault(
 /**
  * Push events the server dispatches today. `chat_message` covers both DMs and
  * @mentions until chat pushes are split per category; it also stays a valid
- * key because device rows persist it in `enabled_events`.
+ * key because migrated device rows still carry it in `enabled_events`.
  */
 export const PUSH_EVENT_TYPES = [
   'awaiting_feedback',
@@ -216,22 +216,3 @@ export const PUSH_EVENT_CATEGORIES: Record<PushEventType, readonly NotificationC
   infra_alert: ['infra_alert'],
   chat_message: ['dm', 'mention'],
 };
-
-export interface PushEventOption {
-  key: PushEventType;
-  label: string;
-  desc: string;
-}
-
-/** Per-device push toggle rows, labelled from the catalog. */
-export const PUSH_EVENT_OPTIONS: readonly PushEventOption[] = PUSH_EVENT_TYPES.map((key) => {
-  if (key === 'chat_message') {
-    return {
-      key,
-      label: 'Chat messages',
-      desc: 'Direct messages, mentions, and channels set to all',
-    };
-  }
-  const cat = getNotificationCategory(PUSH_EVENT_CATEGORIES[key][0]);
-  return { key, label: cat?.label ?? key, desc: cat?.description ?? '' };
-});

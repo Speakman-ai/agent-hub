@@ -5,7 +5,6 @@ import {
   NOTIFICATION_CATEGORY_IDS,
   PUSH_EVENT_TYPES,
   PUSH_EVENT_CATEGORIES,
-  PUSH_EVENT_OPTIONS,
   categoryChannelDefault,
   isNotificationCategoryId,
 } from './notificationCategories';
@@ -69,17 +68,6 @@ describe('notification category catalog', () => {
       for (const c of cats) expect(isNotificationCategoryId(c)).toBe(true);
     }
     expect(PUSH_EVENT_CATEGORIES.chat_message).toEqual(['dm', 'mention']);
-  });
-
-  it('builds a labelled push option for every push event', () => {
-    expect(PUSH_EVENT_OPTIONS.map((o) => o.key)).toEqual([...PUSH_EVENT_TYPES]);
-    for (const o of PUSH_EVENT_OPTIONS) {
-      expect(o.label).toBeTruthy();
-      expect(o.desc).toBeTruthy();
-    }
-    expect(PUSH_EVENT_OPTIONS.find((o) => o.key === 'infra_alert')?.label).toBe(
-      'Infrastructure alerts',
-    );
   });
 
   it('rejects unknown category ids', () => {

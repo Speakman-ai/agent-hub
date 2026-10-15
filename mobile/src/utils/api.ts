@@ -16,6 +16,19 @@ const ERROR_CODE_RE = /^[a-z][a-z0-9]*(_[a-z0-9]+)*$/;
  * client: routes that pair a machine `error` code with a human `message` get
  * the message, since "400: no_pushable_commits" tells an operator nothing.
  */
+export type NotificationChannelKey = 'in_app' | 'desktop' | 'push';
+export interface NotificationPreferencesWire {
+  channels: NotificationChannelKey[];
+  sections: { id: string; label: string; categories: string[] }[];
+  categories: ({ category: string; isDefault: boolean } & Record<
+    NotificationChannelKey,
+    boolean
+  >)[];
+}
+export type NotificationPreferencesPatch = Record<
+  string,
+  Partial<Record<NotificationChannelKey, boolean>>
+>;
 export function errorDetail(body: any, status: number) {
   const code = typeof body?.error === 'string' ? body.error.trim() : '';
   const message = typeof body?.message === 'string' ? body.message.trim() : '';
@@ -2286,11 +2299,15 @@ export const api = {
     }),
   unregisterDeviceToken: (token: any) =>
     fetchJSON(`/devices/${encodeURIComponent(token)}`, { method: 'DELETE' }),
-  getDeviceTokenPreferences: (token: any) => fetchJSON(`/devices/${encodeURIComponent(token)}`),
-  setDeviceTokenPreferences: (token: any, enabledEvents: any) =>
-    fetchJSON(`/devices/${encodeURIComponent(token)}/preferences`, {
+  // Per-user notification preferences (one matrix for every device).
+  getNotificationPreferences: (): Promise<NotificationPreferencesWire> =>
+    fetchJSON('/me/notification-preferences'),
+  updateNotificationPreferences: (
+    categories: NotificationPreferencesPatch,
+  ): Promise<NotificationPreferencesWire> =>
+    fetchJSON('/me/notification-preferences', {
       method: 'PUT',
-      body: JSON.stringify({ enabledEvents }),
+      body: JSON.stringify({ categories }),
     }),
   // Notification inbox (the bell)
   notifications: {

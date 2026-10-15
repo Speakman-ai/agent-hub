@@ -2,11 +2,13 @@ import { describe, it, expect } from 'vitest';
 import { getRequest } from './helpers.js';
 
 /**
- * Integration tests for the mobile push device + preference endpoints:
+ * Integration tests for the mobile push device endpoints:
  *   POST   /api/devices
  *   GET    /api/devices/:token
- *   PUT    /api/devices/:token/preferences
  *   DELETE /api/devices/:token
+ *
+ * Push preferences are per user (`/api/me/notification-preferences`); the
+ * per-device preferences route is gone.
  */
 
 describe('device token preference routes', () => {
@@ -25,60 +27,23 @@ describe('device token preference routes', () => {
     expect(res.body.supportedEvents).toContain('pr_merged');
   });
 
-  it('updates preferences to a specific subset and strips unknown events', async () => {
+  it('no longer accepts per-device preference writes', async () => {
     const request = await getRequest();
-    const token = `ExponentPushToken[pref-subset-${Date.now()}]`;
+    const token = `ExponentPushToken[pref-retired-${Date.now()}]`;
     await request.post('/api/devices').send({ token, platform: 'android' }).expect(200);
-
-    const put = await request
-      .put(`/api/devices/${encodeURIComponent(token)}/preferences`)
-      .send({ enabledEvents: ['chat_message', 'pr_merged', 'thread_message', 'definitely-bogus'] })
-      .expect(200);
-    expect(put.body.enabledEvents).toEqual(['chat_message', 'pr_merged']);
-
-    const get = await request.get(`/api/devices/${encodeURIComponent(token)}`).expect(200);
-    expect(get.body.enabledEvents).toEqual(['chat_message', 'pr_merged']);
-  });
-
-  it('clears preferences when null is passed (back to all events)', async () => {
-    const request = await getRequest();
-    const token = `ExponentPushToken[pref-null-${Date.now()}]`;
-    await request.post('/api/devices').send({ token }).expect(200);
 
     await request
       .put(`/api/devices/${encodeURIComponent(token)}/preferences`)
-      .send({ enabledEvents: ['chat_message'] })
-      .expect(200);
-
-    const cleared = await request
-      .put(`/api/devices/${encodeURIComponent(token)}/preferences`)
-      .send({ enabledEvents: null })
-      .expect(200);
-    expect(cleared.body.enabledEvents).toBeNull();
+      .send({ enabledEvents: ['pr_merged'] })
+      .expect(404);
 
     const get = await request.get(`/api/devices/${encodeURIComponent(token)}`).expect(200);
     expect(get.body.enabledEvents).toBeNull();
   });
 
-  it('rejects non-array preferences with 400', async () => {
-    const request = await getRequest();
-    const token = `ExponentPushToken[pref-bad-${Date.now()}]`;
-    await request.post('/api/devices').send({ token }).expect(200);
-
-    const res = await request
-      .put(`/api/devices/${encodeURIComponent(token)}/preferences`)
-      .send({ enabledEvents: 'not-an-array' })
-      .expect(400);
-    expect(res.body.error).toMatch(/array or null/);
-  });
-
   it('returns 404 for an unknown token', async () => {
     const request = await getRequest();
     await request.get('/api/devices/does-not-exist').expect(404);
-    await request
-      .put('/api/devices/does-not-exist/preferences')
-      .send({ enabledEvents: [] })
-      .expect(404);
   });
 
   it('DELETE removes the token entirely', async () => {

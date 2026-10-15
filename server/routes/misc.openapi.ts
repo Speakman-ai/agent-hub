@@ -4,7 +4,6 @@
  */
 
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
-import { PUSH_EVENT_TYPES } from '../../shared/utils/notificationCategories.js';
 
 const ErrorResponse = registerComponent(
   'MiscErrorResponse',
@@ -72,8 +71,6 @@ export const RegisterDeviceRequestSchema = z.object({
   platform: z.string().optional(),
 });
 
-const PushEventEnum = z.enum([...PUSH_EVENT_TYPES] as [string, ...string[]]);
-
 export const DeviceTokenResponseComponent = registerComponent(
   'DeviceTokenResponse',
   z
@@ -85,10 +82,6 @@ export const DeviceTokenResponseComponent = registerComponent(
     })
     .openapi({ description: 'Push-token preferences and supported event list.' }),
 );
-
-export const UpdateDevicePreferencesRequestSchema = z.object({
-  enabledEvents: z.array(PushEventEnum).nullable().optional(),
-});
 
 const UsageTotalsRow = z
   .object({
@@ -217,29 +210,6 @@ registerPath({
   request: { params: tokenParams },
   responses: {
     200: { description: 'Token row.', content: jsonContent(DeviceTokenResponseComponent) },
-    404: errorResponse('Token not registered.'),
-  },
-});
-
-registerPath({
-  method: 'put',
-  path: '/api/devices/{token}/preferences',
-  tags: ['Devices'],
-  summary: 'Update per-event push preferences',
-  description:
-    '`enabledEvents: null` clears the preference (legacy "all events" behaviour). Unknown event names are stripped server-side.',
-  request: {
-    params: tokenParams,
-    body: { content: jsonContent(UpdateDevicePreferencesRequestSchema) },
-  },
-  responses: {
-    200: {
-      description: 'Updated.',
-      content: jsonContent(
-        z.object({ ok: z.boolean(), enabledEvents: z.array(z.string()).nullable() }),
-      ),
-    },
-    400: errorResponse('enabledEvents must be an array or null.'),
     404: errorResponse('Token not registered.'),
   },
 });

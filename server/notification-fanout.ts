@@ -675,7 +675,12 @@ export async function handleBroadcastForNotifications(
   let pushed = 0;
   if (tokens.length) {
     pushed = await sendExpoPush(
-      buildMessages(tokens, { title: intent.title, body: intent.body, data: intent.data }),
+      buildMessages(tokens, {
+        title: intent.title,
+        body: intent.body,
+        // The category lets mobile gate foreground banners on the right pref.
+        data: { ...intent.data, category: intent.category },
+      }),
       deps,
     );
   }

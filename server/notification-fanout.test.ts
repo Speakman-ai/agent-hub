@@ -40,6 +40,7 @@ function defaults(category: NotificationCategoryId): StoredPrefs {
 interface Harness {
   deps: FanoutDeps;
   sentTo: () => string[];
+  sentMessages: Array<{ to: string; data?: Record<string, unknown> }>;
   inserted: InsertNotificationInput[];
   broadcasts: Record<string, unknown>[];
 }
@@ -55,12 +56,17 @@ function harness(opts: {
   prefs?: Record<string, Partial<Record<NotificationCategoryId, StoredPrefs>>>;
 }): Harness {
   const sent: string[] = [];
+  const sentMessages: Array<{ to: string; data?: Record<string, unknown> }> = [];
   const inserted: InsertNotificationInput[] = [];
   const seen = new Set<string>();
   const broadcasts: Record<string, unknown>[] = [];
   const fetchFn = vi.fn(async (_url: string, init?: RequestInit) => {
-    const msgs = JSON.parse(String(init?.body)) as Array<{ to: string }>;
+    const msgs = JSON.parse(String(init?.body)) as Array<{
+      to: string;
+      data?: Record<string, unknown>;
+    }>;
     sent.push(...msgs.map((m) => m.to));
+    sentMessages.push(...msgs);
     return new Response(JSON.stringify({ data: msgs.map(() => ({ status: 'ok' })) }));
   }) as unknown as typeof fetch;
   const project = { id: 'p1', ownerUserId: opts.projectOwner ?? null } as Project;
@@ -105,7 +111,7 @@ function harness(opts: {
     countUnread: () => 1,
     broadcast: (e) => broadcasts.push(e),
   };
-  return { deps, sentTo: () => [...sent].sort(), inserted, broadcasts };
+  return { deps, sentTo: () => [...sent].sort(), sentMessages, inserted, broadcasts };
 }
 
 const LEGACY_EVENTS: Array<{ name: string; data: Record<string, unknown> }> = [
@@ -202,6 +208,19 @@ describe('handleBroadcastForNotifications: push parity at default prefs', () => 
       h.deps,
     );
     expect(h.sentTo()).toEqual(['u1-phone']);
+  });
+
+  it('tags each push with its catalog category for the foreground banner gate', async () => {
+    const h = harness({ tokens: [token('u1-phone', 'u1')], projectUsers: ['u1'] });
+    await handleBroadcastForNotifications(
+      { type: 'card_moved', projectId: 'p1', cardId: 'c1', columnName: 'Review', moveId: 'm1' },
+      h.deps,
+    );
+    expect(h.sentMessages).toHaveLength(1);
+    expect(h.sentMessages[0].data).toMatchObject({
+      category: 'review_assigned_to_you',
+      cardId: 'c1',
+    });
   });
 });
 

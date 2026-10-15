@@ -2416,7 +2416,6 @@ export interface Stmts {
   getAllDeviceTokens: Stmt;
   updateDeviceTokenLastUsed: Stmt;
   getDeviceToken: Stmt;
-  setDeviceTokenPreferences: Stmt;
 
   // Kanban boards
   getKanbanBoard: Stmt;

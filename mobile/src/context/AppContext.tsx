@@ -53,6 +53,7 @@ import {
 } from '../utils/notificationInboxInstance';
 import { NOTIFICATION_WS_EVENTS } from '../utils/notificationInboxStore';
 import type { InboxNotification } from '@shared/utils/notificationInbox';
+import { foregroundBannerAllowed, loadNotificationPrefs } from '../utils/notificationPreferences';
 import { hubChatAccountGate, hubChatStore } from '../utils/hubChatInstance';
 import { HUB_CHAT_WS_EVENTS } from '../utils/hubChatStore';
 import { uploadAttachments } from '../utils/uploadAttachments';
@@ -1213,6 +1214,7 @@ export function AppProvider({ children }: any) {
     const account = signedIn ? `${getApiBaseUrl() ?? ''}|${userId ?? ''}|${orgId}` : null;
     hubChatAccountGate.update({ account, userId, connected });
     notificationInboxAccountGate.update({ account, userId, connected });
+    if (signedIn) void loadNotificationPrefs();
   }, [configReady, needsAuth, needsSetup, connected]);
   // Foreground banner for DMs and mentions (remote pushes are hidden while
   // the app is open), with the same rule as the web desktop notice.
@@ -1225,7 +1227,12 @@ export function AppProvider({ children }: any) {
           {
             title: notice.title,
             body: notice.body,
-            data: { event: 'chat_message', type: 'chat_message', channelId: notice.channelId },
+            data: {
+              event: 'chat_message',
+              type: 'chat_message',
+              category: notice.category,
+              channelId: notice.channelId,
+            },
           },
         );
       } catch {
@@ -1258,12 +1265,17 @@ export function AppProvider({ children }: any) {
         // Expo suppresses banners while the app is in the foreground.
         if (Notifications.setNotificationHandler) {
           Notifications.setNotificationHandler({
-            handleNotification: async () => ({
-              shouldShowBanner: true,
-              shouldShowList: true,
-              shouldPlaySound: true,
-              shouldSetBadge: false,
-            }),
+            // A banner shown while the app is open is an in-app notice, so
+            // it follows the user's `in_app` pref for its category.
+            handleNotification: async (notification: any) => {
+              const show = foregroundBannerAllowed(notification?.request?.content?.data);
+              return {
+                shouldShowBanner: show,
+                shouldShowList: show,
+                shouldPlaySound: show,
+                shouldSetBadge: false,
+              };
+            },
           });
         }
         const Device = require('expo-device');
