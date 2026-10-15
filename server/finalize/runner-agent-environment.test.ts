@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   SPOT_RECLAIMED_DURING_BRINGUP,
+  createEnvironmentExec,
   resolveAdvertiseHost,
   runAgentEnvironment,
   type EnvironmentDocker,
@@ -305,5 +306,30 @@ describe('resolveAdvertiseHost', () => {
       '10.2.3.4',
     );
     expect(await resolveAdvertiseHost({}, none, ifaces as never)).toBe('172.17.0.9');
+  });
+});
+
+describe('createEnvironmentExec deadline', () => {
+  const opts = { env: {}, phase: 0, quiet: true };
+  const killable: Pick<EnvironmentDocker, 'execStep'> = {
+    execStep: (_n, _r, _e, _l, signal) =>
+      new Promise((resolve) => {
+        if (signal?.aborted) return resolve(1);
+        signal?.addEventListener('abort', () => resolve(1), { once: true });
+      }),
+  };
+
+  it('flags a command killed by its own deadline as timed out', async () => {
+    const exec = createEnvironmentExec(killable, 'c', () => {});
+    const res = await exec('docker compose up', { ...opts, deadlineMs: 5 });
+    expect(res).toMatchObject({ exitCode: 1, timedOut: true });
+  });
+
+  it('does not flag a caller stop as a timeout', async () => {
+    const exec = createEnvironmentExec(killable, 'c', () => {});
+    const ac = new AbortController();
+    const p = exec('docker compose up', { ...opts, deadlineMs: 60_000, signal: ac.signal });
+    ac.abort();
+    expect(await p).toMatchObject({ exitCode: 1, timedOut: false });
   });
 });

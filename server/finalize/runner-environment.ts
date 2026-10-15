@@ -122,6 +122,10 @@ export function buildEnvironmentTeardownCommand(): string {
   return 'docker compose down -v --remove-orphans --timeout 10 || true';
 }
 
+function formatDeadline(ms: number): string {
+  return ms % 60_000 === 0 ? `${ms / 60_000} min` : `${Math.round(ms / 1000)}s`;
+}
+
 export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
@@ -142,6 +146,8 @@ export interface EnvironmentExecResult {
   exitCode: number | null;
   /** Captured stdout (the health probe reads the status code from it). */
   stdout: string;
+  /** The command was killed because it ran past its deadline. */
+  timedOut?: boolean;
 }
 
 /**
@@ -198,6 +204,14 @@ export async function runEnvironmentBringup(args: {
     });
     if (args.signal?.aborted) return stopped();
     if (res.exitCode !== 0) {
+      // docker reports the kill as "context canceled" (exit 1), which reads
+      // like a crash; name the limit so the fix (a faster boot) is obvious.
+      if (res.timedOut) {
+        return {
+          ok: false,
+          error: `"${phase.name}" timed out after ${formatDeadline(phase.deadlineMs)}.`,
+        };
+      }
       return {
         ok: false,
         error: `"${phase.name}" failed (exit ${res.exitCode ?? 'killed'}).`,

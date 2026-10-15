@@ -198,7 +198,11 @@ export function createEnvironmentExec(
     const abort = (): void => ac.abort();
     if (opts.signal?.aborted) ac.abort();
     opts.signal?.addEventListener('abort', abort, { once: true });
-    const timer = setTimeout(abort, opts.deadlineMs);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      abort();
+    }, opts.deadlineMs);
     let stdout = '';
     try {
       const exitCode = await docker.execStep(
@@ -211,7 +215,7 @@ export function createEnvironmentExec(
         },
         ac.signal,
       );
-      return { exitCode, stdout };
+      return { exitCode, stdout, timedOut };
     } finally {
       clearTimeout(timer);
       opts.signal?.removeEventListener('abort', abort);

@@ -155,6 +155,30 @@ describe('runEnvironmentBringup', () => {
     expect(calls.some((c) => c.run.startsWith('curl'))).toBe(false);
   });
 
+  it('names the deadline when a phase is killed for running too long', async () => {
+    const exec: EnvironmentExec = async (run) =>
+      run.startsWith('docker compose up')
+        ? { exitCode: 1, stdout: '', timedOut: true }
+        : { exitCode: 0, stdout: '200' };
+    const res = await runEnvironmentBringup({ spec: SPEC, env: {}, exec, log: () => {} });
+    expect(res).toEqual({ ok: false, error: '"compose up" timed out after 30 min.' });
+  });
+
+  it('keeps the exit-code error when a timed-out command still exited 0', async () => {
+    const exec: EnvironmentExec = async (run) =>
+      run.startsWith('curl')
+        ? { exitCode: 0, stdout: '200' }
+        : { exitCode: 0, stdout: '', timedOut: run.startsWith('docker compose up') };
+    const res = await runEnvironmentBringup({
+      spec: SPEC,
+      env: {},
+      exec,
+      log: () => {},
+      sleep: async () => {},
+    });
+    expect(res).toEqual({ ok: true });
+  });
+
   it('fails when the service never becomes healthy in time', async () => {
     let t = 0;
     const { exec } = fakeExec({ health: [] });
