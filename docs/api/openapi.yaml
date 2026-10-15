@@ -12114,6 +12114,171 @@ components:
         - engine
         - model
       description: Engine and model for Hub chats, Daily Summary, and other Hub-level generation.
+    NotificationPreferencesErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope.
+    UpdateNotificationPreferencesRequest:
+      type: object
+      properties:
+        categories:
+          type: object
+          properties:
+            awaiting_feedback: &a3
+              type: object
+              properties:
+                in_app:
+                  type: boolean
+                desktop:
+                  type: boolean
+                push:
+                  type: boolean
+              additionalProperties: false
+            session_completed: *a3
+            ready_to_push: *a3
+            pushed: *a3
+            finalize_failed: *a3
+            review_assigned_to_you: *a3
+            pr_merged: *a3
+            card_assigned_to_you: *a3
+            escalation: *a3
+            support_ticket_created: *a3
+            infra_alert: *a3
+            deploy_outcome: *a3
+            dm: *a3
+            mention: *a3
+          description: Category id → channel switches to change. Omitted categories and channels keep their current value.
+      required:
+        - categories
+      additionalProperties: false
+      description: Partial update of the caller notification preferences.
+    NotificationPreferences:
+      type: object
+      properties:
+        channels:
+          type: array
+          items:
+            type: string
+            enum:
+              - in_app
+              - desktop
+              - push
+        sections:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                enum:
+                  - sessions
+                  - code
+                  - board
+                  - support
+                  - infra
+                  - chat
+              label:
+                type: string
+              categories:
+                type: array
+                items:
+                  type: string
+                  enum:
+                    - awaiting_feedback
+                    - session_completed
+                    - ready_to_push
+                    - pushed
+                    - finalize_failed
+                    - review_assigned_to_you
+                    - pr_merged
+                    - card_assigned_to_you
+                    - escalation
+                    - support_ticket_created
+                    - infra_alert
+                    - deploy_outcome
+                    - dm
+                    - mention
+            required:
+              - id
+              - label
+              - categories
+        categories:
+          type: array
+          items:
+            type: object
+            properties:
+              category:
+                type: string
+                enum:
+                  - awaiting_feedback
+                  - session_completed
+                  - ready_to_push
+                  - pushed
+                  - finalize_failed
+                  - review_assigned_to_you
+                  - pr_merged
+                  - card_assigned_to_you
+                  - escalation
+                  - support_ticket_created
+                  - infra_alert
+                  - deploy_outcome
+                  - dm
+                  - mention
+              section:
+                type: string
+                enum:
+                  - sessions
+                  - code
+                  - board
+                  - support
+                  - infra
+                  - chat
+              label:
+                type: string
+              description:
+                type: string
+              in_app:
+                type: boolean
+              desktop:
+                type: boolean
+              push:
+                type: boolean
+              defaults:
+                type: object
+                properties:
+                  in_app:
+                    type: boolean
+                  desktop:
+                    type: boolean
+                  push:
+                    type: boolean
+                required:
+                  - in_app
+                  - desktop
+                  - push
+              isDefault:
+                type: boolean
+                description: True when nothing is stored and the values are the catalog defaults.
+            required:
+              - category
+              - section
+              - label
+              - description
+              - in_app
+              - desktop
+              - push
+              - defaults
+              - isDefault
+            description: One category row of the preferences matrix.
+      required:
+        - channels
+        - sections
+        - categories
+      description: The caller per-category, per-channel notification matrix. Every catalog category is present; unset ones carry catalog defaults.
     MemoryErrorResponse:
       type: object
       properties:
@@ -35644,7 +35809,7 @@ paths:
                         - nullable: true
                   minItems: 1
                   description: Row-major matrix of cell values to write.
-                  example: &a3
+                  example: &a4
                     - - Name
                       - Score
                     - - Alice
@@ -35769,7 +35934,7 @@ paths:
                         - nullable: true
                   minItems: 1
                   description: Row-major matrix of cell values to write.
-                  example: *a3
+                  example: *a4
                 valueInputOption:
                   type: string
                   enum:
@@ -40492,7 +40657,7 @@ paths:
         - Log Ingest
       summary: OTLP/HTTP logs ingest
       description: "OpenTelemetry OTLP/HTTP logs endpoint. Accepts `application/json` and binary `application/x-protobuf` `ExportLogsServiceRequest` bodies, each optionally gzip-compressed (`Content-Encoding: gzip` or a raw gzip-framed body). Requests are capped at 1 MiB on the wire; batches at 1,000 records; single records at 256 KiB. Rejected records are reported via `partialSuccess` — the HTTP status stays 200 so the source app is never blocked. Fields (severity, timestamps, resource, attributes, scope, trace_id, span_id) are preserved and redacted before persistence."
-      security: &a4
+      security: &a5
         - logIngestToken: []
       requestBody:
         content:
@@ -40555,7 +40720,7 @@ paths:
         - Log Ingest
       summary: Agent Hub JSON log batch ingest
       description: "Simple JSON batch endpoint mapped to the same canonical OTel LogRecord model. Body is `{ resource?, records: [...] }`, optionally gzip-compressed. Same 1 MiB request / 1,000-record batch / 256 KiB record caps, source-token auth, and pre-persistence redaction as the OTLP endpoint."
-      security: *a4
+      security: *a5
       requestBody:
         content:
           application/json:
@@ -42450,6 +42615,52 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MeHubErrorResponse"
+  /api/me/notification-preferences:
+    get:
+      tags:
+        - Notifications
+      summary: Get the calling user's notification preferences
+      responses:
+        "200":
+          description: Full preferences matrix.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationPreferences"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationPreferencesErrorResponse"
+    put:
+      tags:
+        - Notifications
+      summary: Update the calling user's notification preferences
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateNotificationPreferencesRequest"
+      responses:
+        "200":
+          description: Preferences after the update.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationPreferences"
+        "400":
+          description: Unknown category or channel, or a non-boolean value.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationPreferencesErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationPreferencesErrorResponse"
   /api/memory/reconcile:
     post:
       tags:

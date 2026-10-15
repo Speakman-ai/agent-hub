@@ -298,6 +298,7 @@ import createHubChatRoutes from './routes/hub-chat.js';
 import createProjectChatTriggerRoutes from './routes/project-chat-triggers.js';
 import createMeDashboardRoutes from './routes/me-dashboard.js';
 import createMeHubRoutes from './routes/me-hub.js';
+import createMeNotificationPreferencesRoutes from './routes/me-notification-preferences.js';
 import createMeDailySummaryRoutes from './routes/me-daily-summary.js';
 import createGithubOAuthRoutes from './routes/github-oauth.js';
 import createGoogleOAuthRoutes from './routes/google-oauth.js';
@@ -2513,6 +2514,7 @@ app.use(createHubChatRoutes(routeDeps));
 app.use(createProjectChatTriggerRoutes(routeDeps));
 app.use(createMeDashboardRoutes(routeDeps));
 app.use(createMeHubRoutes(routeDeps));
+app.use(createMeNotificationPreferencesRoutes(routeDeps));
 app.use(createMeDailySummaryRoutes(routeDeps));
 // PR-env settings/provisioning routes and the `pr_env_config` DB row
 // were removed as part of the "Strip PR Environments" epic (88367984).

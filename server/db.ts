@@ -50,6 +50,7 @@ import {
 import { collapseReviewColumn } from './migrations/collapse-review-column.js';
 import { backfillPhaseAutonomousDefaults } from './migrations/backfill-phase-autonomous-defaults.js';
 import { backfillEpicStates } from './migrations/backfill-epic-states.js';
+import { ensureUserNotificationPrefsSchema } from './migrations/user-notification-prefs.js';
 import { repairCardSessionLinks } from './migrations/repair-card-session-links.js';
 import {
   deriveCardPrefix,
@@ -3313,6 +3314,10 @@ function initDb(dataDir: string): void {
   } catch {
     db.exec('ALTER TABLE device_tokens ADD COLUMN user_id TEXT DEFAULT NULL');
   }
+
+  // Per-user notification prefs. The first init that creates the table also
+  // folds each device's enabled_events into its owner's push switches.
+  ensureUserNotificationPrefsSchema(db);
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS review_logs (
