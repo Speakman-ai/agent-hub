@@ -85,3 +85,19 @@ export function resolveBrowserSessionOptions(
     timeoutMs,
   };
 }
+
+/**
+ * Add the owner's saved browser profile to launch options for the public-web
+ * agent browser. Sessions without an owner (API-key or system spawns) or
+ * without a project browse with a fresh context.
+ */
+export function withBrowserProfile(
+  opts: BrowserSessionOptions,
+  scope: { ownerUserId: string | null; agentId: string; projectId: string | null },
+): BrowserSessionOptions {
+  if (!scope.ownerUserId || !scope.agentId || !scope.projectId) return opts;
+  return {
+    ...opts,
+    profile: { userId: scope.ownerUserId, agentId: scope.agentId, projectId: scope.projectId },
+  };
+}

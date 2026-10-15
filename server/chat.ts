@@ -338,6 +338,7 @@ import {
 import {
   effectiveBrowserToolsEnabled,
   resolveBrowserSessionOptions,
+  withBrowserProfile,
 } from './browser-agent-settings.js';
 import {
   buildBrowserActivityEndedEvent,
@@ -6230,7 +6231,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                       direction: browserInput.direction,
                       condition: browserInput.condition,
                     },
-                    browserLaunchOpts,
+                    withBrowserProfile(browserLaunchOpts, {
+                      ownerUserId: session!.owner_user_id ?? null,
+                      agentId: agent.id,
+                      projectId: project?.id ?? null,
+                    }),
                   );
                 } catch (err: unknown) {
                   emitBrowserActivityEvent(

@@ -23,6 +23,37 @@ import type { ChildProcess } from 'child_process';
 const tracked = new Set<ChildProcess>();
 let handlersInstalled = false;
 let shuttingDown = false;
+const shutdownTasks = new Set<() => Promise<unknown>>();
+
+/**
+ * Register async work that must finish before the drain hard-exits (e.g.
+ * saving browser profiles). Each task is capped by the drain grace period.
+ */
+export function registerShutdownTask(task: () => Promise<unknown>): () => void {
+  shutdownTasks.add(task);
+  return () => {
+    shutdownTasks.delete(task);
+  };
+}
+
+function runShutdownTasks(graceMs: number): Promise<void> {
+  const tasks = Array.from(shutdownTasks, (t) =>
+    Promise.resolve()
+      .then(t)
+      .catch((err: unknown) => {
+        console.warn(`[shutdown] task failed: ${err instanceof Error ? err.message : String(err)}`);
+      }),
+  );
+  if (tasks.length === 0) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, graceMs);
+    timer.unref();
+    void Promise.all(tasks).then(() => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
 
 /** Track a spawned child so it can be killed on server shutdown. Auto-removes on exit/close. */
 export function trackChild(proc: ChildProcess): void {
@@ -97,7 +128,7 @@ export function installShutdownHandlers(graceMs = 5000): void {
     if (n > 0) {
       console.log(`[shutdown] ${signal} received, draining ${n} child process group(s)`);
     }
-    killAllTrackedProcessGroups(graceMs).then(() => {
+    Promise.all([killAllTrackedProcessGroups(graceMs), runShutdownTasks(graceMs)]).then(() => {
       // NOTE: this hard-exits once the drain finishes. If other async shutdown
       // work is ever added (e.g. SQLite checkpoint, HTTP server.close()), it
       // must be moved before or merged into this promise chain — otherwise it
@@ -116,8 +147,14 @@ export function installShutdownHandlers(graceMs = 5000): void {
 }
 
 /** Test-only: reset internal state between tests. */
+/** Test-only: run registered shutdown tasks as the signal handler would. */
+export function _runShutdownTasksForTesting(graceMs = 5000): Promise<void> {
+  return runShutdownTasks(graceMs);
+}
+
 export function _resetProcessGroupsForTesting(): void {
   tracked.clear();
+  shutdownTasks.clear();
   handlersInstalled = false;
   shuttingDown = false;
 }

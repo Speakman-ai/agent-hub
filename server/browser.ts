@@ -33,6 +33,11 @@ import {
 } from './browser-host-policy.js';
 import { installBrowserSessionHardening } from './browser-session-hardening.js';
 import { installContextFetchGuard, type CdpSessionLike } from './browser-context-fetch-guard.js';
+import {
+  openBrowserProfileBinding,
+  type BrowserProfileBinding,
+} from './browser-profile-binding.js';
+import type { BrowserProfileKey } from './browser-profiles-store.js';
 
 // Public defaults
 
@@ -82,6 +87,12 @@ export interface BrowserSessionOptions {
   model?: string;
   /** Optional stable session id — useful when the caller already owns one (agent session id). */
   id?: string;
+  /**
+   * Saved browser profile to load at launch and write back while open. Only
+   * the public-web agent browser passes this; preview and design surfaces
+   * never do, and ids under those prefixes are refused regardless.
+   */
+  profile?: BrowserProfileKey;
 }
 
 /**
@@ -103,6 +114,8 @@ export interface BrowserSession {
    */
   stagehand?: unknown;
   createdAt: number;
+  /** Saved-profile binding when the session was launched with one. */
+  profile?: Pick<BrowserProfileBinding, 'writable' | 'takeNotice' | 'save'>;
   /** Per-op timeout used for navigation waits (see {@link BrowserSessionOptions.timeoutMs}). */
   timeoutMs: number;
   close: () => Promise<void>;
@@ -221,6 +234,14 @@ export function buildStagehandOptions(opts: BrowserSessionOptions = {}): Stageha
 }
 
 // Session registry
+
+/**
+ * Preview and design browsers are host-internal surfaces: they must never
+ * see or persist the owner's logins.
+ */
+export function profileAllowedForBrowserSessionId(id: string): boolean {
+  return !id.startsWith('preview:') && !id.startsWith('design:');
+}
 
 const sessions = new Map<string, BrowserSession>();
 /** In-flight {@link launchBrowserSession} for pinned ids — prevents duplicate Chromium for concurrent callers. */
@@ -359,6 +380,7 @@ type PlaywrightPage = {
 };
 
 type PlaywrightContext = {
+  storageState?: (opts: { indexedDB: boolean }) => Promise<unknown>;
   newPage: () => Promise<PlaywrightPage>;
   close: () => Promise<void>;
   on?: (event: string, handler: (...args: unknown[]) => void) => void;
@@ -369,6 +391,7 @@ type PlaywrightContext = {
 type PlaywrightBrowser = {
   newContext: (opts?: {
     viewport?: { width: number; height: number };
+    storageState?: unknown;
   }) => Promise<PlaywrightContext>;
   close: () => Promise<void>;
 };
@@ -379,6 +402,9 @@ type PlaywrightChromium = {
     headless?: boolean;
     executablePath?: string;
     args?: string[];
+    handleSIGINT?: boolean;
+    handleSIGTERM?: boolean;
+    handleSIGHUP?: boolean;
   }) => Promise<PlaywrightBrowser>;
 };
 
@@ -458,6 +484,11 @@ async function performLaunchBrowserSession(opts: BrowserSessionOptions): Promise
     }
     const timeoutMs = effectiveOpts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const launchDiag = describeChromiumLaunchEnv(effectiveOpts.executablePath);
+    const id = opts.id ?? randomUUID();
+    const profileBinding =
+      opts.profile && profileAllowedForBrowserSessionId(id)
+        ? openBrowserProfileBinding(opts.profile, id)
+        : null;
     let browser: PlaywrightBrowser | undefined;
     let context: PlaywrightContext | undefined;
     let page: PlaywrightPage | undefined;
@@ -467,10 +498,28 @@ async function performLaunchBrowserSession(opts: BrowserSessionOptions): Promise
           effectiveOpts.headless ?? DEFAULT_STAGEHAND_OPTIONS.localBrowserLaunchOptions.headless,
         executablePath: effectiveOpts.executablePath,
         args: [...(effectiveOpts.args ?? DEFAULT_CHROMIUM_ARGS)],
+        // Playwright's own signal handlers kill Chromium before our shutdown
+        // hook can save the profile; the hook closes these sessions instead.
+        ...(profileBinding
+          ? { handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false }
+          : {}),
       });
-      context = await browser.newContext({
-        viewport: effectiveOpts.viewport ?? DEFAULT_VIEWPORT,
-      });
+      const viewport = effectiveOpts.viewport ?? DEFAULT_VIEWPORT;
+      if (profileBinding?.initialState) {
+        try {
+          context = await browser.newContext({
+            viewport,
+            storageState: profileBinding.initialState,
+          });
+        } catch (stateErr) {
+          console.warn(
+            `[browser] Saved profile rejected by Chromium, starting fresh: ${
+              stateErr instanceof Error ? stateErr.name : 'error'
+            }`,
+          );
+        }
+      }
+      context ??= await browser.newContext({ viewport });
       try {
         await installBrowserSessionHardening(context, {
           allowDownloads: browserAllowDownloadsFromConfig(),
@@ -498,6 +547,8 @@ async function performLaunchBrowserSession(opts: BrowserSessionOptions): Promise
       }
     } catch (initErr) {
       const msg = initErr instanceof Error ? initErr.message : String(initErr);
+      // No context reached the binding, so close() only releases the lease.
+      await profileBinding?.close().catch(() => {});
       try {
         await page?.close?.();
       } catch {
@@ -517,24 +568,35 @@ async function performLaunchBrowserSession(opts: BrowserSessionOptions): Promise
       throw new Error(`Chromium launch failed: ${msg}. ${launchDiag}`);
     }
     if (!browser || !context || !page) {
+      await profileBinding?.close().catch(() => {});
       throw new Error(`Chromium launch failed: incomplete Playwright session. ${launchDiag}`);
     }
     const launchedBrowser = browser;
     const launchedContext = context;
     const launchedPage = page;
+    if (profileBinding && typeof launchedContext.storageState === 'function') {
+      const ctxStorage = launchedContext.storageState.bind(launchedContext);
+      profileBinding.attach({ storageState: ctxStorage });
+    }
 
-    const id = opts.id ?? randomUUID();
     const session: BrowserSession = {
       id,
       page: launchedPage,
       context: launchedContext,
       createdAt: Date.now(),
       timeoutMs,
+      ...(profileBinding ? { profile: profileBinding } : {}),
       close: async () => {
         clearBrowserIdleTimer(id);
         activeBrowserToolOpsBySessionId.delete(id);
         const wasRegistered = sessions.delete(id);
         if (wasRegistered) emitBrowserSessionLifecycle({ type: 'closed', id });
+        // Save before tearing the context down; storageState needs it alive.
+        try {
+          await profileBinding?.close();
+        } catch (err) {
+          console.warn(`[browser] Profile save on close failed for ${id}: ${String(err)}`);
+        }
         try {
           await launchedPage.close?.();
         } catch {

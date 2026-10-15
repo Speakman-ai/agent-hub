@@ -1157,8 +1157,10 @@ export async function runBrowserReActStep(
   }
   const opTimeoutMs = sessionLaunchOpts.timeoutMs ?? session.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const host = session;
+  const profileNotice = session.profile?.takeNotice() ?? null;
 
   const finish = (b: BrowserReActStepOutcome): BrowserReActStepOutcome => {
+    if (profileNotice) b = { ...b, markdown: `${b.markdown}\n\n${profileNotice}` };
     logBrowserToolAudit({
       chatSessionId,
       op: opRaw,

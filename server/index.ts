@@ -170,7 +170,8 @@ import {
   type OnBaseBranchAdvancedFn,
 } from './worktree.js';
 import { handleWorktreeFailure } from './worktree-failure.js';
-import { installShutdownHandlers } from './process-groups.js';
+import { installShutdownHandlers, registerShutdownTask } from './process-groups.js';
+import { closeAllBrowserSessions } from './browser.js';
 import { markSessionTermination } from './process-termination.js';
 import { cancelSessionChatRun } from './session-chat-cancel.js';
 import { trustProxyValueFromEnv } from './trust-proxy.js';
@@ -2969,6 +2970,8 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
   process.on('SIGTERM', () => markActiveSessionsForShutdown('SIGTERM'));
   process.on('SIGINT', () => markActiveSessionsForShutdown('SIGINT'));
   process.on('SIGHUP', () => markActiveSessionsForShutdown('SIGHUP'));
+  // Closing browser sessions writes their saved profiles back before exit.
+  registerShutdownTask(() => closeAllBrowserSessions());
   installShutdownHandlers();
 
   // Close the adapter-selection gate before accept() — early HTTP must wait
