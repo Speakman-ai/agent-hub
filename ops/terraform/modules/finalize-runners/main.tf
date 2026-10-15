@@ -78,6 +78,10 @@ resource "aws_launch_template" "runner" {
     arn = aws_iam_instance_profile.runner.arn
   }
 
+  # Without this, instances land in the VPC default SG and the PR environment
+  # ingress rule on the runner SG never applies.
+  vpc_security_group_ids = [aws_security_group.runner.id]
+
   metadata_options {
     http_tokens   = "required" # IMDSv2
     http_endpoint = "enabled"
