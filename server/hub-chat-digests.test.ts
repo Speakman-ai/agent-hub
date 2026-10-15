@@ -42,12 +42,15 @@ beforeEach(() => {
 
 function row(extra: Partial<Row> = {}): Row {
   return {
+    id: 'd1',
     channel_id: 'c1',
+    name: 'Channel digest',
     enabled: 1,
     cron: '0 9 * * *',
     time_zone: 'UTC',
     scope: 'channel',
-    project_id: null,
+    project_ids: '[]',
+    prompt: null,
     owner_user_id: 'u1',
     window_start: '2026-10-13T09:00:00.000Z',
     last_run_at: null,
@@ -89,7 +92,7 @@ function runDeps(output = 'All quiet.', code: number | null = 0) {
 }
 
 function channelWithDigest(
-  extra: Partial<import('./hub-chat-digests-store.js').UpsertChannelDigestInput> = {},
+  extra: Partial<import('./hub-chat-digests-store.js').ChannelDigestInput> = {},
 ) {
   const channel = chat.createChannel({
     orgId: 'acme',
@@ -98,16 +101,17 @@ function channelWithDigest(
     createdByUserId: alice,
     memberUserIds: [bob],
   });
-  const digest = digestStore.upsertChannelDigest({
-    channelId: channel.id,
+  const digest = digestStore.createChannelDigest(channel.id, {
+    name: 'Daily',
     enabled: true,
     cron: '0 9 * * *',
     timeZone: 'UTC',
     scope: 'channel',
-    projectId: null,
+    projectIds: [],
+    prompt: null,
     ownerUserId: alice,
     ...extra,
-  });
+  })!;
   return { channel, digest };
 }
 
@@ -143,27 +147,28 @@ describe('digest cursor', () => {
   });
 
   it('editing keeps the cursor; re-enabling a paused digest restarts it', () => {
-    const { channel } = channelWithDigest({ now: new Date('2026-10-01T00:00:00.000Z') });
+    const { digest } = channelWithDigest({ now: new Date('2026-10-01T00:00:00.000Z') });
     const base = {
-      channelId: channel.id,
+      name: 'Evening',
       cron: '0 17 * * *',
       timeZone: 'UTC',
       scope: 'channel' as const,
-      projectId: null,
+      projectIds: [],
+      prompt: null,
       ownerUserId: alice,
     };
-    const edited = digestStore.upsertChannelDigest({
+    const edited = digestStore.updateChannelDigest(digest.id, {
       ...base,
       enabled: true,
       now: new Date('2026-10-14T09:00:00.000Z'),
-    });
+    })!;
     expect(edited.window_start).toBe('2026-09-30T00:00:00.000Z');
-    digestStore.upsertChannelDigest({ ...base, enabled: false });
-    const resumed = digestStore.upsertChannelDigest({
+    digestStore.updateChannelDigest(digest.id, { ...base, enabled: false });
+    const resumed = digestStore.updateChannelDigest(digest.id, {
       ...base,
       enabled: true,
       now: new Date('2026-10-14T09:00:00.000Z'),
-    });
+    })!;
     expect(resumed.window_start).toBe('2026-10-13T09:00:00.000Z');
   });
 
@@ -185,7 +190,7 @@ describe('digest cursor', () => {
       failing.deps,
     );
     expect(first.status).toBe('error');
-    const stuck = digestStore.getChannelDigest(channel.id) as Row;
+    const stuck = digestStore.getChannelDigest(digest.id) as Row;
     expect(stuck.window_start).toBe('2026-10-13T08:00:00.000Z');
 
     const retry = runDeps('Incident on Oct 13.');
@@ -198,14 +203,14 @@ describe('digest cursor', () => {
     const prompt = retry.runFailover.mock.calls[0]?.[0].prompt as string;
     expect(prompt).toContain('between 2026-10-13T08:00:00.000Z and 2026-10-15T09:00:00.000Z');
     expect(prompt).toContain('Oct 13 incident report');
-    expect(digestStore.getChannelDigest(channel.id)?.window_start).toBe('2026-10-15T09:00:00.000Z');
+    expect(digestStore.getChannelDigest(digest.id)?.window_start).toBe('2026-10-15T09:00:00.000Z');
   });
 
   it('a run whose window no longer starts at the cursor changes nothing', async () => {
     const { channel, digest } = channelWithDigest();
     // Another run already closed this window.
     expect(
-      digestStore.advanceChannelDigestWindow(channel.id, digest.window_start, {
+      digestStore.advanceChannelDigestWindow(digest.id, digest.window_start, {
         status: 'skipped',
         windowEnd: new Date().toISOString(),
       }),
@@ -289,7 +294,7 @@ describe('runChannelDigest', () => {
     expect(result).toEqual({ status: 'skipped', reason: 'empty_window' });
     expect(runFailover).not.toHaveBeenCalled();
     expect(chat.listMessages(channel.id)).toHaveLength(0);
-    const after = digestStore.getChannelDigest(channel.id);
+    const after = digestStore.getChannelDigest(digest.id);
     expect(after?.last_status).toBe('skipped');
     expect(after?.last_run_at).toBe(now.toISOString());
   });
@@ -305,7 +310,7 @@ describe('runChannelDigest', () => {
     const { deps, runFailover } = runDeps('Bob said hi.');
     const first = await digests.runChannelDigest(digest, new Date(Date.now() + 1000), deps);
     expect(first.status).toBe('posted');
-    const next = digestStore.getChannelDigest(channel.id) as Row;
+    const next = digestStore.getChannelDigest(digest.id) as Row;
     const second = await digests.runChannelDigest(next, new Date(Date.now() + 61_000), deps);
     expect(second.status).toBe('skipped');
     expect(runFailover).toHaveBeenCalledTimes(1);
@@ -328,7 +333,7 @@ describe('runChannelDigest', () => {
       'b1',
       'Fix login',
     );
-    const { channel, digest } = channelWithDigest({ scope: 'project', projectId: 'web' });
+    const { channel, digest } = channelWithDigest({ scope: 'project', projectIds: ['web'] });
     // The model drops the token, so the footer carries the chip.
     const { deps, runFailover } = runDeps('Login work started.');
     const result = await digests.runChannelDigest(digest, new Date(Date.now() + 1000), deps);
@@ -346,13 +351,14 @@ describe('runChannelDigest', () => {
     ]);
     expect(JSON.parse(message!.payload_json!)).toMatchObject({
       type: digests.CHANNEL_DIGEST_PAYLOAD_TYPE,
+      digestId: digest.id,
       scope: 'project',
       projectId: 'web',
     });
     expect(deps.broadcast).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'hub_chat_message' }),
     );
-    expect(digestStore.getChannelDigest(channel.id)?.last_message_id).toBe(message!.id);
+    expect(digestStore.getChannelDigest(digest.id)?.last_message_id).toBe(message!.id);
   });
 
   it('keeps the cursor when the model fails, so the window is retried', async () => {
@@ -366,7 +372,7 @@ describe('runChannelDigest', () => {
     const { deps } = runDeps('', 1);
     const result = await digests.runChannelDigest(digest, new Date(Date.now() + 1000), deps);
     expect(result.status).toBe('error');
-    const after = digestStore.getChannelDigest(channel.id);
+    const after = digestStore.getChannelDigest(digest.id);
     expect(after?.last_status).toBe('error');
     expect(after?.last_run_at).toBeNull();
     expect(after?.window_start).toBe(digest.window_start);
@@ -389,7 +395,7 @@ describe('runChannelDigest', () => {
   });
 
   it('refuses a project digest the owner can no longer view', async () => {
-    const { digest } = channelWithDigest({ scope: 'project', projectId: 'web' });
+    const { digest } = channelWithDigest({ scope: 'project', projectIds: ['web'] });
     const { deps, runFailover } = runDeps();
     const result = await digests.runChannelDigest(digest, new Date(), {
       ...deps,
@@ -413,7 +419,7 @@ describe('runChannelDigest after a slow model run', () => {
     };
   }
 
-  async function raceWith(change: (channelId: string) => void, extra = {}) {
+  async function raceWith(change: (digestId: string) => void, extra = {}) {
     const { channel, digest } = channelWithDigest(extra);
     chat.appendMessage({
       channelId: channel.id,
@@ -424,11 +430,11 @@ describe('runChannelDigest after a slow model run', () => {
     const { deps, finish } = deferredDeps();
     const running = digests.runChannelDigest(digest, new Date(Date.now() + 1000), deps);
     await vi.waitFor(() => expect(deps.runFailover).toHaveBeenCalled());
-    change(channel.id);
+    change(digest.id);
     finish();
     const result = await running;
     const systemPosts = chat.listMessages(channel.id).filter((m) => m.author_kind === 'system');
-    return { result, systemPosts, after: digestStore.getChannelDigest(channel.id), deps };
+    return { result, systemPosts, after: digestStore.getChannelDigest(digest.id), deps };
   }
 
   it('does not post when the digest is removed mid-run', async () => {
@@ -439,10 +445,7 @@ describe('runChannelDigest after a slow model run', () => {
 
   it('does not post when the digest is disabled mid-run', async () => {
     const { result, systemPosts } = await raceWith((id) => {
-      const d = digestStore.getChannelDigest(id)!;
-      getDb()
-        .prepare('UPDATE hub_chat_channel_digests SET enabled = 0 WHERE channel_id = ?')
-        .run(d.channel_id);
+      getDb().prepare('UPDATE hub_chat_digests SET enabled = 0 WHERE id = ?').run(id);
     });
     expect(result.status).toBe('cancelled');
     expect(systemPosts).toHaveLength(0);
@@ -452,8 +455,8 @@ describe('runChannelDigest after a slow model run', () => {
     const { result, systemPosts, after } = await raceWith((id) => {
       getDb()
         .prepare(
-          `UPDATE hub_chat_channel_digests SET owner_user_id = ?, cron = '0 17 * * *',
-             updated_at = '2099-01-01T00:00:00.000Z' WHERE channel_id = ?`,
+          `UPDATE hub_chat_digests SET owner_user_id = ?, cron = '0 17 * * *',
+             updated_at = '2099-01-01T00:00:00.000Z' WHERE id = ?`,
         )
         .run(bob, id);
     });
@@ -464,7 +467,9 @@ describe('runChannelDigest after a slow model run', () => {
   });
 
   it('does not post when the owner leaves the channel mid-run', async () => {
-    const { result, systemPosts, after } = await raceWith((id) => chat.removeMember(id, alice));
+    const { result, systemPosts, after } = await raceWith((id) =>
+      chat.removeMember(digestStore.getChannelDigest(id)!.channel_id, alice),
+    );
     expect(result.status).toBe('cancelled');
     expect(systemPosts).toHaveLength(0);
     expect(after?.last_run_at).toBeNull();
@@ -480,7 +485,7 @@ describe('runChannelDigest after a slow model run', () => {
     getDb()
       .prepare('INSERT INTO kanban_cards (id, column_id, board_id, title) VALUES (?, ?, ?, ?)')
       .run('card9', 'col9', 'b9', 'Thing');
-    const { channel, digest } = channelWithDigest({ scope: 'project', projectId: 'web' });
+    const { channel, digest } = channelWithDigest({ scope: 'project', projectIds: ['web'] });
     let allowed = true;
     const { deps, finish } = deferredDeps();
     const running = digests.runChannelDigest(digest, new Date(Date.now() + 1000), {
@@ -503,7 +508,7 @@ describe('runChannelDigest after a slow model run', () => {
 
 describe('schedule tick', () => {
   it('runs due digests from the daily-summary ticker', async () => {
-    const { channel } = channelWithDigest({ cron: '30 16 * * *' });
+    const { channel, digest } = channelWithDigest({ cron: '30 16 * * *' });
     const run = vi.fn().mockResolvedValue({ status: 'skipped', reason: 'empty_window' });
     const now = new Date('2026-10-14T16:30:10Z');
     await runDailySummaryScheduleTick({
@@ -515,8 +520,96 @@ describe('schedule tick', () => {
     });
     expect(run).toHaveBeenCalledTimes(1);
     expect(run.mock.calls[0]?.[0].channel_id).toBe(channel.id);
+    expect(run.mock.calls[0]?.[0].id).toBe(digest.id);
     // A second tick in the same minute does not start it again.
     await digests.runChannelDigestTick(now, { ...runDeps().deps, run });
     expect(run).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('multiple digests per channel', () => {
+  it('ticks each enabled digest independently, so two on one channel both post', async () => {
+    const created = new Date('2026-10-14T08:00:00.000Z');
+    const { channel, digest: first } = channelWithDigest({ cron: '30 16 * * *', now: created });
+    const second = digestStore.createChannelDigest(channel.id, {
+      name: 'Also daily',
+      enabled: true,
+      cron: '30 16 * * *',
+      timeZone: 'UTC',
+      scope: 'channel',
+      projectIds: [],
+      prompt: null,
+      ownerUserId: bob,
+      now: created,
+    })!;
+    const msg = chat.appendMessage({
+      channelId: channel.id,
+      authorKind: 'user',
+      authorUserId: bob,
+      body: 'shipped the release',
+    });
+    setCreatedAt(msg.id, '2026-10-14T12:00:00.000Z');
+    const { deps, runFailover } = runDeps('Release shipped.');
+    await digests.runChannelDigestTick(new Date('2026-10-14T16:30:10Z'), deps);
+    expect(runFailover).toHaveBeenCalledTimes(2);
+    const posts = chat.listMessages(channel.id).filter((m) => m.author_kind === 'system');
+    expect(posts).toHaveLength(2);
+    for (const d of [first, second]) {
+      const after = digestStore.getChannelDigest(d.id)!;
+      expect(after.last_status).toBe('posted');
+      expect(posts.map((p) => p.id)).toContain(after.last_message_id);
+    }
+  });
+
+  it('caps a channel at MAX_DIGESTS_PER_CHANNEL', () => {
+    const { channel } = channelWithDigest();
+    for (let i = 1; i < digestStore.MAX_DIGESTS_PER_CHANNEL; i++) {
+      expect(
+        digestStore.createChannelDigest(channel.id, {
+          name: `d${i}`,
+          enabled: true,
+          cron: '0 9 * * *',
+          timeZone: 'UTC',
+          scope: 'channel',
+          projectIds: [],
+          prompt: null,
+          ownerUserId: alice,
+        }),
+      ).not.toBeNull();
+    }
+    expect(digestStore.listChannelDigests(channel.id)).toHaveLength(10);
+    expect(
+      digestStore.createChannelDigest(channel.id, {
+        name: 'one too many',
+        enabled: true,
+        cron: '0 9 * * *',
+        timeZone: 'UTC',
+        scope: 'channel',
+        projectIds: [],
+        prompt: null,
+        ownerUserId: alice,
+      }),
+    ).toBeNull();
+  });
+
+  it('a CAS advance on one digest leaves its sibling cursor alone', () => {
+    const { channel, digest } = channelWithDigest();
+    const sibling = digestStore.createChannelDigest(channel.id, {
+      name: 'sibling',
+      enabled: true,
+      cron: '0 9 * * *',
+      timeZone: 'UTC',
+      scope: 'channel',
+      projectIds: [],
+      prompt: null,
+      ownerUserId: alice,
+    })!;
+    expect(
+      digestStore.advanceChannelDigestWindow(digest.id, digest.window_start, {
+        status: 'skipped',
+        windowEnd: '2099-01-01T00:00:00.000Z',
+      }),
+    ).toBe(true);
+    expect(digestStore.getChannelDigest(sibling.id)?.window_start).toBe(sibling.window_start);
   });
 });

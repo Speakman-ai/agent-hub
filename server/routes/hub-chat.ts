@@ -94,14 +94,23 @@ import {
   SearchMessagesQuerySchema,
   SearchRefsQuerySchema,
   UpdateChannelRequestSchema,
-  UpsertDigestRequestSchema,
+  DIGEST_ROUTE_PREFIXES,
+  SaveDigestRequestSchema,
+  type SaveDigestRequest,
 } from './hub-chat.openapi.js';
 import {
+  createChannelDigest,
   deleteChannelDigest,
+  digestProjectIds,
   getChannelDigest,
-  upsertChannelDigest,
+  listChannelDigests,
+  updateChannelDigest,
+  MAX_DIGESTS_PER_CHANNEL,
+  type ChannelDigestInput,
   type ChannelDigestRow,
 } from '../hub-chat-digests-store.js';
+import { runChannelDigestNow } from '../hub-chat-digests.js';
+import { defaultDigestName } from '../hub-chat-schema.js';
 import { searchHubChatMessages } from '../hub-chat-search.js';
 import { isValidCron } from '../cron-match.js';
 import { isValidTimeZone } from '../daily-summary-schedule.js';
@@ -216,15 +225,21 @@ function shapeMember(m: HubChatMemberRow) {
   };
 }
 
-function shapeDigest(row: ChannelDigestRow | null) {
-  if (!row) return null;
+function digestPaths(suffix: string): string[] {
+  return DIGEST_ROUTE_PREFIXES.map((prefix) => `${prefix}${suffix}`);
+}
+
+function shapeDigest(row: ChannelDigestRow) {
   return {
+    id: row.id,
     channelId: row.channel_id,
+    name: row.name,
     enabled: row.enabled === 1,
     cron: row.cron,
     timeZone: row.time_zone,
     scope: row.scope,
-    projectId: row.project_id,
+    projectIds: digestProjectIds(row),
+    prompt: row.prompt,
     ownerUserId: row.owner_user_id,
     windowStart: row.window_start,
     lastRunAt: row.last_run_at,
@@ -973,70 +988,169 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
     res.json({ membership });
   });
 
-  router.get('/api/chat/channels/:channelId/digest', (req: Request, res: Response) => {
+  /**
+   * Validates a digest save as the caller and returns the store input, or
+   * writes the error response and returns null.
+   */
+  const digestInput = (
+    caller: Caller,
+    body: SaveDigestRequest,
+    res: Response,
+  ): ChannelDigestInput | null => {
+    if (!isValidCron(body.cron)) {
+      bad(res, 400, 'Schedule must be a 5-field cron expression', 'invalid_cron');
+      return null;
+    }
+    if (!isValidTimeZone(body.timeZone)) {
+      bad(res, 400, 'Unknown timezone', 'invalid_time_zone');
+      return null;
+    }
+    const projectIds: string[] = [];
+    if (body.scope === 'project') {
+      const ids = body.projectIds ?? [];
+      if (ids.length === 0) {
+        bad(res, 400, 'Pick a project for a project digest', 'project_required');
+        return null;
+      }
+      for (const id of ids) {
+        const project = deps.findProject?.(id) ?? null;
+        if (
+          !project ||
+          isHubSystemProject(project) ||
+          !canViewProject(project, refViewer(caller).visibility)
+        ) {
+          bad(res, 404, 'Project not found', 'project_not_found');
+          return null;
+        }
+        if (!projectIds.includes(project.id)) projectIds.push(project.id);
+      }
+    }
+    return {
+      name: body.name?.trim() || defaultDigestName(body.scope),
+      enabled: body.enabled,
+      cron: body.cron.trim().split(/\s+/).join(' '),
+      timeZone: body.timeZone.trim(),
+      scope: body.scope,
+      projectIds,
+      prompt: null,
+      ownerUserId: caller.userId,
+    };
+  };
+
+  /** The digest when it belongs to this channel; otherwise a 404 is sent. */
+  const channelDigest = (
+    channelId: string,
+    digestId: string,
+    res: Response,
+  ): ChannelDigestRow | null => {
+    const row = getChannelDigest(digestId);
+    if (!row || row.channel_id !== channelId) {
+      bad(res, 404, 'Digest not found', 'digest_not_found');
+      return null;
+    }
+    return row;
+  };
+
+  router.get(digestPaths('/channels/:channelId/digests'), (req: Request, res: Response) => {
     const caller = requireCaller(req, res);
     if (!caller) return;
     const v = visibleChannel(caller, String(req.params.channelId), res);
     if (!v) return;
-    res.json({ digest: shapeDigest(getChannelDigest(v.channel.id)) });
+    res.json({ digests: listChannelDigests(v.channel.id).map(shapeDigest) });
   });
 
-  router.put('/api/chat/channels/:channelId/digest', (req: Request, res: Response) => {
+  router.post(digestPaths('/channels/:channelId/digests'), (req: Request, res: Response) => {
     const caller = requireCaller(req, res);
     if (!caller) return;
     const m = memberChannel(caller, String(req.params.channelId), res);
     if (!m) return;
-    const body = parse(UpsertDigestRequestSchema, req.body, res);
+    const body = parse(SaveDigestRequestSchema, req.body, res);
     if (!body) return;
     if (m.channel.archived_at) {
       bad(res, 409, 'This channel is archived', 'channel_archived');
       return;
     }
-    if (!isValidCron(body.cron)) {
-      bad(res, 400, 'Schedule must be a 5-field cron expression', 'invalid_cron');
+    const input = digestInput(caller, body, res);
+    if (!input) return;
+    const row = createChannelDigest(m.channel.id, input);
+    if (!row) {
+      bad(
+        res,
+        409,
+        `A channel can hold at most ${MAX_DIGESTS_PER_CHANNEL} digests`,
+        'digest_limit_reached',
+      );
       return;
     }
-    if (!isValidTimeZone(body.timeZone)) {
-      bad(res, 400, 'Unknown timezone', 'invalid_time_zone');
-      return;
-    }
-    let projectId: string | null = null;
-    if (body.scope === 'project') {
-      const project = body.projectId ? (deps.findProject?.(body.projectId) ?? null) : null;
-      if (!body.projectId) {
-        bad(res, 400, 'Pick a project for a project digest', 'project_required');
-        return;
-      }
-      if (
-        !project ||
-        isHubSystemProject(project) ||
-        !canViewProject(project, refViewer(caller).visibility)
-      ) {
-        bad(res, 404, 'Project not found', 'project_not_found');
-        return;
-      }
-      projectId = project.id;
-    }
-    const row = upsertChannelDigest({
-      channelId: m.channel.id,
-      enabled: body.enabled,
-      cron: body.cron.trim().split(/\s+/).join(' '),
-      timeZone: body.timeZone.trim(),
-      scope: body.scope,
-      projectId,
-      ownerUserId: caller.userId,
-    });
-    res.json({ digest: shapeDigest(row) });
+    res.status(201).json({ digest: shapeDigest(row) });
   });
 
-  router.delete('/api/chat/channels/:channelId/digest', (req: Request, res: Response) => {
-    const caller = requireCaller(req, res);
-    if (!caller) return;
-    const m = memberChannel(caller, String(req.params.channelId), res);
-    if (!m) return;
-    deleteChannelDigest(m.channel.id);
-    res.json({ digest: null });
-  });
+  router.put(
+    digestPaths('/channels/:channelId/digests/:digestId'),
+    (req: Request, res: Response) => {
+      const caller = requireCaller(req, res);
+      if (!caller) return;
+      const m = memberChannel(caller, String(req.params.channelId), res);
+      if (!m) return;
+      const body = parse(SaveDigestRequestSchema, req.body, res);
+      if (!body) return;
+      if (!channelDigest(m.channel.id, String(req.params.digestId), res)) return;
+      if (m.channel.archived_at) {
+        bad(res, 409, 'This channel is archived', 'channel_archived');
+        return;
+      }
+      const input = digestInput(caller, body, res);
+      if (!input) return;
+      const row = updateChannelDigest(String(req.params.digestId), input);
+      if (!row) {
+        bad(res, 404, 'Digest not found', 'digest_not_found');
+        return;
+      }
+      res.json({ digest: shapeDigest(row) });
+    },
+  );
+
+  router.delete(
+    digestPaths('/channels/:channelId/digests/:digestId'),
+    (req: Request, res: Response) => {
+      const caller = requireCaller(req, res);
+      if (!caller) return;
+      const m = memberChannel(caller, String(req.params.channelId), res);
+      if (!m) return;
+      const row = channelDigest(m.channel.id, String(req.params.digestId), res);
+      if (!row) return;
+      deleteChannelDigest(row.id);
+      res.json({ ok: true });
+    },
+  );
+
+  router.post(
+    digestPaths('/channels/:channelId/digests/:digestId/run'),
+    async (req: Request, res: Response) => {
+      const caller = requireCaller(req, res);
+      if (!caller) return;
+      const m = memberChannel(caller, String(req.params.channelId), res);
+      if (!m) return;
+      const row = channelDigest(m.channel.id, String(req.params.digestId), res);
+      if (!row) return;
+      if (m.channel.archived_at) {
+        bad(res, 409, 'This channel is archived', 'channel_archived');
+        return;
+      }
+      const result = await runChannelDigestNow(row, new Date(), {
+        config: deps.config,
+        broadcast: deps.broadcast,
+        findProject: (id) => deps.findProject?.(id) ?? null,
+        getProjects: () => deps.getProjects?.() ?? [],
+      });
+      if (result.status === 'busy') {
+        bad(res, 409, 'This digest is already running', 'digest_running');
+        return;
+      }
+      const after = getChannelDigest(row.id);
+      res.json({ result, digest: after ? shapeDigest(after) : null });
+    },
+  );
 
   return router;
 }

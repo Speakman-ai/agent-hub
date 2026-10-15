@@ -799,19 +799,29 @@ registerPath({
 
 export const DigestScopeSchema = z.enum(['channel', 'project']);
 
+/** Mirrors `MAX_DIGESTS_PER_CHANNEL` in `hub-chat-digests-store.ts`. */
+const MAX_DIGESTS_PER_CHANNEL = 10;
+
 export const ChannelDigestComponent = registerComponent(
   'HubChatChannelDigest',
   z
     .object({
+      id: z.string(),
       channelId: z.string(),
+      name: z.string(),
       enabled: z.boolean(),
       cron: z.string().openapi({ description: '5-field cron expression, read in `timeZone`.' }),
       timeZone: z.string().openapi({ description: 'IANA timezone the cron is read in.' }),
       scope: DigestScopeSchema.openapi({
         description:
-          "`channel` summarizes this channel's messages since the last digest; `project` summarizes a project's activity.",
+          "`channel` summarizes this channel's messages since the last run; `project` summarizes a project's activity.",
       }),
-      projectId: z.string().nullable(),
+      projectIds: z.array(z.string()).openapi({
+        description: 'Projects a `project` digest summarizes; empty for `channel`.',
+      }),
+      prompt: z.string().nullable().openapi({
+        description: 'Custom instructions for the summary, or null for the default.',
+      }),
       ownerUserId: z.string().openapi({
         description: 'User whose engine credentials and access the digest runs on (last editor).',
       }),
@@ -831,66 +841,126 @@ export const ChannelDigestComponent = registerComponent(
     .openapi({ description: 'Scheduled AI digest posted into a channel as a system message.' }),
 );
 
-export const UpsertDigestRequestSchema = z
+export const SaveDigestRequestSchema = z
   .object({
+    name: z.string().trim().max(80).optional().openapi({
+      description: 'Display name; defaults from the scope when blank.',
+    }),
     enabled: z.boolean().default(true),
     cron: z.string().trim().min(1).max(120),
     timeZone: z.string().trim().min(1).max(64),
     scope: DigestScopeSchema,
-    projectId: z.string().trim().min(1).max(200).nullable().optional().openapi({
-      description: 'Required when `scope` is `project`; ignored otherwise.',
+    projectIds: z.array(z.string().trim().min(1).max(200)).max(1).optional().openapi({
+      description:
+        'Required (one project) when `scope` is `project`; ignored otherwise. The caller must be able to view it.',
     }),
   })
   .strict();
 
-const digestEnvelope = z.object({ digest: ChannelDigestComponent.nullable() });
+export type SaveDigestRequest = z.infer<typeof SaveDigestRequestSchema>;
 
-registerPath({
-  method: 'get',
-  path: '/api/chat/channels/{channelId}/digest',
-  tags: [TAG],
-  summary: "Get a channel's scheduled digest",
-  request: { params: channelParams },
-  responses: {
-    200: {
-      description: 'The digest, or null when none is configured.',
-      content: jsonContent(digestEnvelope),
+const digestParams = channelParams.extend({ digestId: z.string().min(1) });
+const digestEnvelope = z.object({ digest: ChannelDigestComponent });
+
+/**
+ * Digest routes answer under the Hub Chat prefix `/api/chat` and under
+ * `/api/hub-chat`, the path the digest contract was specified with.
+ */
+export const DIGEST_ROUTE_PREFIXES = ['/api/chat', '/api/hub-chat'] as const;
+
+for (const prefix of DIGEST_ROUTE_PREFIXES) {
+  registerPath({
+    method: 'get',
+    path: `${prefix}/channels/{channelId}/digests`,
+    tags: [TAG],
+    summary: "List a channel's scheduled digests",
+    request: { params: channelParams },
+    responses: {
+      200: {
+        description: 'Digests, oldest first.',
+        content: jsonContent(z.object({ digests: z.array(ChannelDigestComponent) })),
+      },
+      404: notFound,
+      ...common,
     },
-    404: notFound,
-    ...common,
-  },
-});
+  });
 
-registerPath({
-  method: 'put',
-  path: '/api/chat/channels/{channelId}/digest',
-  tags: [TAG],
-  summary: "Create or replace a channel's scheduled digest",
-  description:
-    'Members only. The caller becomes the digest owner: runs use their engine credentials, and a project digest requires that they can view the project.',
-  request: { params: channelParams, body: { content: jsonContent(UpsertDigestRequestSchema) } },
-  responses: {
-    200: { description: 'The saved digest.', content: jsonContent(digestEnvelope) },
-    400: errorResponse('Invalid cron, timezone, or missing project.'),
-    404: errorResponse('Channel or project not found.'),
-    409: errorResponse('Not joined, or the channel is archived.'),
-    ...common,
-  },
-});
+  registerPath({
+    method: 'post',
+    path: `${prefix}/channels/{channelId}/digests`,
+    tags: [TAG],
+    summary: 'Add a scheduled digest to a channel',
+    description: `Members only, at most ${MAX_DIGESTS_PER_CHANNEL} per channel. The caller becomes the digest owner: runs use their engine credentials, and a project digest requires that they can view the project.`,
+    request: { params: channelParams, body: { content: jsonContent(SaveDigestRequestSchema) } },
+    responses: {
+      201: { description: 'The created digest.', content: jsonContent(digestEnvelope) },
+      400: errorResponse('Invalid cron, timezone, or missing project.'),
+      404: errorResponse('Channel or project not found.'),
+      409: errorResponse('Not joined, the channel is archived, or it already has the maximum.'),
+      ...common,
+    },
+  });
 
-registerPath({
-  method: 'delete',
-  path: '/api/chat/channels/{channelId}/digest',
-  tags: [TAG],
-  summary: "Remove a channel's scheduled digest",
-  request: { params: channelParams },
-  responses: {
-    200: { description: 'Removed (or nothing to remove).', content: jsonContent(digestEnvelope) },
-    404: notFound,
-    409: errorResponse('Not joined.'),
-    ...common,
-  },
-});
+  registerPath({
+    method: 'put',
+    path: `${prefix}/channels/{channelId}/digests/{digestId}`,
+    tags: [TAG],
+    summary: 'Replace a scheduled digest',
+    description:
+      'Members only. The caller becomes the digest owner. Editing keeps the window cursor; re-enabling a paused digest restarts it.',
+    request: { params: digestParams, body: { content: jsonContent(SaveDigestRequestSchema) } },
+    responses: {
+      200: { description: 'The saved digest.', content: jsonContent(digestEnvelope) },
+      400: errorResponse('Invalid cron, timezone, or missing project.'),
+      404: errorResponse('Channel, digest or project not found.'),
+      409: errorResponse('Not joined, or the channel is archived.'),
+      ...common,
+    },
+  });
+
+  registerPath({
+    method: 'delete',
+    path: `${prefix}/channels/{channelId}/digests/{digestId}`,
+    tags: [TAG],
+    summary: 'Remove a scheduled digest',
+    request: { params: digestParams },
+    responses: {
+      200: { description: 'Removed.', content: jsonContent(z.object({ ok: z.literal(true) })) },
+      404: errorResponse('Channel or digest not found.'),
+      409: errorResponse('Not joined.'),
+      ...common,
+    },
+  });
+
+  registerPath({
+    method: 'post',
+    path: `${prefix}/channels/{channelId}/digests/{digestId}/run`,
+    tags: [TAG],
+    summary: 'Run a scheduled digest now',
+    description:
+      "Members only. Runs on the digest owner's credentials over the window since the last run, exactly as a scheduled run would: an empty window posts nothing.",
+    request: { params: digestParams },
+    responses: {
+      200: {
+        description: 'The run outcome and the digest after it.',
+        content: jsonContent(
+          z.object({
+            result: z.object({
+              status: z.enum(['posted', 'skipped', 'cancelled', 'error']),
+              messageId: z.string().optional(),
+              reason: z.string().optional(),
+              error: z.string().optional(),
+            }),
+            digest: ChannelDigestComponent.nullable(),
+          }),
+        ),
+      },
+      404: errorResponse('Channel or digest not found.'),
+      409: errorResponse('Not joined, the channel is archived, or the digest is already running.'),
+      ...common,
+    },
+  });
+}
 
 const metaEnvelope = z.object({ meta: MessageMetaComponent });
 const reactionResponses = {

@@ -7,12 +7,16 @@ import humanCron from './humanCron.js';
 export type ChatDigestScope = 'channel' | 'project';
 
 export interface ChatDigest {
+  id: string;
   channelId: string;
+  name: string;
   enabled: boolean;
   cron: string;
   timeZone: string;
   scope: ChatDigestScope;
-  projectId: string | null;
+  projectIds: string[];
+  /** Custom summary instructions, or null for the default. */
+  prompt: string | null;
   ownerUserId: string;
   windowStart: string;
   lastRunAt: string | null;
@@ -32,6 +36,16 @@ export const CHAT_DIGEST_PRESETS: ReadonlyArray<{ label: string; cron: string }>
 ];
 
 export const DEFAULT_CHAT_DIGEST_CRON = '0 9 * * 1-5';
+
+/** Body of a digest create (POST) or replace (PUT). */
+export interface ChatDigestSaveRequest {
+  name?: string;
+  enabled: boolean;
+  cron: string;
+  timeZone: string;
+  scope: ChatDigestScope;
+  projectIds?: string[];
+}
 
 /** The device's IANA timezone, or UTC when it cannot be read. */
 export function deviceTimeZone(): string {

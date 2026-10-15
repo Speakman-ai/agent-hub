@@ -1,4 +1,5 @@
 import type { UploadedAttachment } from '@shared/types/uploads';
+import type { ChatDigestSaveRequest } from '@shared/utils/chatDigest';
 import { getApiBase, getAuthHeaders } from './connection';
 import { getToken as getJwt, clearToken, isLocalBundledDeployment } from './auth';
 import { normalizeSessionMessagesResponse } from '@shared/utils/sessionMessagesResponse';
@@ -1292,24 +1293,28 @@ export const api = {
         method: 'PUT',
         body: JSON.stringify({ mutedUntil }),
       }),
-    digest: (channelId: string) =>
-      fetchJSON(`/chat/channels/${encodeURIComponent(channelId)}/digest`),
-    saveDigest: (
-      channelId: string,
-      data: {
-        enabled: boolean;
-        cron: string;
-        timeZone: string;
-        scope: 'channel' | 'project';
-        projectId?: string | null;
-      },
-    ) =>
-      fetchJSON(`/chat/channels/${encodeURIComponent(channelId)}/digest`, {
-        method: 'PUT',
+    digests: (channelId: string) =>
+      fetchJSON(`/chat/channels/${encodeURIComponent(channelId)}/digests`),
+    createDigest: (channelId: string, data: ChatDigestSaveRequest) =>
+      fetchJSON(`/chat/channels/${encodeURIComponent(channelId)}/digests`, {
+        method: 'POST',
         body: JSON.stringify(data),
       }),
-    removeDigest: (channelId: string) =>
-      fetchJSON(`/chat/channels/${encodeURIComponent(channelId)}/digest`, { method: 'DELETE' }),
+    updateDigest: (channelId: string, digestId: string, data: ChatDigestSaveRequest) =>
+      fetchJSON(
+        `/chat/channels/${encodeURIComponent(channelId)}/digests/${encodeURIComponent(digestId)}`,
+        { method: 'PUT', body: JSON.stringify(data) },
+      ),
+    removeDigest: (channelId: string, digestId: string) =>
+      fetchJSON(
+        `/chat/channels/${encodeURIComponent(channelId)}/digests/${encodeURIComponent(digestId)}`,
+        { method: 'DELETE' },
+      ),
+    runDigest: (channelId: string, digestId: string) =>
+      fetchJSON(
+        `/chat/channels/${encodeURIComponent(channelId)}/digests/${encodeURIComponent(digestId)}/run`,
+        { method: 'POST' },
+      ),
     searchRefs: (trigger: '@' | '#', q: string) =>
       fetchJSON(`/chat/refs/search?${new URLSearchParams({ trigger, q }).toString()}`),
     resolveRefs: (refs: { kind: string; targetId: string }[]) =>

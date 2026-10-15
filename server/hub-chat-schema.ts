@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import type Database from 'better-sqlite3';
 
 /**
@@ -129,18 +130,22 @@ export const HUB_CHAT_SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_project_chat_trigger_posts_created
     ON project_chat_trigger_posts(created_at);
 
-  -- Scheduled AI digest for a channel: at most one per channel. Runs on the
-  -- owner's engine credentials and posts as author_kind='system'.
-  -- window_start is the durable cursor: the next run summarizes
+  -- Scheduled AI digests for a channel, up to 10 per channel. Each runs on
+  -- its owner's engine credentials and posts as author_kind='system'.
+  -- window_start is the durable per-digest cursor: the next run summarizes
   -- [window_start, now). Only a posted or skipped run moves it (to that run's
   -- end); a failed run leaves it, so the retry covers the same span.
-  CREATE TABLE IF NOT EXISTS hub_chat_channel_digests (
-    channel_id      TEXT PRIMARY KEY REFERENCES hub_chat_channels(id) ON DELETE CASCADE,
+  -- project_ids is a JSON array of project ids (scope='project' only).
+  CREATE TABLE IF NOT EXISTS hub_chat_digests (
+    id              TEXT PRIMARY KEY,
+    channel_id      TEXT NOT NULL REFERENCES hub_chat_channels(id) ON DELETE CASCADE,
+    name            TEXT NOT NULL DEFAULT '',
     enabled         INTEGER NOT NULL DEFAULT 1,
     cron            TEXT NOT NULL,
     time_zone       TEXT NOT NULL DEFAULT 'UTC',
     scope           TEXT NOT NULL CHECK(scope IN ('channel','project')),
-    project_id      TEXT,
+    project_ids     TEXT NOT NULL DEFAULT '[]',
+    prompt          TEXT,
     owner_user_id   TEXT NOT NULL,
     window_start    TEXT NOT NULL,
     last_run_at     TEXT,
@@ -150,6 +155,8 @@ export const HUB_CHAT_SCHEMA = `
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
   );
+  CREATE INDEX IF NOT EXISTS idx_hub_chat_digests_channel
+    ON hub_chat_digests(channel_id, created_at);
 
   -- Emoji reactions: one row per (message, user, emoji).
   CREATE TABLE IF NOT EXISTS hub_chat_reactions (
@@ -194,32 +201,86 @@ export const HUB_CHAT_COLUMN_MIGRATIONS: ReadonlyArray<string> = [
   'ALTER TABLE hub_chat_messages ADD COLUMN meta_rev INTEGER NOT NULL DEFAULT 0',
 ];
 
+const LEGACY_DIGESTS_TABLE = 'hub_chat_channel_digests';
+
+/** Default name for a digest copied from the one-per-channel table. */
+export function defaultDigestName(scope: string): string {
+  return scope === 'project' ? 'Project digest' : 'Channel digest';
+}
+
 /**
- * Adds `hub_chat_channel_digests.window_start` to a table created before the
- * column existed. The reconciler in `schema-reconcile.ts` cannot add it: SQLite
- * refuses `ADD COLUMN ... NOT NULL` without a default, so every digest save
- * threw `no column named window_start`. The column gets an empty default and
- * existing rows are backfilled to their last run, else one default lookback
- * before now (the same start a new digest gets). Idempotent.
+ * Moves digests from the one-row-per-channel `hub_chat_channel_digests` table
+ * into id-keyed `hub_chat_digests` rows, then drops the old table. Each row
+ * gets a fresh id and `project_id` becomes a one-element `project_ids` array.
+ * Columns the old table may predate (`window_start`, `last_status`, ...) are
+ * filled the way a new digest would be: the cursor from the last run, else one
+ * default lookback before now. Rows whose channel is gone are not copied.
+ * Idempotent: once the old table is dropped this is a no-op.
  */
-export function migrateHubChatDigestsWindowStart(conn: Database.Database): void {
-  const cols = conn.prepare(`PRAGMA table_info('hub_chat_channel_digests')`).all() as Array<{
-    name: string;
-  }>;
-  if (cols.length === 0 || cols.some((c) => c.name === 'window_start')) return;
+export function migrateHubChatDigestsToIdKeyed(conn: Database.Database): void {
+  const cols = new Set(
+    (conn.prepare(`PRAGMA table_info('${LEGACY_DIGESTS_TABLE}')`).all() as { name: string }[]).map(
+      (c) => c.name,
+    ),
+  );
+  if (cols.size === 0) return;
+  const col = (name: string) => (cols.has(name) ? name : 'NULL');
   const lookbackStart = new Date(Date.now() - 24 * 60 * 60_000).toISOString();
-  const hasLastRun = cols.some((c) => c.name === 'last_run_at');
+  const rows = conn
+    .prepare(
+      `SELECT d.channel_id, d.enabled, d.cron, d.time_zone, d.scope, d.project_id,
+              d.owner_user_id, ${col('window_start')} AS window_start,
+              ${col('last_run_at')} AS last_run_at, ${col('last_status')} AS last_status,
+              ${col('last_error')} AS last_error, ${col('last_message_id')} AS last_message_id,
+              d.created_at, d.updated_at
+       FROM ${LEGACY_DIGESTS_TABLE} d
+       WHERE EXISTS (SELECT 1 FROM hub_chat_channels c WHERE c.id = d.channel_id)`,
+    )
+    .all() as Array<{
+    channel_id: string;
+    enabled: number;
+    cron: string;
+    time_zone: string;
+    scope: string;
+    project_id: string | null;
+    owner_user_id: string;
+    window_start: string | null;
+    last_run_at: string | null;
+    last_status: string | null;
+    last_error: string | null;
+    last_message_id: string | null;
+    created_at: string;
+    updated_at: string;
+  }>;
+  const insert = conn.prepare(
+    `INSERT INTO hub_chat_digests
+       (id, channel_id, name, enabled, cron, time_zone, scope, project_ids, prompt,
+        owner_user_id, window_start, last_run_at, last_status, last_error, last_message_id,
+        created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
   conn.transaction(() => {
-    conn.exec(
-      `ALTER TABLE hub_chat_channel_digests ADD COLUMN window_start TEXT NOT NULL DEFAULT ''`,
-    );
-    conn
-      .prepare(
-        `UPDATE hub_chat_channel_digests SET window_start = ${
-          hasLastRun ? 'COALESCE(last_run_at, ?)' : '?'
-        } WHERE window_start = ''`,
-      )
-      .run(lookbackStart);
+    for (const r of rows) {
+      insert.run(
+        randomUUID(),
+        r.channel_id,
+        defaultDigestName(r.scope),
+        r.enabled,
+        r.cron,
+        r.time_zone,
+        r.scope,
+        JSON.stringify(r.project_id ? [r.project_id] : []),
+        r.owner_user_id,
+        r.window_start || r.last_run_at || lookbackStart,
+        r.last_run_at,
+        r.last_status,
+        r.last_error,
+        r.last_message_id,
+        r.created_at,
+        r.updated_at,
+      );
+    }
+    conn.exec(`DROP TABLE ${LEGACY_DIGESTS_TABLE}`);
   })();
 }
 

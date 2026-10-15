@@ -7,7 +7,7 @@ vi.mock('../utils/api', () => ({
     getProjects: vi.fn().mockResolvedValue([]),
     hubChat: {
       channel: vi.fn(),
-      digest: vi.fn(),
+      digests: vi.fn(),
     },
   },
 }));
@@ -38,7 +38,7 @@ const GENERAL: HubChatChannel = {
 
 beforeEach(() => {
   chat.channel!.mockResolvedValue({ channel: GENERAL, members: [] });
-  chat.digest!.mockResolvedValue({ digest: null });
+  chat.digests!.mockResolvedValue({ digests: [] });
 });
 
 describe('Hub Chat dialog sizing', () => {

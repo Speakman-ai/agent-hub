@@ -10,6 +10,7 @@ import {
   describeDigestSchedule,
   deviceTimeZone,
   type ChatDigest,
+  type ChatDigestSaveRequest,
   type ChatDigestScope,
 } from '@shared/utils/chatDigest';
 
@@ -36,7 +37,7 @@ function draftFrom(digest: ChatDigest | null, defaultProjectId: string | null): 
     cron: digest?.cron ?? DEFAULT_CHAT_DIGEST_CRON,
     timeZone: digest?.timeZone ?? deviceTimeZone(),
     scope: digest?.scope ?? 'channel',
-    projectId: digest?.projectId ?? defaultProjectId ?? '',
+    projectId: digest?.projectIds[0] ?? defaultProjectId ?? '',
   };
 }
 
@@ -61,11 +62,12 @@ export function HubChatDigestSection({
   useEffect(() => {
     let live = true;
     api.hubChat
-      .digest(channelId)
-      .then((res: { digest: ChatDigest | null }) => {
+      .digests(channelId)
+      .then((res: { digests: ChatDigest[] }) => {
         if (!live) return;
-        setDigest(res.digest);
-        setDraft(draftFrom(res.digest, channelProjectId));
+        const first = res.digests[0] ?? null;
+        setDigest(first);
+        setDraft(draftFrom(first, channelProjectId));
       })
       .catch((err: unknown) => {
         if (live) setError(errorText(err));
@@ -225,7 +227,7 @@ export function HubChatDigestSection({
             disabled={busy}
             onClick={() =>
               void run(async () => {
-                await api.hubChat.removeDigest(channelId);
+                if (digest) await api.hubChat.removeDigest(channelId, digest.id);
                 setDigest(null);
                 setDraft(draftFrom(null, channelProjectId));
               })
@@ -240,13 +242,17 @@ export function HubChatDigestSection({
           disabled={!canSave}
           onClick={() =>
             void run(async () => {
-              const res = await api.hubChat.saveDigest(channelId, {
+              const body: ChatDigestSaveRequest = {
+                name: digest?.name,
                 enabled: draft.enabled,
                 cron: draft.cron.trim(),
                 timeZone: draft.timeZone.trim(),
                 scope: draft.scope,
-                projectId: draft.scope === 'project' ? draft.projectId : null,
-              });
+                projectIds: draft.scope === 'project' ? [draft.projectId] : [],
+              };
+              const res = digest
+                ? await api.hubChat.updateDigest(channelId, digest.id, body)
+                : await api.hubChat.createDigest(channelId, body);
               setDigest(res.digest);
               setDraft(draftFrom(res.digest, channelProjectId));
             })

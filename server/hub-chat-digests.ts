@@ -1,6 +1,6 @@
 /**
- * Scheduled AI digests for chat channels. A channel's digest (cron + timezone)
- * summarizes either the channel's own messages or a project's activity over
+ * Scheduled AI digests for chat channels. A channel holds up to ten digests,
+ * each run independently. A digest (cron + timezone) summarizes either the channel's own messages or a project's activity over
  * the window since the previous run, with a one-shot model on the digest
  * owner's engine credentials, and posts it into the channel as a system
  * message whose body carries ref chips.
@@ -9,7 +9,7 @@
  * empty window posts nothing but still advances the cursor; a failed run keeps
  * the cursor so the next run covers the same window.
  *
- * Store: `hub-chat-digests-store.ts`. Routes: `/api/chat/channels/:id/digest`.
+ * Store: `hub-chat-digests-store.ts`. Routes: `/api/chat/channels/:id/digests`.
  */
 import { HUB_ASSISTANT_AGENT_ID } from '../shared/utils/hub.js';
 import { formatHubChatRefToken, parseHubChatRefTokens } from '../shared/utils/hubChatRefTokens.js';
@@ -33,6 +33,7 @@ import { HUB_CHAT_MESSAGE_EVENT } from './hub-chat-events.js';
 import { getUserById } from './users-store.js';
 import {
   advanceChannelDigestWindow,
+  digestProjectIds,
   getChannelDigest,
   listEnabledChannelDigests,
   recordChannelDigestFailure,
@@ -390,7 +391,8 @@ export function isSameDigestConfig(
     current.cron === started.cron &&
     current.time_zone === started.time_zone &&
     current.scope === started.scope &&
-    current.project_id === started.project_id &&
+    current.project_ids === started.project_ids &&
+    current.prompt === started.prompt &&
     current.owner_user_id === started.owner_user_id &&
     current.updated_at === started.updated_at &&
     current.window_start === started.window_start
@@ -464,8 +466,8 @@ export async function runChannelDigest(
   const fail = (error: string): ChannelDigestRunResult => {
     try {
       // A failure belongs to this config only; a replacement keeps its own status.
-      if (isSameDigestConfig(row, getChannelDigest(row.channel_id))) {
-        recordChannelDigestFailure(row.channel_id, error);
+      if (isSameDigestConfig(row, getChannelDigest(row.id))) {
+        recordChannelDigestFailure(row.id, error);
       }
     } catch {
       /* the row may be gone; nothing to record */
@@ -485,7 +487,8 @@ export async function runChannelDigest(
     let facts: DigestFacts;
     if (row.scope === 'project') {
       const canView = deps.ownerCanViewProject ?? defaultOwnerCanViewProject;
-      project = row.project_id ? lookupProject(row.project_id) : null;
+      const projectId = digestProjectIds(row)[0];
+      project = projectId ? lookupProject(projectId) : null;
       if (!project || !canView(row.owner_user_id, channel.org_id, project.id)) {
         return fail('The digest owner can no longer view this project');
       }
@@ -496,7 +499,7 @@ export async function runChannelDigest(
 
     if (isDigestWindowEmpty(facts)) {
       if (
-        !advanceChannelDigestWindow(row.channel_id, window.start, {
+        !advanceChannelDigestWindow(row.id, window.start, {
           status: 'skipped',
           windowEnd: window.end,
         })
@@ -536,7 +539,7 @@ export async function runChannelDigest(
     const outcome = getDb()
       .transaction(
         (): { cancelled: string } | { live: HubChatChannelRow; message: HubChatMessageRow } => {
-          if (!isSameDigestConfig(row, getChannelDigest(row.channel_id))) {
+          if (!isSameDigestConfig(row, getChannelDigest(row.id))) {
             return { cancelled: 'Digest was removed, disabled or changed during the run' };
           }
           const live = getChannel(channel.id);
@@ -554,6 +557,7 @@ export async function runChannelDigest(
             refs: resolved.refs,
             payload: {
               type: CHANNEL_DIGEST_PAYLOAD_TYPE,
+              digestId: row.id,
               scope: row.scope,
               projectId: project?.id ?? null,
               windowStart: window.start,
@@ -563,7 +567,7 @@ export async function runChannelDigest(
           // Checked above, so this cannot miss; if it ever did, throwing
           // rolls the message back with it.
           if (
-            !advanceChannelDigestWindow(row.channel_id, window.start, {
+            !advanceChannelDigestWindow(row.id, window.start, {
               status: 'posted',
               windowEnd: window.end,
               messageId: message.id,
@@ -581,15 +585,16 @@ export async function runChannelDigest(
     return { status: 'posted', messageId: outcome.message.id };
   } catch (err) {
     (deps.log ?? console.error)(
-      `[channel-digest] ${row.channel_id} failed: ${(err as Error).message}`,
+      `[channel-digest] ${row.id} (channel ${row.channel_id}) failed: ${(err as Error).message}`,
     );
     return fail((err as Error).message || 'Digest failed');
   }
 }
 
-// Digests running right now, so a slow model run is never started twice.
+// Digest ids running right now, so a slow model run is never started twice
+// (by the ticker or a manual run).
 const inFlight = new Set<string>();
-// `${channelId}:${minute}` already started this minute, so a failed run (which
+// `${digestId}:${minute}` already started this minute, so a failed run (which
 // keeps its cursor and last_run_at) is not retried every tick within the minute.
 const startedThisMinute = new Set<string>();
 let startedMinute = -1;
@@ -599,6 +604,24 @@ export function resetChannelDigestGuards(): void {
   inFlight.clear();
   startedThisMinute.clear();
   startedMinute = -1;
+}
+
+/**
+ * Runs one digest on demand ("Run now"). Refuses while the same digest is
+ * already running. Never throws.
+ */
+export async function runChannelDigestNow(
+  row: ChannelDigestRow,
+  now: Date,
+  deps: ChannelDigestRunDeps & { run?: typeof runChannelDigest },
+): Promise<ChannelDigestRunResult | { status: 'busy' }> {
+  if (inFlight.has(row.id)) return { status: 'busy' };
+  inFlight.add(row.id);
+  try {
+    return await (deps.run ?? runChannelDigest)(row, now, deps);
+  } finally {
+    inFlight.delete(row.id);
+  }
 }
 
 export interface ChannelDigestTickDeps extends ChannelDigestRunDeps {
@@ -623,14 +646,14 @@ export async function runChannelDigestTick(now: Date, deps: ChannelDigestTickDep
   const run = deps.run ?? runChannelDigest;
   const jobs: Promise<unknown>[] = [];
   for (const row of selectDueChannelDigests(now, rows)) {
-    const key = `${row.channel_id}:${minute}`;
-    if (inFlight.has(row.channel_id) || startedThisMinute.has(key)) continue;
-    inFlight.add(row.channel_id);
+    const key = `${row.id}:${minute}`;
+    if (inFlight.has(row.id) || startedThisMinute.has(key)) continue;
+    inFlight.add(row.id);
     startedThisMinute.add(key);
     jobs.push(
       run(row, now, deps)
         .catch(() => undefined)
-        .finally(() => inFlight.delete(row.channel_id)),
+        .finally(() => inFlight.delete(row.id)),
     );
   }
   await Promise.all(jobs);

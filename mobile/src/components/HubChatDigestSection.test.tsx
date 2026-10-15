@@ -21,7 +21,12 @@ vi.mock('react-native', () => ({
 vi.mock('../utils/api', () => ({
   api: {
     getProjects: vi.fn(),
-    hubChat: { digest: vi.fn(), saveDigest: vi.fn(), removeDigest: vi.fn() },
+    hubChat: {
+      digests: vi.fn(),
+      createDigest: vi.fn(),
+      updateDigest: vi.fn(),
+      removeDigest: vi.fn(),
+    },
   },
 }));
 
@@ -52,15 +57,18 @@ beforeEach(() => {
 
 describe('mobile HubChatDigestSection', () => {
   it('schedules a project digest from the presets', async () => {
-    hubChat.digest.mockResolvedValue({ digest: null });
-    hubChat.saveDigest.mockResolvedValue({
+    hubChat.digests.mockResolvedValue({ digests: [] });
+    hubChat.createDigest.mockResolvedValue({
       digest: {
+        id: 'd1',
         channelId: 'c1',
+        name: 'Project digest',
         enabled: true,
         cron: '0 9 * * *',
         timeZone: 'UTC',
         scope: 'project',
-        projectId: 'web',
+        projectIds: ['web'],
+        prompt: null,
         ownerUserId: 'u1',
         windowStart: '2026-10-13T09:00:00.000Z',
         lastRunAt: null,
@@ -85,9 +93,9 @@ describe('mobile HubChatDigestSection', () => {
     await press(renderer, 'hub-chat-digest-preset-1');
     await press(renderer, 'hub-chat-digest-save');
 
-    expect(hubChat.saveDigest).toHaveBeenCalledWith(
+    expect(hubChat.createDigest).toHaveBeenCalledWith(
       'c1',
-      expect.objectContaining({ cron: '0 9 * * *', scope: 'project', projectId: 'web' }),
+      expect.objectContaining({ cron: '0 9 * * *', scope: 'project', projectIds: ['web'] }),
     );
     expect(statusText(renderer)).toBe('Not run yet.');
   });

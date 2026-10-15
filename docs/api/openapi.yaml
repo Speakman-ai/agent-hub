@@ -7967,7 +7967,11 @@ components:
     HubChatChannelDigest:
       type: object
       properties:
+        id:
+          type: string
         channelId:
+          type: string
+        name:
           type: string
         enabled:
           type: boolean
@@ -7982,10 +7986,16 @@ components:
           enum:
             - channel
             - project
-          description: "`channel` summarizes this channel's messages since the last digest; `project` summarizes a project's activity."
-        projectId:
+          description: "`channel` summarizes this channel's messages since the last run; `project` summarizes a project's activity."
+        projectIds:
+          type: array
+          items:
+            type: string
+          description: Projects a `project` digest summarizes; empty for `channel`.
+        prompt:
           type: string
           nullable: true
+          description: Custom instructions for the summary, or null for the default.
         ownerUserId:
           type: string
           description: User whose engine credentials and access the digest runs on (last editor).
@@ -8015,12 +8025,15 @@ components:
         updatedAt:
           type: string
       required:
+        - id
         - channelId
+        - name
         - enabled
         - cron
         - timeZone
         - scope
-        - projectId
+        - projectIds
+        - prompt
         - ownerUserId
         - windowStart
         - lastRunAt
@@ -37407,11 +37420,11 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HubChatErrorResponse"
-  /api/chat/channels/{channelId}/digest:
+  /api/chat/channels/{channelId}/digests:
     get:
       tags:
         - Hub Chat
-      summary: Get a channel's scheduled digest
+      summary: List a channel's scheduled digests
       parameters:
         - schema:
             type: string
@@ -37422,18 +37435,18 @@ paths:
           in: path
       responses:
         "200":
-          description: The digest, or null when none is configured.
+          description: Digests, oldest first.
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  digest:
-                    allOf:
-                      - $ref: "#/components/schemas/HubChatChannelDigest"
-                      - nullable: true
+                  digests:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/HubChatChannelDigest"
                 required:
-                  - digest
+                  - digests
         "401":
           description: Authentication required, or the caller has no user identity.
           content:
@@ -37452,11 +37465,11 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HubChatErrorResponse"
-    put:
+    post:
       tags:
         - Hub Chat
-      summary: Create or replace a channel's scheduled digest
-      description: "Members only. The caller becomes the digest owner: runs use their engine credentials, and a project digest requires that they can view the project."
+      summary: Add a scheduled digest to a channel
+      description: "Members only, at most 10 per channel. The caller becomes the digest owner: runs use their engine credentials, and a project digest requires that they can view the project."
       parameters:
         - schema:
             type: string
@@ -37471,6 +37484,10 @@ paths:
             schema:
               type: object
               properties:
+                name:
+                  type: string
+                  maxLength: 80
+                  description: Display name; defaults from the scope when blank.
                 enabled:
                   type: boolean
                   default: true
@@ -37487,29 +37504,29 @@ paths:
                   enum:
                     - channel
                     - project
-                projectId:
-                  type: string
-                  nullable: true
-                  minLength: 1
-                  maxLength: 200
-                  description: Required when `scope` is `project`; ignored otherwise.
+                projectIds:
+                  type: array
+                  items:
+                    type: string
+                    minLength: 1
+                    maxLength: 200
+                  maxItems: 1
+                  description: Required (one project) when `scope` is `project`; ignored otherwise. The caller must be able to view it.
               required:
                 - cron
                 - timeZone
                 - scope
               additionalProperties: false
       responses:
-        "200":
-          description: The saved digest.
+        "201":
+          description: The created digest.
           content:
             application/json:
               schema:
                 type: object
                 properties:
                   digest:
-                    allOf:
-                      - $ref: "#/components/schemas/HubChatChannelDigest"
-                      - nullable: true
+                    $ref: "#/components/schemas/HubChatChannelDigest"
                 required:
                   - digest
         "400":
@@ -37537,6 +37554,107 @@ paths:
               schema:
                 $ref: "#/components/schemas/HubChatErrorResponse"
         "409":
+          description: Not joined, the channel is archived, or it already has the maximum.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+  /api/chat/channels/{channelId}/digests/{digestId}:
+    put:
+      tags:
+        - Hub Chat
+      summary: Replace a scheduled digest
+      description: Members only. The caller becomes the digest owner. Editing keeps the window cursor; re-enabling a paused digest restarts it.
+      parameters:
+        - schema:
+            type: string
+            description: Channel id.
+          required: true
+          description: Channel id.
+          name: channelId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: digestId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  maxLength: 80
+                  description: Display name; defaults from the scope when blank.
+                enabled:
+                  type: boolean
+                  default: true
+                cron:
+                  type: string
+                  minLength: 1
+                  maxLength: 120
+                timeZone:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                scope:
+                  type: string
+                  enum:
+                    - channel
+                    - project
+                projectIds:
+                  type: array
+                  items:
+                    type: string
+                    minLength: 1
+                    maxLength: 200
+                  maxItems: 1
+                  description: Required (one project) when `scope` is `project`; ignored otherwise. The caller must be able to view it.
+              required:
+                - cron
+                - timeZone
+                - scope
+              additionalProperties: false
+      responses:
+        "200":
+          description: The saved digest.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  digest:
+                    $ref: "#/components/schemas/HubChatChannelDigest"
+                required:
+                  - digest
+        "400":
+          description: Invalid cron, timezone, or missing project.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "404":
+          description: Channel, digest or project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "409":
           description: Not joined, or the channel is archived.
           content:
             application/json:
@@ -37545,7 +37663,141 @@ paths:
     delete:
       tags:
         - Hub Chat
-      summary: Remove a channel's scheduled digest
+      summary: Remove a scheduled digest
+      parameters:
+        - schema:
+            type: string
+            description: Channel id.
+          required: true
+          description: Channel id.
+          name: channelId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: digestId
+          in: path
+      responses:
+        "200":
+          description: Removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "404":
+          description: Channel or digest not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "409":
+          description: Not joined.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+  /api/chat/channels/{channelId}/digests/{digestId}/run:
+    post:
+      tags:
+        - Hub Chat
+      summary: Run a scheduled digest now
+      description: "Members only. Runs on the digest owner's credentials over the window since the last run, exactly as a scheduled run would: an empty window posts nothing."
+      parameters:
+        - schema:
+            type: string
+            description: Channel id.
+          required: true
+          description: Channel id.
+          name: channelId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: digestId
+          in: path
+      responses:
+        "200":
+          description: The run outcome and the digest after it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: object
+                    properties:
+                      status:
+                        type: string
+                        enum:
+                          - posted
+                          - skipped
+                          - cancelled
+                          - error
+                      messageId:
+                        type: string
+                      reason:
+                        type: string
+                      error:
+                        type: string
+                    required:
+                      - status
+                  digest:
+                    allOf:
+                      - $ref: "#/components/schemas/HubChatChannelDigest"
+                      - nullable: true
+                required:
+                  - result
+                  - digest
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "404":
+          description: Channel or digest not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "409":
+          description: Not joined, the channel is archived, or the digest is already running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+  /api/hub-chat/channels/{channelId}/digests:
+    get:
+      tags:
+        - Hub Chat
+      summary: List a channel's scheduled digests
       parameters:
         - schema:
             type: string
@@ -37556,18 +37808,18 @@ paths:
           in: path
       responses:
         "200":
-          description: Removed (or nothing to remove).
+          description: Digests, oldest first.
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  digest:
-                    allOf:
-                      - $ref: "#/components/schemas/HubChatChannelDigest"
-                      - nullable: true
+                  digests:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/HubChatChannelDigest"
                 required:
-                  - digest
+                  - digests
         "401":
           description: Authentication required, or the caller has no user identity.
           content:
@@ -37586,8 +37838,330 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HubChatErrorResponse"
+    post:
+      tags:
+        - Hub Chat
+      summary: Add a scheduled digest to a channel
+      description: "Members only, at most 10 per channel. The caller becomes the digest owner: runs use their engine credentials, and a project digest requires that they can view the project."
+      parameters:
+        - schema:
+            type: string
+            description: Channel id.
+          required: true
+          description: Channel id.
+          name: channelId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  maxLength: 80
+                  description: Display name; defaults from the scope when blank.
+                enabled:
+                  type: boolean
+                  default: true
+                cron:
+                  type: string
+                  minLength: 1
+                  maxLength: 120
+                timeZone:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                scope:
+                  type: string
+                  enum:
+                    - channel
+                    - project
+                projectIds:
+                  type: array
+                  items:
+                    type: string
+                    minLength: 1
+                    maxLength: 200
+                  maxItems: 1
+                  description: Required (one project) when `scope` is `project`; ignored otherwise. The caller must be able to view it.
+              required:
+                - cron
+                - timeZone
+                - scope
+              additionalProperties: false
+      responses:
+        "201":
+          description: The created digest.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  digest:
+                    $ref: "#/components/schemas/HubChatChannelDigest"
+                required:
+                  - digest
+        "400":
+          description: Invalid cron, timezone, or missing project.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "404":
+          description: Channel or project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "409":
+          description: Not joined, the channel is archived, or it already has the maximum.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+  /api/hub-chat/channels/{channelId}/digests/{digestId}:
+    put:
+      tags:
+        - Hub Chat
+      summary: Replace a scheduled digest
+      description: Members only. The caller becomes the digest owner. Editing keeps the window cursor; re-enabling a paused digest restarts it.
+      parameters:
+        - schema:
+            type: string
+            description: Channel id.
+          required: true
+          description: Channel id.
+          name: channelId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: digestId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  maxLength: 80
+                  description: Display name; defaults from the scope when blank.
+                enabled:
+                  type: boolean
+                  default: true
+                cron:
+                  type: string
+                  minLength: 1
+                  maxLength: 120
+                timeZone:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                scope:
+                  type: string
+                  enum:
+                    - channel
+                    - project
+                projectIds:
+                  type: array
+                  items:
+                    type: string
+                    minLength: 1
+                    maxLength: 200
+                  maxItems: 1
+                  description: Required (one project) when `scope` is `project`; ignored otherwise. The caller must be able to view it.
+              required:
+                - cron
+                - timeZone
+                - scope
+              additionalProperties: false
+      responses:
+        "200":
+          description: The saved digest.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  digest:
+                    $ref: "#/components/schemas/HubChatChannelDigest"
+                required:
+                  - digest
+        "400":
+          description: Invalid cron, timezone, or missing project.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "404":
+          description: Channel, digest or project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "409":
+          description: Not joined, or the channel is archived.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+    delete:
+      tags:
+        - Hub Chat
+      summary: Remove a scheduled digest
+      parameters:
+        - schema:
+            type: string
+            description: Channel id.
+          required: true
+          description: Channel id.
+          name: channelId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: digestId
+          in: path
+      responses:
+        "200":
+          description: Removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "404":
+          description: Channel or digest not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
         "409":
           description: Not joined.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+  /api/hub-chat/channels/{channelId}/digests/{digestId}/run:
+    post:
+      tags:
+        - Hub Chat
+      summary: Run a scheduled digest now
+      description: "Members only. Runs on the digest owner's credentials over the window since the last run, exactly as a scheduled run would: an empty window posts nothing."
+      parameters:
+        - schema:
+            type: string
+            description: Channel id.
+          required: true
+          description: Channel id.
+          name: channelId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: digestId
+          in: path
+      responses:
+        "200":
+          description: The run outcome and the digest after it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: object
+                    properties:
+                      status:
+                        type: string
+                        enum:
+                          - posted
+                          - skipped
+                          - cancelled
+                          - error
+                      messageId:
+                        type: string
+                      reason:
+                        type: string
+                      error:
+                        type: string
+                    required:
+                      - status
+                  digest:
+                    allOf:
+                      - $ref: "#/components/schemas/HubChatChannelDigest"
+                      - nullable: true
+                required:
+                  - result
+                  - digest
+        "401":
+          description: Authentication required, or the caller has no user identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "403":
+          description: Caller is not a member of the active org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "404":
+          description: Channel or digest not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubChatErrorResponse"
+        "409":
+          description: Not joined, the channel is archived, or the digest is already running.
           content:
             application/json:
               schema:
