@@ -624,6 +624,37 @@ function normalizeAssignee(
   return trimmed;
 }
 
+/**
+ * Server-only event for the notification fan-out: a person became a card's
+ * lead user. Self-assignment notifies no one.
+ */
+function broadcastCardAssigned(
+  broadcast: (data: Record<string, unknown>) => void,
+  req: Request,
+  args: {
+    projectId: string;
+    cardId: string;
+    cardTitle: string;
+    assignedUserId: string | null;
+    sessionId?: string | null;
+  },
+): void {
+  if (!args.assignedUserId) return;
+  // An agent acting for its session owner counts as that owner.
+  const actor = resolveActingUserId(req, args.sessionId);
+  if (actor && actor === args.assignedUserId) return;
+  broadcast({
+    type: 'card_assigned',
+    assignmentId: uuidv4(),
+    projectId: args.projectId,
+    cardId: args.cardId,
+    cardTitle: args.cardTitle,
+    assignedUserId: args.assignedUserId,
+    assignedByName: (req as AuthenticatedRequest).authUser ?? null,
+    suppressWebSocket: true,
+  });
+}
+
 function findTodoColumnId(stmts: Stmts, boardId: string): string | null {
   const cols = stmts.getKanbanColumns.all(boardId) as KanbanColumnRow[];
   const todo = cols.find((c) => c.name.toLowerCase() === 'to do');
@@ -1276,6 +1307,15 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     if (shouldSetAssignedUser) {
       stmts.setKanbanCardAssignedUser.run(normalizedAssignedUser, id);
     }
+    if (shouldSetAssignedUser) {
+      broadcastCardAssigned(broadcast, req, {
+        projectId: req.params.projectId as string,
+        cardId: id,
+        cardTitle: title,
+        assignedUserId: normalizedAssignedUser,
+        sessionId,
+      });
+    }
 
     broadcast({ type: 'kanban_update', projectId: req.params.projectId });
     // Server-side subscribers only (chat triggers); clients refresh on kanban_update.
@@ -1501,6 +1541,18 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     }
     broadcast({ type: 'kanban_update', projectId: req.params.projectId });
     const updated = stmts.getKanbanCard.get(req.params.cardId) as KanbanCardRow;
+    if (
+      parsed.assignedUserId !== undefined &&
+      normalizedAssignedUser !== (card.assigned_user_id ?? null)
+    ) {
+      broadcastCardAssigned(broadcast, req, {
+        projectId: req.params.projectId as string,
+        cardId: updated.id,
+        cardTitle: updated.title,
+        assignedUserId: normalizedAssignedUser,
+        sessionId: updated.session_id,
+      });
+    }
     res.json(serializeCardForRequest(req, stmts, card.board_id, updated));
   });
 

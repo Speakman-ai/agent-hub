@@ -16,7 +16,7 @@ import {
   type AuthStampedWs,
   type WsVisibilityStamp,
 } from './session-ownership.js';
-import { handleBroadcastForPush } from './push.js';
+import { handleBroadcastForNotifications } from './notification-fanout.js';
 import { isChatTriggerSourceType, routeBroadcastToChatTriggers } from './chat-trigger-router.js';
 import { resolveProjectIdFromEvent } from './event-project-resolver.js';
 import { shouldDeliverBroadcast } from './broadcast-filter.js';
@@ -465,10 +465,10 @@ export default function createWebSocket(
         client.send(msg);
       });
     }
-    // Fan out relevant broadcasts to mobile clients via Expo push. Fire-and-
-    // forget: push dispatch must never block the WebSocket hot path.
+    // Fan out relevant broadcasts to the inbox and mobile clients. Fire-and-
+    // forget: dispatch must never block the WebSocket hot path.
     //
-    // Push recipients are filtered inside `handleBroadcastForPush`:
+    // Push recipients are filtered inside the fan-out:
     // private-project events go only to tokens whose user can view the
     // project (`filterTokensForBroadcastVisibility`), and session-scoped
     // events go only to the session owner's devices
@@ -484,8 +484,10 @@ export default function createWebSocket(
     // A SideBar is answered in its panel; a phone push would deep-link to a
     // session no list shows.
     if (typeof data.sidebarParentId === 'string') return;
-    void handleBroadcastForPush(data).catch((err: unknown) => {
-      console.error('[push] broadcast handler failed:', (err as Error).message);
+    // Inbox rows, targeted `notification_created` events and Expo push all
+    // come from this one step (notification-fanout.ts).
+    void handleBroadcastForNotifications(data, { broadcast }).catch((err: unknown) => {
+      console.error('[notifications] broadcast handler failed:', (err as Error).message);
     });
   }
 

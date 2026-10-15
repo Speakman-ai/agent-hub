@@ -357,3 +357,16 @@ describe('google_chat_draft_update', () => {
     expect(shouldDeliverBroadcast(data, { userId: 'u2', role: 'Owner' }, deps)).toBe(false);
   });
 });
+
+describe('bell inbox events', () => {
+  for (const type of ['notification_created', 'notification_read']) {
+    it(`${type} reaches only its owner and denies when the owner is missing`, () => {
+      const deps = makeDeps();
+      const owner: WsVisibilityStamp = { userId: 'u1', role: 'User' };
+      const admin: WsVisibilityStamp = { userId: 'u2', role: 'Owner' };
+      expect(shouldDeliverBroadcast({ type, ownerUserId: 'u1' }, owner, deps)).toBe(true);
+      expect(shouldDeliverBroadcast({ type, ownerUserId: 'u1' }, admin, deps)).toBe(false);
+      expect(shouldDeliverBroadcast({ type }, owner, deps)).toBe(false);
+    });
+  }
+});

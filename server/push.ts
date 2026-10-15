@@ -321,7 +321,7 @@ export function chatPushUserIdsFromStore(data: BroadcastData): string[] {
   });
 }
 
-function resolveDeps(deps?: PushDispatchDeps): Required<PushDispatchDeps> {
+export function resolveDeps(deps?: PushDispatchDeps): Required<PushDispatchDeps> {
   return {
     fetchFn: deps?.fetchFn ?? globalThis.fetch,
     getAllTokens:
@@ -505,7 +505,7 @@ export async function dispatchPushEvent(
 
 // Broadcast → push bridge
 
-interface BroadcastData {
+export interface BroadcastData {
   type?: string;
   [key: string]: unknown;
 }

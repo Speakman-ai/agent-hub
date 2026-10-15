@@ -87,7 +87,7 @@ const GOOGLE_CHAT_USER_EVENT_TYPES = new Set([
   'google_chat_mutes',
 ]);
 /** Bell inbox events: owner-only, and a missing owner denies. */
-const INBOX_EVENT_TYPES = new Set(['notification_read']);
+const INBOX_EVENT_TYPES = new Set(['notification_created', 'notification_read']);
 const SESSION_READ_SCOPED_EVENT_TYPES = new Set(['session-event', 'session-progress']);
 
 /**
