@@ -7991,7 +7991,7 @@ components:
           type: array
           items:
             type: string
-          description: Projects a `project` digest summarizes; empty for `channel`.
+          description: Projects a `project` digest summarizes (1 to 10); empty for `channel`. Projects the owner can no longer view are left out of a run with a note.
         prompt:
           type: string
           nullable: true
@@ -37510,8 +37510,13 @@ paths:
                     type: string
                     minLength: 1
                     maxLength: 200
-                  maxItems: 1
-                  description: Required (one project) when `scope` is `project`; ignored otherwise. The caller must be able to view it.
+                  maxItems: 10
+                  description: Required (1 to 10 projects) when `scope` is `project`; ignored otherwise. The caller must be able to view every one.
+                prompt:
+                  type: string
+                  nullable: true
+                  maxLength: 4000
+                  description: Custom instructions that replace the default instruction paragraph. The window, the facts and the framing around them stay fixed. Null or blank restores the default; omitted on PUT keeps the saved prompt.
               required:
                 - cron
                 - timeZone
@@ -37530,7 +37535,7 @@ paths:
                 required:
                   - digest
         "400":
-          description: Invalid cron, timezone, or missing project.
+          description: Invalid cron, timezone or prompt, a missing project, or a project the caller cannot view.
           content:
             application/json:
               schema:
@@ -37548,7 +37553,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/HubChatErrorResponse"
         "404":
-          description: Channel or project not found.
+          description: Channel not found.
           content:
             application/json:
               schema:
@@ -37611,8 +37616,13 @@ paths:
                     type: string
                     minLength: 1
                     maxLength: 200
-                  maxItems: 1
-                  description: Required (one project) when `scope` is `project`; ignored otherwise. The caller must be able to view it.
+                  maxItems: 10
+                  description: Required (1 to 10 projects) when `scope` is `project`; ignored otherwise. The caller must be able to view every one.
+                prompt:
+                  type: string
+                  nullable: true
+                  maxLength: 4000
+                  description: Custom instructions that replace the default instruction paragraph. The window, the facts and the framing around them stay fixed. Null or blank restores the default; omitted on PUT keeps the saved prompt.
               required:
                 - cron
                 - timeZone
@@ -37631,7 +37641,7 @@ paths:
                 required:
                   - digest
         "400":
-          description: Invalid cron, timezone, or missing project.
+          description: Invalid cron, timezone or prompt, a missing project, or a project the caller cannot view.
           content:
             application/json:
               schema:
@@ -37649,7 +37659,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/HubChatErrorResponse"
         "404":
-          description: Channel, digest or project not found.
+          description: Channel or digest not found.
           content:
             application/json:
               schema:
@@ -37883,8 +37893,13 @@ paths:
                     type: string
                     minLength: 1
                     maxLength: 200
-                  maxItems: 1
-                  description: Required (one project) when `scope` is `project`; ignored otherwise. The caller must be able to view it.
+                  maxItems: 10
+                  description: Required (1 to 10 projects) when `scope` is `project`; ignored otherwise. The caller must be able to view every one.
+                prompt:
+                  type: string
+                  nullable: true
+                  maxLength: 4000
+                  description: Custom instructions that replace the default instruction paragraph. The window, the facts and the framing around them stay fixed. Null or blank restores the default; omitted on PUT keeps the saved prompt.
               required:
                 - cron
                 - timeZone
@@ -37903,7 +37918,7 @@ paths:
                 required:
                   - digest
         "400":
-          description: Invalid cron, timezone, or missing project.
+          description: Invalid cron, timezone or prompt, a missing project, or a project the caller cannot view.
           content:
             application/json:
               schema:
@@ -37921,7 +37936,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/HubChatErrorResponse"
         "404":
-          description: Channel or project not found.
+          description: Channel not found.
           content:
             application/json:
               schema:
@@ -37984,8 +37999,13 @@ paths:
                     type: string
                     minLength: 1
                     maxLength: 200
-                  maxItems: 1
-                  description: Required (one project) when `scope` is `project`; ignored otherwise. The caller must be able to view it.
+                  maxItems: 10
+                  description: Required (1 to 10 projects) when `scope` is `project`; ignored otherwise. The caller must be able to view every one.
+                prompt:
+                  type: string
+                  nullable: true
+                  maxLength: 4000
+                  description: Custom instructions that replace the default instruction paragraph. The window, the facts and the framing around them stay fixed. Null or blank restores the default; omitted on PUT keeps the saved prompt.
               required:
                 - cron
                 - timeZone
@@ -38004,7 +38024,7 @@ paths:
                 required:
                   - digest
         "400":
-          description: Invalid cron, timezone, or missing project.
+          description: Invalid cron, timezone or prompt, a missing project, or a project the caller cannot view.
           content:
             application/json:
               schema:
@@ -38022,7 +38042,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/HubChatErrorResponse"
         "404":
-          description: Channel, digest or project not found.
+          description: Channel or digest not found.
           content:
             application/json:
               schema:

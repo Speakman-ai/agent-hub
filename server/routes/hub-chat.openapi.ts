@@ -7,6 +7,10 @@
 
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
 import { HUB_CHAT_REF_MAX_ID } from '../../shared/utils/hubChatRefTokens.js';
+import {
+  MAX_CHAT_DIGEST_PROJECTS,
+  MAX_CHAT_DIGEST_PROMPT_CHARS,
+} from '../../shared/utils/chatDigest.js';
 
 const TAG = 'Hub Chat';
 
@@ -817,7 +821,8 @@ export const ChannelDigestComponent = registerComponent(
           "`channel` summarizes this channel's messages since the last run; `project` summarizes a project's activity.",
       }),
       projectIds: z.array(z.string()).openapi({
-        description: 'Projects a `project` digest summarizes; empty for `channel`.',
+        description:
+          'Projects a `project` digest summarizes (1 to 10); empty for `channel`. Projects the owner can no longer view are left out of a run with a note.',
       }),
       prompt: z.string().nullable().openapi({
         description: 'Custom instructions for the summary, or null for the default.',
@@ -850,9 +855,16 @@ export const SaveDigestRequestSchema = z
     cron: z.string().trim().min(1).max(120),
     timeZone: z.string().trim().min(1).max(64),
     scope: DigestScopeSchema,
-    projectIds: z.array(z.string().trim().min(1).max(200)).max(1).optional().openapi({
+    projectIds: z
+      .array(z.string().trim().min(1).max(200))
+      .max(MAX_CHAT_DIGEST_PROJECTS)
+      .optional()
+      .openapi({
+        description: `Required (1 to ${MAX_CHAT_DIGEST_PROJECTS} projects) when \`scope\` is \`project\`; ignored otherwise. The caller must be able to view every one.`,
+      }),
+    prompt: z.string().trim().max(MAX_CHAT_DIGEST_PROMPT_CHARS).nullable().optional().openapi({
       description:
-        'Required (one project) when `scope` is `project`; ignored otherwise. The caller must be able to view it.',
+        'Custom instructions that replace the default instruction paragraph. The window, the facts and the framing around them stay fixed. Null or blank restores the default; omitted on PUT keeps the saved prompt.',
     }),
   })
   .strict();
@@ -894,8 +906,10 @@ for (const prefix of DIGEST_ROUTE_PREFIXES) {
     request: { params: channelParams, body: { content: jsonContent(SaveDigestRequestSchema) } },
     responses: {
       201: { description: 'The created digest.', content: jsonContent(digestEnvelope) },
-      400: errorResponse('Invalid cron, timezone, or missing project.'),
-      404: errorResponse('Channel or project not found.'),
+      400: errorResponse(
+        'Invalid cron, timezone or prompt, a missing project, or a project the caller cannot view.',
+      ),
+      404: errorResponse('Channel not found.'),
       409: errorResponse('Not joined, the channel is archived, or it already has the maximum.'),
       ...common,
     },
@@ -911,8 +925,10 @@ for (const prefix of DIGEST_ROUTE_PREFIXES) {
     request: { params: digestParams, body: { content: jsonContent(SaveDigestRequestSchema) } },
     responses: {
       200: { description: 'The saved digest.', content: jsonContent(digestEnvelope) },
-      400: errorResponse('Invalid cron, timezone, or missing project.'),
-      404: errorResponse('Channel, digest or project not found.'),
+      400: errorResponse(
+        'Invalid cron, timezone or prompt, a missing project, or a project the caller cannot view.',
+      ),
+      404: errorResponse('Channel or digest not found.'),
       409: errorResponse('Not joined, or the channel is archived.'),
       ...common,
     },

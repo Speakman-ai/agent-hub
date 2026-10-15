@@ -37,6 +37,21 @@ export const CHAT_DIGEST_PRESETS: ReadonlyArray<{ label: string; cron: string }>
 
 export const DEFAULT_CHAT_DIGEST_CRON = '0 9 * * 1-5';
 
+/** Longest custom digest prompt the server accepts. */
+export const MAX_CHAT_DIGEST_PROMPT_CHARS = 4000;
+
+/** Most projects one project digest can cover. */
+export const MAX_CHAT_DIGEST_PROJECTS = 10;
+
+/**
+ * The instruction paragraph a digest uses when it has no custom prompt. A
+ * custom prompt replaces exactly this text; editors show it as placeholder.
+ */
+export const DEFAULT_CHAT_DIGEST_INSTRUCTIONS = [
+  'Lead with the most important outcomes, then group the rest in a short bullet list.',
+  'Keep it under 200 words.',
+].join('\n');
+
 /** Body of a digest create (POST) or replace (PUT). */
 export interface ChatDigestSaveRequest {
   name?: string;
@@ -45,6 +60,11 @@ export interface ChatDigestSaveRequest {
   timeZone: string;
   scope: ChatDigestScope;
   projectIds?: string[];
+  /**
+   * Custom summary instructions; null or blank restores the default. Omitted
+   * on a replace (PUT), the saved prompt is kept.
+   */
+  prompt?: string | null;
 }
 
 /** The device's IANA timezone, or UTC when it cannot be read. */

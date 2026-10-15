@@ -996,6 +996,7 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
     caller: Caller,
     body: SaveDigestRequest,
     res: Response,
+    existing: ChannelDigestRow | null = null,
   ): ChannelDigestInput | null => {
     if (!isValidCron(body.cron)) {
       bad(res, 400, 'Schedule must be a 5-field cron expression', 'invalid_cron');
@@ -1014,12 +1015,14 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
       }
       for (const id of ids) {
         const project = deps.findProject?.(id) ?? null;
+        // Missing and hidden projects answer the same, so a save never
+        // reveals that a project exists.
         if (
           !project ||
           isHubSystemProject(project) ||
           !canViewProject(project, refViewer(caller).visibility)
         ) {
-          bad(res, 404, 'Project not found', 'project_not_found');
+          bad(res, 400, `Project not found: ${id}`, 'project_not_found');
           return null;
         }
         if (!projectIds.includes(project.id)) projectIds.push(project.id);
@@ -1032,7 +1035,7 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
       timeZone: body.timeZone.trim(),
       scope: body.scope,
       projectIds,
-      prompt: null,
+      prompt: body.prompt === undefined ? (existing?.prompt ?? null) : body.prompt?.trim() || null,
       ownerUserId: caller.userId,
     };
   };
@@ -1094,12 +1097,13 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
       if (!m) return;
       const body = parse(SaveDigestRequestSchema, req.body, res);
       if (!body) return;
-      if (!channelDigest(m.channel.id, String(req.params.digestId), res)) return;
+      const existing = channelDigest(m.channel.id, String(req.params.digestId), res);
+      if (!existing) return;
       if (m.channel.archived_at) {
         bad(res, 409, 'This channel is archived', 'channel_archived');
         return;
       }
-      const input = digestInput(caller, body, res);
+      const input = digestInput(caller, body, res, existing);
       if (!input) return;
       const row = updateChannelDigest(String(req.params.digestId), input);
       if (!row) {

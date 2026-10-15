@@ -22,6 +22,7 @@ let bob = '';
 let carol = '';
 const projects = [
   { id: 'web', name: 'Web', cwd: '/tmp', agents: [] },
+  { id: 'api', name: 'API', cwd: '/tmp', agents: [] },
   {
     id: 'vault',
     name: 'Vault',
@@ -144,6 +145,35 @@ describe('channel digest routes', () => {
     });
   });
 
+  it('saves up to ten projects and a custom prompt', async () => {
+    const res = await request(as(alice))
+      .post(url())
+      .send({
+        cron: '0 17 * * *',
+        timeZone: 'UTC',
+        scope: 'project',
+        projectIds: ['web', 'api', 'web'],
+        prompt: '  Only blockers.  ',
+      })
+      .expect(201);
+    expect(res.body.digest).toMatchObject({ projectIds: ['web', 'api'], prompt: 'Only blockers.' });
+    const id = res.body.digest.id;
+    const base = { cron: '0 17 * * *', timeZone: 'UTC', scope: 'project', projectIds: ['api'] };
+    // Omitting the prompt on a replace keeps it; null or blank restores the default.
+    const kept = await request(as(alice)).put(`${url()}/${id}`).send(base).expect(200);
+    expect(kept.body.digest).toMatchObject({ projectIds: ['api'], prompt: 'Only blockers.' });
+    const cleared = await request(as(alice))
+      .put(`${url()}/${id}`)
+      .send({ ...base, prompt: '   ' })
+      .expect(200);
+    expect(cleared.body.digest.prompt).toBeNull();
+    const created = await request(as(alice))
+      .post(url())
+      .send({ cron: '0 9 * * *', timeZone: 'UTC', scope: 'channel', prompt: 'x'.repeat(4000) })
+      .expect(201);
+    expect(created.body.digest.prompt).toHaveLength(4000);
+  });
+
   it('rejects bad schedules, zones and projects', async () => {
     const post = (body: Record<string, unknown>) => request(as(alice)).post(url()).send(body);
     expect((await post({ cron: '0 9 * *', timeZone: 'UTC', scope: 'channel' })).body.code).toBe(
@@ -161,8 +191,34 @@ describe('channel digest routes', () => {
       scope: 'project',
       projectIds: ['vault'],
     });
-    expect(hidden.status).toBe(404);
+    expect(hidden.status).toBe(400);
     expect(hidden.body.code).toBe('project_not_found');
+    // One hidden project in a list rejects the whole save.
+    const mixed = await post({
+      cron: '0 9 * * *',
+      timeZone: 'UTC',
+      scope: 'project',
+      projectIds: ['web', 'vault'],
+    });
+    expect(mixed.status).toBe(400);
+    expect(mixed.body.code).toBe('project_not_found');
+    const tooMany = await post({
+      cron: '0 9 * * *',
+      timeZone: 'UTC',
+      scope: 'project',
+      projectIds: Array.from({ length: 11 }, () => 'web'),
+    });
+    expect(tooMany.status).toBe(400);
+    expect(
+      (
+        await post({
+          cron: '0 9 * * *',
+          timeZone: 'UTC',
+          scope: 'channel',
+          prompt: 'x'.repeat(4001),
+        })
+      ).status,
+    ).toBe(400);
     // The removed singular route is gone.
     await request(as(alice)).get(`/api/chat/channels/${channelId}/digest`).expect(404);
   });
