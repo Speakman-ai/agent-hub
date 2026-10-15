@@ -9,6 +9,7 @@ import { normalizeSessionMessagesResponse } from '@shared/utils/sessionMessagesR
 import { isDeadSessionResponse } from '@shared/utils/authErrorCodes';
 import type { SessionContextUsage } from '@shared/utils/contextUsage';
 import type { InboxNotification } from '@shared/utils/notificationInbox';
+import type { BrowserProfileWire } from '@shared/utils/browserProfiles';
 /** A machine error code (`no_pushable_commits`) rather than human copy. */
 const ERROR_CODE_RE = /^[a-z][a-z0-9]*(_[a-z0-9]+)*$/;
 /**
@@ -1266,6 +1267,16 @@ export const api = {
   },
   getMyWork: () => fetchJSON('/me/work'),
   getHubSession: () => fetchJSON('/me/hub-session'),
+  // Settings → Browser Profiles: the caller's saved agent sign-ins.
+  getMyBrowserProfiles: (): Promise<{ profiles: BrowserProfileWire[] }> =>
+    fetchJSON('/me/browser-profiles'),
+  clearBrowserProfileDomain: (profileId: string, domain: string): Promise<BrowserProfileWire> =>
+    fetchJSON(
+      `/me/browser-profiles/${encodeURIComponent(profileId)}/domains/${encodeURIComponent(domain)}`,
+      { method: 'DELETE' },
+    ),
+  deleteBrowserProfile: (profileId: string): Promise<{ ok: true }> =>
+    fetchJSON(`/me/browser-profiles/${encodeURIComponent(profileId)}`, { method: 'DELETE' }),
   // Agent Hub chat (/api/chat). The server acts as the signed-in user.
   hubChat: {
     members: () => fetchJSON('/chat/members'),

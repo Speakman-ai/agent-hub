@@ -8,6 +8,7 @@ import type { ApiErrorBody, AgentWire, MessageWire, ProjectWire, SessionWire } f
 import type { DeployTriggerEvent } from './deployTriggers';
 import type { InfraServicePackWire } from '@shared/utils/infraPacks';
 import type { InfraSpendTrendWire } from '@shared/utils/infraSpend';
+import type { BrowserProfileWire } from '@shared/utils/browserProfiles';
 import type { InfraFleetWire } from '@shared/utils/infraFleet';
 import type { InboxNotification } from './notificationTarget';
 import type { QuotaHeadroomResponse } from '@shared/utils/quotaHeadroom';
@@ -403,19 +404,8 @@ export type GoogleChatUploadedAttachment = {
 };
 
 /** A saved browser profile from `GET /api/me/browser-profiles` (no cookie contents). */
-export interface BrowserProfileWire {
-  id: string;
-  agentId: string;
-  agentName: string;
-  projectId: string;
-  projectName: string;
-  domains: string[];
-  hasState: boolean;
-  inUse: boolean;
-  lastUsedAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
+
+export type { BrowserProfileWire };
 
 export interface BrowserProfileDomainsWire {
   profileId: string;

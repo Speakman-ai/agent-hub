@@ -1,38 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Loader2, Trash2, X } from 'lucide-react';
+import { formatLastUsed, groupBrowserProfilesByAgent } from '@shared/utils/browserProfiles';
 import { api, type BrowserProfileWire } from '../utils/api';
 
-/** SQLite `datetime('now')` is UTC without a zone marker. */
-function parseSqliteUtc(value: string | null): Date | null {
-  if (!value) return null;
-  const iso = /[zZ]|[+-]\d\d:?\d\d$/.test(value) ? value : `${value.replace(' ', 'T')}Z`;
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? null : d;
-}
-
-export function formatLastUsed(value: string | null): string {
-  const d = parseSqliteUtc(value);
-  return d ? d.toLocaleString() : 'Never';
-}
-
-interface AgentGroup {
-  agentId: string;
-  agentName: string;
-  profiles: BrowserProfileWire[];
-}
-
-function groupByAgent(profiles: BrowserProfileWire[]): AgentGroup[] {
-  const groups = new Map<string, AgentGroup>();
-  for (const p of profiles) {
-    let g = groups.get(p.agentId);
-    if (!g) {
-      g = { agentId: p.agentId, agentName: p.agentName, profiles: [] };
-      groups.set(p.agentId, g);
-    }
-    g.profiles.push(p);
-  }
-  return [...groups.values()].sort((a, b) => a.agentName.localeCompare(b.agentName));
-}
+export { formatLastUsed };
 
 export default function BrowserProfilesSection() {
   const [profiles, setProfiles] = useState<BrowserProfileWire[] | null>(null);
@@ -54,7 +25,7 @@ export default function BrowserProfilesSection() {
     load();
   }, [load]);
 
-  const groups = useMemo(() => groupByAgent(profiles ?? []), [profiles]);
+  const groups = useMemo(() => groupBrowserProfilesByAgent(profiles ?? []), [profiles]);
 
   async function clearDomain(profile: BrowserProfileWire, domain: string) {
     if (
