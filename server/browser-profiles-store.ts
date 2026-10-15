@@ -342,3 +342,106 @@ export function listBrowserProfilesForUser(userId: string): BrowserProfile[] {
     .all(userId) as RawRow[];
   return rows.map(toProfile);
 }
+
+/**
+ * A profile by id, only when it belongs to `userId`. Returns null for both
+ * "missing" and "someone else's" so callers cannot probe for other users'
+ * profile ids.
+ */
+export function getBrowserProfileForUser(userId: string, profileId: string): BrowserProfile | null {
+  if (!userId || !profileId) return null;
+  const row = getOrgsDb()
+    .prepare(`SELECT * FROM browser_profiles WHERE id = ? AND user_id = ?`)
+    .get(profileId, userId) as RawRow | undefined;
+  return row ? toProfile(row) : null;
+}
+
+/** True while some session holds an unexpired write lease. */
+export function isBrowserProfileInUse(profile: BrowserProfile, clock: Clock = {}): boolean {
+  const now = clock.now ?? Date.now();
+  return !!profile.leaseHolder && (profile.leaseExpiresAt ?? 0) > now;
+}
+
+export interface BrowserProfileDomainSummary {
+  domain: string;
+  cookieCount: number;
+  hasSiteStorage: boolean;
+}
+
+function normalizeCookieDomain(d: unknown): string {
+  return typeof d === 'string' ? d.trim().replace(/^\.+/, '').toLowerCase() : '';
+}
+
+function originHost(origin: unknown): string {
+  if (typeof origin !== 'string') return '';
+  try {
+    return new URL(origin).hostname.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Per-domain counts for the saved state. Only names the domains and counts
+ * what is stored there; cookie names and values never leave this module.
+ * Matching uses the same normalization as `domainsFromStorageState`, so each
+ * listed domain is exactly what `clearBrowserProfileDomain` removes.
+ */
+export function summarizeBrowserProfileDomains(
+  key: BrowserProfileKey,
+): BrowserProfileDomainSummary[] {
+  const state = loadBrowserProfileState(key);
+  if (!state) return [];
+  const map = new Map<string, BrowserProfileDomainSummary>();
+  const entry = (domain: string) => {
+    let e = map.get(domain);
+    if (!e) {
+      e = { domain, cookieCount: 0, hasSiteStorage: false };
+      map.set(domain, e);
+    }
+    return e;
+  };
+  for (const c of state.cookies) {
+    const d = normalizeCookieDomain(c.domain);
+    if (d) entry(d).cookieCount += 1;
+  }
+  for (const o of state.origins) {
+    const h = originHost(o.origin);
+    if (h) entry(h).hasSiteStorage = true;
+  }
+  return [...map.values()].sort((a, b) => a.domain.localeCompare(b.domain));
+}
+
+/**
+ * Remove one domain's cookies and site storage from the saved state, leaving
+ * every other domain signed in. Returns the updated profile, or null when
+ * the domain was not present. Writes without a lease check: the caller is the
+ * human owner, and routes refuse this while a session holds the lease so a
+ * running browser cannot write the cookies straight back.
+ */
+export function clearBrowserProfileDomain(
+  key: BrowserProfileKey,
+  domain: string,
+): BrowserProfile | null {
+  assertKey(key);
+  const target = normalizeCookieDomain(domain);
+  if (!target) throw new Error('domain is required');
+  const state = loadBrowserProfileState(key);
+  if (!state) return null;
+  const cookies = state.cookies.filter((c) => normalizeCookieDomain(c.domain) !== target);
+  const origins = state.origins.filter((o) => originHost(o.origin) !== target);
+  if (cookies.length === state.cookies.length && origins.length === state.origins.length) {
+    return null;
+  }
+  const next: BrowserStorageState = { ...state, cookies, origins };
+  const remaining = domainsFromStorageState(next);
+  const enc = remaining.length === 0 ? '' : encryptSecret(JSON.stringify(next));
+  getOrgsDb()
+    .prepare(
+      `UPDATE browser_profiles
+       SET storage_state_enc = ?, domains_json = ?, updated_at = datetime('now')
+       WHERE user_id = ? AND agent_id = ? AND project_id = ?`,
+    )
+    .run(enc, JSON.stringify(remaining), key.userId, key.agentId, key.projectId);
+  return toProfile(selectRow(key)!);
+}

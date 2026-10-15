@@ -11617,6 +11617,93 @@ components:
         - agentId
         - draft
       description: Logs setup wizard session spawned successfully.
+    BrowserProfileErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope.
+    BrowserProfileSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        agentId:
+          type: string
+        agentName:
+          type: string
+          description: Agent display name, or the id if unknown.
+        projectId:
+          type: string
+        projectName:
+          type: string
+          description: Project name, or the id if unknown.
+        domains:
+          type: array
+          items:
+            type: string
+          description: Hostnames with saved sign-in state.
+        hasState:
+          type: boolean
+        inUse:
+          type: boolean
+          description: A running session holds the write lease.
+        lastUsedAt:
+          type: string
+          nullable: true
+          description: When a session last saved this profile (UTC, SQLite datetime).
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - agentId
+        - agentName
+        - projectId
+        - projectName
+        - domains
+        - hasState
+        - inUse
+        - lastUsedAt
+        - createdAt
+        - updatedAt
+      description: One saved browser profile (no cookie contents).
+    BrowserProfileListResponse:
+      type: object
+      properties:
+        profiles:
+          type: array
+          items:
+            $ref: "#/components/schemas/BrowserProfileSummary"
+      required:
+        - profiles
+    BrowserProfileDomainsResponse:
+      type: object
+      properties:
+        profileId:
+          type: string
+        domains:
+          type: array
+          items:
+            type: object
+            properties:
+              domain:
+                type: string
+              cookieCount:
+                type: integer
+              hasSiteStorage:
+                type: boolean
+                description: localStorage / IndexedDB is saved for this host.
+            required:
+              - domain
+              - cookieCount
+              - hasSiteStorage
+      required:
+        - profileId
+        - domains
     MeTodosErrorResponse:
       type: object
       properties:
@@ -42300,6 +42387,140 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/LogsWizardErrorResponse"
+  /api/me/browser-profiles:
+    get:
+      tags:
+        - Browser Profiles
+      summary: List the calling user's saved browser profiles
+      description: Always scoped to the caller. Owners and Admins cannot list or read other users profiles.
+      responses:
+        "200":
+          description: Profiles ordered by project then agent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BrowserProfileListResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BrowserProfileErrorResponse"
+  /api/me/browser-profiles/{profileId}/domains:
+    get:
+      tags:
+        - Browser Profiles
+      summary: List signed-in domains for one of the caller profiles
+      description: Returns per-domain counts only; cookie names and values are never returned.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: profileId
+          in: path
+      responses:
+        "200":
+          description: Domains with saved state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BrowserProfileDomainsResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BrowserProfileErrorResponse"
+        "404":
+          description: No profile with this id belongs to the caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BrowserProfileErrorResponse"
+        "409":
+          description: Saved state cannot be decrypted. Delete the profile to start fresh.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BrowserProfileErrorResponse"
+  /api/me/browser-profiles/{profileId}/domains/{domain}:
+    delete:
+      tags:
+        - Browser Profiles
+      summary: Clear one domain's cookies and site storage
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: profileId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: domain
+          in: path
+      responses:
+        "200":
+          description: Profile after the clear.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BrowserProfileSummary"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BrowserProfileErrorResponse"
+        "404":
+          description: Profile not found for the caller, or the domain is not saved in it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BrowserProfileErrorResponse"
+        "409":
+          description: A running session holds the profile, or its state cannot be decrypted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BrowserProfileErrorResponse"
+  /api/me/browser-profiles/{profileId}:
+    delete:
+      tags:
+        - Browser Profiles
+      summary: Delete one of the caller profiles and everything it saved
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: profileId
+          in: path
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BrowserProfileErrorResponse"
+        "404":
+          description: No profile with this id belongs to the caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BrowserProfileErrorResponse"
   /api/me/todos:
     get:
       tags:

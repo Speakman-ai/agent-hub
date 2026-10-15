@@ -402,6 +402,26 @@ export type GoogleChatUploadedAttachment = {
   size: number;
 };
 
+/** A saved browser profile from `GET /api/me/browser-profiles` (no cookie contents). */
+export interface BrowserProfileWire {
+  id: string;
+  agentId: string;
+  agentName: string;
+  projectId: string;
+  projectName: string;
+  domains: string[];
+  hasState: boolean;
+  inUse: boolean;
+  lastUsedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BrowserProfileDomainsWire {
+  profileId: string;
+  domains: Array<{ domain: string; cookieCount: number; hasSiteStorage: boolean }>;
+}
+
 async function fetchJSON<T = any>(url: string, options: FetchJsonOptions = {}): Promise<T> {
   const base = getApiBase();
   const authHeaders = getAuthHeaders();
@@ -1061,6 +1081,20 @@ export const api = {
     fetchJSON<NotificationPreferencesWire>('/me/notification-preferences', {
       method: 'PUT',
       body: JSON.stringify({ categories }),
+    }),
+  getMyBrowserProfiles: () => fetchJSON<{ profiles: BrowserProfileWire[] }>('/me/browser-profiles'),
+  getBrowserProfileDomains: (profileId: string) =>
+    fetchJSON<BrowserProfileDomainsWire>(
+      `/me/browser-profiles/${encodeURIComponent(profileId)}/domains`,
+    ),
+  clearBrowserProfileDomain: (profileId: string, domain: string) =>
+    fetchJSON<BrowserProfileWire>(
+      `/me/browser-profiles/${encodeURIComponent(profileId)}/domains/${encodeURIComponent(domain)}`,
+      { method: 'DELETE' },
+    ),
+  deleteBrowserProfile: (profileId: string) =>
+    fetchJSON<{ ok: true }>(`/me/browser-profiles/${encodeURIComponent(profileId)}`, {
+      method: 'DELETE',
     }),
   /** Persistent Hub assistant session for the signed-in user (get-or-create). */
   getHubSession: () =>

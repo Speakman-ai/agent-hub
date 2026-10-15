@@ -250,3 +250,31 @@ describe('domainsFromStorageState', () => {
     ).toEqual(['a.test']);
   });
 });
+
+describe('browser-profiles-store: per-domain clear', () => {
+  it('summarizes and clears domains, emptying the blob when nothing is left', () => {
+    acquireBrowserProfileLease(key, 'h', TTL, { now: T0 });
+    saveBrowserProfileState(key, 'h', state(), { now: T0 });
+    expect(store.summarizeBrowserProfileDomains(key)).toEqual([
+      { domain: 'app.example.org', cookieCount: 1, hasSiteStorage: false },
+      { domain: 'example.com', cookieCount: 1, hasSiteStorage: false },
+      { domain: 'mail.example.net', cookieCount: 0, hasSiteStorage: true },
+    ]);
+    expect(store.clearBrowserProfileDomain(key, 'nope.test')).toBeNull();
+    expect(store.clearBrowserProfileDomain(key, '.EXAMPLE.com')!.domains).toEqual([
+      'app.example.org',
+      'mail.example.net',
+    ]);
+    store.clearBrowserProfileDomain(key, 'app.example.org');
+    const last = store.clearBrowserProfileDomain(key, 'mail.example.net')!;
+    expect(last).toMatchObject({ domains: [], hasState: false });
+    expect(loadBrowserProfileState(key)).toBeNull();
+  });
+
+  it('never returns another user profile by id', () => {
+    const bob = createUser({ username: 'bob2', passwordHash: 'x' });
+    const p = getOrCreateBrowserProfile(key);
+    expect(store.getBrowserProfileForUser(key.userId, p.id)?.id).toBe(p.id);
+    expect(store.getBrowserProfileForUser(bob.id, p.id)).toBeNull();
+  });
+});
