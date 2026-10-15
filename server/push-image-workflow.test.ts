@@ -328,6 +328,26 @@ printf '%s' "$BRANCH"`;
       'push job timeout must leave room for a cold rebuild of both images (a timed-out build exports no cache, so retries stay cold)',
     ).toBeGreaterThanOrEqual(60);
   });
+
+  // The agent desktop image ships next to the runner image, but its ECR repo is
+  // a manual one-time setup. A missing repo must skip that push, not fail the
+  // job: the deploy job `needs: push`, so a hard failure would block the Hub
+  // rollout over an image nothing consumes yet.
+  it('builds the agent desktop image in the push job, gated on its ECR repo existing', () => {
+    const yml = readFileSync(ecrPublishWorkflowPath, 'utf8');
+    expect(yml).toMatch(/ECR_PUBLIC_DESKTOP_URI: .*\/agent-hub-desktop$/m);
+    expect(yml).toContain('file: server/desktop/image/Dockerfile');
+    expect(yml).toContain('tags: ${{ steps.tags.outputs.desktop_tags_multi }}');
+    expect(yml).toContain('scope=agent-hub-desktop');
+    const step = yml.match(/- name: Build \+ push desktop image\n([\s\S]*?)\n\n/);
+    expect(step, 'desktop build step must exist').toBeTruthy();
+    expect(step![1]).toContain("if: steps.desktop_repo.outputs.publish == 'true'");
+    expect(yml).toMatch(/describe-repositories[\s\S]*?ECR_PUBLIC_DESKTOP_REPO/);
+    // Must come after the runner build so a desktop failure never costs the runner push.
+    expect(yml.indexOf('Build + push desktop image')).toBeGreaterThan(
+      yml.indexOf('Build + push Finalize runner image'),
+    );
+  });
 });
 
 // Hard gate for going public (AH-1395 / AH-1341 flip): no account-specific

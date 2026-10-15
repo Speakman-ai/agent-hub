@@ -95,7 +95,7 @@ resource "aws_iam_role_policy" "gha_ecr_push" {
         Resource = "*"
       },
       {
-        # Push operations scoped to the single agent-hub repo.
+        # Push operations scoped to the agent-hub image repos.
         Effect = "Allow"
         Action = [
           "ecr-public:BatchCheckLayerAvailability",
@@ -112,6 +112,7 @@ resource "aws_iam_role_policy" "gha_ecr_push" {
         Resource = [
           "arn:aws:ecr-public::${data.aws_caller_identity.current.account_id}:repository/${var.ecr_public_repo_name}",
           "arn:aws:ecr-public::${data.aws_caller_identity.current.account_id}:repository/${var.ecr_public_finalize_runner_repo_name}",
+          "arn:aws:ecr-public::${data.aws_caller_identity.current.account_id}:repository/${var.ecr_public_desktop_repo_name}",
         ]
       }
     ]

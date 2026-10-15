@@ -18,12 +18,20 @@
 #     --repository-name agent-hub-finalize-runner \
 #     --catalog-data 'description=Agent Hub Finalize CI DinD runner (ubuntu-24.04)'
 #
+#   AWS_PROFILE=<account> aws ecr-public create-repository \
+#     --region us-east-1 \
+#     --repository-name agent-hub-desktop \
+#     --catalog-data 'description=Agent Hub agent desktop (Xvfb, openbox, Chromium, control daemon)'
+#
+#   CI skips the desktop push with a warning until this repo exists and the
+#   github-oidc.tf grant for it is applied.
+#
 # After creation, note the registry alias from the output and either:
 #   - leave var.ecr_public_registry_alias = "h9t4v7h0" (current dev account), or
 #   - override per-env in tfvars if a different account assigns a different alias.
 #
 # CI pushes images via the GitHub OIDC role defined in github-oidc.tf, which
-# references both repo names and the caller account.
+# references every repo name and the caller account.
 
 output "ecr_public_repository_uri" {
   description = "Pull URI for the Agent Hub container image, e.g. public.ecr.aws/h9t4v7h0/agent-hub"
@@ -43,4 +51,9 @@ output "ecr_public_image_uri_main" {
 output "ecr_public_finalize_runner_image_uri_main" {
   description = "Default Finalize runner image URI (tag = main, pushed in lockstep with agent-hub)."
   value       = "public.ecr.aws/${var.ecr_public_registry_alias}/${var.ecr_public_finalize_runner_repo_name}:main"
+}
+
+output "ecr_public_desktop_repository_uri" {
+  description = "Pull URI for the agent desktop image, e.g. public.ecr.aws/h9t4v7h0/agent-hub-desktop"
+  value       = "public.ecr.aws/${var.ecr_public_registry_alias}/${var.ecr_public_desktop_repo_name}"
 }

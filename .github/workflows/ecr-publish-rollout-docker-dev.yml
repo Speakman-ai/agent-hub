@@ -97,6 +97,10 @@ env:
   # identifier is baked in here.
   ECR_PUBLIC_URI: ${{ vars.ECR_REGISTRY || 'public.ecr.aws/h9t4v7h0' }}/agent-hub
   ECR_PUBLIC_RUNNER_URI: ${{ vars.ECR_REGISTRY || 'public.ecr.aws/h9t4v7h0' }}/agent-hub-finalize-runner
+  # Agent desktop image (Xvfb + openbox + Chromium + control daemon) for the
+  # container DesktopRuntime backend.
+  ECR_PUBLIC_DESKTOP_REPO: agent-hub-desktop
+  ECR_PUBLIC_DESKTOP_URI: ${{ vars.ECR_REGISTRY || 'public.ecr.aws/h9t4v7h0' }}/agent-hub-desktop
   # OIDC role assumed to push images to ECR Public. Set repo/org Actions
   # Variable ECR_PUSH_ROLE_ARN to your account's CI push role ARN, so no
   # account-specific ARN ships in the public tree.
@@ -106,7 +110,7 @@ jobs:
   push:
     name: Build + push image
     runs-on: ubuntu-latest
-    # Must fit a COLD (cache-miss) build of BOTH images, not just the usual
+    # Must fit a COLD (cache-miss) build of every image, not just the usual
     # warm one. Warm builds are ~7s per image because every layer hits the gha
     # cache; but the Finalize runner Dockerfile's `FROM ubuntu:24.04` floats, so
     # whenever Docker Hub republishes that tag every layer invalidates and the
@@ -122,7 +126,7 @@ jobs:
     # Keep this well above the cold-build cost; it only binds on the rare
     # cache-miss run and never slows a warm one. Guarded by
     # server/push-image-workflow.test.ts.
-    timeout-minutes: 75
+    timeout-minutes: 90
     outputs:
       digest: ${{ steps.build.outputs.digest }}
       # The moving tag this run published, for the deploy job's digest assertion.
@@ -247,6 +251,15 @@ jobs:
             fi
             echo "RUNNER_TAGS_EOF"
           } >> "$GITHUB_OUTPUT"
+          {
+            echo "desktop_tags_multi<<DESKTOP_TAGS_EOF"
+            echo "${ECR_PUBLIC_DESKTOP_URI}:${SHA_SHORT}"
+            echo "${ECR_PUBLIC_DESKTOP_URI}:${BRANCH}"
+            if [[ -n "$EXTRA_TAG" && "$EXTRA_TAG" != "$BRANCH" ]]; then
+              echo "${ECR_PUBLIC_DESKTOP_URI}:${EXTRA_TAG}"
+            fi
+            echo "DESKTOP_TAGS_EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build + push server image
         id: build
@@ -279,10 +292,39 @@ jobs:
           cache-from: type=gha,scope=agent-hub-finalize-runner
           cache-to: type=gha,mode=max,scope=agent-hub-finalize-runner,ignore-error=true
 
+      # The desktop repo and its OIDC push grant are one-time ops steps
+      # (ops/terraform/ecr-public.tf, github-oidc.tf). Until both exist, skip
+      # the desktop push with a warning instead of failing the job: nothing
+      # consumes the image yet, and a failed push job blocks the Hub deploy.
+      - name: Check desktop ECR repo
+        id: desktop_repo
+        run: |
+          if aws ecr-public describe-repositories --region "$AWS_REGION" \
+              --repository-names "$ECR_PUBLIC_DESKTOP_REPO" >/dev/null 2>&1; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Desktop image not published::ECR Public repo ${ECR_PUBLIC_DESKTOP_REPO} is missing or the push role cannot see it. Create it and apply github-oidc.tf (see ops/terraform/ecr-public.tf)."
+          fi
+
+      - name: Build + push desktop image
+        id: build_desktop
+        if: steps.desktop_repo.outputs.publish == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: server/desktop/image/Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.tags.outputs.desktop_tags_multi }}
+          cache-from: type=gha,scope=agent-hub-desktop
+          cache-to: type=gha,mode=max,scope=agent-hub-desktop,ignore-error=true
+
       - name: Summary
         env:
           ST_SHA: ${{ steps.tags.outputs.sha_short }}
           ST_BRANCH: ${{ steps.tags.outputs.branch }}
+          ST_DESKTOP: ${{ steps.desktop_repo.outputs.publish }}
           # ECR_PUBLIC_URI / ECR_PUBLIC_RUNNER_URI are inherited from workflow env.
         run: |
           {
@@ -295,6 +337,14 @@ jobs:
             echo "**Finalize runner (DinD)**"
             echo "- \`${ECR_PUBLIC_RUNNER_URI}:${ST_SHA}\`"
             echo "- \`${ECR_PUBLIC_RUNNER_URI}:${ST_BRANCH}\`"
+            echo ""
+            echo "**Agent desktop**"
+            if [[ "$ST_DESKTOP" == "true" ]]; then
+              echo "- \`${ECR_PUBLIC_DESKTOP_URI}:${ST_SHA}\`"
+              echo "- \`${ECR_PUBLIC_DESKTOP_URI}:${ST_BRANCH}\`"
+            else
+              echo "- skipped: ECR repo \`${ECR_PUBLIC_DESKTOP_REPO}\` not available"
+            fi
             echo ""
             echo "Pull:"
             echo '```'

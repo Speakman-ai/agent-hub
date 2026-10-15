@@ -178,6 +178,12 @@ variable "ecr_public_finalize_runner_repo_name" {
   default     = "agent-hub-finalize-runner"
 }
 
+variable "ecr_public_desktop_repo_name" {
+  description = "ECR Public repository for the agent desktop image (Xvfb + openbox + Chromium + control daemon). Tagged in lockstep with agent-hub."
+  type        = string
+  default     = "agent-hub-desktop"
+}
+
 variable "ecr_public_registry_alias" {
   description = "ECR Public registry alias — the URL path between public.ecr.aws/ and the repo name. AWS auto-assigned \"h9t4v7h0\" on first repo creation in this account; a vanity alias like \"agenthub\" can be requested via the console (same-day AWS approval) and both URIs keep working."
   type        = string
