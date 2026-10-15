@@ -252,6 +252,8 @@ let pendingBrowserConstruction = 0;
 const idleCloseTimerBySessionId = new Map<string, NodeJS.Timeout>();
 /** In-flight host browser (`runBrowserReActStep`) nesting — idle close defers until zero. */
 const activeBrowserToolOpsBySessionId = new Map<string, number>();
+/** Non-agent holds (a pending sign-in handoff) that also defer idle close. */
+const idleHoldsBySessionId = new Map<string, number>();
 
 // Lifecycle listeners
 
@@ -332,13 +334,33 @@ function scheduleBrowserIdleClose(id: string): void {
   const ms = getBrowserIdleTimeoutMs();
   const t = setTimeout(() => {
     idleCloseTimerBySessionId.delete(id);
-    if ((activeBrowserToolOpsBySessionId.get(id) ?? 0) > 0) {
+    if (
+      (activeBrowserToolOpsBySessionId.get(id) ?? 0) > 0 ||
+      (idleHoldsBySessionId.get(id) ?? 0) > 0
+    ) {
       scheduleBrowserIdleClose(id);
       return;
     }
     void closeBrowserSession(id).catch(() => {});
   }, ms);
   idleCloseTimerBySessionId.set(id, t);
+}
+
+/**
+ * Keep `id` open past its idle timeout without counting as an agent step, so
+ * the human can still drive the pane (sign-in handoff). Returns the release.
+ */
+export function holdBrowserSessionOpen(id: string): () => void {
+  idleHoldsBySessionId.set(id, (idleHoldsBySessionId.get(id) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const n = (idleHoldsBySessionId.get(id) ?? 1) - 1;
+    if (n <= 0) idleHoldsBySessionId.delete(id);
+    else idleHoldsBySessionId.set(id, n);
+    bumpBrowserSessionActivity(id);
+  };
 }
 
 /**
@@ -662,6 +684,7 @@ export async function closeAllBrowserSessions(): Promise<void> {
   for (const s of snapshot) emitBrowserSessionLifecycle({ type: 'closed', id: s.id });
   pendingBrowserConstruction = 0;
   activeBrowserToolOpsBySessionId.clear();
+  idleHoldsBySessionId.clear();
   await Promise.allSettled(
     snapshot.map(async (s) => {
       try {

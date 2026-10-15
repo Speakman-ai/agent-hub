@@ -4,7 +4,7 @@ import type { InboxNotification } from '@shared/utils/notificationInbox';
 export type { InboxNotification };
 
 export type NotificationTarget =
-  | { kind: 'session'; sessionId: string; agentId: string | null }
+  | { kind: 'session'; sessionId: string; agentId: string | null; pane?: 'browser' }
   | { kind: 'route'; route: NavigationState };
 
 function str(v: unknown): string | null {
@@ -47,6 +47,10 @@ export function notificationTarget(n: InboxNotification): NotificationTarget | n
     case 'pushed':
     case 'finalize_failed':
       return sessionId ? { kind: 'session', sessionId, agentId: str(data.agentId) } : null;
+    case 'browser_sign_in':
+      return sessionId
+        ? { kind: 'session', sessionId, agentId: str(data.agentId), pane: 'browser' }
+        : null;
     case 'review_assigned_to_you':
     case 'pr_merged':
     case 'escalation':

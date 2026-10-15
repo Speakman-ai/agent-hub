@@ -449,3 +449,31 @@ describe('routeInboxNotification — explicit route', () => {
     expect(routeFromWebLink(null)).toBeNull();
   });
 });
+
+describe('routeNotificationTap — browser sign-in', () => {
+  it('opens the session and asks for the browser view', () => {
+    expect(
+      routeNotificationTap({ event: 'browser_sign_in', sessionId: 's1', agentId: 'a1' }),
+    ).toEqual({ kind: 'chat', agentId: 'a1', sessionId: 's1', openPane: 'browser' });
+    expect(routeNotificationTap({ event: 'browser_sign_in' })).toBeNull();
+  });
+
+  it('routes a sign-in inbox row to the browser view too', () => {
+    expect(
+      routeInboxNotification({
+        id: 'n1',
+        userId: 'u1',
+        orgId: null,
+        projectId: 'p1',
+        category: 'browser_sign_in',
+        title: 't',
+        body: '',
+        route: null,
+        data: { sessionId: 's1', agentId: 'a1' },
+        sourceKey: 'k',
+        createdAt: '2026-10-15T10:00:00Z',
+        readAt: null,
+      }),
+    ).toEqual({ kind: 'chat', agentId: 'a1', sessionId: 's1', openPane: 'browser' });
+  });
+});

@@ -158,6 +158,9 @@ describe('buildEnrichedPrompt — first message gating', () => {
     // the JSON shape.
     expect(prompt).toContain('"tool":"browser"');
     expect(prompt).toContain('"op":"navigate"');
+    // Sign-ins go through the human, never through chat.
+    expect(prompt).toContain('"op":"request_login"');
+    expect(prompt).toMatch(/Never ask for passwords, codes or card details in chat/);
   });
 
   it('omits the "Browser Automation Available" callout when browser tools are disabled for the agent', () => {

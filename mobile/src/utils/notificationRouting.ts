@@ -1,7 +1,7 @@
 /**
  * Notification-tap routing.
  *
- * @typedef {{ kind: 'chat', agentId: string | null, sessionId: string }} ChatRoute
+ * @typedef {{ kind: 'chat', agentId: string | null, sessionId: string, openPane?: 'browser' }} ChatRoute
  * @typedef {{ kind: 'kanban', projectId: string | null, cardId: string | null }} KanbanRoute
  * @typedef {{ kind: 'support', projectId: string, ticketId: string | null }} SupportRoute
  * @typedef {{ kind: 'pulls', projectId: string | null, prNumber: number | null }} PullsRoute
@@ -66,6 +66,11 @@ export function routeNotificationTap(data: any, ctx: any = {}) {
     case 'pushed':
     case 'finalize_failed':
       return chat();
+    case 'browser_sign_in': {
+      // The agent is parked on a sign-in: open its session with the browser view.
+      const route = chat();
+      return route ? { ...route, openPane: 'browser' as const } : null;
+    }
     case 'support_ticket_created': {
       const projectId = typeof data.projectId === 'string' ? data.projectId : null;
       if (!projectId) return null;

@@ -227,3 +227,19 @@ describe('mapBroadcastToNotification — project scoping (ownerUserId on project
     expect(r?.event).toBe('review_assigned_to_you');
   });
 });
+
+describe('mapBroadcastToNotification — browser sign-in', () => {
+  it('banners a sign-in request with the domain', () => {
+    const r = mapBroadcastToNotification({
+      type: 'browser_login_requested',
+      sessionId: 's1',
+      agentName: 'Researcher',
+      request: { requestId: 'r1', domain: 'github.com' },
+    });
+    expect(r).toEqual({
+      event: 'browser_sign_in',
+      title: 'Sign in to github.com',
+      body: 'Researcher is waiting for you to sign in to github.com in its browser',
+    });
+  });
+});

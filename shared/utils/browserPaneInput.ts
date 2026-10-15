@@ -174,3 +174,32 @@ export function normalizeUrlBarInput(raw: string): string | null {
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(t) || /^[a-z][a-z0-9+.-]*:(?!\d)/i.test(t)) return t;
   return `https://${t}`;
 }
+
+/** An open sign-in handoff, from the pane socket's `login_request` frame. */
+export interface BrowserPaneLoginRequest {
+  requestId: string;
+  domain: string;
+  reason: string;
+  expiresAt: number | null;
+}
+
+/** Validate a `login_request` frame's `request`; null clears the banner. */
+export function parseBrowserPaneLoginRequest(raw: unknown): BrowserPaneLoginRequest | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.requestId !== 'string' || !r.requestId) return null;
+  if (typeof r.domain !== 'string' || !r.domain) return null;
+  return {
+    requestId: r.requestId,
+    domain: r.domain,
+    reason: typeof r.reason === 'string' ? r.reason : '',
+    expiresAt: typeof r.expiresAt === 'number' ? r.expiresAt : null,
+  };
+}
+
+export function browserLoginBannerTitle(req: BrowserPaneLoginRequest): string {
+  return `The agent needs you to sign in to ${req.domain}`;
+}
+
+export const BROWSER_LOGIN_BANNER_HINT =
+  'Sign in here, finish any 2FA, CAPTCHA or payment step, then click Done. The agent never sees what you type.';

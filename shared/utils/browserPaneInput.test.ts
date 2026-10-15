@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  browserLoginBannerTitle,
+  parseBrowserPaneLoginRequest,
   browserPaneStatusLabel,
   browserPaneSurfaceBadge,
   fitFrameInBox,
@@ -105,5 +107,19 @@ describe('browserPaneSurfaceBadge', () => {
     expect(browserPaneSurfaceBadge('preview')).toBe('preview');
     expect(browserPaneSurfaceBadge('web')).toBe('public web');
     expect(browserPaneSurfaceBadge(null)).toBeNull();
+  });
+});
+
+describe('parseBrowserPaneLoginRequest', () => {
+  it('accepts a request and fills defaults', () => {
+    const req = parseBrowserPaneLoginRequest({ requestId: 'r1', domain: 'github.com' });
+    expect(req).toEqual({ requestId: 'r1', domain: 'github.com', reason: '', expiresAt: null });
+    expect(browserLoginBannerTitle(req!)).toBe('The agent needs you to sign in to github.com');
+  });
+
+  it('treats null and malformed payloads as no request', () => {
+    expect(parseBrowserPaneLoginRequest(null)).toBeNull();
+    expect(parseBrowserPaneLoginRequest({ requestId: 'r1' })).toBeNull();
+    expect(parseBrowserPaneLoginRequest({ domain: 'x.com' })).toBeNull();
   });
 });

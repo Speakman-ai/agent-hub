@@ -10,18 +10,22 @@ import {
   type GestureResponderEvent,
   type LayoutChangeEvent,
 } from 'react-native';
-import { Globe, RotateCw, X } from 'lucide-react-native';
+import { Globe, KeyRound, RotateCw, X } from 'lucide-react-native';
 import { colors } from '../theme/colors';
 import { getBrowserWsUrl } from '../utils/config';
 import {
+  BROWSER_LOGIN_BANNER_HINT,
   BROWSER_PANE_WAITING_HINT,
+  browserLoginBannerTitle,
   browserPaneStatusLabel,
   browserPaneSurfaceBadge,
   fitFrameInBox,
   mapPointerToViewport,
   normalizeUrlBarInput,
+  parseBrowserPaneLoginRequest,
   parseBrowserPaneSurface,
   type BrowserPaneFrame,
+  type BrowserPaneLoginRequest,
   type BrowserPaneStatus,
   type BrowserPaneSurface,
   type BrowserPaneViewport,
@@ -62,6 +66,8 @@ export default function MobileBrowserPane({
   const [urlDirty, setUrlDirty] = useState(false);
   const [typed, setTyped] = useState('');
   const [box, setBox] = useState({ width: 0, height: 0 });
+  const [loginRequest, setLoginRequest] = useState<BrowserPaneLoginRequest | null>(null);
+  const [loginAnswering, setLoginAnswering] = useState(false);
 
   const showNotice = useCallback((text: string) => {
     setNotice(text);
@@ -115,6 +121,8 @@ export default function MobileBrowserPane({
         if (socketRef.current !== socket) return;
         attachedRef.current = true;
         setError('');
+        // The server re-sends an open sign-in request on attach.
+        setLoginRequest(null);
         socket.send(JSON.stringify({ type: 'attach', maxWidth: 900, maxHeight: 700, quality: 50 }));
       };
 
@@ -152,6 +160,13 @@ export default function MobileBrowserPane({
           } else {
             showNotice(msg.message || 'Navigation refused');
           }
+        } else if (msg.type === 'login_request') {
+          setLoginRequest(parseBrowserPaneLoginRequest(msg.request));
+          setLoginAnswering(false);
+        } else if (msg.type === 'login_result') {
+          setLoginAnswering(false);
+          if (msg.ok) setLoginRequest(null);
+          else showNotice(msg.message || 'That sign-in request is no longer open');
         } else if (msg.type === 'error') {
           setStatus('error');
           setError(msg.message || 'Browser connection failed');
@@ -187,6 +202,15 @@ export default function MobileBrowserPane({
   useEffect(() => {
     if (!urlDirty) setUrlInput(pageUrl ?? '');
   }, [pageUrl, urlDirty]);
+
+  const answerLogin = (kind: 'login_done' | 'login_cancel') => {
+    if (!loginRequest) return;
+    if (!sendFrame({ type: kind, requestId: loginRequest.requestId })) {
+      showNotice('Not connected');
+      return;
+    }
+    setLoginAnswering(true);
+  };
 
   const reconnectNow = useCallback(() => {
     if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
@@ -282,6 +306,38 @@ export default function MobileBrowserPane({
           <Text style={styles.goText}>Go</Text>
         </TouchableOpacity>
       </View>
+      {loginRequest ? (
+        <View style={styles.loginBanner} testID="mobile-browser-login-banner">
+          <View style={styles.loginTitleRow}>
+            <KeyRound size={13} color={colors.amber400} />
+            <Text style={styles.loginTitle} numberOfLines={2}>
+              {browserLoginBannerTitle(loginRequest)}
+            </Text>
+          </View>
+          {loginRequest.reason ? <Text style={styles.loginText}>{loginRequest.reason}</Text> : null}
+          <Text style={styles.loginHint}>{BROWSER_LOGIN_BANNER_HINT}</Text>
+          <View style={styles.loginButtons}>
+            <TouchableOpacity
+              onPress={() => answerLogin('login_done')}
+              disabled={loginAnswering}
+              style={[styles.loginDone, loginAnswering && styles.disabled]}
+              accessibilityLabel="Done signing in"
+              testID="mobile-browser-login-done"
+            >
+              <Text style={styles.loginDoneText}>Done</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => answerLogin('login_cancel')}
+              disabled={loginAnswering}
+              style={[styles.key, loginAnswering && styles.disabled]}
+              accessibilityLabel="Cancel sign-in"
+              testID="mobile-browser-login-cancel"
+            >
+              <Text style={styles.keyText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      ) : null}
       {error ? <Text style={styles.error}>{error}</Text> : null}
       {notice ? (
         <Text style={styles.notice} testID="mobile-browser-notice">
@@ -324,7 +380,10 @@ export default function MobileBrowserPane({
           onChangeText={setTyped}
           onSubmitEditing={sendTyped}
           editable={live}
-          placeholder="Type into the agent's browser…"
+          secureTextEntry={!!loginRequest}
+          placeholder={
+            loginRequest ? 'Type here (hidden while signing in)…' : "Type into the agent's browser…"
+          }
           placeholderTextColor={colors.gray600}
           autoCapitalize="none"
           autoCorrect={false}
@@ -469,4 +528,24 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   keyText: { color: colors.gray200, fontSize: 11, fontFamily: 'monospace' },
+  loginBanner: {
+    gap: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: colors.amber900_40,
+  },
+  loginTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  loginTitle: { flex: 1, color: colors.amber400, fontSize: 12, fontWeight: '600' },
+  loginText: { color: colors.gray200, fontSize: 11 },
+  loginHint: { color: colors.gray400, fontSize: 11 },
+  loginButtons: { flexDirection: 'row', gap: 8, marginTop: 2 },
+  loginDone: {
+    borderWidth: 1,
+    borderColor: colors.emerald600,
+    borderRadius: 5,
+    backgroundColor: colors.emerald700,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  loginDoneText: { color: '#fff', fontSize: 11, fontWeight: '600' },
 });

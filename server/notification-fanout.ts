@@ -330,6 +330,34 @@ export function mapBroadcastToNotification(data: BroadcastData): NotificationInt
       };
     }
 
+    case 'browser_login_requested': {
+      const sessionId = broadcastSessionId(data);
+      const request = (data.request ?? {}) as { requestId?: unknown; domain?: unknown };
+      const requestId = str(request.requestId);
+      if (!sessionId || !requestId) return null;
+      const owner = str(data.ownerUserId);
+      const domain = str(request.domain) ?? 'a site';
+      const who = str(data.agentName) ?? 'An agent';
+      return {
+        category: 'browser_sign_in',
+        pushEvent: null,
+        deviceScope: 'recipients',
+        title: `Sign in to ${domain}`,
+        body: `${who} is waiting for you to sign in to ${domain} in its browser`,
+        data: {
+          sessionId,
+          agentId: data.agentId,
+          domain,
+          requestId,
+          pane: 'browser',
+          type: 'browser_sign_in',
+        },
+        projectId: str(data.projectId) ?? null,
+        sourceKey: `browser_sign_in:${requestId}`,
+        recipients: owner ? { kind: 'users', userIds: [owner] } : { kind: 'session', sessionId },
+      };
+    }
+
     case 'finalize_run_completed': {
       const legacy = fromLegacyPush(data);
       if (legacy) return legacy;

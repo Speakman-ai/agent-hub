@@ -15,6 +15,7 @@
  *   - `{type:'detach'}`
  *   - `{type:'input', input: BrowserViewerInput}`
  *   - `{type:'navigate', url}`
+ *   - `{type:'login_done'|'login_cancel', requestId}` — answer a sign-in handoff
  *
  * Server frames:
  *   - `{type:'state', status:'waiting'|'live'|'closed', url, viewport}`
@@ -23,6 +24,8 @@
  *   - `{type:'navigated', ok, url?, code?, message?}`
  *   - `{type:'detached'}`
  *   - `{type:'error', code, message}`
+ *   - `{type:'login_request', request}` — open sign-in handoff, or null when none
+ *   - `{type:'login_result', ok, requestId, outcome?}`
  *
  * Backpressure: frames are dropped (never queued) while the socket buffer is
  * above the cap, so a slow viewer sees a lower frame rate rather than a
@@ -39,6 +42,12 @@ import type { IncomingMessage, Server } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 import { z } from 'zod';
+import {
+  getPendingBrowserLogin,
+  settleBrowserLogin,
+  subscribeBrowserLoginHandoffs,
+  type BrowserLoginRequest,
+} from './browser-login-handoff.js';
 import { authenticateWsDetailed, type WsAuthResult } from './auth.js';
 import {
   userOwnsSession as defaultUserOwnsSession,
@@ -130,6 +139,8 @@ const BrowserClientFrameSchema = z.discriminatedUnion('type', [
   z
     .object({ type: z.literal('navigate'), url: z.string().min(1).max(BROWSER_WS_MAX_URL_CHARS) })
     .strict(),
+  z.object({ type: z.literal('login_done'), requestId: z.string().min(1).max(64) }).strict(),
+  z.object({ type: z.literal('login_cancel'), requestId: z.string().min(1).max(64) }).strict(),
 ]);
 
 export type BrowserClientFrame = z.infer<typeof BrowserClientFrameSchema>;
@@ -140,7 +151,35 @@ export type BrowserServerFrame =
   | ({ type: 'input_result' } & BrowserViewerInputResult)
   | ({ type: 'navigated' } & BrowserViewerNavigateResult)
   | { type: 'detached' }
-  | { type: 'error'; code: string; message: string };
+  | { type: 'error'; code: string; message: string }
+  | { type: 'login_request'; request: BrowserLoginRequestView | null }
+  | {
+      type: 'login_result';
+      ok: boolean;
+      requestId: string;
+      outcome?: 'done' | 'cancelled';
+      message?: string;
+    };
+
+/** The sign-in request as the pane sees it (no session internals). */
+export interface BrowserLoginRequestView {
+  requestId: string;
+  domain: string;
+  reason: string;
+  requestedAt: number;
+  expiresAt: number;
+}
+
+function loginRequestView(r: BrowserLoginRequest | null): BrowserLoginRequestView | null {
+  if (!r) return null;
+  return {
+    requestId: r.requestId,
+    domain: r.domain,
+    reason: r.reason,
+    requestedAt: r.requestedAt,
+    expiresAt: r.expiresAt,
+  };
+}
 
 export interface BrowserScreencastFeedHost {
   attach(browserSessionId: string, viewer: ScreencastViewer): () => void;
@@ -322,6 +361,9 @@ export function attachBrowserScreencastWebSocket(
             sendFrame({ type: 'state', ...s });
           },
         });
+        const pendingLogin = getPendingBrowserLogin(sessionId);
+        if (pendingLogin)
+          sendFrame({ type: 'login_request', request: loginRequestView(pendingLogin) });
         return;
       }
       if (frame.type === 'detach') {
@@ -335,6 +377,21 @@ export function attachBrowserScreencastWebSocket(
       }
       if (!detach) {
         sendError('not_attached', 'Attach the browser before sending input');
+        return;
+      }
+      if (frame.type === 'login_done' || frame.type === 'login_cancel') {
+        const outcome = frame.type === 'login_done' ? 'done' : 'cancelled';
+        const ok = settleBrowserLogin(sessionId, { outcome }, frame.requestId);
+        sendFrame(
+          ok
+            ? { type: 'login_result', ok, requestId: frame.requestId, outcome }
+            : {
+                type: 'login_result',
+                ok,
+                requestId: frame.requestId,
+                message: 'That sign-in request is no longer open.',
+              },
+        );
         return;
       }
       if (frame.type === 'input') {
@@ -364,8 +421,17 @@ export function attachBrowserScreencastWebSocket(
         );
     });
 
+    const unsubscribeLogin = subscribeBrowserLoginHandoffs((ev) => {
+      if (ev.request.sessionId !== sessionId || !detach) return;
+      sendFrame({
+        type: 'login_request',
+        request: ev.type === 'requested' ? loginRequestView(ev.request) : null,
+      });
+    });
+
     ws.on('close', () => {
       clearTimeout(attachTimer);
+      unsubscribeLogin();
       detachCurrent();
     });
     ws.on('error', (err) => {

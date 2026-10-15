@@ -143,6 +143,19 @@ export function mapBroadcastToNotification(data: any, opts: any = {}) {
       });
       return { event: 'pr_merged', title, body };
     }
+    case 'browser_login_requested': {
+      const domain =
+        typeof data.request?.domain === 'string' && data.request.domain
+          ? data.request.domain
+          : 'a site';
+      const who =
+        typeof data.agentName === 'string' && data.agentName ? data.agentName : 'An agent';
+      return {
+        event: 'browser_sign_in',
+        title: `Sign in to ${domain}`,
+        body: `${who} is waiting for you to sign in to ${domain} in its browser`,
+      };
+    }
     case 'infra_alert_transition': {
       const { title, body } = infraAlertNotification(data);
       return { event: 'infra_alert', title, body };

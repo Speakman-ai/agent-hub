@@ -40,6 +40,12 @@ export const NOTIFICATION_SECTIONS = [
         defaults: LOUD,
       },
       {
+        id: 'browser_sign_in',
+        label: 'Sign-in needed',
+        description: 'An agent is waiting for you to sign in to a site in its browser',
+        defaults: LOUD,
+      },
+      {
         id: 'session_completed',
         label: 'Session completed',
         description: 'An agent finished its turn',

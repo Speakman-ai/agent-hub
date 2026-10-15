@@ -90,3 +90,14 @@ describe('notificationTarget', () => {
     expect(notificationTarget(row({ category: 'awaiting_feedback', data: {} }))).toBeNull();
   });
 });
+
+describe('notificationTarget — browser sign-in', () => {
+  it('opens the session with the Agent browser pane', () => {
+    expect(
+      notificationTarget(
+        row({ category: 'browser_sign_in', data: { sessionId: 's1', agentId: 'a1' } }),
+      ),
+    ).toEqual({ kind: 'session', sessionId: 's1', agentId: 'a1', pane: 'browser' });
+    expect(notificationTarget(row({ category: 'browser_sign_in', data: {} }))).toBeNull();
+  });
+});

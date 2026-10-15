@@ -1,17 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent, KeyboardEvent, PointerEvent, WheelEvent } from 'react';
-import { Globe, Loader2, RotateCw, X } from 'lucide-react';
+import { Globe, KeyRound, Loader2, RotateCw, X } from 'lucide-react';
 import { getBrowserWsUrl } from '../utils/connection';
 import {
+  BROWSER_LOGIN_BANNER_HINT,
   BROWSER_PANE_WAITING_HINT,
+  browserLoginBannerTitle,
   browserPaneStatusLabel,
   browserPaneSurfaceBadge,
   fitFrameInBox,
   keyInputFromDomEvent,
   mapPointerToViewport,
   normalizeUrlBarInput,
+  parseBrowserPaneLoginRequest,
   parseBrowserPaneSurface,
   type BrowserPaneFrame,
+  type BrowserPaneLoginRequest,
   type BrowserPaneStatus,
   type BrowserPaneSurface,
   type BrowserPaneViewport,
@@ -65,6 +69,8 @@ export default function SessionBrowserPane({
   const [urlDirty, setUrlDirty] = useState(false);
   const [box, setBox] = useState({ width: 0, height: 0 });
   const [navigating, setNavigating] = useState(false);
+  const [loginRequest, setLoginRequest] = useState<BrowserPaneLoginRequest | null>(null);
+  const [loginAnswering, setLoginAnswering] = useState(false);
 
   const showNotice = useCallback((text: string) => {
     setNotice(text);
@@ -137,6 +143,8 @@ export default function SessionBrowserPane({
         if (socketRef.current !== socket) return;
         setError('');
         attachedRef.current = true;
+        // The server re-sends an open sign-in request on attach.
+        setLoginRequest(null);
         socket.send(JSON.stringify({ type: 'attach', maxWidth: 1280, maxHeight: 800 }));
       };
 
@@ -188,6 +196,17 @@ export default function SessionBrowserPane({
           } else {
             showNotice(msg.message || 'Navigation refused');
           }
+          return;
+        }
+        if (msg.type === 'login_request') {
+          setLoginRequest(parseBrowserPaneLoginRequest(msg.request));
+          setLoginAnswering(false);
+          return;
+        }
+        if (msg.type === 'login_result') {
+          setLoginAnswering(false);
+          if (msg.ok) setLoginRequest(null);
+          else showNotice(msg.message || 'That sign-in request is no longer open');
           return;
         }
         if (msg.type === 'error') {
@@ -310,6 +329,15 @@ export default function SessionBrowserPane({
     setNavigating(true);
   };
 
+  const answerLogin = (kind: 'login_done' | 'login_cancel') => {
+    if (!loginRequest) return;
+    if (!sendFrame({ type: kind, requestId: loginRequest.requestId })) {
+      showNotice('Not connected');
+      return;
+    }
+    setLoginAnswering(true);
+  };
+
   const live = status === 'live';
   const statusText = browserPaneStatusLabel(status);
   const surfaceBadge = browserPaneSurfaceBadge(surface);
@@ -408,6 +436,42 @@ export default function SessionBrowserPane({
         </button>
       </form>
 
+      {loginRequest ? (
+        <div
+          className="px-3 py-2 border-b border-amber-800/60 bg-amber-950/50 space-y-1.5"
+          data-testid="session-browser-login-banner"
+          role="status"
+        >
+          <div className="flex items-center gap-2 text-xs font-semibold text-amber-100">
+            <KeyRound size={13} className="shrink-0 text-amber-300" aria-hidden />
+            <span className="truncate">{browserLoginBannerTitle(loginRequest)}</span>
+          </div>
+          {loginRequest.reason ? (
+            <p className="text-[11px] text-amber-200/90">{loginRequest.reason}</p>
+          ) : null}
+          <p className="text-[11px] text-amber-200/70">{BROWSER_LOGIN_BANNER_HINT}</p>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => answerLogin('login_done')}
+              disabled={loginAnswering}
+              className="text-xs px-2.5 py-1 rounded bg-emerald-700/80 hover:bg-emerald-600/80 text-emerald-50 border border-emerald-600/60 disabled:opacity-50"
+              data-testid="session-browser-login-done"
+            >
+              Done
+            </button>
+            <button
+              type="button"
+              onClick={() => answerLogin('login_cancel')}
+              disabled={loginAnswering}
+              className="text-xs px-2.5 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 border border-gray-700 disabled:opacity-50"
+              data-testid="session-browser-login-cancel"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : null}
       {error ? (
         <div className="px-3 py-1.5 text-[11px] text-rose-300 bg-rose-950/40 border-b border-rose-900/50">
           {error}

@@ -123,6 +123,15 @@ export function AppProvider({ children }: any) {
   const [streamingMsgId, setStreamingMsgId] = useState<any>(null);
   const streamingMsgIdRef = useRef<any>(null);
   const [chatScrollNonce, setChatScrollNonce] = useState(0);
+  // Bumped to ask ChatScreen to open the Agent browser view for a session
+  // (sign-in handoff request or a tapped sign-in notification).
+  const [browserPaneRequest, setBrowserPaneRequest] = useState<{
+    sessionId: string;
+    nonce: number;
+  } | null>(null);
+  const openBrowserPaneFor = useCallback((sessionId: string) => {
+    setBrowserPaneRequest((prev) => ({ sessionId, nonce: (prev?.nonce ?? 0) + 1 }));
+  }, []);
   const [streamingEngine, setStreamingEngine] = useState<any>(null);
   const [sessionEngine, setSessionEngine] = useState('claude-code');
   const [sessionModel, setSessionModel] = useState('claude-opus-5-5');
@@ -564,6 +573,11 @@ export function AppProvider({ children }: any) {
                   prev,
                 ) || prev,
             );
+          }
+          break;
+        case 'browser_login_requested':
+          if (forActiveSession && typeof data.sessionId === 'string') {
+            openBrowserPaneFor(data.sessionId);
           }
           break;
         case 'interrupted':
@@ -1186,7 +1200,7 @@ export function AppProvider({ children }: any) {
           break;
       }
     },
-    [kanbanRefreshScheduler, presentForegroundFor, reloadActiveAgentSkills],
+    [kanbanRefreshScheduler, openBrowserPaneFor, presentForegroundFor, reloadActiveAgentSkills],
   );
   const { send, connected, reconnecting, reconnect } = useWebSocket(handleWsMessage);
   // Agent Hub chat: start over whenever the account or server changes, and
@@ -1277,38 +1291,42 @@ export function AppProvider({ children }: any) {
   // The routing decision is fully pure (`routeNotificationTap`); only the
   // side-effects — state updates, `navigatorRef.current(screen, params)` —
   // live here.
-  const applyRoute = useCallback((route: any) => {
-    if (!route) return;
-    switch (route.kind) {
-      case 'chat': {
-        // Stash the target session on `pendingSessionIdRef` before swapping
-        // `activeAgentId` so the sessions-load effect honors it (mirror of
-        // `handleOpenHandoffSession`). When `agentId` is unknown (the
-        // session wasn't in the loaded list) we still stash the pending id
-        // — if the user ever lands on that agent the session will activate.
-        pendingSessionIdRef.current = route.sessionId;
-        if (route.agentId) {
-          setActiveAgentId(route.agentId);
+  const applyRoute = useCallback(
+    (route: any) => {
+      if (!route) return;
+      switch (route.kind) {
+        case 'chat': {
+          // Stash the target session on `pendingSessionIdRef` before swapping
+          // `activeAgentId` so the sessions-load effect honors it (mirror of
+          // `handleOpenHandoffSession`). When `agentId` is unknown (the
+          // session wasn't in the loaded list) we still stash the pending id
+          // — if the user ever lands on that agent the session will activate.
+          pendingSessionIdRef.current = route.sessionId;
+          if (route.agentId) {
+            setActiveAgentId(route.agentId);
+          }
+          setActiveSessionId(route.sessionId);
+          if (route.openPane === 'browser') openBrowserPaneFor(route.sessionId);
+          break;
         }
-        setActiveSessionId(route.sessionId);
-        break;
+        case 'kanban':
+        case 'support':
+        case 'pulls':
+        case 'infra':
+        case 'hubChat':
+        case 'deployments': {
+          // Navigator-driven kinds share one param mapper (screen + params,
+          // including the `pulls` PR number and the `infra` alert id).
+          const nav = notificationRouteToNavigation(route);
+          if (nav) navigatorRef.current?.(nav.screen, nav.params);
+          break;
+        }
+        default:
+          break;
       }
-      case 'kanban':
-      case 'support':
-      case 'pulls':
-      case 'infra':
-      case 'hubChat':
-      case 'deployments': {
-        // Navigator-driven kinds share one param mapper (screen + params,
-        // including the `pulls` PR number and the `infra` alert id).
-        const nav = notificationRouteToNavigation(route);
-        if (nav) navigatorRef.current?.(nav.screen, nav.params);
-        break;
-      }
-      default:
-        break;
-    }
-  }, []);
+    },
+    [openBrowserPaneFor],
+  );
   const applyNotificationRoute = useCallback(
     (data: any) => applyRoute(routeNotificationTap(data, { sessions: sessionsRef.current })),
     [applyRoute],
@@ -2618,6 +2636,7 @@ export function AppProvider({ children }: any) {
     restoringSessionIds,
     handleCancel,
     chatScrollNonce,
+    browserPaneRequest,
     handleSend,
     handleSwitchOrg,
     refreshAgents,

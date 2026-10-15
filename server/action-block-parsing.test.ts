@@ -820,3 +820,30 @@ describe('detectReActBlock — in-fence fallback (regression)', () => {
     expect(detectReActBlock(text)).toBeNull();
   });
 });
+
+describe('parseReActBlock — browser request_login', () => {
+  it('keeps domain and reason', () => {
+    const r = parseReActBlock(
+      '<agenthub:react>{"actions":[{"tool":"browser","op":"request_login","domain":"github.com","reason":"Read notifications"}]}</agenthub:react>',
+    );
+    expect('error' in r).toBe(false);
+    if (!('error' in r)) {
+      expect(r.actions[0]).toMatchObject({
+        tool: 'browser',
+        op: 'request_login',
+        domain: 'github.com',
+        reason: 'Read notifications',
+      });
+    }
+  });
+
+  it('rejects request_login without a domain', () => {
+    const r = parseReActBlock(
+      '<agenthub:react>{"actions":[{"tool":"browser","op":"request_login"}]}</agenthub:react>',
+    );
+    expect(r).toMatchObject({
+      error: 'malformed',
+      detail: 'browser request_login requires domain',
+    });
+  });
+});

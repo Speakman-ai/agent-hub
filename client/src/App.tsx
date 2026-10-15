@@ -520,6 +520,16 @@ export default function App({ initialView }: any = {}) {
   // requests, which a single functional updater cannot do.
   const browserPaneOpenBySessionRef = useRef(browserPaneOpenBySession);
   browserPaneOpenBySessionRef.current = browserPaneOpenBySession;
+  // Open the Agent browser pane for `sid`, taking the right-hand slot the same
+  // way the manual toggle does: Changes / Artifacts / Terminal have priority
+  // in resolveSessionRightPaneFlags and would otherwise hide it.
+  const openBrowserPaneForSession = useCallback((sid: string) => {
+    browserPaneOpenBySessionRef.current = { ...browserPaneOpenBySessionRef.current, [sid]: true };
+    setBrowserPaneOpenBySession((prev) => ({ ...prev, [sid]: true }));
+    setDiffPaneOpenBySession((prev: any) => ({ ...prev, [sid]: false }));
+    setArtifactsPaneOpenBySession((prev: any) => ({ ...prev, [sid]: false }));
+    setTerminalPaneOpenBySession((prev: any) => ({ ...prev, [sid]: false }));
+  }, []);
   /** Per-session SideBar panel (side questions on a hidden Consult fork). It is
    * its own column, not part of the exclusive right-pane slot. */
   const [sideBarPaneOpenBySession, setSideBarPaneOpenBySession] = useState<Record<string, boolean>>(
@@ -1970,6 +1980,11 @@ export default function App({ initialView }: any = {}) {
         return;
       }
 
+      // A sign-in handoff needs the human in the pane, even one they closed.
+      if (data.type === 'browser_login_requested' && typeof data.sessionId === 'string') {
+        openBrowserPaneForSession(data.sessionId);
+      }
+
       switch (data.type) {
         case 'active-tasks-snapshot': {
           // Rebuild active-task map from server snapshot.
@@ -2226,20 +2241,9 @@ export default function App({ initialView }: any = {}) {
           if (event?.type === 'browser_tool_activity' && event.phase === 'started') {
             const sid = data.sessionId;
             if (sid && browserPaneOpenBySessionRef.current[sid] === undefined) {
-              // Decide once, synchronously, so a burst of activity events in
+              // The ref updates synchronously, so a burst of activity events in
               // the same tick cannot re-run the auto-open.
-              browserPaneOpenBySessionRef.current = {
-                ...browserPaneOpenBySessionRef.current,
-                [sid]: true,
-              };
-              setBrowserPaneOpenBySession((prev) => ({ ...prev, [sid]: true }));
-              // Take the right-hand slot the same way the manual toggle does:
-              // Changes / Artifacts / Terminal have priority in
-              // resolveSessionRightPaneFlags, so an open one would otherwise
-              // hide the pane the first browser action is meant to reveal.
-              setDiffPaneOpenBySession((prev: any) => ({ ...prev, [sid]: false }));
-              setArtifactsPaneOpenBySession((prev: any) => ({ ...prev, [sid]: false }));
-              setTerminalPaneOpenBySession((prev: any) => ({ ...prev, [sid]: false }));
+              openBrowserPaneForSession(sid);
             }
           }
 
@@ -3771,6 +3775,10 @@ export default function App({ initialView }: any = {}) {
           }
           break;
         }
+        case 'browser_login_requested':
+        case 'browser_login_resolved':
+          // Pane open is handled above; the pane socket drives the banner.
+          break;
         default: {
           if (import.meta.env.DEV) {
             console.debug('[ws] unhandled message type:', data.type);
@@ -3781,6 +3789,7 @@ export default function App({ initialView }: any = {}) {
     },
     [
       notify,
+      openBrowserPaneForSession,
       refreshAgents,
       reloadActiveAgentSkills,
       showToast,
@@ -4490,12 +4499,13 @@ export default function App({ initialView }: any = {}) {
     (target: NotificationTarget) => {
       if (target.kind === 'session') {
         focusAgentSession(target.agentId, target.sessionId);
+        if (target.pane === 'browser') openBrowserPaneForSession(target.sessionId);
         setSidebarOpen(false);
         return;
       }
       applyNavigationState(target.route);
     },
-    [applyNavigationState, focusAgentSession],
+    [applyNavigationState, focusAgentSession, openBrowserPaneForSession],
   );
 
   const openNotificationSettings = useCallback(() => {

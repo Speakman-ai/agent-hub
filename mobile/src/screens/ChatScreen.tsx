@@ -121,6 +121,7 @@ export default function ChatScreen({
     presentedArtifactBySession,
     acknowledgePresentedArtifact,
     hubSessionId,
+    browserPaneRequest,
   } = useApp();
   // NOTE: `activeSession` is declared once below (useMemo) — a duplicate
   // plain declaration here previously made this module fail to parse.
@@ -129,6 +130,11 @@ export default function ChatScreen({
   const [showSwitcher, setShowSwitcher] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
   const [showBrowser, setShowBrowser] = useState(false);
+  useEffect(() => {
+    if (browserPaneRequest && browserPaneRequest.sessionId === activeSessionId) {
+      setShowBrowser(true);
+    }
+  }, [browserPaneRequest, activeSessionId]);
   const [showContextUsage, setShowContextUsage] = useState(false);
   const [showSideBar, setShowSideBar] = useState(false);
   const [showTimeline, setShowTimeline] = useState(false);

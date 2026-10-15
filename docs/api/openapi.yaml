@@ -12182,6 +12182,7 @@ components:
                 push:
                   type: boolean
               additionalProperties: false
+            browser_sign_in: *a3
             session_completed: *a3
             ready_to_push: *a3
             pushed: *a3
@@ -12233,6 +12234,7 @@ components:
                   type: string
                   enum:
                     - awaiting_feedback
+                    - browser_sign_in
                     - session_completed
                     - ready_to_push
                     - pushed
@@ -12259,6 +12261,7 @@ components:
                 type: string
                 enum:
                   - awaiting_feedback
+                  - browser_sign_in
                   - session_completed
                   - ready_to_push
                   - pushed

@@ -318,6 +318,37 @@ describe('handleBroadcastForNotifications: inbox + live event', () => {
   });
 });
 
+describe('mapBroadcastToNotification: browser sign-in handoff', () => {
+  it('notifies the session owner and links to the browser pane', () => {
+    const n = mapBroadcastToNotification({
+      type: 'browser_login_requested',
+      sessionId: 's1',
+      agentId: 'a1',
+      agentName: 'Researcher',
+      projectId: 'p1',
+      ownerUserId: 'u1',
+      request: { requestId: 'r1', domain: 'github.com', reason: 'x' },
+    });
+    expect(n).toMatchObject({
+      category: 'browser_sign_in',
+      title: 'Sign in to github.com',
+      body: 'Researcher is waiting for you to sign in to github.com in its browser',
+      sourceKey: 'browser_sign_in:r1',
+      recipients: { kind: 'users', userIds: ['u1'] },
+      data: { sessionId: 's1', pane: 'browser', type: 'browser_sign_in' },
+    });
+  });
+
+  it('ignores the resolved event and malformed requests', () => {
+    expect(
+      mapBroadcastToNotification({ type: 'browser_login_resolved', sessionId: 's1' }),
+    ).toBeNull();
+    expect(
+      mapBroadcastToNotification({ type: 'browser_login_requested', sessionId: 's1' }),
+    ).toBeNull();
+  });
+});
+
 describe('mapBroadcastToNotification: new producers', () => {
   it('session_completed from a chat done event with an owner', () => {
     const n = mapBroadcastToNotification({

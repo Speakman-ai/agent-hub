@@ -13,6 +13,10 @@ import {
   type BrowserServerFrame,
 } from './browser-screencast-websocket.js';
 import type { ScreencastViewer } from './browser-screencast.js';
+import {
+  __resetBrowserLoginHandoffsForTests,
+  requestBrowserLogin,
+} from './browser-login-handoff.js';
 
 class FakeFeedHost implements BrowserScreencastFeedHost {
   readonly attached: Array<{ sessionId: string; viewer: ScreencastViewer }> = [];
@@ -260,5 +264,78 @@ describe('agent browser WebSocket route', () => {
     } finally {
       chat.wss.close();
     }
+  });
+});
+
+describe('browser screencast WebSocket — sign-in handoff', () => {
+  afterEach(() => {
+    __resetBrowserLoginHandoffsForTests();
+  });
+
+  it('pushes the open request on attach and settles it on Done', async () => {
+    const { url } = await makeHarness();
+    const { request, settled } = requestBrowserLogin('owned', {
+      domain: 'github.com',
+      reason: 'Read your notifications',
+    });
+    const ws = await connect(url);
+    const frames = collectFrames(ws);
+    ws.send(JSON.stringify({ type: 'attach' }));
+    await vi.waitFor(() =>
+      expect(frames.find((f) => f.type === 'login_request')).toMatchObject({
+        type: 'login_request',
+        request: { requestId: request.requestId, domain: 'github.com' },
+      }),
+    );
+
+    ws.send(JSON.stringify({ type: 'login_done', requestId: request.requestId }));
+    await expect(settled).resolves.toEqual({ outcome: 'done' });
+    await vi.waitFor(() =>
+      expect(frames.filter((f) => f.type === 'login_result')).toEqual([
+        { type: 'login_result', ok: true, requestId: request.requestId, outcome: 'done' },
+      ]),
+    );
+    // The resolve event clears the banner on every attached viewer.
+    expect(frames.filter((f) => f.type === 'login_request').at(-1)).toEqual({
+      type: 'login_request',
+      request: null,
+    });
+    ws.close();
+  });
+
+  it('pushes a request opened after attach and reports a stale Cancel', async () => {
+    const { url } = await makeHarness();
+    const ws = await connect(url);
+    const frames = collectFrames(ws);
+    ws.send(JSON.stringify({ type: 'attach' }));
+    await vi.waitFor(() => expect(frames).toHaveLength(1));
+    expect(frames.some((f) => f.type === 'login_request')).toBe(false);
+
+    const { request, settled } = requestBrowserLogin('owned', { domain: 'example.com' });
+    await vi.waitFor(() =>
+      expect(frames.at(-1)).toMatchObject({
+        type: 'login_request',
+        request: { requestId: request.requestId },
+      }),
+    );
+    ws.send(JSON.stringify({ type: 'login_cancel', requestId: 'stale' }));
+    await vi.waitFor(() =>
+      expect(frames.at(-1)).toMatchObject({ type: 'login_result', ok: false, requestId: 'stale' }),
+    );
+    ws.send(JSON.stringify({ type: 'login_cancel', requestId: request.requestId }));
+    await expect(settled).resolves.toEqual({ outcome: 'cancelled' });
+    ws.close();
+  });
+
+  it('does not leak another session’s request', async () => {
+    const { url } = await makeHarness();
+    const ws = await connect(url);
+    const frames = collectFrames(ws);
+    ws.send(JSON.stringify({ type: 'attach' }));
+    await vi.waitFor(() => expect(frames).toHaveLength(1));
+    requestBrowserLogin('someone-else', { domain: 'example.com' });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(frames.some((f) => f.type === 'login_request')).toBe(false);
+    ws.close();
   });
 });

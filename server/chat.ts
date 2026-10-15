@@ -323,6 +323,7 @@ import {
   BROWSER_REACT_OP_SET,
   browserToolStartLabel,
 } from './browser-tools.js';
+import { browserLoginHandoffDeps } from './browser-login-broadcast.js';
 import {
   runPreviewReActStep,
   resolvePreviewReactRuntime,
@@ -752,8 +753,10 @@ interface ReActAction {
   condition?: string;
   /** preview navigate / start — path within the preview app (must start with `/`). */
   route?: string;
-  /** preview start — optional reason recorded on the preview task. */
+  /** preview start — optional reason recorded on the preview task; browser request_login — banner text. */
   reason?: string;
+  /** browser request_login — site the human signs in to. */
+  domain?: string;
   /** preview logs — tail line count. */
   tail?: number;
   /** terminal inject — single command line to run at an idle prompt. */
@@ -975,7 +978,7 @@ export function buildEnrichedPrompt(
   // reminder on later turns).
   if (browserToolsOn) {
     prompt += `\n\n## Browser Automation Available
-You have access to a real Chromium browser in this session (host Playwright). When a user asks you to navigate to a URL, take a screenshot, fill out a form, click around a website, scrape a page, or read content from any web page, **do it** — do not claim you lack web access or a browser. Drive the browser by emitting a \`<agenthub:react>\` block with a \`browser\` action, e.g. \`{"tool":"browser","op":"navigate","url":"https://example.com"}\`. Ops: \`navigate\`, \`click\`, \`type\`, \`extract\`, \`screenshot\`, \`scroll\`, \`back\`, \`forward\`, \`wait\`, \`read_page\`, \`close\`. **Two browsers, two surfaces:** the \`browser\` tool is the public-web Chromium (observations end with \`Surface: web\`). For this session's **dev preview** use \`{"tool":"preview",…}\` (including \`op":"start"\`) — a separate Chromium pinned to the preview origin (observations end with \`Surface: preview\`); the generic browser tool cannot reach it (loopback is blocked there) and the preview tool cannot leave it. The human watches **whichever Chromium you are driving** live in the **Agent browser** pane and can click/type there too. To see whether the running app rendered, emit \`{"tool":"preview","op":"screenshot"}\` (naked XML tag, never a code fence) then read the saved image path if your engine can view images — the observation also includes visible page text so every engine can tell if \`/\` is blank.`;
+You have access to a real Chromium browser in this session (host Playwright). When a user asks you to navigate to a URL, take a screenshot, fill out a form, click around a website, scrape a page, or read content from any web page, **do it** — do not claim you lack web access or a browser. Drive the browser by emitting a \`<agenthub:react>\` block with a \`browser\` action, e.g. \`{"tool":"browser","op":"navigate","url":"https://example.com"}\`. Ops: \`navigate\`, \`click\`, \`type\`, \`extract\`, \`screenshot\`, \`scroll\`, \`back\`, \`forward\`, \`wait\`, \`read_page\`, \`close\`, \`request_login\`. **Sign-ins, 2FA, CAPTCHAs and payments are the human's job:** when a page needs a password, a 2FA code, a CAPTCHA or payment details, emit \`{"tool":"browser","op":"request_login","domain":"example.com","reason":"Sign in so I can read your invoices"}\`. The turn pauses while the human signs in through the **Agent browser** pane, and you get an observation when they click Done or Cancel. Never ask for passwords, codes or card details in chat (not even with a credential-request card) and never type them yourself. **Two browsers, two surfaces:** the \`browser\` tool is the public-web Chromium (observations end with \`Surface: web\`). For this session's **dev preview** use \`{"tool":"preview",…}\` (including \`op":"start"\`) — a separate Chromium pinned to the preview origin (observations end with \`Surface: preview\`); the generic browser tool cannot reach it (loopback is blocked there) and the preview tool cannot leave it. The human watches **whichever Chromium you are driving** live in the **Agent browser** pane and can click/type there too. To see whether the running app rendered, emit \`{"tool":"preview","op":"screenshot"}\` (naked XML tag, never a code fence) then read the saved image path if your engine can view images — the observation also includes visible page text so every engine can tell if \`/\` is blank.`;
   } else if (isDevServerConfigured(project.prEnv?.devServer)) {
     prompt += `\n\n## Preview screenshots
 The generic \`browser\` tool is off for this agent, but you can still verify **this session's running preview** with a naked \`<agenthub:react>{"actions":[{"tool":"preview","op":"screenshot"}]}</agenthub:react>\` block (never a code fence). The host returns a saved image path plus visible page text. Do not probe localhost ports with Bash.`;
@@ -1087,7 +1090,7 @@ ${skillsList.join('\n')}`;
       ? '{"actions":[{"tool":"wiki","query":"..."},{"tool":"skill","name":"kanban"},{"tool":"web","query":"..."},{"tool":"browser","op":"navigate","url":"https://example.com"}]}'
       : '{"actions":[{"tool":"wiki","query":"..."},{"tool":"skill","name":"kanban"},{"tool":"web","query":"..."}]}';
     const browserToolLines = browserToolsOn
-      ? `- \`browser\` — host Chromium via Playwright (field: \`op\` + operands). Ops: \`navigate\` (\`url\`), \`click\` / \`type\` (\`target\` — CSS/XPath preferred; natural-language labels use Playwright getByText), \`extract\` (page text snapshot — you parse it; optional \`instruction\`), \`screenshot\`, \`scroll\` (\`direction\`: up|down|top|bottom), \`back\`, \`forward\`, \`wait\` (\`condition\`: load|domcontentloaded|networkidle|selector or \`selector:…\`), \`read_page\`, \`close\`. \`screenshot\` writes the image to a file and returns its absolute path — open that path with your file-reading tool if you can view images; the observation also includes visible page text. Requires Playwright Chromium on the server.
+      ? `- \`browser\` — host Chromium via Playwright (field: \`op\` + operands). Ops: \`navigate\` (\`url\`), \`click\` / \`type\` (\`target\` — CSS/XPath preferred; natural-language labels use Playwright getByText), \`extract\` (page text snapshot — you parse it; optional \`instruction\`), \`screenshot\`, \`scroll\` (\`direction\`: up|down|top|bottom), \`back\`, \`forward\`, \`wait\` (\`condition\`: load|domcontentloaded|networkidle|selector or \`selector:…\`), \`read_page\`, \`close\`, \`request_login\` (\`domain\`, optional \`reason\`: hands the page to the human for a password, 2FA, CAPTCHA or payment step and pauses the turn until they click Done or Cancel; never ask for those in chat). \`screenshot\` writes the image to a file and returns its absolute path — open that path with your file-reading tool if you can view images; the observation also includes visible page text. Requires Playwright Chromium on the server.
 - **Browser egress note (operators / models):** URL policy that blocks private, loopback, metadata-style, and similar targets applies to explicit \`navigate\` (redirect targets during that \`goto\` when CDP Fetch works, plus a committed-URL check), and to the URL after \`back\`/\`forward\`. It is **not** a blanket guarantee on every page transition — e.g. \`click\`-driven link navigations and client-side redirects are not funneled through that path. Hostname/string checks also do not defeat DNS rebinding. Plan network egress and isolation accordingly.`
       : `- **Browser tools** are turned off for this agent (project default or \`browserToolsEnabled: false\`). Omit browser entries from the ReAct \`actions\` array — the host will reject them. Preview screenshot/navigate (below) still work when a dev server is configured.`;
     const previewToolLines = previewEnabledForPrompt
@@ -1130,7 +1133,7 @@ The host executes actions, appends a compact observation + loaded context, and m
         ? '{"tool":"preview","op":"screenshot"}'
         : '{"tool":"wiki","query":"..."}';
     const browserReminder = browserToolsOn
-      ? `\n**You have a real Chromium browser in this session** — ops \`navigate\`, \`click\`, \`type\`, \`extract\`, \`screenshot\`, \`scroll\`, \`back\`, \`forward\`, \`wait\`, \`read_page\`, \`close\`. Do not claim you lack a browser or web access; drive it with a \`browser\` action.`
+      ? `\n**You have a real Chromium browser in this session** — ops \`navigate\`, \`click\`, \`type\`, \`extract\`, \`screenshot\`, \`scroll\`, \`back\`, \`forward\`, \`wait\`, \`read_page\`, \`close\`, \`request_login\` (for passwords, 2FA, CAPTCHA, payment; never ask in chat). Do not claim you lack a browser or web access; drive it with a \`browser\` action.`
       : previewEnabledForPrompt
         ? `\n**Browser tools** are turned off for this agent — omit \`browser\` entries from the \`actions\` array. You can still verify the running preview with \`{"tool":"preview","op":"screenshot"}\`.`
         : `\n**Browser tools** are turned off for this agent — omit \`browser\` entries from the \`actions\` array.`;
@@ -1776,8 +1779,15 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
           detail: 'browser extract with schema requires instruction',
         };
       }
+      const domain = typeof a.domain === 'string' ? a.domain : undefined;
+      const reason = typeof a.reason === 'string' ? a.reason : undefined;
+      if (op === 'request_login' && !domain?.trim() && !url?.trim()) {
+        return { error: 'malformed', detail: 'browser request_login requires domain' };
+      }
       actions.push({
         tool: 'browser',
+        domain,
+        reason,
         op,
         url,
         target,
@@ -6205,6 +6215,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                   schema: action.schema,
                   direction: action.direction,
                   condition: action.condition,
+                  domain: action.domain,
+                  reason: action.reason,
                 };
                 const startLabel = browserToolStartLabel(browserInput);
                 const startedAtMs = Date.now();
@@ -6230,11 +6242,23 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                       schema: browserInput.schema,
                       direction: browserInput.direction,
                       condition: browserInput.condition,
+                      domain: browserInput.domain,
+                      reason: browserInput.reason,
                     },
                     withBrowserProfile(browserLaunchOpts, {
                       ownerUserId: session!.owner_user_id ?? null,
                       agentId: agent.id,
                       projectId: project?.id ?? null,
+                    }),
+                    undefined,
+                    browserLoginHandoffDeps({
+                      broadcast,
+                      sessionId,
+                      agentId: agent.id,
+                      agentName: agent.name,
+                      projectId: project?.id ?? null,
+                      sessionName: session!.name ?? null,
+                      ownerUserId: session!.owner_user_id ?? null,
                     }),
                   );
                 } catch (err: unknown) {

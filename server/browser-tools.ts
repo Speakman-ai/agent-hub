@@ -22,6 +22,8 @@ import {
   closeBrowserSession,
   incrementBrowserToolOpEntered,
   notifyBrowserToolOpEnded,
+  holdBrowserSessionOpen,
+  subscribeBrowserSessionLifecycle,
   DEFAULT_TIMEOUT_MS,
   type BrowserSession,
   type BrowserSessionOptions,
@@ -42,6 +44,14 @@ import {
   saveBrowserScreenshot,
   screenshotObservationLines,
 } from './browser-screenshot-store.js';
+import {
+  abortBrowserLogin,
+  normalizeBrowserLoginDomain,
+  requestBrowserLogin,
+  BROWSER_LOGIN_HANDOFF_TIMEOUT_MS,
+  type BrowserLoginRequest,
+  type BrowserLoginResolution,
+} from './browser-login-handoff.js';
 
 // Types
 
@@ -58,6 +68,7 @@ export const BROWSER_REACT_OPS = [
   'wait',
   'read_page',
   'close',
+  'request_login',
 ] as const;
 
 export type BrowserToolOp = (typeof BROWSER_REACT_OPS)[number];
@@ -108,6 +119,21 @@ export interface BrowserReActActionInput {
   schema?: Record<string, unknown>;
   direction?: string;
   condition?: string;
+  /** request_login — site the human should sign in to (hostname or URL). */
+  domain?: string;
+  /** request_login — one line shown to the human on the sign-in banner. */
+  reason?: string;
+}
+
+/** Host hooks for `request_login` (notification, Stop, test timeouts). */
+export interface BrowserLoginHandoffDeps {
+  timeoutMs?: number;
+  /** Fired once the request is open, e.g. to broadcast + notify the owner. */
+  onRequested?: (request: BrowserLoginRequest) => void;
+  /** Fired after the wait settles, before the observation is returned. */
+  onResolved?: (request: BrowserLoginRequest, resolution: BrowserLoginResolution) => void;
+  /** True when the user already pressed Stop; skips opening the request. */
+  isCancelled?: () => boolean;
 }
 
 const SCROLL_DELTA_PX = 720;
@@ -1091,6 +1117,10 @@ export function browserToolStartLabel(input: BrowserReActActionInput): string {
       return 'Reading page text…';
     case 'close':
       return 'Closing browser…';
+    case 'request_login': {
+      const d = normalizeBrowserLoginDomain(input.domain ?? input.url);
+      return d ? `Waiting for you to sign in to ${d}…` : 'Waiting for you to sign in…';
+    }
     default:
       return 'Running browser tool…';
   }
@@ -1107,6 +1137,150 @@ function hostHintFromNavigateData(data: unknown): string | undefined {
   }
 }
 
+function isBlankPageUrl(url: string | null): boolean {
+  return !url || url === 'about:blank' || url.startsWith('chrome://');
+}
+
+function loginSaveLine(
+  host: BrowserSession,
+  saved: boolean | null,
+): { line: string; detail: string } {
+  if (!host.profile) {
+    return {
+      line: 'No saved browser profile is attached, so the login lasts only until this browser closes.',
+      detail: 'no_profile',
+    };
+  }
+  if (!host.profile.writable) {
+    return {
+      line: "This session's browser profile is read-only (another session holds it), so the login lasts only until this browser closes.",
+      detail: 'read_only',
+    };
+  }
+  return saved
+    ? { line: 'The login was saved to the browser profile for future sessions.', detail: 'saved' }
+    : {
+        line: 'Saving the login to the browser profile failed; it lasts until this browser closes.',
+        detail: 'save_failed',
+      };
+}
+
+async function runRequestLoginStep(
+  chatSessionId: string,
+  input: BrowserReActActionInput,
+  host: BrowserSession,
+  opTimeoutMs: number,
+  policyOpts: BrowserNavigationPolicyOpts | undefined,
+  deps: BrowserLoginHandoffDeps,
+): Promise<BrowserReActStepOutcome> {
+  const domain = normalizeBrowserLoginDomain(input.domain ?? input.url);
+  if (!domain) {
+    return {
+      markdown:
+        '## Browser tool error\nrequest_login needs `domain`: the site to sign in to, e.g. "github.com".',
+      hostExit: 1,
+      hostDetail: 'bad_domain',
+      ui: { summary: 'Sign-in request rejected', errorLine: 'Missing or invalid domain' },
+    };
+  }
+  const stoppedBeforeRequest = (): BrowserReActStepOutcome => ({
+    markdown: `## Browser: request_login\nSign-in to ${domain} was not requested: the user stopped this turn.`,
+    hostExit: 1,
+    hostDetail: 'cancelled_before_request',
+    ui: { summary: 'Sign-in not requested (stopped)' },
+  });
+  if (deps.isCancelled?.()) return stoppedBeforeRequest();
+
+  // Put the human on the site rather than a blank page.
+  if (isBlankPageUrl(currentPageUrlOf(host))) {
+    await browserNavigate(host, `https://${domain}/`, opTimeoutMs, policyOpts);
+    // A Stop during the navigation found no request to abort; honour it here
+    // rather than parking the stopped turn on a fresh request.
+    if (deps.isCancelled?.()) return stoppedBeforeRequest();
+  }
+
+  const release = holdBrowserSessionOpen(chatSessionId);
+  const unsubscribe = subscribeBrowserSessionLifecycle((ev) => {
+    if (ev.type === 'closed' && ev.id === chatSessionId) {
+      abortBrowserLogin(chatSessionId, 'browser_closed');
+    }
+  });
+  const timeoutMs = deps.timeoutMs ?? BROWSER_LOGIN_HANDOFF_TIMEOUT_MS;
+  let request: BrowserLoginRequest | null = null;
+  let resolution: BrowserLoginResolution;
+  try {
+    const opened = requestBrowserLogin(
+      chatSessionId,
+      { domain, reason: input.reason },
+      { timeoutMs, onRequested: deps.onRequested },
+    );
+    request = opened.request;
+    resolution = await opened.settled;
+  } finally {
+    unsubscribe();
+    release();
+  }
+  try {
+    deps.onResolved?.(request, resolution);
+  } catch (err) {
+    console.warn(`[browser-login] onResolved failed: ${String(err)}`);
+  }
+
+  const url = currentPageUrlOf(host);
+  const trailer = surfaceObservationLines(
+    'web',
+    resolution.detail === 'browser_closed' ? null : url,
+  );
+  const body = (text: string) => ['## Browser: request_login', '', text, ...trailer].join('\n');
+
+  switch (resolution.outcome) {
+    case 'done': {
+      let saved: boolean | null = null;
+      if (host.profile?.writable) {
+        saved = await host.profile.save().catch(() => false);
+      }
+      const save = loginSaveLine(host, saved);
+      return {
+        markdown: body(
+          `The human finished signing in to ${domain} in the Agent browser pane. ${save.line} Continue the task from the current page; check it is signed in before relying on that.`,
+        ),
+        hostExit: 0,
+        hostDetail: `done:${save.detail}`,
+        ui: { summary: `Signed in to ${domain}`, targetSummary: url ?? undefined },
+      };
+    }
+    case 'cancelled':
+      return {
+        markdown: body(
+          `The human cancelled sign-in to ${domain}. Do not request it again unless they ask. Tell them in chat what you could not finish without signing in, and never ask for the password, 2FA code or payment details in chat.`,
+        ),
+        hostExit: 2,
+        hostDetail: 'cancelled',
+        ui: { summary: `Sign-in to ${domain} cancelled` },
+      };
+    case 'timeout':
+      return {
+        markdown: body(
+          `Nobody completed sign-in to ${domain} within ${Math.round(timeoutMs / 60000)} minutes. Tell the human in chat that the task is waiting on that sign-in; request it again only when they say they are ready.`,
+        ),
+        hostExit: 2,
+        hostDetail: 'timeout',
+        ui: { summary: `Sign-in to ${domain} timed out` },
+      };
+    default:
+      return {
+        markdown: body(
+          resolution.detail === 'browser_closed'
+            ? `The browser closed before sign-in to ${domain} finished.`
+            : `The sign-in request for ${domain} ended (${resolution.detail ?? 'stopped'}) before the human finished.`,
+        ),
+        hostExit: 1,
+        hostDetail: `aborted:${resolution.detail ?? 'unknown'}`,
+        ui: { summary: `Sign-in to ${domain} stopped` },
+      };
+  }
+}
+
 /**
  * Run one browser tool from a parsed ReAct action. Injects markdown for the model.
  */
@@ -1115,6 +1289,7 @@ export async function runBrowserReActStep(
   input: BrowserReActActionInput,
   sessionLaunchOpts: BrowserSessionOptions = {},
   policyOpts?: BrowserNavigationPolicyOpts,
+  loginDeps: BrowserLoginHandoffDeps = {},
 ): Promise<BrowserReActStepOutcome> {
   const opRaw = typeof input.op === 'string' ? input.op.trim() : '';
   if (!opRaw || !BROWSER_REACT_OP_SET.has(opRaw)) {
@@ -1191,6 +1366,13 @@ export async function runBrowserReActStep(
       ...surfaceObservationLines('web', r.op === 'close' ? null : currentPageUrlOf(host)),
     ].join('\n');
   };
+
+  // Not an agent step: the human must be able to drive the pane while it waits.
+  if (op === 'request_login') {
+    return finish(
+      await runRequestLoginStep(chatSessionId, input, host, opTimeoutMs, policyOpts, loginDeps),
+    );
+  }
 
   incrementBrowserToolOpEntered(chatSessionId);
   try {
