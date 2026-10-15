@@ -144,6 +144,13 @@ describe('chatBadgeCount', () => {
     expect(chatBadgeCount(true, { 'spaces/A': { count: 5 } }, announced, loaded())).toBe(5);
   });
 
+  it('counts unread-dot spaces once each, without double counting announced ones', () => {
+    const announced = addAnnouncement({}, { spaceId: 'A', count: 2 });
+    expect(chatBadgeCount(false, {}, announced, loaded(), ['A', 'B', 'C'])).toBe(4);
+    expect(chatBadgeCount(false, {}, {}, loaded(['C']), ['A', 'B', 'C'])).toBe(2);
+    expect(chatBadgeCount(true, { 'spaces/A': { count: 1 } }, {}, loaded(), ['B'])).toBe(1);
+  });
+
   it('a mute from another tab removes what the space already added to the fallback badge', () => {
     const store = createChatMuteStore(makeApi());
     store.applyEvent({ spaceIds: [], revision: 1 });

@@ -223,7 +223,9 @@ export function addAnnouncement(
  * Unread count for Chat badges. With push active the push store tracks real
  * unread counts per space (keyed `spaces/{id}`); without it, fall back to the
  * messages the notifier announced per space since the user last opened the
- * Chat pane. Never sum the two: the notifier also announces pushed messages.
+ * Chat pane, plus one for each other space that shows an unread dot in the
+ * Google Chat list. Never sum push with either: the notifier also announces
+ * pushed messages.
  *
  * Both sources are filtered by the current mute list at read time, so muting
  * a space (here or in another tab) removes what it already contributed. Until
@@ -235,6 +237,7 @@ export function chatBadgeCount(
   pushUnread: Record<string, { count: number }>,
   announcedBySpace: Record<string, number>,
   mutes: ChatMuteState,
+  unreadSpaces: Iterable<string> = [],
 ): number {
   let total = 0;
   if (pushActive) {
@@ -245,6 +248,9 @@ export function chatBadgeCount(
   }
   for (const [spaceId, n] of Object.entries(announcedBySpace)) {
     if (!isSpaceQuiet(mutes, spaceId)) total += n;
+  }
+  for (const spaceId of unreadSpaces) {
+    if (!announcedBySpace[spaceId] && !isSpaceQuiet(mutes, spaceId)) total += 1;
   }
   return total;
 }

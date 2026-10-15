@@ -122,6 +122,7 @@ import {
 import { getOpenChatSpace, requestOpenChatSpace } from './utils/googleChatNotifications';
 import { useHubChatUnread } from './hooks/useHubChatUnread';
 import { combinedChatBadge } from './utils/hubChatUnread';
+import { unreadSpacesStore, useGoogleChatUnreadSpaces } from './utils/googleChatUnreadSpaces';
 import {
   effectiveChatPaneSide,
   getChatPaneSide,
@@ -3816,11 +3817,13 @@ export default function App({ initialView }: any = {}) {
   const chatUserId = getAuthRecord()?.user?.id || null;
   useChatMutesSync(chatEnabled, chatUserId);
   const chatMutes = useChatMutes();
+  const googleUnreadSpaces = useGoogleChatUnreadSpaces(chatUserId);
   const googleChatBadge = chatBadgeCount(
     googleChatPush.pushActive,
     googleChatPush.unread,
     chatAnnouncedSinceOpen,
     chatMutes,
+    chatEnabled ? googleUnreadSpaces : [],
   );
   useGoogleChatNotifications({
     ...chatNotifyGate(chatEnabled, chatMutes),
@@ -3832,6 +3835,7 @@ export default function App({ initialView }: any = {}) {
       document.hasFocus() &&
       getOpenChatSpace() === spaceId,
     onNotify: (notice) => {
+      unreadSpacesStore().markUnread(chatUserId, notice.spaceId);
       if (!chatPaneOpenRef.current)
         setChatAnnouncedSinceOpen((prev) => addAnnouncement(prev, notice));
       const more = notice.count > 1 ? ` (+${notice.count - 1} more)` : '';

@@ -4,6 +4,7 @@ import {
   laterOf,
   loadSeen,
   markSeen,
+  partitionUnreadSpaces,
   pruneSeen,
   saveSeen,
   spacesNeedingReadState,
@@ -208,5 +209,39 @@ describe('spacesNeedingReadState', () => {
       'S2',
       'S3',
     ]);
+  });
+});
+
+describe('partitionUnreadSpaces', () => {
+  const spaces = [
+    { id: 'A', lastActiveTime: '2026-10-09T11:00:00Z' },
+    { id: 'B', lastActiveTime: '2026-10-09T11:00:00Z' },
+    { id: 'C', lastActiveTime: '2026-10-09T11:00:00Z' },
+    { id: 'D', lastActiveTime: '2026-10-09T11:00:00Z' },
+  ];
+  const google: GoogleReadCache = {
+    A: { lastReadTime: '2026-10-09T10:00:00Z', checkedActive: null, checkedAt: NOW },
+    B: { lastReadTime: '2026-10-09T11:30:00Z', checkedActive: null, checkedAt: NOW },
+    D: { lastReadTime: null, checkedActive: null, checkedAt: NOW },
+  };
+
+  it('splits read-state results into unread and not-yet-known, skipping the open space', () => {
+    const out = partitionUnreadSpaces(spaces, {
+      google,
+      seen: seenAt('2026-10-01T00:00:00Z'),
+      useGoogle: true,
+      selectedId: 'D',
+    });
+    expect(out).toEqual({ unread: ['A'], unknown: ['C'] });
+  });
+
+  it('has no unknowns without read-state access', () => {
+    const out = partitionUnreadSpaces(spaces, {
+      google: {},
+      seen: seenAt('2026-10-09T10:30:00Z', { B: '2026-10-09T11:00:00Z' }),
+      useGoogle: false,
+      selectedId: null,
+    });
+    expect(out).toEqual({ unread: ['A', 'C', 'D'], unknown: [] });
   });
 });

@@ -168,3 +168,26 @@ export function spacesNeedingReadState(
     opts.limit ?? READ_STATE_CHECKS_PER_PASS,
   );
 }
+
+/**
+ * The list's dot state for every space, for the Chat badges. `unknown` holds
+ * spaces whose Google read position hasn't been fetched and that this browser
+ * never showed, so a publisher keeps whatever it last knew for them instead of
+ * clearing them on mount. The open space is being read and is never unread.
+ */
+export function partitionUnreadSpaces(
+  spaces: Pick<ChatSpace, 'id' | 'lastActiveTime'>[],
+  opts: { google: GoogleReadCache; seen: SeenStore; useGoogle: boolean; selectedId: string | null },
+): { unread: string[]; unknown: string[] } {
+  const unread: string[] = [];
+  const unknown: string[] = [];
+  for (const space of spaces) {
+    if (!space.id || space.id === opts.selectedId) continue;
+    if (opts.useGoogle && !opts.google[space.id] && !opts.seen.spaces[space.id]) {
+      unknown.push(space.id);
+    } else if (isSpaceUnread(space, opts)) {
+      unread.push(space.id);
+    }
+  }
+  return { unread, unknown };
+}

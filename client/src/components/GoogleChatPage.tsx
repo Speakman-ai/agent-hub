@@ -107,6 +107,7 @@ import {
   laterOf,
   loadSeen,
   markSeen,
+  partitionUnreadSpaces,
   pruneSeen,
   saveSeen,
   spacesNeedingReadState,
@@ -114,6 +115,7 @@ import {
   type SeenStore,
 } from '../utils/googleChatUnread';
 import { getAuthRecord } from '../utils/auth';
+import { unreadSpacesStore } from '../utils/googleChatUnreadSpaces';
 import { chatMuteStore, isSpaceQuiet, useChatMutes } from '../utils/googleChatMutes';
 
 type GoogleStatus = NonNullable<GoogleStatusLike>;
@@ -1129,6 +1131,18 @@ export default function GoogleChatPage({
   useEffect(() => {
     saveSeen(unreadUserId, seen);
   }, [unreadUserId, seen]);
+
+  // Share the dot set so the Chat badges can count it while this page is closed.
+  useEffect(() => {
+    if (!spaces.length) return;
+    const { unread, unknown } = partitionUnreadSpaces(spaces, {
+      google: googleRead,
+      seen,
+      useGoogle: canReadState,
+      selectedId,
+    });
+    unreadSpacesStore().publish(unreadUserId, unread, unknown);
+  }, [spaces, googleRead, seen, canReadState, selectedId, unreadUserId]);
 
   useEffect(() => {
     setReactionMenuFor(null);
