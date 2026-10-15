@@ -165,6 +165,9 @@ describe('GoogleChatPage', () => {
     expect(startSessionProps.last?.contextLabel).toBe(
       'Chat: Please reset the staging DB for tenant 42',
     );
+    // The session name drops the "Chat:" prefix and is handed to the auto-titler.
+    expect(startSessionProps.last?.defaultName).toBe('Please reset the staging DB for tenant 42');
+    expect(startSessionProps.last?.autoTitle).toBe(true);
   });
 
   it('shows an agent draft under its thread message and approves it', async () => {
@@ -1647,6 +1650,7 @@ describe('GoogleChatPage multi-select', () => {
     );
     expect(seed).not.toContain('Third, unrelated');
     expect(startSessionProps.last?.contextLabel).toBe('Chat: 2 messages in Acme support');
+    expect(startSessionProps.last?.defaultName).toBe('Invoices show the wrong total');
     expect(startSessionProps.last?.warning).toBeNull();
 
     const onStarted = startSessionProps.last?.onStarted as (s: unknown) => void;

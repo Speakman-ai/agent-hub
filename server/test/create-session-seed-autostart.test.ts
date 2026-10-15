@@ -58,6 +58,7 @@ describe('POST /api/agents/:agentId/sessions autoStart', () => {
       agentId,
       sessionId: res.body.id,
       content: 'Look at this thread.',
+      _seedTurn: true,
     });
     const { getStmts } = await import('../db.js');
     expect(getStmts().getMessages.all(res.body.id)).toHaveLength(0);
@@ -79,5 +80,42 @@ describe('POST /api/agents/:agentId/sessions autoStart', () => {
       .send({ name: 'empty', autoStart: true })
       .expect(200);
     expect(handleChat).not.toHaveBeenCalled();
+  });
+
+  it('keeps a plain name as a manual title', async () => {
+    const res = await request
+      .post(`/api/agents/${agentId}/sessions`)
+      .send({ name: 'Chat: Molly thought maybe', seedMessage: 'ctx', autoStart: true })
+      .expect(200);
+    const { getStmts } = await import('../db.js');
+    const row = getStmts().getSession.get(res.body.id) as { name: string; title_source: string };
+    expect(row.name).toBe('Chat: Molly thought maybe');
+    expect(row.title_source).not.toBe('auto');
+  });
+
+  it('hands an autoTitle name to the automatic title flow', async () => {
+    const res = await request
+      .post(`/api/agents/${agentId}/sessions`)
+      .send({
+        name: 'Hi! Molly thought maybe this was done on purpose so that history stays intact. Can we check?',
+        seedMessage: "Here's a Google Chat request I'd like you to work on.",
+        autoStart: true,
+        autoTitle: true,
+      })
+      .expect(200);
+    const { getStmts } = await import('../db.js');
+    const row = getStmts().getSession.get(res.body.id) as { name: string; title_source: string };
+    expect(row.title_source).toBe('auto');
+    expect(row.name).toBe(res.body.name);
+    expect(row.name.startsWith('Molly thought maybe')).toBe(true);
+    expect(row.name.length).toBeLessThanOrEqual(60);
+  });
+
+  it('ignores autoTitle without a name', async () => {
+    const res = await request
+      .post(`/api/agents/${agentId}/sessions`)
+      .send({ autoTitle: true })
+      .expect(200);
+    expect(res.body.name).toMatch(/^Session /);
   });
 });

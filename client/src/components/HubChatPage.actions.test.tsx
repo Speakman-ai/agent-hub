@@ -23,7 +23,12 @@ vi.mock('../utils/api', () => ({
 // The modals are covered on their own; here they only record what the pane
 // handed them.
 const ticketDrafts: unknown[] = [];
-const seeds: Array<{ contextLabel: string; seedMessage: string }> = [];
+const seeds: Array<{
+  contextLabel: string;
+  seedMessage: string;
+  defaultName?: string;
+  autoTitle?: boolean;
+}> = [];
 vi.mock('./CaptureToTicketModal', () => ({
   default: (props: { draft: unknown }) => {
     ticketDrafts.push(props.draft);
@@ -34,9 +39,16 @@ vi.mock('./StartSessionModal', () => ({
   default: (props: {
     contextLabel: string;
     seedMessage: string;
+    defaultName?: string;
+    autoTitle?: boolean;
     onStarted: (s: unknown) => void;
   }) => {
-    seeds.push({ contextLabel: props.contextLabel, seedMessage: props.seedMessage });
+    seeds.push({
+      contextLabel: props.contextLabel,
+      seedMessage: props.seedMessage,
+      defaultName: props.defaultName,
+      autoTitle: props.autoTitle,
+    });
     return (
       <button
         type="button"
@@ -155,8 +167,10 @@ describe('HubChatPage message actions', () => {
     await screen.findByText('on it');
     fireEvent.click(within(rowFor('Login fails')).getByLabelText('Send to agent'));
 
-    const { contextLabel, seedMessage } = seeds.at(-1)!;
+    const { contextLabel, seedMessage, defaultName, autoTitle } = seeds.at(-1)!;
     expect(contextLabel).toBe('Chat: Login fails for @carol');
+    expect(defaultName).toBe('Login fails for @carol');
+    expect(autoTitle).toBe(true);
     expect(seedMessage).toContain('**Channel:** # general');
     expect(seedMessage).toContain('**Chat reference:** Agent Hub chat channel gen (message m1)');
     expect(seedMessage).toContain('Login fails for @[carol](user:carol)');

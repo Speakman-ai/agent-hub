@@ -2099,7 +2099,14 @@ export const api = {
       consultMode,
       seedMessage,
       autoStart,
-    }: { consultMode?: boolean; seedMessage?: string; autoStart?: boolean } = {},
+      autoTitle,
+    }: {
+      consultMode?: boolean;
+      seedMessage?: string;
+      autoStart?: boolean;
+      /** `name` is provisional: the automatic title flow may replace it. */
+      autoTitle?: boolean;
+    } = {},
   ) =>
     fetchJSON<SessionWire>(`/agents/${agentId}/sessions`, {
       method: 'POST',
@@ -2108,6 +2115,7 @@ export const api = {
         ...(consultMode ? { session_mode: 'consult' } : {}),
         ...(seedMessage ? { seedMessage } : {}),
         ...(seedMessage && autoStart ? { autoStart: true } : {}),
+        ...(autoTitle ? { autoTitle: true } : {}),
       }),
     }),
   /**

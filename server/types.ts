@@ -4426,6 +4426,8 @@ export interface ChatMessage {
   interrupt?: boolean;
   images?: string[] | UploadedAttachment[];
   _fromQueue?: boolean;
+  /** Internal: the turn runs a session's seed context block; it never drives the auto-title. */
+  _seedTurn?: boolean;
   _existingMsgId?: string;
   /**
    * Set to true ONLY by `reconcileOrphanedTasks` → `resumeOrphanedSessions`

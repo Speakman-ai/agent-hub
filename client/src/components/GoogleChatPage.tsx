@@ -242,13 +242,14 @@ export function buildSeedForMessage(
   space: ChatSpace | null,
   messages: ChatMessage[],
   target: ChatMessage,
-): { label: string; seed: string } {
+): { label: string; name: string; seed: string } {
   const spaceLabel = space ? chatSpaceLabel(space) : null;
   const threaded = !!space?.supportsThreadReplies;
   const firstLine = (target.text || '').split('\n')[0].trim();
   const short = firstLine.length > 60 ? `${firstLine.slice(0, 59)}…` : firstLine;
   return {
     label: `Chat: ${short || spaceLabel || 'message'}`,
+    name: firstLine || `Chat message${spaceLabel ? ` in ${spaceLabel}` : ''}`,
     seed: buildChatSessionSeed({
       spaceLabel,
       spaceName: target.spaceName || space?.name || null,
@@ -292,11 +293,13 @@ export function buildSeedForMessages(
   space: ChatSpace | null,
   messages: ChatMessage[],
   picked: ChatMessage[],
-): { label: string; seed: string } {
+): { label: string; name: string; seed: string } {
   if (picked.length === 1) return buildSeedForMessage(space, messages, picked[0]);
   const spaceLabel = space ? chatSpaceLabel(space) : null;
+  const label = `Chat: ${picked.length} messages${spaceLabel ? ` in ${spaceLabel}` : ''}`;
   return {
-    label: `Chat: ${picked.length} messages${spaceLabel ? ` in ${spaceLabel}` : ''}`,
+    label,
+    name: (picked[0]?.text || '').split('\n')[0].trim() || label,
     seed: buildChatMultiSessionSeed({
       spaceLabel,
       spaceName: picked[0]?.spaceName || space?.name || null,
@@ -314,6 +317,7 @@ export function buildSeedForMessages(
 /** "Send to agent" in progress: the seed plus the messages it should be linked to. */
 type PendingDispatch = {
   label: string;
+  name: string;
   seed: string;
   spaceId: string;
   targets: Array<{
@@ -2448,7 +2452,8 @@ export default function GoogleChatPage({
         <StartSessionModal
           contextLabel={dispatch.label}
           seedMessage={dispatch.seed}
-          defaultName={dispatch.label}
+          defaultName={dispatch.name}
+          autoTitle
           autoStart
           warning={dispatchWarning}
           onClose={() => setDispatch(null)}

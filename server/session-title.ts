@@ -219,7 +219,9 @@ export function isRealUserTitleTurn(input: {
   fromQueue?: boolean;
   isAutoContinuation?: boolean;
   skipUserMessagePersist?: boolean;
+  seedTurn?: boolean;
 }): boolean {
+  if (input.seedTurn) return false;
   if (input.fromQueue) return true;
   return !input.isAutoContinuation && !input.skipUserMessagePersist;
 }

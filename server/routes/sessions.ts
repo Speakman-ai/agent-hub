@@ -107,7 +107,11 @@ import { buildExtractSkillKickoffPrompt, buildExtractSkillSessionName } from '..
 import { buildActiveTasksSnapshot } from '../active-tasks.js';
 import { isSessionChatBusy } from '../session-chat-busy.js';
 import { inferPrUrlFromSessionTitle } from '../session-title-pr.js';
-import { buildForwardedSessionTitle } from '../session-title.js';
+import {
+  buildForwardedSessionTitle,
+  deriveHeuristicTitle,
+  scheduleTitleUpgrade,
+} from '../session-title.js';
 import { checkWorktreeChanges } from '../auto-git.js';
 import { hasPublishableChanges, makeNetDiffProbe } from '../finalize/net-diff.js';
 import { syncLinkedCardToSessionStatus } from '../session-card-status.js';
@@ -677,7 +681,13 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const parsed = parseBody(CreateSessionRequestSchema, req, res);
     if (!parsed) return;
     const id = uuidv4();
-    const name = parsed.name || `Session ${new Date().toLocaleString()}`;
+    // `autoTitle` hands the name to the automatic title flow: it is cleaned up
+    // like a first-message title now, and a later LLM upgrade, substantive user
+    // turn, or linked card may replace it.
+    const autoTitle = parsed.autoTitle === true && !!parsed.name?.trim();
+    const name = autoTitle
+      ? deriveHeuristicTitle(parsed.name!)
+      : parsed.name || `Session ${new Date().toLocaleString()}`;
     const found = findAgent(req.params.agentId as string);
     // Reviewer agents are spawned exclusively by the GitHub webhook
     // handler (one session per PR, named "Review: PR #N"). Users may
@@ -737,6 +747,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const useWorktree = defaultSessionUseWorktreeFlag(found?.project);
     stmts.createSession.run(id, req.params.agentId, name, engine, model, useWorktree, 0, 1);
     setSessionOwner(id, ownerUid);
+    if (autoTitle) stmts.updateSessionNameWithTitleSource.run(name, 'auto', id);
     // Optional opening user message (e.g. an email/todo context block, or chat
     // messages sent to an agent). With `autoStart` it runs as the first turn
     // right away (handleChat stores the message itself, below). Otherwise it is
@@ -779,12 +790,39 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const session = stmts.getSession.get(id) as SessionRow;
     const sessionWire = enrichSessionForClient(session, stmts, found?.project ?? null);
     deps.broadcast({ type: 'session_created', agentId: req.params.agentId, session: sessionWire });
+    if (autoTitle && seed) {
+      void scheduleTitleUpgrade({
+        sessionId: id,
+        heuristicTitle: name,
+        content: seed,
+        config: { anthropicApiKey: null, openaiApiKey: deps.config?.openaiApiKey ?? null },
+        getSessionName: (sid) =>
+          (stmts.getSession.get(sid) as SessionRow | undefined)?.name ?? null,
+        getSessionTitleSource: (sid) =>
+          (stmts.getSession.get(sid) as SessionRow | undefined)?.title_source ?? null,
+        updateSessionName: (title, sid, expected) =>
+          ((stmts.updateAutoSessionNameIfCurrent.run(title, sid, expected) as { changes?: number })
+            .changes ?? 0) > 0,
+        onUpgrade: () => {
+          const row = stmts.getSession.get(id) as SessionRow | undefined;
+          if (row) {
+            deps.broadcast({
+              type: 'session-updated',
+              session: enrichSessionForClient(row, stmts, found?.project ?? null),
+            });
+          }
+        },
+      });
+    }
     if (autoStartSeed && seed) {
       void handleChat(null, {
         type: 'chat',
         agentId: agentIdParam,
         sessionId: id,
         content: seed,
+        // The seed is a context block, not the user's own words; titling from
+        // it would replace the session name with its boilerplate lead-in.
+        _seedTurn: true,
       }).catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err);
         console.error(`[sessions] seed auto-start rejected for session ${id}: ${message}`);

@@ -16,6 +16,7 @@ export default function StartSessionModal({
   contextLabel,
   seedMessage,
   defaultName,
+  autoTitle = false,
   warning,
   autoStart = false,
   onClose,
@@ -27,6 +28,8 @@ export default function StartSessionModal({
   seedMessage: string;
   /** Suggested session name. */
   defaultName?: string;
+  /** `defaultName` is only a placeholder; the session renames itself from its content. */
+  autoTitle?: boolean;
   /** Shown above the form, e.g. when the source was already sent to an agent. */
   warning?: string | null;
   /** Run the opening message as the first turn right away instead of waiting for a follow-up. */
@@ -107,6 +110,7 @@ export default function StartSessionModal({
       const session = await api.createSession(agentId, defaultName, {
         seedMessage: seed.trim(),
         autoStart,
+        ...(autoTitle ? { autoTitle } : {}),
       });
       onStarted(session);
       onClose();

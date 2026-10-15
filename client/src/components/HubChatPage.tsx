@@ -314,7 +314,9 @@ export default function HubChatPage({
     null,
   );
   const [ticketDraft, setTicketDraft] = useState<CaptureCardDraft | null>(null);
-  const [dispatch, setDispatch] = useState<{ label: string; seed: string } | null>(null);
+  const [dispatch, setDispatch] = useState<{ label: string; name: string; seed: string } | null>(
+    null,
+  );
   const [copied, setCopied] = useState<{ id: string; ok: boolean } | null>(null);
   const [highlightId, setHighlightId] = useState<string | null>(null);
 
@@ -1219,6 +1221,7 @@ export default function HubChatPage({
     const firstLine = refsToPlainText(chosen[0].body, locateChatMarkdownCode).split('\n')[0].trim();
     const short = firstLine.length > 60 ? `${firstLine.slice(0, 59)}…` : firstLine;
     setDispatch({
+      name: firstLine || `Chat message${input.channelLabel ? ` in ${input.channelLabel}` : ''}`,
       label:
         chosen.length === 1
           ? `Chat: ${short || input.channelLabel || 'message'}`
@@ -1995,7 +1998,8 @@ export default function HubChatPage({
         <StartSessionModal
           contextLabel={dispatch.label}
           seedMessage={dispatch.seed}
-          defaultName={dispatch.label}
+          defaultName={dispatch.name}
+          autoTitle
           autoStart
           onClose={() => setDispatch(null)}
           onStarted={(session) => {

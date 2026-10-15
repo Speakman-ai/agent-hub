@@ -1093,6 +1093,11 @@ describe('scheduleTitleUpgrade', () => {
 });
 
 describe('isRealUserTitleTurn', () => {
+  it('never titles from a seed context turn, even when it arrives via the queue', () => {
+    expect(isRealUserTitleTurn({ seedTurn: true })).toBe(false);
+    expect(isRealUserTitleTurn({ seedTurn: true, fromQueue: true })).toBe(false);
+  });
+
   it('treats a plain persisted user turn as real', () => {
     expect(isRealUserTitleTurn({})).toBe(true);
     expect(

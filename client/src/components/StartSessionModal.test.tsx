@@ -97,4 +97,29 @@ describe('StartSessionModal', () => {
       autoStart: true,
     });
   });
+
+  it('marks the suggested name as provisional when autoTitle is set', async () => {
+    render(
+      <StartSessionModal
+        contextLabel="Chat: #eng"
+        seedMessage="Please look at this thread."
+        defaultName="Molly thought maybe this was done on purpose"
+        autoTitle
+        autoStart
+        onClose={() => {}}
+        onStarted={() => {}}
+      />,
+    );
+    await waitFor(() => expect(getAgents).toHaveBeenCalled());
+    const submit = await screen.findByTestId('start-session-submit');
+    await waitFor(() => expect(submit).not.toBeDisabled());
+    fireEvent.click(submit);
+    await waitFor(() => expect(createSession).toHaveBeenCalled());
+    expect(createSession.mock.calls[0][1]).toBe('Molly thought maybe this was done on purpose');
+    expect(createSession.mock.calls[0][2]).toEqual({
+      seedMessage: 'Please look at this thread.',
+      autoStart: true,
+      autoTitle: true,
+    });
+  });
 });
