@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ENVIRONMENT_GATEWAY_PORT,
   ENVIRONMENT_READY_MARKER,
+  buildEnvironmentDiagnosticsCommand,
   buildEnvironmentOverrideYaml,
   buildEnvironmentPhases,
   environmentComposeEnv,
@@ -49,6 +50,7 @@ describe('environment compose wiring', () => {
   it('runs override, compose up, then seed steps in order', () => {
     expect(buildEnvironmentPhases(SPEC).map((p) => p.name)).toEqual([
       'compose override',
+      'compose build',
       'compose up',
       'migrate',
     ]);
@@ -95,9 +97,10 @@ describe('runEnvironmentBringup', () => {
       sleep: async () => {},
     });
     expect(res).toEqual({ ok: true });
-    expect(calls[1].run).toBe('docker compose up -d --build --remove-orphans');
+    expect(calls[1].run).toBe('docker compose build');
+    expect(calls[2].run).toBe('docker compose up -d --no-build --remove-orphans');
     // Secrets and compose targeting reach every command.
-    expect(calls[2].env).toMatchObject({
+    expect(calls[3].env).toMatchObject({
       DATABASE_PASSWORD: 's3cret',
       COMPOSE_PROJECT_NAME: 'pr-42',
     });
@@ -162,6 +165,40 @@ describe('runEnvironmentBringup', () => {
         : { exitCode: 0, stdout: '200' };
     const res = await runEnvironmentBringup({ spec: SPEC, env: {}, exec, log: () => {} });
     expect(res).toEqual({ ok: false, error: '"compose up" timed out after 30 min.' });
+  });
+
+  it('a slow build gets its own deadline instead of sharing the up deadline', () => {
+    const phases = buildEnvironmentPhases(SPEC);
+    const build = phases.find((p) => p.name === 'compose build');
+    const up = phases.find((p) => p.name === 'compose up');
+    expect(build?.deadlineMs).toBe(30 * 60_000);
+    expect(up?.deadlineMs).toBe(30 * 60_000);
+    expect(up?.run).toContain('--no-build');
+  });
+
+  it('dumps container status and logs into the phase log when compose up fails', async () => {
+    const calls: Array<{ run: string; phase: number; quiet?: boolean }> = [];
+    const exec: EnvironmentExec = async (run, o) => {
+      calls.push({ run, phase: o.phase, quiet: o.quiet });
+      return run.startsWith('docker compose up')
+        ? { exitCode: 1, stdout: '', timedOut: true }
+        : { exitCode: 0, stdout: '' };
+    };
+    const res = await runEnvironmentBringup({ spec: SPEC, env: {}, exec, log: () => {} });
+    expect(res).toEqual({ ok: false, error: '"compose up" timed out after 30 min.' });
+    const upIndex = calls.findIndex((c) => c.run.startsWith('docker compose up'));
+    const diag = calls[upIndex + 1];
+    expect(diag.run).toBe(buildEnvironmentDiagnosticsCommand());
+    expect(diag.run).toContain('docker compose ps -a');
+    expect(diag.run).toContain('docker compose logs');
+    expect(diag.phase).toBe(calls[upIndex].phase);
+    expect(diag.quiet).toBeFalsy();
+  });
+
+  it('does not run diagnostics when writing the override fails', async () => {
+    const { exec, calls } = fakeExec({ fail: 'cat >' });
+    await runEnvironmentBringup({ spec: SPEC, env: {}, exec, log: () => {} });
+    expect(calls.some((c) => c.run === buildEnvironmentDiagnosticsCommand())).toBe(false);
   });
 
   it('keeps the exit-code error when a timed-out command still exited 0', async () => {

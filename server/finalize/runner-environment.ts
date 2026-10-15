@@ -93,7 +93,12 @@ export interface EnvironmentPhase {
   deadlineMs: number;
 }
 
-/** Ordered bring-up commands: write the override, `compose up`, seed steps. */
+/**
+ * Ordered bring-up commands: write the override, build images, `compose up`,
+ * seed steps. Images build in their own phase so a slow build does not eat the
+ * `up` deadline, which also has to cover `depends_on: service_healthy` gates
+ * (a backend migrating an empty database can hold `up -d` for many minutes).
+ */
 export function buildEnvironmentPhases(spec: RunnerEnvironmentSpec): EnvironmentPhase[] {
   const deadlineMs = DEFAULT_ENVIRONMENT_PHASE_DEADLINE_MS;
   return [
@@ -103,8 +108,13 @@ export function buildEnvironmentPhases(spec: RunnerEnvironmentSpec): Environment
       deadlineMs: 60_000,
     },
     {
+      name: 'compose build',
+      run: 'docker compose build',
+      deadlineMs,
+    },
+    {
       name: 'compose up',
-      run: 'docker compose up -d --build --remove-orphans',
+      run: 'docker compose up -d --no-build --remove-orphans',
       deadlineMs,
     },
     ...spec.steps.map((s) => ({ name: s.name, run: s.run, deadlineMs })),
@@ -115,6 +125,22 @@ export function buildEnvironmentPhases(spec: RunnerEnvironmentSpec): Environment
 export function buildHealthProbeCommand(spec: RunnerEnvironmentSpec): string {
   const url = `http://127.0.0.1:${ENVIRONMENT_GATEWAY_PORT}${spec.health}`;
   return `curl -sS -o /dev/null -w '%{http_code}' --max-time 5 ${shellQuote(url)} || true`;
+}
+
+/**
+ * Prints container states (including health) and each service's recent logs.
+ * Run after a compose phase fails so the log shows which container held it up,
+ * not just docker's "context canceled".
+ */
+export function buildEnvironmentDiagnosticsCommand(): string {
+  return [
+    "echo '==> container status'",
+    'docker compose ps -a',
+    "echo '==> recent container logs'",
+    'docker compose logs --no-color --timestamps --tail 40',
+  ]
+    .map((c) => `${c} || true`)
+    .join('; ');
 }
 
 /** Stops the stack and removes its volumes. Safe to run when nothing is up. */
@@ -204,6 +230,16 @@ export async function runEnvironmentBringup(args: {
     });
     if (args.signal?.aborted) return stopped();
     if (res.exitCode !== 0) {
+      // Every phase after the override touches the stack.
+      if (i > 0) {
+        await exec(buildEnvironmentDiagnosticsCommand(), {
+          env,
+          phase: i,
+          deadlineMs: 60_000,
+          signal: args.signal,
+        });
+        if (args.signal?.aborted) return stopped();
+      }
       // docker reports the kill as "context canceled" (exit 1), which reads
       // like a crash; name the limit so the fix (a faster boot) is obvious.
       if (res.timedOut) {

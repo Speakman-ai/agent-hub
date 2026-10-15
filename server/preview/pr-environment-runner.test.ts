@@ -241,7 +241,7 @@ describe('local environment runner', () => {
     expect(await runner.status(ref)).toMatchObject({
       upstream: { host: '127.0.0.1', port: 40001 },
     });
-    expect(execs).toContain('docker compose up -d --build --remove-orphans');
+    expect(execs).toContain('docker compose up -d --no-build --remove-orphans');
     const logs = await runner.readLogs(ref, -1);
     expect(logs.lines).toContain('==> environment is healthy');
   });
