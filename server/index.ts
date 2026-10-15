@@ -421,6 +421,7 @@ import {
 import { initLogsDb } from './logs/logs-db.js';
 import { startLogWriteQueue, flushLogWriteQueue } from './logs/log-write-queue.js';
 import { runLogRetentionReaper, LOG_RETENTION_REAPER_CRON } from './logs/log-retention-reaper.js';
+import { runNotificationsPrune, NOTIFICATIONS_PRUNE_CRON } from './notifications-store.js';
 import { initInfraDb } from './infra/infra-db.js';
 import { startInfraWriteQueue, flushInfraWriteQueue } from './infra/infra-write-queue.js';
 import { runInfraInventorySync, INFRA_INVENTORY_SYNC_CRON } from './infra/inventory-sync.js';
@@ -2044,6 +2045,12 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
     },
     { name: 'log-retention-reaper' },
   );
+
+  // Notification inbox retention: read rows after 30 days, unread after 90
+  // (spec STORAGE). Pure SQLite against orgs.db; runs on every Hub.
+  cron.schedule(NOTIFICATIONS_PRUNE_CRON, () => void runNotificationsPrune(), {
+    name: 'notifications-prune',
+  });
 
   // AWS resource inventory sync (decision INFRA-SCOPE) — hourly describe-API
   // sweep that seeds `infra_resources` for every enabled scope row. Deliberately

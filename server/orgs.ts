@@ -21,6 +21,7 @@ import { widenInListCheck } from './sqlite-widen-check.js';
 import { TODO_SOURCE_TYPES } from './source-provenance.js';
 import { ORG_TODOS_SCHEMA } from './org-todos-schema.js';
 import { PROJECT_MEMBERS_SCHEMA } from './project-members-schema.js';
+import { NOTIFICATIONS_SCHEMA } from './notifications-schema.js';
 
 const HOME = process.env.HOME || '/home/' + (process.env.USER || 'user');
 
@@ -223,6 +224,8 @@ export function initOrgsDb(): void {
   // (project_id, user_id); FK on user_id CASCADEs from users. See
   // project-members-store.ts / project-visibility.ts.
   orgsDb.exec(PROJECT_MEMBERS_SCHEMA);
+  // Per-user notification inbox (bell feed). See notifications-store.ts.
+  orgsDb.exec(NOTIFICATIONS_SCHEMA);
 
   // Additive migration for installs that created user_todos before the
   // priority / do_date-window / polymorphic-link columns existed (spec
