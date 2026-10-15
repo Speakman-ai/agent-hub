@@ -96,3 +96,4 @@ server/server.log
 !.cursor/rules/**/
 !.cursor/rules/**/*.mdc
 server/finalize/runner/runner-agent.mjs
+__pycache__/

@@ -23,6 +23,8 @@ python3 scripts/history-scrub/scrub-history.py \
   over.
 - Rewrites file contents, file paths, commit and tag messages, and any
   author/committer email that matches a rule. Other emails are untouched.
+- Reduces `Merged-by: Agent Hub (user@host)` trailers in commit and tag
+  messages to `(user)`, the format new merges write. The username stays.
 - Fails if the commit count changes or any object still matches.
 - `--replace-text` takes filter-repo's expressions file, parsed and applied
   by filter-repo's own code paths (`literal:`, `regex:` with `\1` groups,

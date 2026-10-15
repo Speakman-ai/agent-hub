@@ -170,6 +170,40 @@ describe('scrub-history.py', () => {
     },
   );
 
+  it('verify flags a Merged-by trailer that still carries an email domain', () => {
+    git(repo, 'commit', '-q', '-m', 'merge\n\nMerged-by: Agent Hub (dev@widgetcorp.test)');
+    const res = scrub('--workdir', repo, '--verify-only', '--word', 'unused=x');
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain('leak: commit');
+  });
+
+  it.skipIf(!hasFilterRepo)(
+    'rewrite drops the email domain from Merged-by trailers and keeps the username',
+    () => {
+      writeFileSync(path.join(repo, 'a.txt'), 'Merged-by: Agent Hub (dev@widgetcorp.test)\n');
+      git(repo, 'add', 'a.txt');
+      git(
+        repo,
+        'commit',
+        '-q',
+        '-m',
+        'merge #1\n\nMerged-by: Agent Hub (dev@widgetcorp.test)\nMerged-by: Agent Hub (bot)',
+      );
+      git(repo, 'tag', '-a', 'v1', '-m', 'release\n\nMerged-by: Agent Hub (dev@widgetcorp.test)');
+      const out = path.join(root, 'out');
+      const res = scrub('--source', repo, '--workdir', out, '--word', 'unused=x');
+      expect(res.stderr).not.toContain('leak:');
+      expect(res.status).toBe(0);
+      const msg = git(out, 'log', '--format=%B', '-1', 'main');
+      expect(msg).toContain('Merged-by: Agent Hub (dev)\n');
+      expect(msg).toContain('Merged-by: Agent Hub (bot)');
+      expect(msg).not.toContain('widgetcorp.test');
+      expect(git(out, 'cat-file', '-p', 'v1')).toContain('Merged-by: Agent Hub (dev)');
+      // File contents are not trailers; only messages are rewritten.
+      expect(git(out, 'show', 'main:a.txt')).toContain('(dev@widgetcorp.test)');
+    },
+  );
+
   it.skipIf(!hasFilterRepo)('leaves binary blobs untouched and reports the match', () => {
     writeFileSync(path.join(repo, 'img.bin'), Buffer.from(`\0\0widgetcorp\0`));
     git(repo, 'add', 'img.bin');

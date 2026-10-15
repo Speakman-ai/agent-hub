@@ -22,6 +22,10 @@ contain them:
                         to paths, messages, and emails, and checked by
                         verification. Keep it outside the repo.
 
+`Merged-by: <name> (user@host)` trailers in commit and tag messages are
+reduced to `(user)`, matching what new merges write; verification fails on
+any commit or tag that still has one.
+
 Binary blobs (NUL in the first 8 KiB) are never rewritten, matching
 filter-repo; a match left in one fails verification for you to handle.
 
@@ -42,6 +46,16 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+# `Merged-by: Agent Hub (user@host)` trailers written before merges started
+# dropping the domain (server/commit-message-redaction.ts actorForTrailer).
+MERGED_BY_EMAIL = re.compile(rb"(?im)^(merged-by:[^\n(]*\()([^()@\s]+)@[^()\s]+\)")
+
+
+def strip_merged_by_domains(message: bytes) -> bytes:
+    """Reduce `Merged-by: ... (user@host)` to `(user)`, as new merges write it."""
+    return MERGED_BY_EMAIL.sub(rb"\1\2)", message)
+
 
 SEP = rb"(?:[-_ \t]*|[ \t]*\r?\n[ \t]*(?:[*#/]+|--)?[ \t]*)"
 
@@ -168,7 +182,7 @@ def rewrite(args, rules: Rules, repo: Path) -> None:
             blob.data = rules.apply(blob.data)
 
     def message_cb(message):
-        return rules.apply(message)
+        return rules.apply(strip_merged_by_domains(message))
 
     def filename_cb(filename):
         return rules.apply(filename)
@@ -236,7 +250,7 @@ def verify(rules: Rules, repo: Path) -> int:
             proc.kill()
             raise VerifyError(f"truncated object {sha.decode()}")
         checked += 1
-        if rules.find(data):
+        if rules.find(data) or (kind in (b"commit", b"tag") and MERGED_BY_EMAIL.search(data)):
             bad += 1
             if bad <= 20:
                 print(f"  leak: {kind.decode()} {sha.decode()}", file=sys.stderr)
