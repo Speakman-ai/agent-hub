@@ -16,6 +16,9 @@
 # Usage:
 #   fc-prepare-disks.sh --vm-id ID --base-rootfs PATH --worktree PATH
 #                       [--workspace-size-mib N]
+#   fc-prepare-disks.sh --vm-id ID --base-rootfs PATH --no-worktree
+#                       [--workspace-size-mib N]
+#     (desktop computers: an empty persistent data disk that holds the home dir)
 #   fc-prepare-disks.sh clean --vm-id ID
 
 set -euo pipefail
@@ -34,6 +37,7 @@ BASE_ROOTFS=""
 VM_ID=""
 WORKSPACE_SIZE_MIB="32768"
 WORKTREE=""
+NO_WORKTREE="0"
 WORKSPACE_UID="${AGENT_HUB_WORKSPACE_UID:-1000}"
 WORKSPACE_GID="${AGENT_HUB_WORKSPACE_GID:-1000}"
 
@@ -48,6 +52,7 @@ while [[ $# -gt 0 ]]; do
     --base-rootfs) BASE_ROOTFS="$2"; shift 2 ;;
     --workspace-size-mib) WORKSPACE_SIZE_MIB="$2"; shift 2 ;;
     --worktree) WORKTREE="$2"; shift 2 ;;
+    --no-worktree) NO_WORKTREE="1"; shift ;;
     # Legacy output flags are refused — outputs are constructed from --vm-id.
     --rootfs-out|--workspace-out)
       echo "fc-prepare-disks: refusing caller-supplied output path ($1); use --vm-id" >&2
@@ -86,7 +91,13 @@ if [[ "${CMD}" == "clean" ]]; then
   exit 0
 fi
 
-for required in BASE_ROOTFS WORKTREE; do
+if [[ "${NO_WORKTREE}" == "1" && -n "${WORKTREE}" ]]; then
+  echo "fc-prepare-disks: --worktree and --no-worktree are mutually exclusive" >&2
+  exit 2
+fi
+REQUIRED=(BASE_ROOTFS)
+[[ "${NO_WORKTREE}" == "1" ]] || REQUIRED+=(WORKTREE)
+for required in "${REQUIRED[@]}"; do
   if [[ -z "${!required}" ]]; then
     echo "fc-prepare-disks: missing required --${required,,}" | tr '_' '-' >&2
     exit 2
@@ -94,15 +105,16 @@ for required in BASE_ROOTFS WORKTREE; do
 done
 
 fc_assert_under_roots 'base-rootfs' "${BASE_ROOTFS}" ARTIFACT_DIR
-fc_assert_worktree_under_roots 'worktree' "${WORKTREE}"
 fc_assert_no_symlink_components 'base-rootfs' "${BASE_ROOTFS}"
-fc_assert_no_symlink_components 'worktree' "${WORKTREE}"
-
 BASE_ROOTFS=$(fc_canonicalize "${BASE_ROOTFS}")
-WORKTREE=$(fc_canonicalize "${WORKTREE}")
-
 [[ -f "${BASE_ROOTFS}" ]] || { echo "fc-prepare-disks: base rootfs not found: ${BASE_ROOTFS}" >&2; exit 1; }
-[[ -d "${WORKTREE}" ]] || { echo "fc-prepare-disks: worktree not found: ${WORKTREE}" >&2; exit 1; }
+
+if [[ "${NO_WORKTREE}" != "1" ]]; then
+  fc_assert_worktree_under_roots 'worktree' "${WORKTREE}"
+  fc_assert_no_symlink_components 'worktree' "${WORKTREE}"
+  WORKTREE=$(fc_canonicalize "${WORKTREE}")
+  [[ -d "${WORKTREE}" ]] || { echo "fc-prepare-disks: worktree not found: ${WORKTREE}" >&2; exit 1; }
+fi
 
 # Create the per-VM directory as root under the fixed RUN_DIR. Never follow a
 # pre-existing symlink leaf planted by an unprivileged user.
@@ -144,6 +156,18 @@ cleanup() {
 trap cleanup EXIT
 
 mount -o loop -- "${WORKSPACE_OUT}" "${MOUNT_DIR}"
+
+if [[ "${NO_WORKTREE}" == "1" ]]; then
+  # Empty data disk owned by the workspace user; the guest seeds the home dir
+  # onto it at first boot (agent-hub-desktop-home).
+  chown "${WORKSPACE_UID}:${WORKSPACE_GID}" "${MOUNT_DIR}"
+  sync
+  cleanup
+  trap - EXIT
+  touch -- "${WORKSPACE_READY}"
+  echo "fc-prepare-disks: rootfs=${ROOTFS_OUT} workspace=${WORKSPACE_OUT}"
+  exit 0
+fi
 
 # Materialize the worktree as the workspace user — never as root. The session
 # `.git` is attacker-controlled (smudge filters / hooks / config); Git must not

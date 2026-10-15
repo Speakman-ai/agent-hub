@@ -8,6 +8,7 @@ import { USER_SKILL_CREDENTIALS_SCHEMA } from './skill-credentials-schema.js';
 import { USER_SKILL_OPTIONS_SCHEMA } from './skill-options-schema.js';
 import { GOOGLE_CONNECTIONS_SCHEMA } from './google-connections-schema.js';
 import { BROWSER_PROFILES_SCHEMA } from './browser-profiles-schema.js';
+import { DESKTOP_COMPUTERS_SCHEMA } from './desktop/desktop-computers-schema.js';
 import { APPROVALS_SCHEMA } from './approvals-schema.js';
 import { GOOGLE_CHAT_DRAFTS_SCHEMA } from './google-chat-drafts-schema.js';
 import { GMAIL_IMPORTANCE_SCHEMA } from './gmail-importance-schema.js';
@@ -213,6 +214,9 @@ export function initOrgsDb(): void {
   // Per-(user, agent, project) browser logins, encrypted at rest. See
   // browser-profiles-store.ts.
   orgsDb.exec(BROWSER_PROFILES_SCHEMA);
+  // Persistent desktop computers (VM id + network slot) per (user, agent,
+  // project). See desktop/desktop-computers-store.ts.
+  orgsDb.exec(DESKTOP_COMPUTERS_SCHEMA);
   // Agent approval requests and remembered always-allow rules. See
   // approvals-store.ts.
   orgsDb.exec(APPROVALS_SCHEMA);

@@ -1070,6 +1070,40 @@ describe('fc-prepare-disks.sh argv', () => {
     expect(res.status).toBe(2);
     expect(res.stderr).toMatch(/refusing caller-supplied output path/);
   });
+
+  it('--no-worktree prepares a data disk without requiring a worktree', () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'fc-prep-noworktree-'));
+    try {
+      const env = { AGENT_HUB_FC_ROOTS_CONF: writeRootsConf(base) };
+      const res = run(
+        prepareHelper,
+        ['--vm-id', 'ahdt-x', '--base-rootfs', path.join(base, 'missing.ext4'), '--no-worktree'],
+        env,
+      );
+      // Gets past argument validation to the rootfs check: no worktree demanded.
+      expect(res.stderr).not.toMatch(/missing required --worktree/);
+      expect(res.stderr).toMatch(/base rootfs not found/);
+      expect(res.status).toBe(1);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses --worktree together with --no-worktree', () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'fc-prep-both-'));
+    try {
+      const env = { AGENT_HUB_FC_ROOTS_CONF: writeRootsConf(base) };
+      const res = run(
+        prepareHelper,
+        ['--vm-id', 'ahdt-x', '--base-rootfs', '/tmp/x', '--worktree', base, '--no-worktree'],
+        env,
+      );
+      expect(res.status).toBe(2);
+      expect(res.stderr).toMatch(/mutually exclusive/);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('bash -n helpers', () => {

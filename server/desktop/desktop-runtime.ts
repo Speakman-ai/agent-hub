@@ -24,6 +24,12 @@ export const DESKTOP_SCREEN = { width: 1280, height: 800 } as const;
 /** Stop a computer after this long without a tool call. */
 export const DESKTOP_IDLE_STOP_MS = 30 * 60 * 1000;
 
+/** X display inside the computer; matches the desktop container image (DISPLAY=:99). */
+export const DESKTOP_DISPLAY = ':99';
+
+/** VNC port of the desktop display inside the computer. */
+export const DESKTOP_VNC_PORT = 5900;
+
 /** Identity of one persistent computer. */
 export interface DesktopComputerKey {
   userId: string;
@@ -86,6 +92,11 @@ export interface DesktopRuntime {
   ensureStarted(key: DesktopComputerKey): Promise<DesktopComputerStatus>;
   /** Stop the computer. Persistent storage is kept. No-op when already stopped. */
   stop(key: DesktopComputerKey): Promise<void>;
+  /**
+   * Stop the computer and delete its persistent storage. Only called when the
+   * owning profile is deleted. No-op when the computer never existed.
+   */
+  destroy(key: DesktopComputerKey): Promise<void>;
   /** Run a shell command inside the computer as the desktop user. */
   exec(
     key: DesktopComputerKey,

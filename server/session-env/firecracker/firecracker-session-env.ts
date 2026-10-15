@@ -280,7 +280,16 @@ export interface PreparedDisks {
 
 export interface FirecrackerSessionEnvDeps {
   sessionId: string;
-  worktreePath: string;
+  /**
+   * Host worktree seeded onto the workspace disk at first boot. Null boots an
+   * empty persistent data disk instead (desktop computers keep the home dir
+   * there; see agent-hub-desktop-home).
+   */
+  worktreePath: string | null;
+  /** Fixed VM id. Defaults to one derived from `sessionId`. */
+  vmId?: string;
+  /** Extra kernel cmdline parameters for the guest. */
+  bootArgsExtra?: string[];
   slots: FirecrackerSlotPool;
   paths: FirecrackerPaths;
   vcpuCount?: number;
@@ -306,7 +315,7 @@ export interface FirecrackerSessionEnvDeps {
   prepareDisks?: (ctx: {
     vmDir: string;
     sessionId: string;
-    worktreePath: string;
+    worktreePath: string | null;
     paths: FirecrackerPaths;
     workspaceSizeMib: number;
     vmId?: string;
@@ -357,7 +366,8 @@ export class FirecrackerSessionEnv implements SessionEnv {
   #network: VmNetworkPlan | null = null;
   #vmProcess: VmmHandle | null = null;
 
-  private readonly worktreePath: string;
+  private readonly worktreePath: string | null;
+  private readonly bootArgsExtra: string[];
   private readonly slots: FirecrackerSlotPool;
   private readonly paths: FirecrackerPaths;
   private readonly vcpuCount: number;
@@ -391,7 +401,8 @@ export class FirecrackerSessionEnv implements SessionEnv {
     this.worktreePath = deps.worktreePath;
     this.slots = deps.slots;
     this.paths = deps.paths;
-    this.vmId = sessionVmId(deps.sessionId);
+    this.vmId = deps.vmId ?? sessionVmId(deps.sessionId);
+    this.bootArgsExtra = deps.bootArgsExtra ?? [];
     this.vcpuCount = deps.vcpuCount ?? DEFAULT_VCPU;
     this.memSizeMib = deps.memSizeMib ?? DEFAULT_MEM_MIB;
     this.workspaceSizeMib = deps.workspaceSizeMib ?? DEFAULT_WORKSPACE_MIB;
@@ -548,7 +559,7 @@ export class FirecrackerSessionEnv implements SessionEnv {
   }
 
   async #doStart(): Promise<void> {
-    if (!(await this.io.isDirectory(this.worktreePath))) {
+    if (this.worktreePath !== null && !(await this.io.isDirectory(this.worktreePath))) {
       throw new Error(
         `Session worktree not found at ${this.worktreePath} (session ${this.sessionId})`,
       );
@@ -632,7 +643,7 @@ export class FirecrackerSessionEnv implements SessionEnv {
       });
 
       const nameservers = await this.resolveNameservers();
-      const bootArgsExtra = [`ahvm.session=${this.sessionId}`];
+      const bootArgsExtra = [`ahvm.session=${this.sessionId}`, ...this.bootArgsExtra];
 
       let apiSockPath: string;
       let configPath: string;
@@ -1416,7 +1427,7 @@ export async function defaultPrepareDisks(
   ctx: {
     vmDir: string;
     sessionId: string;
-    worktreePath: string;
+    worktreePath: string | null;
     paths: FirecrackerPaths;
     workspaceSizeMib: number;
     vmId?: string;
@@ -1434,8 +1445,9 @@ export async function defaultPrepareDisks(
     ctx.paths.baseRootfsPath,
     '--workspace-size-mib',
     String(ctx.workspaceSizeMib),
-    '--worktree',
-    hostVisibleWorktreePath(ctx.worktreePath, ctx),
+    ...(ctx.worktreePath === null
+      ? ['--no-worktree']
+      : ['--worktree', hostVisibleWorktreePath(ctx.worktreePath, ctx)]),
   ]);
   if (!res.ok) {
     throw new Error(

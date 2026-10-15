@@ -27,6 +27,8 @@ const { createUser } = await import('../users-store.js');
 const { __resetSecretCryptoForTests } = await import('../secret-crypto.js');
 const store = await import('../browser-profiles-store.js');
 const { default: createMeBrowserProfilesRoutes } = await import('./me-browser-profiles.js');
+const { registerDesktopRuntime, resetDesktopRuntimesForTests } =
+  await import('../desktop/desktop-runtime-registry.js');
 
 const SECRET = 'cookie-value-must-not-leak';
 
@@ -70,6 +72,7 @@ beforeEach(() => {
   __resetSecretCryptoForTests();
   setOrgsDbPathForTests(path.join(TMP_DIR, 'orgs.db'));
   initOrgsDb();
+  resetDesktopRuntimesForTests();
   alice = createUser({ username: 'alice', passwordHash: 'x' }).id;
   bob = createUser({ username: 'bob', passwordHash: 'x' }).id;
 });
@@ -169,6 +172,51 @@ describe('/api/me/browser-profiles', () => {
     const p = seed(alice);
     await request(makeApp(alice)).delete(`/api/me/browser-profiles/${p.id}`).expect(200);
     expect(store.listBrowserProfilesForUser(alice)).toEqual([]);
+  });
+
+  it("deletes the agent's desktop computer storage along with the profile", async () => {
+    const p = seed(alice);
+    const destroy = vi.fn(async () => undefined);
+    registerDesktopRuntime({ kind: 'firecracker', destroy } as never);
+    await request(makeApp(alice)).delete(`/api/me/browser-profiles/${p.id}`).expect(200);
+    expect(destroy).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: alice, agentId: 'agent-a', projectId: 'proj-1' }),
+    );
+    expect(store.listBrowserProfilesForUser(alice)).toEqual([]);
+  });
+
+  it('keeps the profile when a persisted desktop computer has no backend on this host', async () => {
+    const p = seed(alice);
+    const { createDesktopComputersStore } = await import('../desktop/desktop-computers-store.js');
+    createDesktopComputersStore().create({
+      userId: alice,
+      agentId: 'agent-a',
+      projectId: 'proj-1',
+      kind: 'firecracker',
+      vmId: 'ahdt-x',
+      slot: 3,
+      lastActiveAt: null,
+    });
+    const res = await request(makeApp(alice))
+      .delete(`/api/me/browser-profiles/${p.id}`)
+      .expect(500);
+    expect(res.body.error).toContain('backend is not available');
+    expect(store.getBrowserProfileForUser(alice, p.id)).not.toBeNull();
+  });
+
+  it('keeps the profile when the desktop storage delete fails', async () => {
+    const p = seed(alice);
+    registerDesktopRuntime({
+      kind: 'firecracker',
+      destroy: async () => {
+        throw new Error('helper refused');
+      },
+    } as never);
+    const res = await request(makeApp(alice))
+      .delete(`/api/me/browser-profiles/${p.id}`)
+      .expect(500);
+    expect(res.body.error).toContain('helper refused');
+    expect(store.getBrowserProfileForUser(alice, p.id)).not.toBeNull();
   });
 
   describe('domain policies', () => {

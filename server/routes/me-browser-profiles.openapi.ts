@@ -143,7 +143,8 @@ registerPath({
   tags: ['Browser Profiles'],
   summary: 'Delete one of the caller profiles and everything it saved',
   description:
-    'Also removes the profile site policies and approval rules, so agent credentials are refused.',
+    'Also removes the profile site policies and approval rules, so agent credentials are refused. ' +
+    "Deletes the agent's desktop computer and its persistent disk first; if that fails the profile is kept so the delete can be retried.",
   request: { params: ProfileIdParams },
   responses: {
     200: {
@@ -156,6 +157,10 @@ registerPath({
       content: { 'application/json': { schema: ErrorResponse } },
     },
     404: notFound,
+    500: {
+      description: 'The desktop computer storage could not be deleted. The profile is kept.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
   },
 });
 

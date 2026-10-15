@@ -24,6 +24,7 @@ import {
   setBrowserDomainPolicy,
 } from '../browser-domain-policy.js';
 import { isAgentCaller } from './approvals.js';
+import { deleteDesktopComputersWithProfile } from '../desktop/desktop-runtime-registry.js';
 
 const UNREADABLE =
   'Saved browser state for this profile cannot be decrypted. Delete the profile to start fresh.';
@@ -165,10 +166,17 @@ export default function createMeBrowserProfilesRoutes(deps: RouteDeps): Router {
 
   // Deleting a profile also drops its site policies and approval rules, so an
   // agent that could delete it would shed the human's gate along with it.
-  router.delete('/api/me/browser-profiles/:profileId', (req: Request, res: Response) => {
+  // The agent's desktop computer storage goes with it. That runs first so a
+  // failed disk delete leaves the profile in place to retry, and desktop
+  // starts for this key are refused until the profile row is gone.
+  router.delete('/api/me/browser-profiles/:profileId', async (req: Request, res: Response) => {
     const profile = policyEditor(req, res);
     if (!profile) return;
-    deleteBrowserProfile(profile);
+    try {
+      await deleteDesktopComputersWithProfile(profile, () => deleteBrowserProfile(profile));
+    } catch (err) {
+      return res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
     res.json({ ok: true });
   });
 

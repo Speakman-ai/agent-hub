@@ -197,6 +197,9 @@ sudo install -D -m 0644 "${WORK_DIR}/vm-agent.mjs" "${MOUNT_DIR}/usr/local/lib/a
 # The guest resolver writer runs before anything that needs DNS.
 sudo install -D -m 0755 "${SCRIPT_DIR}/../guest/agent-hub-write-resolv.sh" \
   "${MOUNT_DIR}/usr/local/bin/agent-hub-write-resolv"
+# Desktop computers bind the workspace user's home onto the persistent disk.
+sudo install -D -m 0755 "${SCRIPT_DIR}/../guest/agent-hub-desktop-home.sh" \
+  "${MOUNT_DIR}/usr/local/bin/agent-hub-desktop-home"
 
 # Seed a working resolver. This cannot be done in the Dockerfile: docker
 # bind-mounts /etc/resolv.conf over the image during build and the export drops
@@ -207,7 +210,7 @@ printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\noptions timeout:2 attempts:2\n' 
 sudo chmod 0644 "${MOUNT_DIR}/etc/resolv.conf"
 
 for unit in agent-hub-vm-agent.service agent-hub-vsock-bridge.service workspace.mount \
-            agent-hub-resolv.service; do
+            agent-hub-resolv.service agent-hub-desktop-home.service; do
   sudo install -D -m 0644 "${SCRIPT_DIR}/../guest/systemd/${unit}" \
     "${MOUNT_DIR}/etc/systemd/system/${unit}"
 done
@@ -226,6 +229,8 @@ sudo ln -sf ../agent-hub-vsock-bridge.service \
   "${MOUNT_DIR}/etc/systemd/system/multi-user.target.wants/agent-hub-vsock-bridge.service"
 sudo ln -sf ../workspace.mount \
   "${MOUNT_DIR}/etc/systemd/system/local-fs.target.wants/workspace.mount"
+sudo ln -sf ../agent-hub-desktop-home.service \
+  "${MOUNT_DIR}/etc/systemd/system/multi-user.target.wants/agent-hub-desktop-home.service"
 
 sudo sync
 sudo umount "${MOUNT_DIR}"

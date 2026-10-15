@@ -1,0 +1,16 @@
+[Unit]
+Description=Agent Hub desktop home on the persistent data disk
+# Only desktop computers pass this; session VMs keep the image's home.
+ConditionKernelCommandLine=ahvm.desktop=1
+DefaultDependencies=no
+Requires=workspace.mount
+After=workspace.mount
+Before=agent-hub-vm-agent.service multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/agent-hub-desktop-home
+
+[Install]
+WantedBy=multi-user.target

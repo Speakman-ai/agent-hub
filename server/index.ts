@@ -301,6 +301,8 @@ import createMeNotificationPreferencesRoutes from './routes/me-notification-pref
 import createMeBrowserProfilesRoutes from './routes/me-browser-profiles.js';
 import createApprovalsRoutes from './routes/approvals.js';
 import createDesktopRuntimeRoutes from './routes/desktop-runtime.js';
+import { registerFirecrackerDesktopRuntime } from './desktop/register-firecracker-desktop-runtime.js';
+import { unregisterDesktopRuntime } from './desktop/desktop-runtime-registry.js';
 import { cancelOrphanedApprovalRequests } from './approvals-store.js';
 import createGithubOAuthRoutes from './routes/github-oauth.js';
 import createGoogleOAuthRoutes from './routes/google-oauth.js';
@@ -3029,10 +3031,24 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
       console.log(
         `[session-env] firecracker exec=${firecrackerExec.mode} jailer=${fcDefaults.useJailer ? 'on' : 'off'}`,
       );
-      registerFirecrackerBackend({
-        paths: firecrackerPaths,
-        ...fcDefaults,
-      });
+      // Desktop computers share the session slot pool; the pool is built with
+      // their persisted slots already reserved. If those can't be read, leave
+      // Firecracker unregistered rather than hand sessions slots that stopped
+      // computers still own.
+      try {
+        const fcDesktop = registerFirecrackerDesktopRuntime({
+          paths: firecrackerPaths,
+          ...fcDefaults,
+        });
+        registerShutdownTask(async () => fcDesktop.stopSweeper());
+        registerFirecrackerBackend({
+          paths: firecrackerPaths,
+          ...fcDefaults,
+          slots: fcDesktop.slots,
+        });
+      } catch (e) {
+        console.error(`[session-env] firecracker backend not registered: ${(e as Error).message}`);
+      }
     }
 
     void initSessionEnvSelection(
@@ -3060,7 +3076,10 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
               run: (argv) => createFirecrackerHostIo(firecrackerExec).run(argv),
               stopStaleVmms: () => stopStaleFirecrackerVmms(firecrackerExec),
             }),
-          unregisterFirecracker: () => unregisterFirecrackerBackend(),
+          unregisterFirecracker: () => {
+            unregisterFirecrackerBackend();
+            unregisterDesktopRuntime('firecracker');
+          },
         });
       })
       .catch((e) => console.error('[session-env] capability probe failed:', (e as Error).message))

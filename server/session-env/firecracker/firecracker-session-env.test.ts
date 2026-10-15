@@ -263,6 +263,28 @@ describe('FirecrackerSessionEnv start', () => {
     expect(env.guestIp).toBe('172.30.0.3');
   });
 
+  it('boots a fixed vm id on an empty data disk when there is no worktree', async () => {
+    const isDirectory = vi.fn(async () => false);
+    const { env, runs, written, spawned } = makeEnv({
+      vmId: 'ahdt-abc',
+      worktreePath: null,
+      bootArgsExtra: ['ahvm.desktop=1'],
+      ioOverrides: { isDirectory },
+    });
+    await env.ensureStarted();
+
+    expect(env.vmId).toBe('ahdt-abc');
+    // No worktree to validate; a missing one must not block the boot.
+    expect(isDirectory).not.toHaveBeenCalledWith(null);
+    const prepare = runs.find((a) => a[0].endsWith('fc-prepare-disks.sh'))!;
+    expect(prepare).toContain('--no-worktree');
+    expect(prepare).not.toContain('--worktree');
+    expect(prepare[prepare.indexOf('--vm-id') + 1]).toBe('ahdt-abc');
+    const config = JSON.parse([...written.values()][0]);
+    expect(config['boot-source'].boot_args).toContain('ahvm.desktop=1');
+    expect(spawned[0].vmId).toBe('ahdt-abc');
+  });
+
   it('fails closed when the guest bridge cannot be created', async () => {
     const { env } = makeEnv({
       ioOverrides: {
@@ -827,6 +849,13 @@ describe('defaultPrepareDisks — worktree path handed to the privileged helper'
       containerWorkspacesDir: '/home/node/.agent-hub/workspaces',
     });
     expect(worktreeArg(calls[0] as string[])).toBe('/var/lib/agent-hub/workspaces/proj/session-s1');
+  });
+
+  it('asks for an empty data disk when there is no worktree', async () => {
+    const { io, calls } = okIo();
+    await defaultPrepareDisks(io, { ...ctx, worktreePath: null });
+    expect(calls[0]).toContain('--no-worktree');
+    expect(calls[0]).not.toContain('--worktree');
   });
 
   it('passes the path through when the Hub and helper already agree', async () => {
