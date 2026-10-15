@@ -5,6 +5,7 @@
  */
 import { randomUUID } from 'crypto';
 import { getDb } from './db.js';
+import { MAX_CHAT_DIGESTS_PER_CHANNEL } from '../shared/utils/chatDigest.js';
 
 export type ChannelDigestScope = 'channel' | 'project';
 export type ChannelDigestStatus = 'posted' | 'skipped' | 'error';
@@ -37,7 +38,7 @@ const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 /** How far back a new (or re-enabled) digest's first window reaches. */
 export const DIGEST_DEFAULT_LOOKBACK_MS = 24 * 60 * 60_000;
 
-export const MAX_DIGESTS_PER_CHANNEL = 10;
+export const MAX_DIGESTS_PER_CHANNEL = MAX_CHAT_DIGESTS_PER_CHANNEL;
 
 /** The digest's project ids; a malformed column reads as none. */
 export function digestProjectIds(row: Pick<ChannelDigestRow, 'project_ids'>): string[] {

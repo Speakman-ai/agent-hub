@@ -40,6 +40,9 @@ export const DEFAULT_CHAT_DIGEST_CRON = '0 9 * * 1-5';
 /** Longest custom digest prompt the server accepts. */
 export const MAX_CHAT_DIGEST_PROMPT_CHARS = 4000;
 
+/** Most digests one channel can hold. */
+export const MAX_CHAT_DIGESTS_PER_CHANNEL = 10;
+
 /** Most projects one project digest can cover. */
 export const MAX_CHAT_DIGEST_PROJECTS = 10;
 

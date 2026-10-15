@@ -1315,17 +1315,23 @@ function DialogShell({
   visible,
   title,
   onClose,
+  fullHeight = false,
   children,
 }: {
   visible: boolean;
   title: string;
   onClose: () => void;
+  /** Fill the screen height so long forms (digest editor) are not cramped. */
+  fullHeight?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <View style={styles.backdrop}>
-        <View style={styles.sheet}>
+      <KeyboardAvoidingView
+        style={styles.backdrop}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <View style={[styles.sheet, fullHeight && styles.sheetFull]}>
           <View style={styles.sheetHeader}>
             <Text style={styles.sheetTitle}>{title}</Text>
             <TouchableOpacity onPress={onClose} accessibilityLabel="Close">
@@ -1334,7 +1340,7 @@ function DialogShell({
           </View>
           {children}
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -1639,8 +1645,8 @@ function ChannelSettingsDialog({
   const setMute = (until: string | null) =>
     save({ mutedUntil: until }, () => api.hubChat.setMute(channel.id, until));
   return (
-    <DialogShell visible={visible} title="Channel settings" onClose={onClose}>
-      <ScrollView>
+    <DialogShell visible={visible} title="Channel settings" onClose={onClose} fullHeight>
+      <ScrollView style={styles.flex} keyboardShouldPersistTaps="handled">
         <Text style={styles.sectionLabel}>Notifications</Text>
         {NOTIFY_OPTIONS.map((o) => (
           <TouchableOpacity
@@ -1871,6 +1877,7 @@ const styles = StyleSheet.create({
     maxHeight: '80%',
     gap: 8,
   },
+  sheetFull: { height: '94%', maxHeight: '94%' },
   sheetHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   sheetTitle: { color: colors.white, fontSize: 16, fontWeight: '600' },
   sheetList: { maxHeight: 360 },
