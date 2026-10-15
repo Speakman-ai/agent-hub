@@ -243,3 +243,19 @@ describe('mapBroadcastToNotification — browser sign-in', () => {
     });
   });
 });
+
+describe('mapBroadcastToNotification — approval requested', () => {
+  it('banners the action and target', () => {
+    const r = mapBroadcastToNotification({
+      type: 'approval_requested',
+      sessionId: 's1',
+      agentName: 'Researcher',
+      approval: { id: 'ap1', action: 'send', target: 'https://mail.example.com' },
+    });
+    expect(r).toEqual({
+      event: 'approval_requested',
+      title: 'Approve: send',
+      body: 'Researcher wants to send https://mail.example.com',
+    });
+  });
+});

@@ -156,6 +156,23 @@ export function mapBroadcastToNotification(data: any, opts: any = {}) {
         body: `${who} is waiting for you to sign in to ${domain} in its browser`,
       };
     }
+    case 'approval_requested': {
+      const action =
+        typeof data.approval?.action === 'string' && data.approval.action
+          ? data.approval.action
+          : 'act';
+      const target =
+        typeof data.approval?.target === 'string' && data.approval.target
+          ? data.approval.target
+          : 'something';
+      const who =
+        typeof data.agentName === 'string' && data.agentName ? data.agentName : 'An agent';
+      return {
+        event: 'approval_requested',
+        title: `Approve: ${action}`,
+        body: `${who} wants to ${action} ${target.length > 120 ? `${target.slice(0, 117)}...` : target}`,
+      };
+    }
     case 'infra_alert_transition': {
       const { title, body } = infraAlertNotification(data);
       return { event: 'infra_alert', title, body };

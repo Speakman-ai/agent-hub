@@ -46,6 +46,12 @@ export const NOTIFICATION_SECTIONS = [
         defaults: LOUD,
       },
       {
+        id: 'approval_requested',
+        label: 'Approval needed',
+        description: 'An agent is waiting for you to allow or deny an irreversible action',
+        defaults: LOUD,
+      },
+      {
         id: 'session_completed',
         label: 'Session completed',
         description: 'An agent finished its turn',

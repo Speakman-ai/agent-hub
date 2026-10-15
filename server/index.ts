@@ -299,6 +299,8 @@ import createMeDashboardRoutes from './routes/me-dashboard.js';
 import createMeHubRoutes from './routes/me-hub.js';
 import createMeNotificationPreferencesRoutes from './routes/me-notification-preferences.js';
 import createMeBrowserProfilesRoutes from './routes/me-browser-profiles.js';
+import createApprovalsRoutes from './routes/approvals.js';
+import { cancelOrphanedApprovalRequests } from './approvals-store.js';
 import createGithubOAuthRoutes from './routes/github-oauth.js';
 import createGoogleOAuthRoutes from './routes/google-oauth.js';
 import createGoogleCalendarRoutes from './routes/google-calendar.js';
@@ -532,6 +534,15 @@ execAsync('gh api user --jq ".login"')
 let _activeDataDir: string = config.dataDir;
 
 initOrgsDb();
+// Every turn parked on an approval died with the previous process; nothing
+// can act on those answers any more.
+try {
+  const orphaned = cancelOrphanedApprovalRequests();
+  if (orphaned > 0)
+    console.log(`[approval] Cancelled ${orphaned} pending approval(s) left by a restart`);
+} catch (err) {
+  console.warn(`[approval] Failed to cancel orphaned approvals: ${String(err)}`);
+}
 // Migrate the pre-Phase-3 single-user auth.json into the new users +
 // memberships tables. No-op when users already exist or auth.json is
 // missing (fresh install → setup flow seeds the first Owner directly).
@@ -2523,6 +2534,7 @@ app.use(createMeDashboardRoutes(routeDeps));
 app.use(createMeHubRoutes(routeDeps));
 app.use(createMeNotificationPreferencesRoutes(routeDeps));
 app.use(createMeBrowserProfilesRoutes(routeDeps));
+app.use(createApprovalsRoutes());
 // PR-env settings/provisioning routes and the `pr_env_config` DB row
 // were removed as part of the "Strip PR Environments" epic (88367984).
 // Worktree previews (per-session, host-side) are the supported preview

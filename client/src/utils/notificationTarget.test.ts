@@ -101,3 +101,17 @@ describe('notificationTarget — browser sign-in', () => {
     expect(notificationTarget(row({ category: 'browser_sign_in', data: {} }))).toBeNull();
   });
 });
+
+describe('notificationTarget — approval requested', () => {
+  it('opens the session that is waiting on the approval', () => {
+    expect(
+      notificationTarget(
+        row({
+          category: 'approval_requested',
+          data: { sessionId: 's1', agentId: 'a1', approvalId: 'ap1' },
+        }),
+      ),
+    ).toEqual({ kind: 'session', sessionId: 's1', agentId: 'a1' });
+    expect(notificationTarget(row({ category: 'approval_requested', data: {} }))).toBeNull();
+  });
+});

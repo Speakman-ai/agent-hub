@@ -368,6 +368,55 @@ describe('mapBroadcastToNotification: browser sign-in handoff', () => {
   });
 });
 
+describe('mapBroadcastToNotification: approval requests', () => {
+  it('notifies the session owner with the approval id for actionable UI', () => {
+    const n = mapBroadcastToNotification({
+      type: 'approval_requested',
+      sessionId: 's1',
+      agentId: 'a1',
+      agentName: 'Researcher',
+      projectId: 'p1',
+      ownerUserId: 'u1',
+      approval: {
+        id: 'ap1',
+        action: 'send',
+        target: 'https://mail.example.com',
+        domain: 'mail.example.com',
+        canRemember: true,
+        expiresAt: 123,
+      },
+    });
+    expect(n).toMatchObject({
+      category: 'approval_requested',
+      pushEvent: null,
+      deviceScope: 'recipients',
+      title: 'Approve: send',
+      body: 'Researcher wants to send https://mail.example.com',
+      sourceKey: 'approval_requested:ap1',
+      recipients: { kind: 'users', userIds: ['u1'] },
+      data: {
+        sessionId: 's1',
+        approvalId: 'ap1',
+        canRemember: true,
+        expiresAt: 123,
+        type: 'approval_requested',
+      },
+    });
+  });
+
+  it('falls back to session recipients without an owner and ignores malformed events', () => {
+    expect(
+      mapBroadcastToNotification({
+        type: 'approval_requested',
+        sessionId: 's1',
+        approval: { id: 'ap1', action: 'delete', target: 'row 4' },
+      }),
+    ).toMatchObject({ recipients: { kind: 'session', sessionId: 's1' } });
+    expect(mapBroadcastToNotification({ type: 'approval_requested', sessionId: 's1' })).toBeNull();
+    expect(mapBroadcastToNotification({ type: 'approval_resolved', sessionId: 's1' })).toBeNull();
+  });
+});
+
 describe('mapBroadcastToNotification: new producers', () => {
   it('session_completed from a chat done event with an owner', () => {
     const n = mapBroadcastToNotification({

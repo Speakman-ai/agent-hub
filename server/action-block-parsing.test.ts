@@ -847,3 +847,43 @@ describe('parseReActBlock — browser request_login', () => {
     });
   });
 });
+
+describe('parseReActBlock — approval request', () => {
+  it('keeps action, target, details and domain', () => {
+    const r = parseReActBlock(
+      '<agenthub:react>{"actions":[{"tool":"approval","op":"request","action":"send","target":"https://mail.example.com/compose","details":"Reply to Ana","domain":"mail.example.com"}]}</agenthub:react>',
+    );
+    expect('error' in r).toBe(false);
+    if (!('error' in r)) {
+      expect(r.actions[0]).toMatchObject({
+        tool: 'approval',
+        op: 'request',
+        action: 'send',
+        target: 'https://mail.example.com/compose',
+        details: 'Reply to Ana',
+        domain: 'mail.example.com',
+      });
+    }
+  });
+
+  it('rejects an unknown op and a missing action or target', () => {
+    expect(
+      parseReActBlock(
+        '<agenthub:react>{"actions":[{"tool":"approval","op":"grant","action":"send","target":"x"}]}</agenthub:react>',
+      ),
+    ).toMatchObject({ error: 'malformed', detail: 'approval action requires op "request"' });
+    expect(
+      parseReActBlock(
+        '<agenthub:react>{"actions":[{"tool":"approval","op":"request","target":"x"}]}</agenthub:react>',
+      ),
+    ).toMatchObject({
+      error: 'malformed',
+      detail: 'approval request requires non-empty action and target',
+    });
+    expect(
+      parseReActBlock(
+        '<agenthub:react>{"actions":[{"tool":"approval","op":"request","action":"send"}]}</agenthub:react>',
+      ),
+    ).toMatchObject({ error: 'malformed' });
+  });
+});

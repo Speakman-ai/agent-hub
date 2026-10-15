@@ -477,3 +477,12 @@ describe('routeNotificationTap — browser sign-in', () => {
     ).toEqual({ kind: 'chat', agentId: 'a1', sessionId: 's1', openPane: 'browser' });
   });
 });
+
+describe('routeNotificationTap — approval requested', () => {
+  it('opens the waiting session', () => {
+    expect(
+      routeNotificationTap({ event: 'approval_requested', sessionId: 's1', agentId: 'a1' }),
+    ).toEqual({ kind: 'chat', agentId: 'a1', sessionId: 's1' });
+    expect(routeNotificationTap({ event: 'approval_requested' })).toBeNull();
+  });
+});

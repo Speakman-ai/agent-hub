@@ -358,6 +358,44 @@ export function mapBroadcastToNotification(data: BroadcastData): NotificationInt
       };
     }
 
+    case 'approval_requested': {
+      const sessionId = broadcastSessionId(data);
+      const approval = (data.approval ?? {}) as {
+        id?: unknown;
+        action?: unknown;
+        target?: unknown;
+        domain?: unknown;
+        canRemember?: unknown;
+        expiresAt?: unknown;
+      };
+      const approvalId = str(approval.id);
+      if (!sessionId || !approvalId) return null;
+      const owner = str(data.ownerUserId);
+      const action = str(approval.action) ?? 'act';
+      const target = str(approval.target) ?? 'something';
+      const who = str(data.agentName) ?? 'An agent';
+      return {
+        category: 'approval_requested',
+        pushEvent: null,
+        deviceScope: 'recipients',
+        title: `Approve: ${action}`,
+        body: `${who} wants to ${action} ${target.length > 120 ? `${target.slice(0, 117)}...` : target}`,
+        data: {
+          sessionId,
+          agentId: data.agentId,
+          approvalId,
+          action,
+          domain: str(approval.domain),
+          canRemember: approval.canRemember === true,
+          expiresAt: typeof approval.expiresAt === 'number' ? approval.expiresAt : undefined,
+          type: 'approval_requested',
+        },
+        projectId: str(data.projectId) ?? null,
+        sourceKey: `approval_requested:${approvalId}`,
+        recipients: owner ? { kind: 'users', userIds: [owner] } : { kind: 'session', sessionId },
+      };
+    }
+
     case 'finalize_run_completed': {
       const legacy = fromLegacyPush(data);
       if (legacy) return legacy;

@@ -199,6 +199,123 @@ components:
       required:
         - error
       description: Error envelope. `details` is populated for 400 schema-validation errors with one entry per failing Zod issue.
+    ApprovalErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope.
+    Approval:
+      type: object
+      properties:
+        id:
+          type: string
+        sessionId:
+          type: string
+        agentId:
+          type: string
+        projectId:
+          type: string
+          nullable: true
+        action:
+          type: string
+          description: Normalized verb, e.g. `send`, `delete`, `purchase`.
+        target:
+          type: string
+          description: What the action affects (URL, recipient, ...).
+        domain:
+          type: string
+          nullable: true
+          description: Site the request is about; null for free-text targets.
+        details:
+          type: string
+        status:
+          type: string
+          enum:
+            - pending
+            - allowed
+            - denied
+            - cancelled
+        resolution:
+          type: string
+          nullable: true
+          enum:
+            - allow_once
+            - always_allow
+            - auto_allowed
+            - deny
+            - timeout
+            - aborted
+            - null
+        ruleId:
+          type: string
+          nullable: true
+          description: Rule saved by, or that auto-allowed, this request.
+        canRemember:
+          type: boolean
+          description: Always allow will save a rule (the request has a domain and an owner).
+        requestedAt:
+          type: integer
+          description: Epoch ms.
+        expiresAt:
+          type: integer
+          description: Epoch ms; unanswered requests are denied then.
+        resolvedAt:
+          type: integer
+          nullable: true
+      required:
+        - id
+        - sessionId
+        - agentId
+        - projectId
+        - action
+        - target
+        - domain
+        - details
+        - status
+        - resolution
+        - ruleId
+        - canRemember
+        - requestedAt
+        - expiresAt
+        - resolvedAt
+      description: An agent request to perform an irreversible action.
+    ApprovalRule:
+      type: object
+      properties:
+        id:
+          type: string
+        profileId:
+          type: string
+          description: Browser profile the rule is scoped to.
+        userId:
+          type: string
+        domain:
+          type: string
+        action:
+          type: string
+        effect:
+          type: string
+          enum:
+            - allow
+            - require
+          description: "`require` always asks, even when an `allow` rule matches."
+        sourceRequestId:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+      required:
+        - id
+        - profileId
+        - userId
+        - domain
+        - action
+        - effect
+        - sourceRequestId
+        - createdAt
     Artifact:
       type: object
       properties:
@@ -12183,6 +12300,7 @@ components:
                   type: boolean
               additionalProperties: false
             browser_sign_in: *a3
+            approval_requested: *a3
             session_completed: *a3
             ready_to_push: *a3
             pushed: *a3
@@ -12235,6 +12353,7 @@ components:
                   enum:
                     - awaiting_feedback
                     - browser_sign_in
+                    - approval_requested
                     - session_completed
                     - ready_to_push
                     - pushed
@@ -12262,6 +12381,7 @@ components:
                 enum:
                   - awaiting_feedback
                   - browser_sign_in
+                  - approval_requested
                   - session_completed
                   - ready_to_push
                   - pushed
@@ -18224,6 +18344,248 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AgentErrorResponse"
+  /api/me/approvals:
+    get:
+      tags:
+        - Approvals
+      summary: List approvals raised by the caller sessions
+      parameters:
+        - schema:
+            type: string
+            enum:
+              - pending
+              - allowed
+              - denied
+              - cancelled
+          required: false
+          name: status
+          in: query
+        - schema:
+            type: string
+          required: false
+          name: sessionId
+          in: query
+      responses:
+        "200":
+          description: Newest first, up to 100.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  approvals:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Approval"
+                required:
+                  - approvals
+        "400":
+          description: Unknown status filter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalErrorResponse"
+        "403":
+          description: Called with agent credentials (global API key, spawn key, or X-Agent-Hub-Session-Id). Only people answer approvals.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalErrorResponse"
+  /api/me/approvals/{approvalId}:
+    get:
+      tags:
+        - Approvals
+      summary: Read one approval
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: approvalId
+          in: path
+      responses:
+        "200":
+          description: The approval.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Approval"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalErrorResponse"
+        "403":
+          description: Called with agent credentials (global API key, spawn key, or X-Agent-Hub-Session-Id). Only people answer approvals.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalErrorResponse"
+        "404":
+          description: No approval with this id is visible to the caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalErrorResponse"
+  /api/me/approvals/{approvalId}/answer:
+    post:
+      tags:
+        - Approvals
+      summary: Answer a pending approval
+      description: Resumes the agent turn waiting on it. `always_allow` also saves a rule for (browser profile, domain, action) so later matching requests are approved without asking; requests without a domain cannot be remembered.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: approvalId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                decision:
+                  type: string
+                  enum:
+                    - allow_once
+                    - always_allow
+                    - deny
+              required:
+                - decision
+      responses:
+        "200":
+          description: Answered.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  approval:
+                    $ref: "#/components/schemas/Approval"
+                  ruleId:
+                    type: string
+                    nullable: true
+                required:
+                  - approval
+                  - ruleId
+        "400":
+          description: Invalid decision.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalErrorResponse"
+        "403":
+          description: Called with agent credentials (global API key, spawn key, or X-Agent-Hub-Session-Id). Only people answer approvals.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalErrorResponse"
+        "404":
+          description: No approval with this id is visible to the caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalErrorResponse"
+        "409":
+          description: Already answered, expired (denied), or its turn is gone (stopped or the Hub restarted).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  approval:
+                    $ref: "#/components/schemas/Approval"
+                required:
+                  - error
+  /api/me/approval-rules:
+    get:
+      tags:
+        - Approvals
+      summary: List the caller remembered approval rules
+      responses:
+        "200":
+          description: Rules ordered by domain then action.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rules:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ApprovalRule"
+                required:
+                  - rules
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalErrorResponse"
+        "403":
+          description: Called with agent credentials (global API key, spawn key, or X-Agent-Hub-Session-Id). Only people answer approvals.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalErrorResponse"
+  /api/me/approval-rules/{ruleId}:
+    delete:
+      tags:
+        - Approvals
+      summary: Delete one of the caller approval rules
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: ruleId
+          in: path
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalErrorResponse"
+        "403":
+          description: Called with agent credentials (global API key, spawn key, or X-Agent-Hub-Session-Id). Only people answer approvals.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalErrorResponse"
+        "404":
+          description: No rule with this id belongs to the caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalErrorResponse"
   /api/sessions/{sessionId}/artifacts:
     get:
       tags:

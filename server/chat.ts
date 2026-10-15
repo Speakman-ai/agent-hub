@@ -324,6 +324,7 @@ import {
   browserToolStartLabel,
 } from './browser-tools.js';
 import { browserLoginHandoffDeps } from './browser-login-broadcast.js';
+import { approvalGranted, runApprovalReActStep } from './approval-requests.js';
 import {
   runPreviewReActStep,
   resolvePreviewReactRuntime,
@@ -736,7 +737,8 @@ type ReActTool =
   | 'preview'
   | 'terminal'
   | 'google'
-  | 'design';
+  | 'design'
+  | 'approval';
 
 interface ReActAction {
   tool: ReActTool;
@@ -765,6 +767,9 @@ interface ReActAction {
   html?: string;
   /** design render — optional <title> when `html` is a fragment. */
   title?: string;
+  /** approval request — irreversible action verb, what it affects, extra context. */
+  action?: string;
+  details?: string;
   /** google — read-only inline context; see server/google-react.ts */
   surface?: string;
   from?: string;
@@ -1108,6 +1113,7 @@ Supported tools:
 - \`wiki\` — hybrid project wiki retrieval (field: \`query\`).
 - \`skill\` — load a registered Agent Hub skill (field: \`name\`).
 - \`web\` — live web search via DuckDuckGo (field: \`query\`). Keyless; no server configuration required.
+- \`approval\` — ask the human before an irreversible action: \`{"tool":"approval","op":"request","action":"send","target":"https://mail.example.com","details":"Reply to Ana confirming the Friday booking"}\`. **Required before you send, submit, delete, purchase or publish anything** (fields: \`action\` verb, \`target\` URL or thing affected, optional \`details\`, optional \`domain\`). The turn pauses until the human answers Allow once, Always allow or Deny (24h, then denied); the observation tells you which. Never act on a denied, timed-out or cancelled request, and never answer an approval yourself through the API.
 - \`design\` — render HTML/CSS/JS (a chart, graph, mockup, diagram, or small self-contained app) inline: \`{"tool":"design","op":"render","html":"<the document — full page or a body fragment>","title":"optional"}\`. The host renders it in a headless browser and streams the image straight into the chat, and saves it as a viewable artifact. **You always have this ability on every engine and every session** — when a user says "show me a chart of this" / "mock up a page" / "draw a diagram", emit a \`design\` render (a chart library from a public CDN works). No design mode required.
 ${browserToolLines}${previewToolLines}${terminalToolLines}
 The host executes actions, appends a compact observation + loaded context, and may auto-continue the same turn within budget caps.`;
@@ -1123,7 +1129,7 @@ The host executes actions, appends a compact observation + loaded context, and m
     // `terminal` is not — it ships unconditionally because its availability is a
     // *runtime* fact (has the human opened a shell), which the host reports as a
     // `no_terminal` / `runtime_unwired` observation rather than a rejection.
-    const toolNames = ['`wiki`', '`skill`', '`web`', '`design`'];
+    const toolNames = ['`wiki`', '`skill`', '`web`', '`design`', '`approval`'];
     if (browserToolsOn) toolNames.push('`browser`');
     if (previewEnabledForPrompt) toolNames.push('`preview`');
     toolNames.push('`terminal`');
@@ -1140,7 +1146,7 @@ The host executes actions, appends a compact observation + loaded context, and m
     const humanStartedLine = previewEnabledForPrompt
       ? `\n\`preview\` can boot via \`{"tool":"preview","op":"start"}\` (same as toolbar **Start preview**), then observe/drive; stop stays human-only. \`terminal\` acts on a shell the human opened (the **Terminal** tab) — you cannot open one yourself.`
       : `\n\`terminal\` acts on a shell the human has already opened (the **Terminal** tab) — you cannot open one yourself, and you'll get a "not running" observation when none is up.`;
-    const designReminder = `\n\`design\` renders HTML/CSS/JS inline — \`{"tool":"design","op":"render","html":"…"}\` — whenever the user asks for a chart/graph/mockup/diagram. Always available, no design mode needed.`;
+    const designReminder = `\n\`design\` renders HTML/CSS/JS inline — \`{"tool":"design","op":"render","html":"…"}\` — whenever the user asks for a chart/graph/mockup/diagram. Always available, no design mode needed.\n\`approval\` — \`{"tool":"approval","op":"request","action":"send","target":"…","details":"…"}\` is required before any send, submit, delete, purchase or publish; the turn pauses for the human's answer. Never act on a denial.`;
     prompt += `\n\n## ReAct Loop (host tools)
 Still available mid-answer: emit a naked \`<agenthub:react>{"actions":[${exampleAction}]}</agenthub:react>\` block (valid JSON, never inside a code fence). Tools: ${toolNames.join(', ')}.${browserReminder}${humanStartedLine}${designReminder}`;
   }
@@ -1898,6 +1904,29 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
       actions.push({ tool: 'design', op, html, title });
       continue;
     }
+    if (a.tool === 'approval') {
+      const op = typeof a.op === 'string' ? a.op.trim().toLowerCase() : '';
+      if (op !== 'request') {
+        return { error: 'malformed', detail: 'approval action requires op "request"' };
+      }
+      const action = typeof a.action === 'string' ? a.action.trim() : '';
+      const target = typeof a.target === 'string' ? a.target.trim() : '';
+      if (!action || !target) {
+        return {
+          error: 'malformed',
+          detail: 'approval request requires non-empty action and target',
+        };
+      }
+      actions.push({
+        tool: 'approval',
+        op,
+        action,
+        target,
+        details: typeof a.details === 'string' ? a.details : undefined,
+        domain: typeof a.domain === 'string' ? a.domain : undefined,
+      });
+      continue;
+    }
     if (a.tool === 'google') {
       const surface = typeof a.surface === 'string' ? a.surface.trim().toLowerCase() : '';
       if (!isGoogleReactSurface(surface)) {
@@ -1927,7 +1956,7 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
     return {
       error: 'malformed',
       detail:
-        'Unsupported action.tool; expected "wiki", "skill", "web", "browser", "preview", "terminal", "google", or "design"',
+        'Unsupported action.tool; expected "wiki", "skill", "web", "browser", "preview", "terminal", "google", "design", or "approval"',
     };
   }
   return { actions };
@@ -5975,7 +6004,17 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             // to this session's preview, which every engine must be able to
             // verify. Only the public-web `browser` tool is gated.
           }
+          // Set when an action must stop the rest of the batch: an approval
+          // that was not granted guards whatever the model queued after it.
+          let haltRemainingActions: string | null = null;
           for (let actionIdx = 0; actionIdx < boundedActions.length; actionIdx++) {
+            if (haltRemainingActions) {
+              const remaining = boundedActions.length - actionIdx;
+              reactObservations.push(
+                `- ${remaining} remaining host action(s) skipped: ${haltRemainingActions}. Re-emit them only after a fresh approval is granted.`,
+              );
+              break;
+            }
             // A Stop landing mid-chain (the process already deregistered, so
             // SIGTERM was a no-op) must halt the remaining host actions rather
             // than run a slow browser/web queue to completion after the user
@@ -6071,6 +6110,37 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                   hostDetail = 'empty_web_result';
                 }
                 hostDetail = hostDetail || (action.query ?? '').slice(0, 120) || undefined;
+                continue;
+              }
+
+              if (action.tool === 'approval') {
+                const ap = await runApprovalReActStep(
+                  {
+                    op: action.op ?? '',
+                    action: action.action,
+                    target: action.target,
+                    details: action.details,
+                    domain: action.domain,
+                  },
+                  {
+                    sessionId,
+                    ownerUserId: session!.owner_user_id ?? null,
+                    agentId: agent.id,
+                    agentName: agent.name,
+                    projectId: project?.id ?? null,
+                    sessionName: session!.name ?? null,
+                  },
+                  { broadcast, isCancelled: () => isReactChainCancelRequested(sessionId) },
+                );
+                assistantContextToAppend = assistantContextToAppend
+                  ? `${assistantContextToAppend}\n\n${ap.markdown.trim()}`
+                  : ap.markdown.trim();
+                reactObservations.push(`- approval(${action.action ?? ''}) ${ap.hostDetail}.`);
+                if (!approvalGranted(ap)) {
+                  haltRemainingActions = `approval for "${action.action ?? ''}" was not granted (${ap.hostDetail})`;
+                }
+                hostExit = ap.hostExit;
+                hostDetail = ap.hostDetail;
                 continue;
               }
 

@@ -42,6 +42,7 @@ export function notificationTarget(n: InboxNotification): NotificationTarget | n
 
   switch (n.category) {
     case 'awaiting_feedback':
+    case 'approval_requested':
     case 'session_completed':
     case 'ready_to_push':
     case 'pushed':

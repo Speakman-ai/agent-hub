@@ -61,6 +61,7 @@ export function routeNotificationTap(data: any, ctx: any = {}) {
   };
   switch (event) {
     case 'awaiting_feedback':
+    case 'approval_requested':
     case 'session_completed':
     case 'ready_to_push':
     case 'pushed':

@@ -2,6 +2,7 @@ import type { ActiveChatProcess } from './active-chat-process.js';
 import { markSessionTermination } from './process-termination.js';
 import { requestReactChainCancel } from './react-chain-cancel.js';
 import { abortBrowserLogin } from './browser-login-handoff.js';
+import { abortApprovalsForSession } from './approval-requests.js';
 
 /** How long a SIGTERMed CLI gets to exit before Stop escalates to SIGKILL. */
 export const CANCEL_SIGKILL_GRACE_MS = 5000;
@@ -32,8 +33,10 @@ export interface SessionChatCancelDeps {
 export function cancelSessionChatRun(deps: SessionChatCancelDeps): void {
   const { sessionId, activeProcesses } = deps;
   requestReactChainCancel(sessionId);
-  // A turn parked on a sign-in handoff has no CLI to kill; release it.
+  // A turn parked on a sign-in handoff or an approval has no CLI to kill;
+  // release it.
   abortBrowserLogin(sessionId, 'stopped');
+  abortApprovalsForSession(sessionId, 'stopped');
   const proc = activeProcesses.get(sessionId);
   if (!proc) return;
   markSessionTermination(sessionId, 'user_cancel');
@@ -63,6 +66,7 @@ export function forceKillSessionChatRun(
   const { sessionId, activeProcesses } = deps;
   requestReactChainCancel(sessionId);
   abortBrowserLogin(sessionId, 'stopped');
+  abortApprovalsForSession(sessionId, 'stopped');
   const proc = activeProcesses.get(sessionId);
   if (!proc) return undefined;
   markSessionTermination(sessionId, 'autopilot_unstick');
