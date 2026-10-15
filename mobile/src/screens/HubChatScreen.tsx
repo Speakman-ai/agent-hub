@@ -34,6 +34,9 @@ import {
   type HubChatMessageMeta,
   type HubChatNotifyLevel,
   type HubChatOrgMember,
+  mentionPendingText,
+  parseMentionNotices,
+  type HubChatMentionNotice,
 } from '@shared/utils/hubChat';
 import {
   decodeToComposer,
@@ -55,6 +58,7 @@ import { createPinsLoader, type PinsState } from '../utils/hubChatPins';
 import { initialPinnedList } from '@shared/utils/hubChatPins';
 import { plainChatText } from '@shared/utils/hubChatUnread';
 import { badgeText, hubChatRefTarget } from '../utils/hubChatMobile';
+import { mergeNotices } from '../utils/hubChatMentions';
 import { useAccountScoped, useHubChatBadge, useHubChatSnapshot } from '../hooks/useHubChat';
 import { useApp } from '../context/AppContext';
 import { HubChatComposer, HubChatMessageBody } from '../components/HubChatRefs';
@@ -452,6 +456,8 @@ function ChannelView({
   draftRef.current = draft;
   const [editing, setEditing] = useState<HubChatMessage | null>(null);
   const [sending, setSending] = useState(false);
+  // Mentions in this viewer's posts here that the server refused.
+  const [mentionNotices, setMentionNotices] = useState<HubChatMentionNotice[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [actionsFor, setActionsFor] = useState<HubChatMessage | null>(null);
   const [pinsOpen, setPinsOpen] = useState(false);
@@ -476,6 +482,7 @@ function ChannelView({
   // One sync controller per open channel owns every change to the window.
   useEffect(() => {
     mounted.current = true;
+    setMentionNotices([]);
     const ctl = createChannelSync(channelId, api.hubChat, (next) => {
       if (mounted.current) setSync(next);
     });
@@ -503,6 +510,8 @@ function ChannelView({
       ) {
         ctl.receiveUpdate(event.message);
         pinsLoader.receiveUpdate(event.message);
+      } else if (event.type === 'hub_chat_notice' && event.notice.channelId === channelId) {
+        setMentionNotices((cur) => mergeNotices(cur, [event.notice]));
       }
     });
     const sub = AppState.addEventListener('change', (st) => setAppActive(st === 'active'));
@@ -714,6 +723,11 @@ function ChannelView({
         } else {
           stickToBottomRef.current = true;
           syncRef.current?.receiveNew([res.message]);
+          const notices = parseMentionNotices(res.mentionNotices, {
+            channelId,
+            messageId: res.message.id,
+          });
+          if (notices.length) setMentionNotices((cur) => mergeNotices(cur, notices));
         }
       }
       // Clear only what was sent: text typed while the request was out stays.
@@ -993,6 +1007,11 @@ function ChannelView({
         </TouchableOpacity>
       ) : (
         <View style={styles.composer}>
+          <MentionStatus
+            pendingText={mentionPendingText(channel?.mentionPending ?? [])}
+            notices={mentionNotices}
+            onDismissNotice={(key) => setMentionNotices((cur) => cur.filter((n) => n.key !== key))}
+          />
           {editing ? (
             <View style={styles.editingBar}>
               <Text style={styles.muted}>Editing message</Text>
@@ -1186,6 +1205,50 @@ export function MessageRow({
           </View>
         ) : null}
       </TouchableOpacity>
+    </View>
+  );
+}
+
+/**
+ * Mentioned agents still answering here (for every member, from the server)
+ * and the viewer's own refused mentions.
+ */
+export function MentionStatus({
+  pendingText,
+  notices,
+  onDismissNotice,
+}: {
+  pendingText: string | null;
+  notices: HubChatMentionNotice[];
+  onDismissNotice: (key: string) => void;
+}) {
+  if (!pendingText && notices.length === 0) return null;
+  return (
+    <View style={styles.mentionStatus} testID="hub-chat-mention-status">
+      {pendingText ? (
+        <View
+          style={styles.mentionRow}
+          testID="hub-chat-mention-pending"
+          accessibilityRole="progressbar"
+        >
+          <ActivityIndicator size="small" color={colors.blue400} />
+          <Text style={[styles.muted, styles.mentionText]} numberOfLines={2}>
+            {pendingText}
+          </Text>
+        </View>
+      ) : null}
+      {notices.map((n) => (
+        <View key={n.key} style={styles.mentionRow} testID="hub-chat-mention-notice">
+          <Text style={[styles.mentionNotice, styles.mentionText]}>{n.message}</Text>
+          <TouchableOpacity
+            onPress={() => onDismissNotice(n.key)}
+            accessibilityLabel="Dismiss notice"
+            hitSlop={8}
+          >
+            <HubIcon name="X" size={14} color={colors.gray400} />
+          </TouchableOpacity>
+        </View>
+      ))}
     </View>
   );
 }
@@ -1704,6 +1767,10 @@ const styles = StyleSheet.create({
   link: { color: colors.blue400, fontSize: 13 },
   disabled: { opacity: 0.5 },
   agentStateRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 },
+  mentionStatus: { gap: 4, paddingBottom: 6 },
+  mentionRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  mentionText: { flexShrink: 1 },
+  mentionNotice: { color: colors.amber400, fontSize: 12 },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 8 },
   chip: {
     borderWidth: 1,

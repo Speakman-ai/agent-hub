@@ -26,7 +26,11 @@ import {
   type HubChatMessageMeta,
   parseMessageMetaEvent,
   applyAgentStateToChannels,
+  applyMentionPendingToChannels,
+  parseMentionNotices,
+  parseMentionPending,
   type HubChatAgentState,
+  type HubChatMentionNotice,
 } from '@shared/utils/hubChat';
 import {
   hubChatBadgeCount,
@@ -64,6 +68,8 @@ export type HubChatLiveEvent =
   | { type: 'hub_chat_channel_update'; channelId: string | null }
   /** Reactions or pin changed; `pinChanged` means the channel's pinned list did. */
   | { type: 'hub_chat_message_meta'; meta: HubChatMessageMeta; pinChanged: boolean }
+  /** For the viewer only: an `@agent` mention in their post was not dispatched. */
+  | { type: 'hub_chat_notice'; notice: HubChatMentionNotice }
   /** The connection came back: events may have been missed, reload what is shown. */
   | { type: 'resync' };
 
@@ -73,6 +79,7 @@ export const HUB_CHAT_WS_EVENTS: ReadonlySet<string> = new Set([
   'hub_chat_read',
   'hub_chat_channel_update',
   'hub_chat_message_meta',
+  'hub_chat_notice',
 ]);
 
 type MembershipPatch = Partial<Pick<HubChatMembership, 'notifyLevel' | 'mutedUntil'>>;
@@ -576,6 +583,13 @@ export function createHubChatStore(chatApi: HubChatStoreApi) {
           for (const l of liveListeners) l({ type: 'hub_chat_message_meta', meta, pinChanged });
           return;
         }
+        case 'hub_chat_notice': {
+          // Never stored and never counted; only the open channel shows it.
+          for (const notice of parseMentionNotices(data)) {
+            for (const l of liveListeners) l({ type: 'hub_chat_notice', notice });
+          }
+          return;
+        }
         case 'hub_chat_channel_update': {
           const channelId = typeof data.channelId === 'string' ? data.channelId : null;
           for (const l of liveListeners) l({ type: 'hub_chat_channel_update', channelId });
@@ -584,6 +598,13 @@ export function createHubChatStore(chatApi: HubChatStoreApi) {
             setBase(
               applyAgentStateToChannels(base, channelId, data.agentState as HubChatAgentState),
             );
+            return;
+          }
+          // So is the list of mentioned agents still answering.
+          const mentionPending =
+            data.reason === 'mention_state' ? parseMentionPending(data.mentionPending) : null;
+          if (channelId && mentionPending) {
+            setBase(applyMentionPendingToChannels(base, channelId, mentionPending));
             return;
           }
           void refresh();
