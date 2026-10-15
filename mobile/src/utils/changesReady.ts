@@ -1,7 +1,5 @@
 /**
- * Helpers for the "Changes ready → Create PR" flow.
- *
- * Ported behaviour from the web client (`ChangesReadyBox.jsx` + `App.jsx`).
+ * Helpers for the session "changes ready" state that feeds the Finalize bar.
  * No React Native rendering.
  */
 /**

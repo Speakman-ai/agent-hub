@@ -25,7 +25,6 @@ import DelegationPanel from '../components/DelegationPanel';
 import SessionTail from '../components/SessionTail';
 // FinalizeBar — single action row (Summary, View changes, Build, Finalize, Push).
 import SessionAgentsPanel from '../components/SessionAgentsPanel';
-import ChangesReadyBox from '../components/ChangesReadyBox';
 import FinalizeBar from '../components/FinalizeBar';
 import SessionDesignFilesPanel from '../components/SessionDesignFilesPanel';
 import SessionArtifactsPanel from '../components/SessionArtifactsPanel';
@@ -104,8 +103,6 @@ export default function ChatScreen({
     activeSessionId,
     changesReady,
     dismissChangesReady,
-    triggerCreateTicketAndPr,
-    shipFailureAt,
     projects,
     sessionHandoffs,
     handleOpenHandoffSession,
@@ -615,16 +612,6 @@ export default function ChatScreen({
             agentName={activeAgent?.name}
           />
         </>
-      ) : null}
-      {pendingChanges && !workflowProject ? (
-        <ChangesReadyBox
-          sessionId={activeSessionId}
-          changes={pendingChanges}
-          onTrigger={triggerCreateTicketAndPr}
-          onDismiss={dismissChangesReady}
-          isSessionProcessing={isProcessing}
-          shipFailureAt={shipFailureAt}
-        />
       ) : null}
       {sessionRoundProcessing ? (
         <View style={styles.roundBanner}>

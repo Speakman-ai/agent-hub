@@ -284,7 +284,6 @@ export function AppProvider({ children }: any) {
   // the web sidebar's live status map so mobile can derive the same session
   // lifecycle state from Finalize WS events.
   const [finalizeStatusBySession, setFinalizeStatusBySession] = useState<any>({});
-  const [shipFailureAt, setShipFailureAt] = useState<any>(null);
   // Tracks which agenthub:ask prompts the user has already answered in this
   // app instance, so the picker renders as "Submitted" immediately after
   // tapping. This is the optimistic, in-memory half; the authoritative source
@@ -998,11 +997,6 @@ export function AppProvider({ children }: any) {
             delete (next as any)[data.sessionId];
             return next;
           });
-          break;
-        case 'auto_pr_failed':
-          if (data.sessionId === activeSessionIdRef.current) {
-            setShipFailureAt(Date.now());
-          }
           break;
         case 'finalize_run_phase_changed':
         case 'finalize_run_completed':
@@ -2557,15 +2551,6 @@ export function AppProvider({ children }: any) {
       return next;
     });
   }, []);
-  const triggerCreateTicketAndPr = useCallback(async () => {
-    const sessionId = activeSessionIdRef.current;
-    if (!sessionId) return;
-    try {
-      await api.shipSession(sessionId);
-    } catch (err: any) {
-      Alert.alert('Create ticket & PR', (err && err.message) || 'Failed to start shipping');
-    }
-  }, []);
   // Finalize Code Changes — kicks off a finalize_runs row for a card-linked
   // session. The card id is required (sessions without a linked card cannot
   // finalize). Errors bubble to the caller so the button can surface them
@@ -2677,9 +2662,7 @@ export function AppProvider({ children }: any) {
     skillImprovementRefreshKey,
     skillImprovementPendingTotal,
     changesReady,
-    shipFailureAt,
     dismissChangesReady,
-    triggerCreateTicketAndPr,
     // Finalize Code Changes (card 2bce78c2)
     startFinalizeRun,
     startFinalizeRunForSession,

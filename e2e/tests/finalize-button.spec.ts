@@ -1,8 +1,8 @@
 /**
  * Finalize Code Changes button — E2E spec (card 2bce78c2).
  *
- * Verifies that the new <FinalizeButton /> mounted in the session view
- * (replacing the legacy ChangesReadyBox) exposes the contract documented
+ * Verifies that the <FinalizeButton /> mounted in the session view
+ * exposes the contract documented
  * in the design doc:
  *
  *   • The split "Run Tests" + "Reviewer" buttons are visible for

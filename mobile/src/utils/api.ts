@@ -1611,11 +1611,6 @@ export const api = {
     }),
   // Cron sessions
   getCronSessions: () => fetchJSON('/sessions/cron'),
-  shipSession: (sessionId: any) =>
-    fetchJSON(`/sessions/${sessionId}/ship`, {
-      method: 'POST',
-      body: JSON.stringify({}),
-    }),
   // Finalize Code Changes — design doc: finalize-code-changes-architecture-v0
   // Returns the most-recent finalize_runs row for a session, or `{ run: null }`
   // when none exists yet. Used by the mobile FinalizeButton for both initial

@@ -24,7 +24,7 @@ import { copyToClipboard, canCopy } from '../utils/clipboard';
 import { attachmentKind } from '../utils/attachmentKind';
 import { createSelectableMarkdownRules } from '../utils/selectableMarkdownRules';
 import { parsePrCreatedMetadata, shortSha } from '../utils/prMessage';
-import { parseShipRequestedMetadata } from '../utils/shipRequestedMessage';
+import { parseShipRequestedMetadata, shipRequestedCopy } from '../utils/shipRequestedMessage';
 import { stripAskAnswerBlocks } from '../utils/askAnswers';
 import { getUserMessageFlags } from '../utils/chatMessageUserFlags';
 import { resolveAgentDisplayName } from '../utils/agentDisplayName';
@@ -310,15 +310,9 @@ function SystemShipRequestedMessage({ message }: any) {
       <View style={shipStyles.card}>
         <View style={prStyles.headerRow}>
           <AppIcon name="git-pull-request" size={16} color={colors.purple400} />
-          <Text style={shipStyles.headerText}>
-            {meta.auto ? 'Shipping automatically' : 'Create ticket & PR'}
-          </Text>
+          <Text style={shipStyles.headerText}>{shipRequestedCopy(meta).title}</Text>
         </View>
-        <Text style={shipStyles.subtext}>
-          {meta.auto
-            ? 'Agent Hub is rebasing on the base branch, then committing, pushing, and opening or updating the pull request.'
-            : 'Agent Hub is creating a kanban ticket, committing, pushing, and opening a pull request.'}
-        </Text>
+        <Text style={shipStyles.subtext}>{shipRequestedCopy(meta).body}</Text>
         {message.created_at ? (
           <Text style={prStyles.timestamp}>{relativeTime(message.created_at)}</Text>
         ) : null}

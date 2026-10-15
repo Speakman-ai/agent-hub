@@ -2,7 +2,7 @@ import { ExternalLink, X } from 'lucide-react';
 import { parseNativePrUrl } from '../utils/prFormatting';
 
 /**
- * Shown instead of ChangesReadyBox when the session is fixing an existing PR
+ * Shown in the toolbar when the session is fixing an existing PR
  * (`[Resolve PR #N]` title).
  *
  * `prUrl` is either a github.com URL or an Agent Hub-native route

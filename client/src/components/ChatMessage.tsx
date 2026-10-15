@@ -12,7 +12,7 @@ import {
   describePrFailureCode,
   shortSha,
 } from '../utils/prMessage';
-import { parseShipRequestedMetadata } from '../utils/shipRequestedMessage';
+import { parseShipRequestedMetadata, shipRequestedCopy } from '../utils/shipRequestedMessage';
 import { stripAskAnswerBlocks } from '../utils/askAnswers';
 import {
   isFinalizeStepOutputMessage,
@@ -260,14 +260,8 @@ function SystemShipRequestedMessage({ message }: any) {
         <div className="flex items-center gap-2">
           <GitPullRequest className="w-4 h-4 text-purple-400 shrink-0" />
           <div>
-            <p className="text-sm font-medium text-purple-200">
-              {meta.auto ? 'Shipping automatically' : 'Create ticket & PR'}
-            </p>
-            <p className="text-xs text-purple-200/70 mt-0.5">
-              {meta.auto
-                ? 'Agent Hub is rebasing on the base branch, then committing, pushing, and opening or updating the pull request.'
-                : 'Agent Hub is creating a kanban ticket, committing, pushing, and opening a pull request.'}
-            </p>
+            <p className="text-sm font-medium text-purple-200">{shipRequestedCopy(meta).title}</p>
+            <p className="text-xs text-purple-200/70 mt-0.5">{shipRequestedCopy(meta).body}</p>
           </div>
         </div>
         {message.created_at && (

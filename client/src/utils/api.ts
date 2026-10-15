@@ -2532,11 +2532,6 @@ export const api = {
   // worktree-only sessions. The legacy `PUT /sessions/:id/worktree`
   // endpoint no longer exists.
 
-  shipSession: (sessionId: any) =>
-    fetchJSON(`/sessions/${sessionId}/ship`, {
-      method: 'POST',
-      body: JSON.stringify({}),
-    }),
   setSessionAskMode: (sessionId: any, enabled: any) =>
     fetchJSON(`/sessions/${sessionId}/ask-mode`, {
       method: 'PUT',
