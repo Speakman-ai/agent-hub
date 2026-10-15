@@ -1,6 +1,8 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import {
+  claimDesktopOnlyNotice,
   handleBroadcastForNotifications,
+  resetDesktopOnlyDedupeForTests,
   mapBroadcastToNotification,
   tokenWantsPush,
   type FanoutDeps,
@@ -243,7 +245,56 @@ describe('handleBroadcastForNotifications: inbox + live event', () => {
       h.deps,
     );
     expect(h.inserted).toHaveLength(0);
+    expect(h.broadcasts).toHaveLength(0);
     expect(h.sentTo()).toEqual(['u1-phone']);
+  });
+
+  describe('desktop-only (in_app off, desktop on)', () => {
+    beforeEach(() => resetDesktopOnlyDedupeForTests());
+    const desktopOnly = {
+      u1: { awaiting_feedback: { in_app: false, desktop: true, push: false, isDefault: false } },
+    };
+    const ev = { type: 'awaiting_input', waiting: true, sessionId: 's1', askIds: ['a'] };
+
+    it('emits notification_created with inbox:false and writes no row', async () => {
+      const h = harness({
+        tokens: [token('u1-phone', 'u1')],
+        sessionOwner: 'u1',
+        prefs: desktopOnly,
+      });
+      const res = await handleBroadcastForNotifications(ev, h.deps);
+      expect(h.inserted).toHaveLength(0);
+      expect(res.inserted).toBe(0);
+      expect(h.sentTo()).toEqual([]);
+      expect(h.broadcasts).toEqual([
+        {
+          type: 'notification_created',
+          ownerUserId: 'u1',
+          inbox: false,
+          desktop: true,
+          notification: expect.objectContaining({
+            category: 'awaiting_feedback',
+            sourceKey: 'awaiting_feedback:s1:a',
+            projectId: 'p1',
+          }),
+        },
+      ]);
+      expect(h.broadcasts[0]).not.toHaveProperty('unreadCount');
+      expect((h.broadcasts[0].notification as Record<string, unknown>).id).toBeUndefined();
+    });
+
+    it('dedupes a repeated broadcast without an inbox row', async () => {
+      const h = harness({ tokens: [], sessionOwner: 'u1', prefs: desktopOnly });
+      await handleBroadcastForNotifications(ev, h.deps);
+      await handleBroadcastForNotifications(ev, h.deps);
+      expect(h.broadcasts).toHaveLength(1);
+    });
+
+    it('inbox rows are flagged inbox:true', async () => {
+      const h = harness({ tokens: [], sessionOwner: 'u1' });
+      await handleBroadcastForNotifications(ev, h.deps);
+      expect(h.broadcasts[0]).toMatchObject({ inbox: true, desktop: true });
+    });
   });
 
   it('session events go to the owner only', async () => {
@@ -629,5 +680,16 @@ describe('handleBroadcastForNotifications: devices with no user id', () => {
       h.deps,
     );
     expect(h.sentTo()).toEqual(['u1-phone']);
+  });
+});
+
+describe('claimDesktopOnlyNotice', () => {
+  beforeEach(() => resetDesktopOnlyDedupeForTests());
+
+  it('claims once per user and key within the TTL', () => {
+    expect(claimDesktopOnlyNotice('u1', 'k', 0)).toBe(true);
+    expect(claimDesktopOnlyNotice('u1', 'k', 1000)).toBe(false);
+    expect(claimDesktopOnlyNotice('u2', 'k', 1000)).toBe(true);
+    expect(claimDesktopOnlyNotice('u1', 'k', 11 * 60 * 1000)).toBe(true);
   });
 });

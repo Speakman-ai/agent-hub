@@ -162,6 +162,15 @@ describe('NotificationBell', () => {
     }
   });
 
+  it('ignores desktop-only notification_created events (inbox:false)', async () => {
+    setup();
+    fireEvent.click(screen.getByTestId('notification-bell'));
+    const before = (await screen.findAllByTestId('notification-row')).length;
+    emit({ type: 'notification_created', inbox: false, desktop: true, notification: n('z') });
+    expect(screen.getAllByTestId('notification-row')).toHaveLength(before);
+    expect(screen.queryByText('Title z')).toBeNull();
+  });
+
   it('updates the badge from live events while closed', async () => {
     setup();
     await screen.findByTestId('notification-bell-badge');

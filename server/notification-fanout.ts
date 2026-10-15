@@ -11,6 +11,9 @@
  *     - inserts an inbox row when `in_app` is on, emitting a
  *       `notification_created` WS event targeted to that user (carrying the
  *       `desktop` flag so desktop clients know whether to raise an OS notice),
+ *     - with `in_app` off but `desktop` on, emits the same event with
+ *       `inbox: false` and no row, so desktop clients still raise the OS
+ *       notice while the bell ignores it,
  *     - sends Expo push to that user's devices when push is on.
  *
  * Push for events that pushed before this module existed keeps its device
@@ -65,6 +68,39 @@ import {
 import type { BroadcastFn } from './types.js';
 
 export const NOTIFICATION_CREATED_EVENT = 'notification_created';
+
+/**
+ * Desktop-only notices have no inbox row, so the unique (user_id, source_key)
+ * index can't dedupe repeated broadcasts. Remember recent keys in memory.
+ */
+const DESKTOP_ONLY_DEDUPE_TTL_MS = 10 * 60 * 1000;
+const DESKTOP_ONLY_DEDUPE_MAX = 5000;
+const desktopOnlySeen = new Map<string, number>();
+
+/** True the first time `userId`/`sourceKey` is seen within the TTL. */
+export function claimDesktopOnlyNotice(
+  userId: string,
+  sourceKey: string,
+  now: number = Date.now(),
+): boolean {
+  const key = `${userId}\u0000${sourceKey}`;
+  const seenAt = desktopOnlySeen.get(key);
+  if (seenAt !== undefined && now - seenAt < DESKTOP_ONLY_DEDUPE_TTL_MS) return false;
+  desktopOnlySeen.delete(key);
+  desktopOnlySeen.set(key, now);
+  // Map iterates in insertion order, so the oldest keys come first.
+  for (const [k, at] of desktopOnlySeen) {
+    if (desktopOnlySeen.size <= DESKTOP_ONLY_DEDUPE_MAX && now - at < DESKTOP_ONLY_DEDUPE_TTL_MS) {
+      break;
+    }
+    desktopOnlySeen.delete(k);
+  }
+  return true;
+}
+
+export function resetDesktopOnlyDedupeForTests(): void {
+  desktopOnlySeen.clear();
+}
 
 /** Who a notification is addressed to, before preferences apply. */
 export type RecipientSpec =
@@ -528,7 +564,24 @@ export async function handleBroadcastForNotifications(
 
   let inserted = 0;
   for (const [userId, prefs] of prefsByUser) {
-    if (!prefs.in_app) continue;
+    if (!prefs.in_app) {
+      if (!prefs.desktop || !claimDesktopOnlyNotice(userId, intent.sourceKey)) continue;
+      deps.broadcast?.({
+        type: NOTIFICATION_CREATED_EVENT,
+        ownerUserId: userId,
+        inbox: false,
+        desktop: true,
+        notification: {
+          category: categoryByUser.get(userId) ?? intent.category,
+          title: intent.title,
+          body: intent.body,
+          data: intent.data,
+          projectId,
+          sourceKey: intent.sourceKey,
+        },
+      });
+      continue;
+    }
     try {
       const { notification, created } = insert({
         userId,
@@ -544,6 +597,7 @@ export async function handleBroadcastForNotifications(
       deps.broadcast?.({
         type: NOTIFICATION_CREATED_EVENT,
         ownerUserId: userId,
+        inbox: true,
         notification,
         desktop: prefs.desktop,
         unreadCount: countUnread(userId),

@@ -178,7 +178,8 @@ export default function NotificationBell({
       const data = (e as CustomEvent).detail;
       if (!data || typeof data !== 'object') return;
       const count = typeof data.unreadCount === 'number' ? data.unreadCount : undefined;
-      if (data.type === 'notification_created' && data.notification?.id) {
+      // `inbox: false` is a desktop-only notice with no inbox row behind it.
+      if (data.type === 'notification_created' && data.inbox !== false && data.notification?.id) {
         updateFacts((f) => withLiveRow(f, data.notification as InboxNotification, count));
       } else if (data.type === 'notification_read') {
         // Only the server's readAt may act as a mark-all cutoff; the browser
