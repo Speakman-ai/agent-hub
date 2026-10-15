@@ -55,6 +55,7 @@ import { deriveSessionState } from '../utils/deriveSessionState';
 import { deriveWatchIndicator, watchIndicatorTitle } from '../utils/backgroundShells';
 import { derivePreviewIndicator, previewIndicatorTitle } from '../utils/sessionPreviewState';
 import BugReportButton from './BugReportButton';
+import NotificationBell from './NotificationBell';
 import BrandLogo from './BrandLogo';
 import KanbanSidebarEpicsPanel from './KanbanSidebarEpicsPanel';
 import { isWorkflowProject } from '../utils/projectMode';
@@ -201,6 +202,9 @@ export default function Sidebar({
    * renders in the header. Mobile uses the slide-out drawer and never shows it.
    */
   onCollapseSidebar,
+  /** Bell inbox: renders in the header only when both handlers are provided. */
+  onOpenNotificationTarget,
+  onOpenNotificationSettings,
   showAiSignInGuide = false,
   onDismissAiSignInGuide,
   desktopUpdateHintVersion = null,
@@ -615,6 +619,12 @@ export default function Sidebar({
             >
               {connected ? '● Connected' : reconnecting ? '● Reconnecting…' : '● Disconnected'}
             </span>
+            {onOpenNotificationTarget && onOpenNotificationSettings && (
+              <NotificationBell
+                onOpenTarget={onOpenNotificationTarget}
+                onOpenSettings={onOpenNotificationSettings}
+              />
+            )}
             <BugReportButton
               projectId={bugReportProjectId}
               agentId={bugReportAgentId}

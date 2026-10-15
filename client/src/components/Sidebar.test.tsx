@@ -110,6 +110,27 @@ describe('Sidebar — loading overlay', () => {
   });
 });
 
+describe('Sidebar — notification bell', () => {
+  it('renders the bell in the header row when inbox handlers are provided', () => {
+    render(
+      <Sidebar
+        {...buildProps({
+          onOpenNotificationTarget: vi.fn(),
+          onOpenNotificationSettings: vi.fn(),
+        })}
+      />,
+    );
+    const bell = screen.getByTestId('notification-bell');
+    const status = screen.getByTestId('sidebar-connection-status');
+    expect(bell.parentElement).toBe(status.parentElement);
+  });
+
+  it('omits the bell without handlers', () => {
+    render(<Sidebar {...buildProps()} />);
+    expect(screen.queryByTestId('notification-bell')).not.toBeInTheDocument();
+  });
+});
+
 describe('Sidebar — Hub nav (global home)', () => {
   it('renders a single Hub entry instead of Home/Dashboard/Todos/Calendar/Gmail', () => {
     render(

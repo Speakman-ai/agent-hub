@@ -9,6 +9,8 @@ import {
   Suspense,
 } from 'react';
 import Sidebar from './components/Sidebar';
+import NotificationBell, { NOTIFICATION_WS_EVENT } from './components/NotificationBell';
+import type { NotificationTarget } from './utils/notificationTarget';
 import BrandLogo from './components/BrandLogo';
 import TopBar from './components/TopBar';
 import ChatMessage from './components/ChatMessage';
@@ -3375,6 +3377,10 @@ export default function App({ initialView }: any = {}) {
         // rather than on its next poll, without subscribing to the WS directly.
         // The broadcast fans out to every client, so the listener filters by
         // projectId before refetching.
+        case 'notification_created':
+        case 'notification_read':
+          window.dispatchEvent(new CustomEvent(NOTIFICATION_WS_EVENT, { detail: data }));
+          break;
         case 'infra_health_event':
           window.dispatchEvent(new CustomEvent('infra_health_event', { detail: data }));
           break;
@@ -4470,6 +4476,23 @@ export default function App({ initialView }: any = {}) {
     [setActiveAgentId],
   );
   focusAgentSessionRef.current = focusAgentSession;
+
+  const openNotificationTarget = useCallback(
+    (target: NotificationTarget) => {
+      if (target.kind === 'session') {
+        focusAgentSession(target.agentId, target.sessionId);
+        setSidebarOpen(false);
+        return;
+      }
+      applyNavigationState(target.route);
+    },
+    [applyNavigationState, focusAgentSession],
+  );
+
+  const openNotificationSettings = useCallback(() => {
+    setCurrentView('settings:notifications');
+    setSidebarOpen(false);
+  }, []);
 
   useEffect(() => {
     if (currentView !== 'hub' && !hubPaneFromLegacyView(currentView)) return;
@@ -6590,6 +6613,12 @@ export default function App({ initialView }: any = {}) {
             >
               <PanelLeftOpen size={18} />
             </button>
+            <NotificationBell
+              placement="right"
+              testIdPrefix="rail-notification-bell"
+              onOpenTarget={openNotificationTarget}
+              onOpenSettings={openNotificationSettings}
+            />
           </div>
         )}
 
@@ -6617,6 +6646,8 @@ export default function App({ initialView }: any = {}) {
             chatActive={currentView === 'hub' && hubPane === 'chat'}
             chatUnread={chatButtonBadge}
             onCollapseSidebar={() => setSidebarCollapsed(true)}
+            onOpenNotificationTarget={openNotificationTarget}
+            onOpenNotificationSettings={openNotificationSettings}
             isLoading={sidebarDataLoading}
             projects={projects}
             agents={agents}

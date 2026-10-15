@@ -129,7 +129,16 @@ registerPath({
   responses: {
     200: {
       description: 'Number of rows flipped to read.',
-      content: jsonContent(z.object({ updated: z.number().int(), unreadCount: z.number().int() })),
+      content: jsonContent(
+        z.object({
+          updated: z.number().int(),
+          unreadCount: z.number().int(),
+          readAt: z.string().openapi({
+            description:
+              'Server time stamped on the flipped rows. Every row created at or before it is now read.',
+          }),
+        }),
+      ),
     },
     401: errorResponse('Authentication required.'),
   },

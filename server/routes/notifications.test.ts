@@ -165,7 +165,8 @@ describe('POST /api/notifications/read-all', () => {
     seed(userA, 3);
     seed(userB, 2);
     const res = await request(mount(userA)).post('/api/notifications/read-all').expect(200);
-    expect(res.body).toEqual({ updated: 3, unreadCount: 0 });
+    expect(res.body).toEqual({ updated: 3, unreadCount: 0, readAt: expect.any(String) });
+    expect(broadcast.mock.calls[0][0].readAt).toBe(res.body.readAt);
     expect(broadcast).toHaveBeenCalledTimes(1);
     expect(broadcast.mock.calls[0][0]).toMatchObject({
       type: 'notification_read',
@@ -179,7 +180,7 @@ describe('POST /api/notifications/read-all', () => {
 
   it('does not broadcast when nothing was unread', async () => {
     const res = await request(mount(userA)).post('/api/notifications/read-all').expect(200);
-    expect(res.body).toEqual({ updated: 0, unreadCount: 0 });
+    expect(res.body).toEqual({ updated: 0, unreadCount: 0, readAt: expect.any(String) });
     expect(broadcast).not.toHaveBeenCalled();
   });
 });

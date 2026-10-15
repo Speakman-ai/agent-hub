@@ -69,7 +69,7 @@ export default function createNotificationsRoutes(deps: Pick<RouteDeps, 'broadca
     const now = new Date();
     const updated = markAllNotificationsRead(userId, now);
     if (updated > 0) emitRead(userId, { all: true, readAt: now.toISOString() });
-    res.json({ updated, unreadCount: countUnreadNotifications(userId) });
+    res.json({ updated, unreadCount: countUnreadNotifications(userId), readAt: now.toISOString() });
   });
 
   router.post('/api/notifications/:id/read', (req: Request, res: Response) => {

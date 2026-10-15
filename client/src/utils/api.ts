@@ -9,6 +9,7 @@ import type { DeployTriggerEvent } from './deployTriggers';
 import type { InfraServicePackWire } from '@shared/utils/infraPacks';
 import type { InfraSpendTrendWire } from '@shared/utils/infraSpend';
 import type { InfraFleetWire } from '@shared/utils/infraFleet';
+import type { InboxNotification } from './notificationTarget';
 import type { QuotaHeadroomResponse } from '@shared/utils/quotaHeadroom';
 import type { SessionContextUsage } from '@shared/utils/contextUsage';
 
@@ -3520,6 +3521,22 @@ export const api = {
   // support_tickets_read_all WebSocket event. Returns { marked, unreadCount }.
   markAllSupportTicketsRead: (projectId: any) =>
     fetchJSON(`/projects/${projectId}/support-tickets/read-all`, { method: 'POST' }),
+
+  // Bell inbox: scoped to the signed-in user, newest first, cursor paged.
+  listNotifications: (params: { limit?: number; cursor?: string | null } = {}) =>
+    fetchJSON<{ items: InboxNotification[]; nextCursor: string | null }>(
+      `/notifications${infraQuery({ limit: params.limit, cursor: params.cursor ?? undefined })}`,
+    ),
+  getNotificationUnreadCount: () => fetchJSON<{ count: number }>('/notifications/unread-count'),
+  markNotificationRead: (id: string) =>
+    fetchJSON<{ notification: InboxNotification; unreadCount: number }>(
+      `/notifications/${encodeURIComponent(id)}/read`,
+      { method: 'POST' },
+    ),
+  markAllNotificationsRead: () =>
+    fetchJSON<{ updated: number; unreadCount: number; readAt: string }>('/notifications/read-all', {
+      method: 'POST',
+    }),
 
   // Score-ranked voting feed — only `type=feature_request` tickets, sorted by
   // score desc, each carrying a `voting` tally { score, upvotes, downvotes,

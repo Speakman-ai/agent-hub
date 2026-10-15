@@ -44038,9 +44038,13 @@ paths:
                     type: integer
                   unreadCount:
                     type: integer
+                  readAt:
+                    type: string
+                    description: Server time stamped on the flipped rows. Every row created at or before it is now read.
                 required:
                   - updated
                   - unreadCount
+                  - readAt
         "401":
           description: Authentication required.
           content:
