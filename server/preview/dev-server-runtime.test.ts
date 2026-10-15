@@ -773,7 +773,7 @@ describe('DevServerRuntime lifecycle', () => {
       return env;
     }
 
-    /** Survey Tracker's real shape: an Angular dev server on 4200. */
+    /** Acme Tracker's real shape: an Angular dev server on 4200. */
     const project = () =>
       makeProject({ portMap: [{ internalPort: 4200, label: 'Frontend', primary: true }] });
 

@@ -635,12 +635,12 @@ describe('patchSessionInAgentCaches', () => {
         { id: 's1', state: 'working' },
         { id: 's2', state: 'waiting_for_user_input' },
       ],
-      'survey-tracker-dev': [{ id: 's3', state: 'waiting_for_user_input' }],
+      'acme-tracker-dev': [{ id: 's3', state: 'waiting_for_user_input' }],
     };
     const next = patchSessionInAgentCaches(cache, 's1', (s) => ({ ...s, state: 'pending_push' }));
     expect(next['agent-hub-dev'][0].state).toBe('pending_push');
     expect(next['agent-hub-dev'][1]).toBe(cache['agent-hub-dev'][1]);
-    expect(next['survey-tracker-dev']).toBe(cache['survey-tracker-dev']);
+    expect(next['acme-tracker-dev']).toBe(cache['acme-tracker-dev']);
     expect(cache['agent-hub-dev'][0].state).toBe('working');
   });
 

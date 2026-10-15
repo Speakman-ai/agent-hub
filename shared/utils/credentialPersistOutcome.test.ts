@@ -8,14 +8,14 @@ import {
 describe('normalizeCredentialPersistTarget', () => {
   it('accepts a valid target and trims key names', () => {
     expect(
-      normalizeCredentialPersistTarget({ skillId: 'survey-tracker', map: { username: ' USER ' } }),
-    ).toEqual({ skillId: 'survey-tracker', map: { username: 'USER' } });
+      normalizeCredentialPersistTarget({ skillId: 'acme-tracker', map: { username: ' USER ' } }),
+    ).toEqual({ skillId: 'acme-tracker', map: { username: 'USER' } });
   });
 
   it('rejects a map whose destination keys collide (would overwrite the wrong secret)', () => {
     expect(
       normalizeCredentialPersistTarget({
-        skillId: 'survey-tracker',
+        skillId: 'acme-tracker',
         map: { password: 'LOGIN', username: 'LOGIN' },
       }),
     ).toBeNull();
@@ -42,27 +42,27 @@ describe('normalizeCredentialPersistTarget', () => {
 });
 
 const persist = {
-  skillId: 'survey-tracker',
+  skillId: 'acme-tracker',
   map: {
-    username: 'SURVEYTRACKER_API_DATA_USERNAME',
-    password: 'SURVEYTRACKER_API_DATA_PASSWORD',
+    username: 'ACMETRACKER_API_DATA_USERNAME',
+    password: 'ACMETRACKER_API_DATA_PASSWORD',
   },
 };
 
 describe('describeCredentialPersistOutcome', () => {
   it('returns the ephemeral line when no persist target was requested', () => {
-    const out = describeCredentialPersistOutcome({ service: 'Survey Tracker' });
+    const out = describeCredentialPersistOutcome({ service: 'Acme Tracker' });
     expect(out.kind).toBe('off');
     expect(out.line).toBe(EPHEMERAL_DISCARD_LINE);
   });
 
   it('reports full success only when every requested key was stored', () => {
     const out = describeCredentialPersistOutcome({
-      service: 'Survey Tracker',
+      service: 'Acme Tracker',
       persist,
       persisted: {
-        skillId: 'survey-tracker',
-        stored: ['SURVEYTRACKER_API_DATA_USERNAME', 'SURVEYTRACKER_API_DATA_PASSWORD'],
+        skillId: 'acme-tracker',
+        stored: ['ACMETRACKER_API_DATA_USERNAME', 'ACMETRACKER_API_DATA_PASSWORD'],
         skipped: [],
       },
     });
@@ -73,48 +73,48 @@ describe('describeCredentialPersistOutcome', () => {
 
   it('reports partial failure when some requested keys were skipped', () => {
     const out = describeCredentialPersistOutcome({
-      service: 'Survey Tracker',
+      service: 'Acme Tracker',
       persist,
       persisted: {
-        skillId: 'survey-tracker',
-        stored: ['SURVEYTRACKER_API_DATA_USERNAME'],
-        skipped: [{ keyName: 'SURVEYTRACKER_API_DATA_PASSWORD', reason: 'not-declared-by-skill' }],
+        skillId: 'acme-tracker',
+        stored: ['ACMETRACKER_API_DATA_USERNAME'],
+        skipped: [{ keyName: 'ACMETRACKER_API_DATA_PASSWORD', reason: 'not-declared-by-skill' }],
       },
     });
     expect(out.kind).toBe('partial');
-    expect(out.savedKeys).toEqual(['SURVEYTRACKER_API_DATA_USERNAME']);
-    expect(out.unsavedKeys).toEqual(['SURVEYTRACKER_API_DATA_PASSWORD']);
+    expect(out.savedKeys).toEqual(['ACMETRACKER_API_DATA_USERNAME']);
+    expect(out.unsavedKeys).toEqual(['ACMETRACKER_API_DATA_PASSWORD']);
     expect(out.line).toContain('partially saved');
     expect(out.line).toContain('could NOT be saved');
-    expect(out.line).toContain('SURVEYTRACKER_API_DATA_PASSWORD');
+    expect(out.line).toContain('ACMETRACKER_API_DATA_PASSWORD');
     expect(out.line).not.toContain('reused in future sessions');
   });
 
   it('treats a requested key the server omitted entirely as unsaved (not just skipped[])', () => {
     const out = describeCredentialPersistOutcome({
-      service: 'Survey Tracker',
+      service: 'Acme Tracker',
       persist,
       // Server returned only one stored key and an EMPTY skipped list — the
       // other requested key is still unsaved and must be disclosed.
       persisted: {
-        skillId: 'survey-tracker',
-        stored: ['SURVEYTRACKER_API_DATA_USERNAME'],
+        skillId: 'acme-tracker',
+        stored: ['ACMETRACKER_API_DATA_USERNAME'],
         skipped: [],
       },
     });
     expect(out.kind).toBe('partial');
-    expect(out.unsavedKeys).toEqual(['SURVEYTRACKER_API_DATA_PASSWORD']);
+    expect(out.unsavedKeys).toEqual(['ACMETRACKER_API_DATA_PASSWORD']);
   });
 
   it('reports total failure and surfaces the error when nothing was stored', () => {
     const out = describeCredentialPersistOutcome({
-      service: 'Survey Tracker',
+      service: 'Acme Tracker',
       persist,
       persisted: {
-        skillId: 'survey-tracker',
+        skillId: 'acme-tracker',
         stored: [],
         skipped: [],
-        error: 'skill "survey-tracker" declares no credentials in SKILL.md frontmatter',
+        error: 'skill "acme-tracker" declares no credentials in SKILL.md frontmatter',
       },
     });
     expect(out.kind).toBe('failed');
@@ -124,7 +124,7 @@ describe('describeCredentialPersistOutcome', () => {
   });
 
   it('degrades to failed when the server returns no persisted payload at all', () => {
-    const out = describeCredentialPersistOutcome({ service: 'Survey Tracker', persist });
+    const out = describeCredentialPersistOutcome({ service: 'Acme Tracker', persist });
     expect(out.kind).toBe('failed');
     expect(out.line).toContain('could NOT be saved');
   });

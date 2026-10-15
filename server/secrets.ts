@@ -22,9 +22,10 @@
  * See `ops/terraform/ssm-iam.tf` for the Terraform resource.
  *
  * ## Label gate
- * The server reads this secret ONLY for sessions whose kanban card carries one
- * of the opt-in labels `cross-hub:dev` or `survey-tracker`.  Sessions without
- * those labels never trigger a `GetSecretValue` call and never receive
+ * The server reads this secret ONLY for sessions whose kanban card carries an
+ * opt-in label: `cross-hub:dev`, plus any labels listed (comma-separated) in
+ * the `AGENT_HUB_CROSS_HUB_LABELS` env var.  Sessions without those labels
+ * never trigger a `GetSecretValue` call and never receive
  * `DEV_HUB_API_KEY` in their spawn environment.
  *
  * Both **autonomous dispatch** (`server/autonomous.ts`) and **manual board
@@ -85,11 +86,21 @@ export function __clearSecretsCacheForTests(): void {
 
 // Label gate
 
+const BUILTIN_CROSS_HUB_LABELS = ['cross-hub:dev'];
+
 /**
- * Labels (comma-separated card `labels` string) that opt a session into
- * receiving `DEV_HUB_API_KEY` in its spawn env.
+ * Labels that opt a session into receiving `DEV_HUB_API_KEY` in its spawn env.
+ * Deployment-specific labels (a project name, say) come from
+ * `AGENT_HUB_CROSS_HUB_LABELS` so they are not baked into the public source.
+ * Read per call so an env change applies without a module reload.
  */
-const CROSS_HUB_LABELS = new Set(['cross-hub:dev', 'survey-tracker']);
+export function crossHubLabels(env: NodeJS.ProcessEnv = process.env): Set<string> {
+  const extra = (env.AGENT_HUB_CROSS_HUB_LABELS ?? '')
+    .split(',')
+    .map((l) => l.trim().toLowerCase())
+    .filter(Boolean);
+  return new Set([...BUILTIN_CROSS_HUB_LABELS, ...extra]);
+}
 
 /**
  * Return true when the card's label string contains at least one of the
@@ -98,10 +109,11 @@ const CROSS_HUB_LABELS = new Set(['cross-hub:dev', 'survey-tracker']);
  */
 export function cardNeedsDevHubKey(labels: string | null | undefined): boolean {
   if (!labels) return false;
+  const allowed = crossHubLabels();
   return labels
     .split(',')
     .map((l) => l.trim().toLowerCase())
-    .some((l) => CROSS_HUB_LABELS.has(l));
+    .some((l) => allowed.has(l));
 }
 
 // Secret fetch

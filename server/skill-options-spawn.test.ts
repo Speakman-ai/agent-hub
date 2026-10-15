@@ -5,9 +5,7 @@ import type { ParsedOptions } from './skill-options-declaration.js';
 // Mock the runtime skill list + schema resolver + selection store so we can
 // drive exactly which options resolve and what the user selected.
 vi.mock('./agent-skills-list.js', () => ({
-  listEnabledSkills: vi.fn(() => [
-    { id: 'survey-tracker', name: 'survey-tracker', description: '' },
-  ]),
+  listEnabledSkills: vi.fn(() => [{ id: 'acme-tracker', name: 'acme-tracker', description: '' }]),
 }));
 vi.mock('./skill-options-resolve.js', () => ({
   readOptionsSchemaForSkill: vi.fn(),
@@ -24,7 +22,7 @@ const SCHEMA: ParsedOptions = {
   error: null,
   options: [
     {
-      name: 'SURVEY_TRACKER_ENV',
+      name: 'ACME_TRACKER_ENV',
       label: 'Environment',
       description: '',
       choices: [
@@ -58,45 +56,43 @@ describe('mergeSkillOptionSpawnEnv', () => {
   });
 
   it('injects the user selection when it is a legal choice', () => {
-    vi.mocked(getUserSkillOptionValues).mockReturnValue(new Map([['SURVEY_TRACKER_ENV', 'prod']]));
+    vi.mocked(getUserSkillOptionValues).mockReturnValue(new Map([['ACME_TRACKER_ENV', 'prod']]));
     const env: NodeJS.ProcessEnv = {};
     mergeSkillOptionSpawnEnv(env, { ownerId: 'u1', agentId: 'a1', project: makeProject(AGENT) });
-    expect(env.SURVEY_TRACKER_ENV).toBe('prod');
+    expect(env.ACME_TRACKER_ENV).toBe('prod');
   });
 
   it('falls back to the default when no selection is stored', () => {
     const env: NodeJS.ProcessEnv = {};
     mergeSkillOptionSpawnEnv(env, { ownerId: 'u1', agentId: 'a1', project: makeProject(AGENT) });
-    expect(env.SURVEY_TRACKER_ENV).toBe('dev');
+    expect(env.ACME_TRACKER_ENV).toBe('dev');
   });
 
   it('falls back to the default when the stored selection is not a legal choice', () => {
-    vi.mocked(getUserSkillOptionValues).mockReturnValue(
-      new Map([['SURVEY_TRACKER_ENV', 'staging']]),
-    );
+    vi.mocked(getUserSkillOptionValues).mockReturnValue(new Map([['ACME_TRACKER_ENV', 'staging']]));
     const env: NodeJS.ProcessEnv = {};
     mergeSkillOptionSpawnEnv(env, { ownerId: 'u1', agentId: 'a1', project: makeProject(AGENT) });
-    expect(env.SURVEY_TRACKER_ENV).toBe('dev');
+    expect(env.ACME_TRACKER_ENV).toBe('dev');
   });
 
   it('never overwrites an env var already set to a non-empty value', () => {
-    vi.mocked(getUserSkillOptionValues).mockReturnValue(new Map([['SURVEY_TRACKER_ENV', 'prod']]));
-    const env: NodeJS.ProcessEnv = { SURVEY_TRACKER_ENV: 'preset' };
+    vi.mocked(getUserSkillOptionValues).mockReturnValue(new Map([['ACME_TRACKER_ENV', 'prod']]));
+    const env: NodeJS.ProcessEnv = { ACME_TRACKER_ENV: 'preset' };
     mergeSkillOptionSpawnEnv(env, { ownerId: 'u1', agentId: 'a1', project: makeProject(AGENT) });
-    expect(env.SURVEY_TRACKER_ENV).toBe('preset');
+    expect(env.ACME_TRACKER_ENV).toBe('preset');
   });
 
   it('injects nothing when the schema is malformed', () => {
     vi.mocked(readOptionsSchemaForSkill).mockReturnValue({ error: 'bad', options: [] });
     const env: NodeJS.ProcessEnv = {};
     mergeSkillOptionSpawnEnv(env, { ownerId: 'u1', agentId: 'a1', project: makeProject(AGENT) });
-    expect(env.SURVEY_TRACKER_ENV).toBeUndefined();
+    expect(env.ACME_TRACKER_ENV).toBeUndefined();
   });
 
   it('injects nothing when there is no owner', () => {
     const env: NodeJS.ProcessEnv = {};
     mergeSkillOptionSpawnEnv(env, { ownerId: null, agentId: 'a1', project: makeProject(AGENT) });
-    expect(env.SURVEY_TRACKER_ENV).toBeUndefined();
+    expect(env.ACME_TRACKER_ENV).toBeUndefined();
     expect(readOptionsSchemaForSkill).not.toHaveBeenCalled();
   });
 });

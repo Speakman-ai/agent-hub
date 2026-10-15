@@ -30,6 +30,7 @@ import type { NativePrService } from '../native-pr/service.js';
 import { pushAndCreateNativePr } from './push-and-create-pr-agenthub.js';
 import { assertWorktreeOriginMatchesProject } from './origin-guard.js';
 import { generateLlmPrSummary } from './pr-summary-llm.js';
+import { redactCardDescriptionForGit } from '../pr-body-redaction.js';
 import type {
   PushAndCreatePrArgs,
   PushAndCreatePrFn,
@@ -61,7 +62,7 @@ export async function resolvePrSummaryOverride(
   if (!config.openaiApiKey && !config.anthropicApiKey) return null;
   return generateLlmPrSummary({
     cardTitle: args.card.title ?? null,
-    cardDescription: args.card.description ?? null,
+    cardDescription: redactCardDescriptionForGit(args.card.description) || null,
     commits,
     diffStat,
     openaiApiKey: config.openaiApiKey ?? null,
@@ -196,7 +197,7 @@ export function buildPrDetails(
 ): { title: string; body: string } {
   const firstCommit = commits[0];
   const cardTitle = args.card.title?.trim() ?? '';
-  const cardDescription = args.card.description?.trim() ?? '';
+  const cardDescription = redactCardDescriptionForGit(args.card.description);
   // Trimmed, possibly-empty newest-commit subject. Trimming here (rather than
   // trusting collectPrCommits to drop empty subjects) keeps buildPrDetails
   // defensive when called with malformed/whitespace subjects.

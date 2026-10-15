@@ -7,7 +7,7 @@
  *
  * Each job gets its own clone of the run worktree before the container
  * starts. GitHub Actions does this by default; without it, parallel
- * Survey Tracker shards race `python3 -m venv .venv` and `npm ci` on one
+ * shards race `python3 -m venv .venv` and `npm ci` on one
  * bind-mount and fail with EACCES.
  */
 import { rm } from 'fs/promises';

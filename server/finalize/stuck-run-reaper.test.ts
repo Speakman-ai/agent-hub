@@ -366,7 +366,7 @@ describe('selectRuntimeStuckFinalizeRunCandidates (SQL)', () => {
   });
 
   /**
-   * Production run f773c012 (surveytracker, 2026-07-27). The run spent 33
+   * Production run f773c012 (acmetracker, 2026-07-27). The run spent 33
    * minutes in rebase → review → fix rounds, the reviewer approved it at round
    * 4, the orchestrator flipped to the tasks phase and dispatched 13 jobs — and
    * the reaper killed it 4 SECONDS later, because the progress clock was still
@@ -385,7 +385,7 @@ describe('selectRuntimeStuckFinalizeRunCandidates (SQL)', () => {
       status: 'running',
       session_id: 's',
       card_id: 'c',
-      project_id: 'surveytracker',
+      project_id: 'acmetracker',
       head_sha: 'h',
       // Row inserted 33 min ago; every minute since went to rebase/review/fix,
       // none of which writes a step row.
@@ -435,7 +435,7 @@ describe('selectRuntimeStuckFinalizeRunCandidates (SQL)', () => {
       status: 'running',
       session_id: 's',
       card_id: 'c',
-      project_id: 'surveytracker',
+      project_id: 'acmetracker',
       head_sha: 'h',
       started_at: NOW - 60 * MIN,
       phase_changed_at: NOW - 12 * MIN,

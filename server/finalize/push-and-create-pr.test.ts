@@ -120,6 +120,20 @@ describe('buildPrDetails', () => {
     expect(body).not.toContain('## Commits');
   });
 
+  it('keeps bug-report Reporter Context out of the PR body', () => {
+    const description =
+      'Sessions pause mid-run.\n\n---\n\n### Reporter Context\n- **Source URL:** https://hub.internal.example/#/chat\n- **Reported From Agent:** private-dev';
+    for (const commits of [
+      [{ subject: 'fix: resume' }],
+      [{ subject: 'a' }, { subject: 'b' }],
+      [],
+    ]) {
+      const { body } = __test.buildPrDetails(mkArgs({ description }), commits, '');
+      expect(body).toContain('Sessions pause mid-run.');
+      expect(body).not.toMatch(/Reporter Context|hub\.internal|private-dev/);
+    }
+  });
+
   it('names a multi-commit PR after the session goal (card title), not the newest commit', () => {
     // Regression: git log is newest-first, so commits[0] is the last turn.
     // The PR should be named after the kanban card (the session goal).

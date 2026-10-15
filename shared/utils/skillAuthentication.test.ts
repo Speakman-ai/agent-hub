@@ -6,7 +6,7 @@ import {
 
 describe('skill authentication presets', () => {
   it('normalizes a project skill slug into a POSIX env prefix', () => {
-    expect(skillAuthenticationEnvPrefix('surveytracker-api-data')).toBe('SURVEYTRACKER_API_DATA');
+    expect(skillAuthenticationEnvPrefix('acmetracker-api-data')).toBe('ACMETRACKER_API_DATA');
     expect(skillAuthenticationEnvPrefix('---')).toBe('SKILL');
   });
 
@@ -22,15 +22,15 @@ describe('skill authentication presets', () => {
   });
 
   it('builds username and password declarations with only the password masked', () => {
-    expect(buildSkillAuthenticationPreset('survey-tracker', 'username-password')).toEqual([
+    expect(buildSkillAuthenticationPreset('acme-tracker', 'username-password')).toEqual([
       {
-        name: 'SURVEY_TRACKER_USERNAME',
+        name: 'ACME_TRACKER_USERNAME',
         label: 'Username',
         type: 'string',
         required: true,
       },
       {
-        name: 'SURVEY_TRACKER_PASSWORD',
+        name: 'ACME_TRACKER_PASSWORD',
         label: 'Password',
         type: 'secret',
         required: true,

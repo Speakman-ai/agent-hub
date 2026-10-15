@@ -100,11 +100,11 @@ the draft rather than merely telling the agent to ask for credentials. Example:
 
 ```yaml
 credentials:
-  - name: SURVEY_TRACKER_USERNAME
+  - name: ACME_TRACKER_USERNAME
     label: Username
     type: string
     required: true
-  - name: SURVEY_TRACKER_PASSWORD
+  - name: ACME_TRACKER_PASSWORD
     label: Password
     type: secret
     required: true

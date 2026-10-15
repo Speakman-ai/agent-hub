@@ -60,6 +60,7 @@ function makeConfig(): AppConfig {
     },
     emailLogoEnabled: true,
     codexProfile: null,
+    commitRedactions: null,
     sessionEnvAdapter: 'auto' as const,
     codexDangerBypass: true,
     cursorSandboxBypass: true,

@@ -70,11 +70,11 @@ export function canReadReporterEmail(req: Request): boolean {
 }
 
 /**
- * True for a non-interactive API-key request — the Survey-Tracker-facing
+ * True for a non-interactive API-key request — the external-client-facing
  * class. Both key shapes count: the global break-glass X-API-Key
  * (`authViaApiKey`, no Hub user) AND a per-user `ahub_*` key
  * (`authViaUserApiKey`, which DOES carry an `authUserId`). The card lets
- * Survey Tracker present either, so classifying only the keyless global path
+ * the external client present either, so classifying only the keyless global path
  * as external would leak the full ticket (reporter_email, AI investigation,
  * replay refs, release fields) to a per-user-key caller.
  *
@@ -266,7 +266,7 @@ export type SupportTicketVotingHubItem = SupportTicketResponse & {
 };
 
 /**
- * External (Survey-Tracker) voting item. An allowlist projection matching the
+ * External voting item. An allowlist projection matching the
  * public contract exactly: `id` (required to cast subsequent vote/comment
  * calls) plus subject/body/type/severity/status and the vote+comment tally
  * (`voting` = score/upvotes/downvotes/myVote/comment_count). Nothing else —
@@ -312,7 +312,7 @@ function projectVotingItemExternal(
 
 /**
  * Serialize the score-ranked voting feed for the calling identity. External
- * API-key-only callers (Survey Tracker) get the safe projection above; every
+ * API-key-only callers (external clients) get the safe projection above; every
  * Hub caller gets the full ticket shape with the tally attached (converted-card
  * lookups batched by {@link serializeSupportTicketsForRequest}).
  */

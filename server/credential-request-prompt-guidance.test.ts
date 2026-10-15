@@ -108,7 +108,7 @@ describe('buildEnrichedPrompt — credential-request guidance', () => {
 
   it('makes the credential-request block the path for interactive secrets and bans external secret managers', () => {
     const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), { isFirstMessage: true });
-    // Regression for the Survey Tracker "log me in" session: the agent claimed
+    // Regression for the Acme Tracker "log me in" session: the agent claimed
     // there was no secure prompt and steered the user to 1Password / paste-in-chat
     // instead of emitting the masked credential-request card.
     expect(prompt).toContain('collecting a username/password or any one-off secret');

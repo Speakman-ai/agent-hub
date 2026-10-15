@@ -6,7 +6,7 @@ import { tmpdir } from 'os';
 // Capture credential writes without touching orgs.db / crypto.
 const upsertMock = vi.fn((opts: { keyName: string }) => ({
   id: `row-${opts.keyName}`,
-  skill_id: 'survey-tracker',
+  skill_id: 'acme-tracker',
   key_name: opts.keyName,
   masked_preview: '••••abcd',
   last_used_at: null,
@@ -40,16 +40,16 @@ function makeSkillDir(root: string, skillId: string, credentialNames: string[]):
 describe('normalizePersistTarget', () => {
   it('accepts a valid target and trims key names', () => {
     const t = normalizePersistTarget({
-      skillId: 'survey-tracker',
+      skillId: 'acme-tracker',
       map: { username: ' USER ', password: 'PASS' },
     });
-    expect(t).toEqual({ skillId: 'survey-tracker', map: { username: 'USER', password: 'PASS' } });
+    expect(t).toEqual({ skillId: 'acme-tracker', map: { username: 'USER', password: 'PASS' } });
   });
 
   it('returns null for absent, non-object, or empty-map payloads', () => {
     expect(normalizePersistTarget(undefined)).toBeNull();
     expect(normalizePersistTarget('x')).toBeNull();
-    expect(normalizePersistTarget({ skillId: 'survey-tracker', map: {} })).toBeNull();
+    expect(normalizePersistTarget({ skillId: 'acme-tracker', map: {} })).toBeNull();
     expect(normalizePersistTarget({ skillId: '', map: { a: 'B' } })).toBeNull();
     expect(normalizePersistTarget({ skillId: 'ok', map: { a: 5 } })).toBeNull();
   });
@@ -66,7 +66,7 @@ describe('normalizePersistTarget', () => {
     // secret. The authoritative normalizer must reject it outright.
     expect(
       normalizePersistTarget({
-        skillId: 'survey-tracker',
+        skillId: 'acme-tracker',
         map: { password: 'LOGIN', username: 'LOGIN' },
       }),
     ).toBeNull();
@@ -78,9 +78,9 @@ describe('persistSessionCredentialToSkill', () => {
   beforeEach(() => {
     upsertMock.mockClear();
     root = mkdtempSync(path.join(tmpdir(), 'session-cred-persist-'));
-    makeSkillDir(root, 'survey-tracker', [
-      'SURVEYTRACKER_API_DATA_USERNAME',
-      'SURVEYTRACKER_API_DATA_PASSWORD',
+    makeSkillDir(root, 'acme-tracker', [
+      'ACMETRACKER_API_DATA_USERNAME',
+      'ACMETRACKER_API_DATA_PASSWORD',
     ]);
   });
 
@@ -89,10 +89,10 @@ describe('persistSessionCredentialToSkill', () => {
       ownerUserId: 'owner-1',
       actorUserId: 'owner-1',
       target: {
-        skillId: 'survey-tracker',
+        skillId: 'acme-tracker',
         map: {
-          username: 'SURVEYTRACKER_API_DATA_USERNAME',
-          password: 'SURVEYTRACKER_API_DATA_PASSWORD',
+          username: 'ACMETRACKER_API_DATA_USERNAME',
+          password: 'ACMETRACKER_API_DATA_PASSWORD',
         },
       },
       values: { username: 'ryan', password: 'hunter2' },
@@ -100,16 +100,16 @@ describe('persistSessionCredentialToSkill', () => {
     });
 
     expect(result.stored.sort()).toEqual([
-      'SURVEYTRACKER_API_DATA_PASSWORD',
-      'SURVEYTRACKER_API_DATA_USERNAME',
+      'ACMETRACKER_API_DATA_PASSWORD',
+      'ACMETRACKER_API_DATA_USERNAME',
     ]);
     expect(result.skipped).toEqual([]);
     expect(upsertMock).toHaveBeenCalledTimes(2);
     expect(upsertMock).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: 'owner-1',
-        skillId: 'survey-tracker',
-        keyName: 'SURVEYTRACKER_API_DATA_USERNAME',
+        skillId: 'acme-tracker',
+        keyName: 'ACMETRACKER_API_DATA_USERNAME',
         value: 'ryan',
       }),
     );
@@ -120,9 +120,9 @@ describe('persistSessionCredentialToSkill', () => {
       ownerUserId: 'owner-1',
       actorUserId: 'owner-1',
       target: {
-        skillId: 'survey-tracker',
+        skillId: 'acme-tracker',
         map: {
-          username: 'SURVEYTRACKER_API_DATA_USERNAME',
+          username: 'ACMETRACKER_API_DATA_USERNAME',
           extra: 'NOT_A_DECLARED_KEY',
         },
       },
@@ -130,7 +130,7 @@ describe('persistSessionCredentialToSkill', () => {
       projectSkillsDirs: [root],
     });
 
-    expect(result.stored).toEqual(['SURVEYTRACKER_API_DATA_USERNAME']);
+    expect(result.stored).toEqual(['ACMETRACKER_API_DATA_USERNAME']);
     expect(result.skipped).toEqual([
       { keyName: 'NOT_A_DECLARED_KEY', reason: 'not-declared-by-skill' },
     ]);
@@ -142,15 +142,15 @@ describe('persistSessionCredentialToSkill', () => {
       ownerUserId: 'owner-1',
       actorUserId: 'owner-1',
       target: {
-        skillId: 'survey-tracker',
-        map: { username: 'SURVEYTRACKER_API_DATA_USERNAME' },
+        skillId: 'acme-tracker',
+        map: { username: 'ACMETRACKER_API_DATA_USERNAME' },
       },
       values: { username: '   ' },
       projectSkillsDirs: [root],
     });
     expect(result.stored).toEqual([]);
     expect(result.skipped).toEqual([
-      { keyName: 'SURVEYTRACKER_API_DATA_USERNAME', reason: 'no-value-for-field' },
+      { keyName: 'ACMETRACKER_API_DATA_USERNAME', reason: 'no-value-for-field' },
     ]);
     expect(upsertMock).not.toHaveBeenCalled();
   });
@@ -161,7 +161,7 @@ describe('persistSessionCredentialToSkill', () => {
     // the partial save instead of claiming nothing was saved.
     upsertMock.mockImplementationOnce((opts: { keyName: string }) => ({
       id: `row-${opts.keyName}`,
-      skill_id: 'survey-tracker',
+      skill_id: 'acme-tracker',
       key_name: opts.keyName,
       masked_preview: '••••abcd',
       last_used_at: null,
@@ -176,19 +176,19 @@ describe('persistSessionCredentialToSkill', () => {
       ownerUserId: 'owner-1',
       actorUserId: 'owner-1',
       target: {
-        skillId: 'survey-tracker',
+        skillId: 'acme-tracker',
         map: {
-          username: 'SURVEYTRACKER_API_DATA_USERNAME',
-          password: 'SURVEYTRACKER_API_DATA_PASSWORD',
+          username: 'ACMETRACKER_API_DATA_USERNAME',
+          password: 'ACMETRACKER_API_DATA_PASSWORD',
         },
       },
       values: { username: 'ryan', password: 'hunter2' },
       projectSkillsDirs: [root],
     });
 
-    expect(result.stored).toEqual(['SURVEYTRACKER_API_DATA_USERNAME']);
+    expect(result.stored).toEqual(['ACMETRACKER_API_DATA_USERNAME']);
     expect(result.skipped).toEqual([
-      { keyName: 'SURVEYTRACKER_API_DATA_PASSWORD', reason: 'store-failed' },
+      { keyName: 'ACMETRACKER_API_DATA_PASSWORD', reason: 'store-failed' },
     ]);
     expect(upsertMock).toHaveBeenCalledTimes(2);
   });

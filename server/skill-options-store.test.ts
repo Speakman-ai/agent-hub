@@ -36,39 +36,39 @@ describe('skill-options-store', () => {
   });
 
   it('upserts and reads back a selection', () => {
-    upsertUserSkillOption({ userId, skillId: 'survey-tracker', optionName: 'ENV', value: 'prod' });
-    const rows = listUserSkillOptions(userId, 'survey-tracker');
+    upsertUserSkillOption({ userId, skillId: 'acme-tracker', optionName: 'ENV', value: 'prod' });
+    const rows = listUserSkillOptions(userId, 'acme-tracker');
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
-      skill_id: 'survey-tracker',
+      skill_id: 'acme-tracker',
       option_name: 'ENV',
       value: 'prod',
     });
   });
 
   it('updates the value on a second upsert (unique per user+skill+option)', () => {
-    upsertUserSkillOption({ userId, skillId: 'survey-tracker', optionName: 'ENV', value: 'dev' });
-    upsertUserSkillOption({ userId, skillId: 'survey-tracker', optionName: 'ENV', value: 'prod' });
-    const rows = listUserSkillOptions(userId, 'survey-tracker');
+    upsertUserSkillOption({ userId, skillId: 'acme-tracker', optionName: 'ENV', value: 'dev' });
+    upsertUserSkillOption({ userId, skillId: 'acme-tracker', optionName: 'ENV', value: 'prod' });
+    const rows = listUserSkillOptions(userId, 'acme-tracker');
     expect(rows).toHaveLength(1);
     expect(rows[0]!.value).toBe('prod');
   });
 
   it('getUserSkillOptionValues returns a name->value map for one skill', () => {
-    upsertUserSkillOption({ userId, skillId: 'survey-tracker', optionName: 'ENV', value: 'prod' });
-    upsertUserSkillOption({ userId, skillId: 'survey-tracker', optionName: 'REGION', value: 'us' });
+    upsertUserSkillOption({ userId, skillId: 'acme-tracker', optionName: 'ENV', value: 'prod' });
+    upsertUserSkillOption({ userId, skillId: 'acme-tracker', optionName: 'REGION', value: 'us' });
     upsertUserSkillOption({ userId, skillId: 'other', optionName: 'ENV', value: 'dev' });
-    const map = getUserSkillOptionValues(userId, 'survey-tracker');
+    const map = getUserSkillOptionValues(userId, 'acme-tracker');
     expect(map.get('ENV')).toBe('prod');
     expect(map.get('REGION')).toBe('us');
     expect(map.has('other')).toBe(false);
   });
 
   it('delete removes the row and reports ok', () => {
-    upsertUserSkillOption({ userId, skillId: 'survey-tracker', optionName: 'ENV', value: 'prod' });
-    expect(deleteUserSkillOption(userId, 'survey-tracker', 'ENV').ok).toBe(true);
-    expect(listUserSkillOptions(userId, 'survey-tracker')).toHaveLength(0);
+    upsertUserSkillOption({ userId, skillId: 'acme-tracker', optionName: 'ENV', value: 'prod' });
+    expect(deleteUserSkillOption(userId, 'acme-tracker', 'ENV').ok).toBe(true);
+    expect(listUserSkillOptions(userId, 'acme-tracker')).toHaveLength(0);
     // idempotent: second delete reports not-found
-    expect(deleteUserSkillOption(userId, 'survey-tracker', 'ENV').ok).toBe(false);
+    expect(deleteUserSkillOption(userId, 'acme-tracker', 'ENV').ok).toBe(false);
   });
 });

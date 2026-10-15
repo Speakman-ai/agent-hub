@@ -320,7 +320,7 @@ describe('GET /api/sessions/:id/artifacts/:artifactId/content', () => {
   // stream (ERR_INVALID_CHAR) and surfaced in the browser as "Failed to fetch".
   it('serves a Unicode filename via RFC 5987 filename* without breaking download', async () => {
     const id = await newSessionId();
-    const unicodeName = 'AH-1401 surveytracker scrub — patch (v1).diff';
+    const unicodeName = 'AH-1401 acmetracker scrub — patch (v1).diff';
     // Clients percent-encode X-Filename (a raw em-dash is rejected by the HTTP
     // stack as an invalid header char); the server decodes it back.
     const upload = await request

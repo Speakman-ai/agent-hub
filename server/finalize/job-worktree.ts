@@ -3,7 +3,7 @@
  *
  * GitHub Actions gives every job a fresh checkout. The local DinD backend
  * used to bind-mount the *same* host directory into every parallel job
- * container. Survey Tracker (and any other repo) then races
+ * container. Any repo with per-job installs then raced
  * `python3 -m venv .venv` and `npm ci` across shards — mkdir of
  * `.venv` / `frontend/node_modules` fails with EACCES even though unix
  * perms look fine, because a sibling job is deleting/recreating the tree.

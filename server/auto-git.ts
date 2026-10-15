@@ -53,6 +53,7 @@ import {
 import { rebaseOntoBase } from './pre-push-rebase.js';
 import { handleGithubCardOnMerge } from './github-card-on-merge.js';
 import { findUnansweredAskIds } from '../shared/utils/awaitingInput.js';
+import { redactCardDescriptionForGit } from './pr-body-redaction.js';
 import {
   hasCommitNudgeSinceLastUser,
   shouldNudgeUncommittedCommit,
@@ -1218,7 +1219,7 @@ export function buildPrBody(input: PrBodyInput): string {
   // while the subject often duplicates the title. Empty bodies fall back to
   // the subject so the legacy subject-only path is unchanged.
   const commitList = normalizeCommitInputs(commits);
-  const cardDescription = card?.description?.trim() || '';
+  const cardDescription = redactCardDescriptionForGit(card?.description);
   const cardTitle = card?.title?.trim() || '';
   // Tracks whether the Summary lede came from a commit (vs the card). When the
   // card already drove the Summary we must NOT repeat it under ## Original task.
@@ -1739,7 +1740,7 @@ async function commitPushAndCreatePR(
     const session = d.stmts.getSession?.get(sessionId) as { name?: string } | undefined;
     const title = (card?.title ?? session?.name ?? '').trim() || 'Agent task completion';
     const body = [
-      card?.description ? `\n${card.description}` : null,
+      card?.description ? `\n${redactCardDescriptionForGit(card.description)}` : null,
       `\nAgent: ${agent.name}`,
       card?.priority ? `Priority: ${card.priority}` : null,
       `\nCo-Authored-By: ${agent.name} <noreply@anthropic.com>`,
@@ -2026,7 +2027,7 @@ async function publishFromCheckout(
       }
 
       const commitBody = [
-        card?.description ? `\n${card.description}` : null,
+        card?.description ? `\n${redactCardDescriptionForGit(card.description)}` : null,
         `\nAgent: ${agent.name}`,
         card?.priority ? `Priority: ${card.priority}` : null,
         `\nCo-Authored-By: ${agent.name} <noreply@anthropic.com>`,

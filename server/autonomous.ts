@@ -1517,7 +1517,7 @@ async function runAutonomousLoopInner(
       if (commentContext) contextLines.push(`\n${commentContext}`);
 
       // Scoped cross-hub secret injection: only cards that carry an opt-in
-      // label (`cross-hub:dev` or `survey-tracker`) receive `DEV_HUB_API_KEY`
+      // label (`cross-hub:dev` or one from `AGENT_HUB_CROSS_HUB_LABELS`) receive `DEV_HUB_API_KEY`
       // in their spawn environment. The fetch is best-effort — if Secrets
       // Manager is unreachable the session starts without the key and the
       // error is logged via the TOOL_ERROR pattern (see server/secrets.ts).

@@ -58,24 +58,37 @@ describe('cardNeedsDevHubKey', () => {
     expect(cardNeedsDevHubKey('cross-hub:dev')).toBe(true);
   });
 
-  it('matches survey-tracker label', () => {
-    expect(cardNeedsDevHubKey('survey-tracker')).toBe(true);
+  it('ignores a project label that is not configured', () => {
+    vi.stubEnv('AGENT_HUB_CROSS_HUB_LABELS', '');
+    expect(cardNeedsDevHubKey('acme-tracker')).toBe(false);
+    vi.unstubAllEnvs();
+  });
+
+  it('matches a label configured via AGENT_HUB_CROSS_HUB_LABELS', () => {
+    vi.stubEnv('AGENT_HUB_CROSS_HUB_LABELS', ' acme-tracker , other-label ');
+    expect(cardNeedsDevHubKey('acme-tracker')).toBe(true);
+    expect(cardNeedsDevHubKey('other-label')).toBe(true);
+    vi.unstubAllEnvs();
   });
 
   it('matches cross-hub:dev within a multi-label string', () => {
     expect(cardNeedsDevHubKey('infra,cross-hub:dev,secrets-manager')).toBe(true);
   });
 
-  it('matches survey-tracker within a multi-label string', () => {
-    expect(cardNeedsDevHubKey('frontend,survey-tracker,bug')).toBe(true);
+  it('matches a configured label within a multi-label string', () => {
+    vi.stubEnv('AGENT_HUB_CROSS_HUB_LABELS', 'acme-tracker');
+    expect(cardNeedsDevHubKey('frontend,acme-tracker,bug')).toBe(true);
+    vi.unstubAllEnvs();
   });
 
   it('is case-insensitive for cross-hub:dev', () => {
     expect(cardNeedsDevHubKey('Cross-Hub:Dev')).toBe(true);
   });
 
-  it('is case-insensitive for survey-tracker', () => {
-    expect(cardNeedsDevHubKey('Survey-Tracker')).toBe(true);
+  it('is case-insensitive for configured labels', () => {
+    vi.stubEnv('AGENT_HUB_CROSS_HUB_LABELS', 'Acme-Tracker');
+    expect(cardNeedsDevHubKey('acme-TRACKER')).toBe(true);
+    vi.unstubAllEnvs();
   });
 
   it('trims whitespace around labels', () => {

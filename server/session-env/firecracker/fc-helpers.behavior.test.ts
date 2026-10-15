@@ -497,14 +497,14 @@ describe('fc-prepare-disks.sh worktree copy', () => {
 
   it('excludes generated dependency trees and treats GNU tar exit 1 as success', () => {
     const src = readFileSync(path.join(here, 'build/fc-prepare-disks.sh'), 'utf8');
-    // Live node_modules is what made Survey Tracker session boots hang on
+    // Live node_modules is what made Acme Tracker session boots hang on
     // "Waiting for first event…" then die with "File shrank" / "file changed
     // as we read it". The guest installs its own deps.
     expect(src).toMatch(/--exclude=node_modules/);
     expect(src).toMatch(/--exclude-vcs-ignores/);
     expect(src).toMatch(/prod_rc not in \(0, 1\)/);
     // Tracked-but-ignored paths must be re-materialized or Changes shows
-    // false deletions (sample.env / .vscode on Survey Tracker).
+    // false deletions (sample.env / .vscode on Acme Tracker).
     expect(src).toMatch(/checkout-index.*-a.*-f|checkout-index", "-a", "-f"/);
     // Dirty working-tree edits must be re-copied after checkout-index via
     // O_NOFOLLOW dirfds (never shutil.copy2 onto a destination symlink).

@@ -48,7 +48,7 @@ describe('composeProjectNameForSession', () => {
   it('rejects names the Hub did not assign', () => {
     for (const name of [
       'backend',
-      'surveytracker-port4101',
+      'acmetracker-port4101',
       'session-x',
       'session-dfcb608c-extra',
       '',

@@ -196,8 +196,8 @@ describe('path deep links', () => {
   });
 
   it('resolves /projects/<id>/pulls/<number> to the PR detail route', () => {
-    expect(parseNavigationPath('/projects/surveytracker/pulls/306')).toEqual({
-      state: { view: 'pulls', projectId: 'surveytracker', prNumber: 306 },
+    expect(parseNavigationPath('/projects/acmetracker/pulls/306')).toEqual({
+      state: { view: 'pulls', projectId: 'acmetracker', prNumber: 306 },
       basePath: '',
     });
   });
@@ -227,10 +227,10 @@ describe('path deep links', () => {
   });
 
   it('resolves the board card deep link to the kanban view with the card focused', () => {
-    expect(parseNavigationPath('/projects/surveytracker/board', '?card=card-abc')).toEqual({
+    expect(parseNavigationPath('/projects/acmetracker/board', '?card=card-abc')).toEqual({
       state: {
-        view: 'kanban:surveytracker',
-        projectId: 'surveytracker',
+        view: 'kanban:acmetracker',
+        projectId: 'acmetracker',
         cardId: 'card-abc',
       },
       basePath: '',
@@ -238,9 +238,9 @@ describe('path deep links', () => {
   });
 
   it('resolves a board path with no card query to the kanban view', () => {
-    expect(parseNavigationPath('/projects/surveytracker/board')?.state).toEqual({
-      view: 'kanban:surveytracker',
-      projectId: 'surveytracker',
+    expect(parseNavigationPath('/projects/acmetracker/board')?.state).toEqual({
+      view: 'kanban:acmetracker',
+      projectId: 'acmetracker',
       cardId: null,
     });
   });
@@ -266,47 +266,47 @@ describe('path deep links', () => {
   });
 
   it('routes a pasted path link when there is no hash at all', () => {
-    window.history.replaceState(null, '', '/projects/surveytracker/pulls/306');
+    window.history.replaceState(null, '', '/projects/acmetracker/pulls/306');
 
     expect(getInitialNavigation()).toEqual({
       view: 'pulls',
-      projectId: 'surveytracker',
+      projectId: 'acmetracker',
       prNumber: 306,
     });
   });
 
   it('routes a pasted board card link (no hash) to the kanban view with the card', () => {
-    window.history.replaceState(null, '', '/projects/surveytracker/board?card=card-abc');
+    window.history.replaceState(null, '', '/projects/acmetracker/board?card=card-abc');
 
     expect(getInitialNavigation()).toEqual({
-      view: 'kanban:surveytracker',
-      projectId: 'surveytracker',
+      view: 'kanban:acmetracker',
+      projectId: 'acmetracker',
       cardId: 'card-abc',
     });
   });
 
   it('reads the board card id from location', () => {
-    window.history.replaceState(null, '', '/projects/surveytracker/board?card=card-abc');
+    window.history.replaceState(null, '', '/projects/acmetracker/board?card=card-abc');
 
     expect(readNavigationStateFromLocation()).toMatchObject({
-      view: 'kanban:surveytracker',
-      projectId: 'surveytracker',
+      view: 'kanban:acmetracker',
+      projectId: 'acmetracker',
       cardId: 'card-abc',
     });
   });
 
   it('recovers the PR number from the path when the hash lost it', () => {
-    window.history.replaceState(null, '', '/projects/surveytracker/pulls/306#/pulls/surveytracker');
+    window.history.replaceState(null, '', '/projects/acmetracker/pulls/306#/pulls/acmetracker');
 
     expect(readNavigationStateFromLocation()).toMatchObject({
       view: 'pulls',
-      projectId: 'surveytracker',
+      projectId: 'acmetracker',
       prNumber: 306,
     });
   });
 
   it('lets the hash win when it points somewhere else entirely', () => {
-    window.history.replaceState(null, '', '/projects/surveytracker/pulls/306#/wiki/agent-hub');
+    window.history.replaceState(null, '', '/projects/acmetracker/pulls/306#/wiki/agent-hub');
 
     expect(readNavigationStateFromLocation()).toMatchObject({
       view: 'wiki',

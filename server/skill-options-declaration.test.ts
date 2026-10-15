@@ -10,7 +10,7 @@ describe('parseOptionsDeclaration', () => {
   it('parses a full option with object choices and explicit default', () => {
     const parsed = parseOptionsDeclaration([
       {
-        name: 'SURVEY_TRACKER_ENV',
+        name: 'ACME_TRACKER_ENV',
         label: 'Environment',
         description: 'Which API to target',
         choices: [
@@ -24,7 +24,7 @@ describe('parseOptionsDeclaration', () => {
     expect(parsed.error).toBeNull();
     expect(parsed.options).toHaveLength(1);
     expect(parsed.options[0]).toMatchObject({
-      name: 'SURVEY_TRACKER_ENV',
+      name: 'ACME_TRACKER_ENV',
       label: 'Environment',
       default: 'prod',
       required: true,

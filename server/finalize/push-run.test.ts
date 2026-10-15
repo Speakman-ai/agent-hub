@@ -749,7 +749,7 @@ describe('runFinalizePush validated head', () => {
 });
 
 describe('push gate requires a pushable HEAD', () => {
-  // Regression: surveytracker session-04ebfae9 / PR #470. The session staged 14
+  // Regression: acmetracker session-04ebfae9 / PR #470. The session staged 14
   // files and never committed, so its branch was identical to `master`. The
   // committable gate's dirty-worktree shortcut passed, and Finalize pushed and
   // auto-merged a zero-diff PR. The push seams must ask the gate about HEAD, not

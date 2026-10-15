@@ -426,7 +426,7 @@ describe('prod.tfvars is committed config; tokens are individual GitHub secrets'
     // These moved to the gitignored overlay / TF_VAR_* so the committed file
     // stays clean of the internal-only identifiers public-repo-hygiene scans.
     const tfvars = read(prodTfvarsPath);
-    expect(tfvars, 'private deploy domain').not.toMatch(/surveytracker/i);
+    expect(tfvars, 'private deploy domain').not.toMatch(/acmetracker/i);
     expect(tfvars, 'real AWS account id').not.toMatch(
       /\b(?:120569607241|350025135582|797611956947)\b/,
     );

@@ -402,7 +402,7 @@ const SessionCredentialFieldSchema = registerComponent(
 
 export const SubmitSessionCredentialRequestSchema = z.object({
   service: z.string().min(1).max(120).openapi({
-    description: 'Human-facing service name, for example `Survey Tracker`.',
+    description: 'Human-facing service name, for example `Acme Tracker`.',
   }),
   purpose: z.string().min(1).max(240).openapi({
     description: 'Why the agent is requesting these credentials.',

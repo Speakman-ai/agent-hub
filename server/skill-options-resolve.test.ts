@@ -10,9 +10,9 @@ import {
 describe('extractOptionsFromSkillContent', () => {
   it('parses an options block from SKILL.md frontmatter', () => {
     const md = `---
-name: survey-tracker
+name: acme-tracker
 options:
-  - name: SURVEY_TRACKER_ENV
+  - name: ACME_TRACKER_ENV
     label: Environment
     choices:
       - value: dev
@@ -25,7 +25,7 @@ Body.`;
     const parsed = extractOptionsFromSkillContent(md);
     expect(parsed.error).toBeNull();
     expect(parsed.options).toHaveLength(1);
-    expect(parsed.options[0]!.name).toBe('SURVEY_TRACKER_ENV');
+    expect(parsed.options[0]!.name).toBe('ACME_TRACKER_ENV');
     expect(parsed.options[0]!.default).toBe('dev');
   });
 
@@ -41,20 +41,20 @@ describe('readOptionsSchemaForSkill', () => {
   });
 
   it('reads options from a project skill dir', () => {
-    const skillDir = path.join(root, 'survey-tracker');
+    const skillDir = path.join(root, 'acme-tracker');
     mkdirSync(skillDir, { recursive: true });
     writeFileSync(
       path.join(skillDir, 'SKILL.md'),
       `---
-name: survey-tracker
+name: acme-tracker
 options:
-  - name: SURVEY_TRACKER_ENV
+  - name: ACME_TRACKER_ENV
     choices: [dev, prod]
     default: prod
 ---
 `,
     );
-    const parsed = readOptionsSchemaForSkill('survey-tracker', { projectSkillsDirs: [root] });
+    const parsed = readOptionsSchemaForSkill('acme-tracker', { projectSkillsDirs: [root] });
     expect(parsed.error).toBeNull();
     expect(parsed.options[0]!.default).toBe('prod');
   });

@@ -63,12 +63,12 @@ describe('findLatestFinalizeSummary', () => {
 });
 
 describe('buildFollowUpSeedMessage', () => {
-  const base = { sourceAgentName: 'Survey Tracker Dev', sourceSessionName: 'Add webhook retry' };
+  const base = { sourceAgentName: 'Acme Tracker Dev', sourceSessionName: 'Add webhook retry' };
 
   it('leads with the operator prompt, then the context frame', () => {
     const out = buildFollowUpSeedMessage({ ...base, prompt: 'Also retry on 502.' });
     expect(out.indexOf('Also retry on 502.')).toBeLessThan(out.indexOf('--- Follow-up on'));
-    expect(out).toContain('session with Survey Tracker Dev ("Add webhook retry")');
+    expect(out).toContain('session with Acme Tracker Dev ("Add webhook retry")');
     expect(out.trimEnd().endsWith('--- End of follow-up context ---')).toBe(true);
   });
 

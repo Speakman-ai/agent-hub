@@ -80,7 +80,7 @@ describe('deriveHeuristicTitle', () => {
 
   it('skips a forwarded transcript header and role labels to reach real content', () => {
     const blob = [
-      '--- Forwarded from session with Survey Tracker Dev ---',
+      '--- Forwarded from session with Acme Tracker Dev ---',
       '',
       '[User]:',
       'Investigate the job assignment failures',
@@ -1132,11 +1132,11 @@ describe('forwarded-session title helpers', () => {
   it('strips only the legacy "[Fwd]" marker, preserving topic colons', () => {
     // Legacy session format "[Fwd] <agent>: <source>" — the "[Fwd]" token is
     // removed; the agent-name colon is left as topic (auto-title refines it).
-    expect(stripForwardedTitleMarkers('[Fwd] Survey Tracker Dev: Investigate failures')).toBe(
-      'Survey Tracker Dev: Investigate failures',
+    expect(stripForwardedTitleMarkers('[Fwd] Acme Tracker Dev: Investigate failures')).toBe(
+      'Acme Tracker Dev: Investigate failures',
     );
-    expect(stripForwardedTitleMarkers('[Fwd] Survey Tracker Dev: Investigate failures (fwd)')).toBe(
-      'Survey Tracker Dev: Investigate failures',
+    expect(stripForwardedTitleMarkers('[Fwd] Acme Tracker Dev: Investigate failures (fwd)')).toBe(
+      'Acme Tracker Dev: Investigate failures',
     );
   });
 
@@ -1194,7 +1194,7 @@ describe('forwarded-session title helpers', () => {
   it('does not stack markers/prefix when re-forwarding an already-forwarded title', () => {
     const title = buildForwardedSessionTitle({
       prompt: undefined,
-      sourceTitle: '[Fwd] Survey Tracker Dev: Investigate failures (fwd)',
+      sourceTitle: '[Fwd] Acme Tracker Dev: Investigate failures (fwd)',
     });
     // No leading "[Fwd]" prefix, exactly one trailing marker.
     expect(title).not.toContain('[Fwd]');

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { routeSkillsFromMessage } from './skill-router.js';
 
 const SKILLS = [
-  { id: 'survey-tracker', name: 'Survey Tracker', description: 'Survey API' },
+  { id: 'acme-tracker', name: 'Acme Tracker', description: 'Survey API' },
   { id: 'agent-hub-kanban', name: 'Kanban', description: 'Board cards' },
 ];
 
@@ -11,10 +11,10 @@ describe('routeSkillsFromMessage — projectDefaultSkillIds', () => {
     const matches = routeSkillsFromMessage({
       message: 'hello there',
       skills: SKILLS,
-      projectDefaultSkillIds: ['survey-tracker'],
+      projectDefaultSkillIds: ['acme-tracker'],
     });
-    expect(matches.map((m) => m.skillId)).toContain('survey-tracker');
-    const st = matches.find((m) => m.skillId === 'survey-tracker');
+    expect(matches.map((m) => m.skillId)).toContain('acme-tracker');
+    const st = matches.find((m) => m.skillId === 'acme-tracker');
     expect(st?.reason).toBe('project default skill');
   });
 
@@ -29,11 +29,11 @@ describe('routeSkillsFromMessage — projectDefaultSkillIds', () => {
 
   it('does not double-add when the same skill already matched explicitly', () => {
     const matches = routeSkillsFromMessage({
-      message: 'use the survey-tracker skill please',
+      message: 'use the acme-tracker skill please',
       skills: SKILLS,
-      projectDefaultSkillIds: ['survey-tracker'],
+      projectDefaultSkillIds: ['acme-tracker'],
     });
-    const count = matches.filter((m) => m.skillId === 'survey-tracker').length;
+    const count = matches.filter((m) => m.skillId === 'acme-tracker').length;
     expect(count).toBe(1);
   });
 
@@ -42,6 +42,6 @@ describe('routeSkillsFromMessage — projectDefaultSkillIds', () => {
       message: 'hello there',
       skills: SKILLS,
     });
-    expect(matches.map((m) => m.skillId)).not.toContain('survey-tracker');
+    expect(matches.map((m) => m.skillId)).not.toContain('acme-tracker');
   });
 });

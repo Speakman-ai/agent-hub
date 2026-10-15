@@ -86,6 +86,32 @@ describe('native-pr merge engine', () => {
     expect(() => git(bare, 'rev-parse refs/heads/feat-a')).toThrow();
   });
 
+  it('squash merge scrubs configured terms, reporter context, and the actor mail domain', async () => {
+    process.env.AGENT_HUB_COMMIT_REDACTIONS = 'Widget Corp=>Acme';
+    try {
+      makeBranch('feat-r', 'r.txt', 'R\n');
+      const result = await mergePullRequest({
+        repoPath: bare,
+        baseBranch: 'main',
+        headBranch: 'feat-r',
+        prNumber: 9,
+        prTitle: 'Fix WIDGET_CORP import',
+        prBody:
+          'widget-corp had stale cards.\n\n---\n\n### Reporter Context\n- **Source URL:** https://hub.internal.example/',
+        method: 'squash',
+        actor: 'someone@private.example',
+      });
+      expect(result.ok).toBe(true);
+      const msg = git(bare, 'log --format=%B -n1 refs/heads/main');
+      expect(msg).toContain('Fix ACME import (#9)');
+      expect(msg).toContain('acme had stale cards.');
+      expect(msg).toContain('Merged-by: Agent Hub (someone)');
+      expect(msg).not.toMatch(/widget|Reporter Context|hub\.internal|private\.example/i);
+    } finally {
+      delete process.env.AGENT_HUB_COMMIT_REDACTIONS;
+    }
+  });
+
   it('merge method: two parents (old base + head)', async () => {
     const headSha = makeBranch('feat-b', 'b.txt', 'B\n');
     const baseBefore = git(bare, 'rev-parse refs/heads/main');

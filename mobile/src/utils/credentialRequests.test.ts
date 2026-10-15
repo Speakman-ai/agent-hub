@@ -6,24 +6,24 @@ describe('mobile parsePersistTarget', () => {
 
   it('accepts a valid target and trims key names', () => {
     expect(
-      parsePersistTarget({ skillId: 'survey-tracker', map: { username: ' USER ' } }, fieldKeys),
-    ).toEqual({ skillId: 'survey-tracker', map: { username: 'USER' } });
+      parsePersistTarget({ skillId: 'acme-tracker', map: { username: ' USER ' } }, fieldKeys),
+    ).toEqual({ skillId: 'acme-tracker', map: { username: 'USER' } });
   });
 
   it('rejects unknown field keys, bad skill ids, and empty maps', () => {
     expect(
-      parsePersistTarget({ skillId: 'survey-tracker', map: { nope: 'K' } }, fieldKeys),
+      parsePersistTarget({ skillId: 'acme-tracker', map: { nope: 'K' } }, fieldKeys),
     ).toBeUndefined();
     expect(
       parsePersistTarget({ skillId: 'bad id', map: { username: 'K' } }, fieldKeys),
     ).toBeUndefined();
-    expect(parsePersistTarget({ skillId: 'survey-tracker', map: {} }, fieldKeys)).toBeUndefined();
+    expect(parsePersistTarget({ skillId: 'acme-tracker', map: {} }, fieldKeys)).toBeUndefined();
   });
 
   it('rejects a map with duplicate destination credential keys', () => {
     expect(
       parsePersistTarget(
-        { skillId: 'survey-tracker', map: { username: 'LOGIN', password: 'LOGIN' } },
+        { skillId: 'acme-tracker', map: { username: 'LOGIN', password: 'LOGIN' } },
         fieldKeys,
       ),
     ).toBeUndefined();
@@ -34,19 +34,19 @@ describe('mobile parseCredentialRequestEnvelope with persist', () => {
   it('attaches a valid persist target', () => {
     const block: any = parseCredentialRequestEnvelope(
       JSON.stringify({
-        requestId: 'survey-tracker-login',
-        service: 'Survey Tracker',
+        requestId: 'acme-tracker-login',
+        service: 'Acme Tracker',
         purpose: 'Sign in.',
         fields: [{ key: 'password', label: 'Password', type: 'password' }],
         persist: {
-          skillId: 'survey-tracker',
-          map: { password: 'SURVEYTRACKER_API_DATA_PASSWORD' },
+          skillId: 'acme-tracker',
+          map: { password: 'ACMETRACKER_API_DATA_PASSWORD' },
         },
       }),
     );
     expect(block?.persist).toEqual({
-      skillId: 'survey-tracker',
-      map: { password: 'SURVEYTRACKER_API_DATA_PASSWORD' },
+      skillId: 'acme-tracker',
+      map: { password: 'ACMETRACKER_API_DATA_PASSWORD' },
     });
   });
 });

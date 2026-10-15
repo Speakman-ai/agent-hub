@@ -544,6 +544,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       'cursorSandboxBypass',
       'emailLogoEnabled',
       'codexProfile',
+      'commitRedactions',
     ] as const;
     const body = (req.body || {}) as Record<string, unknown>;
     const legacyDefaultModelRequested = Object.prototype.hasOwnProperty.call(body, 'defaultModel');
@@ -607,6 +608,16 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
         updates.codexProfile = trimmed.length > 0 ? trimmed : null;
       } else {
         delete updates.codexProfile;
+      }
+    }
+    if (updates.commitRedactions !== undefined) {
+      const raw = updates.commitRedactions;
+      if (raw == null || (typeof raw === 'string' && raw.trim() === '')) {
+        updates.commitRedactions = null;
+      } else if (typeof raw === 'string') {
+        updates.commitRedactions = raw.trim();
+      } else {
+        delete updates.commitRedactions;
       }
     }
     if (Object.keys(updates).length === 0) {

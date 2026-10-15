@@ -53,8 +53,8 @@ export interface RunnerImageVersions {
   /**
    * AWS CLI v2, from AWS's official installer zip — Ubuntu 24.04 (noble)
    * dropped the `awscli` apt package entirely, so `aptPackages: ['awscli']`
-   * cannot resolve and repo scripts that shell out to `aws` (Survey Tracker's
-   * `sync_db_from_aws`) fail with "command not found". GitHub's ubuntu-24.04
+   * cannot resolve and repo scripts that shell out to `aws` (for example a
+   * `sync_db_from_aws` script) fail with "command not found". GitHub's ubuntu-24.04
    * image ships it, so baking it in is parity as well as a fix.
    */
   awsCli: string;

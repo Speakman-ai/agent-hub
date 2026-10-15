@@ -2912,6 +2912,19 @@ describe('buildPrBody', () => {
     expect(body).toContain('Need a way to login to github. Also need to do this during setup.');
   });
 
+  it('keeps bug-report Reporter Context out of the PR body', () => {
+    const card = {
+      id: 'c1',
+      description:
+        'Sessions pause mid-run.\n\n---\n\n### Reporter Context\n- **Source URL:** https://hub.internal.example/#/chat',
+    } as never;
+    for (const commits of [['fix: resume'], ['a', 'b'], []]) {
+      const body = buildPrBody({ agentName, card, commits });
+      expect(body).toContain('Sessions pause mid-run.');
+      expect(body).not.toMatch(/Reporter Context|hub\.internal/);
+    }
+  });
+
   it('omits the Commits section when only one commit is present', () => {
     const body = buildPrBody({ agentName, commits: ['Fix login'] });
     expect(body).not.toContain('## Commits');

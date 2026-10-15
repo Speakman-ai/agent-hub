@@ -24,9 +24,9 @@ describe('listProjectDefaultSkillIds — error propagation', () => {
   it('returns the mapped ids on success', () => {
     (getStmts as any).mockReturnValue({
       getProjectDefaultSkills: {
-        all: () => [{ skill_id: 'deploy' }, { skill_id: 'survey-tracker' }],
+        all: () => [{ skill_id: 'deploy' }, { skill_id: 'acme-tracker' }],
       },
     });
-    expect(listProjectDefaultSkillIds('proj-a')).toEqual(['deploy', 'survey-tracker']);
+    expect(listProjectDefaultSkillIds('proj-a')).toEqual(['deploy', 'acme-tracker']);
   });
 });

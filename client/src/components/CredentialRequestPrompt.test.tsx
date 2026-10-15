@@ -12,8 +12,8 @@ import { api } from '../utils/api';
 import CredentialRequestPrompt from './CredentialRequestPrompt';
 
 const request = {
-  requestId: 'survey-tracker-login',
-  service: 'Survey Tracker',
+  requestId: 'acme-tracker-login',
+  service: 'Acme Tracker',
   purpose: 'Sign in to query work orders.',
   fields: [
     { key: 'username', label: 'Username', type: 'username' as const },
@@ -44,7 +44,7 @@ describe('CredentialRequestPrompt', () => {
     await waitFor(() => {
       expect(api.submitSessionCredentialRequest).toHaveBeenCalledWith(
         'session-1',
-        'survey-tracker-login',
+        'acme-tracker-login',
         expect.objectContaining({
           values: {
             username: 'employee@example.com',
@@ -56,8 +56,8 @@ describe('CredentialRequestPrompt', () => {
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
     const message = onSubmit.mock.calls[0][0];
-    expect(message).toContain('survey-tracker-login');
-    expect(message).toContain('Survey Tracker');
+    expect(message).toContain('acme-tracker-login');
+    expect(message).toContain('Acme Tracker');
     expect(message).not.toContain('employee@example.com');
     expect(message).not.toContain('survey-secret-password');
   });
@@ -66,18 +66,18 @@ describe('CredentialRequestPrompt', () => {
     (api.submitSessionCredentialRequest as any).mockResolvedValue({
       status: 'submitted',
       persisted: {
-        skillId: 'survey-tracker',
-        stored: ['SURVEYTRACKER_API_DATA_USERNAME', 'SURVEYTRACKER_API_DATA_PASSWORD'],
+        skillId: 'acme-tracker',
+        stored: ['ACMETRACKER_API_DATA_USERNAME', 'ACMETRACKER_API_DATA_PASSWORD'],
         skipped: [],
       },
     });
     const persistRequest = {
       ...request,
       persist: {
-        skillId: 'survey-tracker',
+        skillId: 'acme-tracker',
         map: {
-          username: 'SURVEYTRACKER_API_DATA_USERNAME',
-          password: 'SURVEYTRACKER_API_DATA_PASSWORD',
+          username: 'ACMETRACKER_API_DATA_USERNAME',
+          password: 'ACMETRACKER_API_DATA_PASSWORD',
         },
       },
     };
@@ -91,7 +91,7 @@ describe('CredentialRequestPrompt', () => {
     );
 
     // Honest copy at collection time: saved for future sessions, not "discarded".
-    expect(screen.getByText(/saved to your Survey Tracker skill credentials/i)).toBeTruthy();
+    expect(screen.getByText(/saved to your Acme Tracker skill credentials/i)).toBeTruthy();
 
     fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'ryan' } });
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'pw' } });
@@ -100,13 +100,13 @@ describe('CredentialRequestPrompt', () => {
     await waitFor(() => {
       expect(api.submitSessionCredentialRequest).toHaveBeenCalledWith(
         'session-1',
-        'survey-tracker-login',
+        'acme-tracker-login',
         expect.objectContaining({
           persist: {
-            skillId: 'survey-tracker',
+            skillId: 'acme-tracker',
             map: {
-              username: 'SURVEYTRACKER_API_DATA_USERNAME',
-              password: 'SURVEYTRACKER_API_DATA_PASSWORD',
+              username: 'ACMETRACKER_API_DATA_USERNAME',
+              password: 'ACMETRACKER_API_DATA_PASSWORD',
             },
           },
         }),
@@ -121,17 +121,17 @@ describe('CredentialRequestPrompt', () => {
     (api.submitSessionCredentialRequest as any).mockResolvedValue({
       status: 'submitted',
       persisted: {
-        skillId: 'survey-tracker',
+        skillId: 'acme-tracker',
         stored: [],
         skipped: [],
-        error: 'skill "survey-tracker" declares no credentials in SKILL.md frontmatter',
+        error: 'skill "acme-tracker" declares no credentials in SKILL.md frontmatter',
       },
     });
     const persistRequest = {
       ...request,
       persist: {
-        skillId: 'survey-tracker',
-        map: { username: 'SURVEYTRACKER_API_DATA_USERNAME' },
+        skillId: 'acme-tracker',
+        map: { username: 'ACMETRACKER_API_DATA_USERNAME' },
       },
     };
     const onSubmit = vi.fn();
@@ -158,18 +158,18 @@ describe('CredentialRequestPrompt', () => {
     (api.submitSessionCredentialRequest as any).mockResolvedValue({
       status: 'submitted',
       persisted: {
-        skillId: 'survey-tracker',
-        stored: ['SURVEYTRACKER_API_DATA_USERNAME'],
-        skipped: [{ keyName: 'SURVEYTRACKER_API_DATA_PASSWORD', reason: 'not-declared-by-skill' }],
+        skillId: 'acme-tracker',
+        stored: ['ACMETRACKER_API_DATA_USERNAME'],
+        skipped: [{ keyName: 'ACMETRACKER_API_DATA_PASSWORD', reason: 'not-declared-by-skill' }],
       },
     });
     const persistRequest = {
       ...request,
       persist: {
-        skillId: 'survey-tracker',
+        skillId: 'acme-tracker',
         map: {
-          username: 'SURVEYTRACKER_API_DATA_USERNAME',
-          password: 'SURVEYTRACKER_API_DATA_PASSWORD',
+          username: 'ACMETRACKER_API_DATA_USERNAME',
+          password: 'ACMETRACKER_API_DATA_PASSWORD',
         },
       },
     };
@@ -189,7 +189,7 @@ describe('CredentialRequestPrompt', () => {
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
     const message = onSubmit.mock.calls[0][0];
     expect(message).toContain('partially saved');
-    expect(message).toContain('SURVEYTRACKER_API_DATA_PASSWORD');
+    expect(message).toContain('ACMETRACKER_API_DATA_PASSWORD');
     expect(message).not.toContain('reused in future sessions');
   });
 });

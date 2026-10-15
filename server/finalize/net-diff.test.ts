@@ -108,7 +108,7 @@ describe('makeNetDiffProbe — base-aware', () => {
   const FEATURE = 'feature/accountability-role-remap';
 
   it('measures against the resolved PR base, not the repo default', async () => {
-    // Regression for the surveytracker PR #308 zero-diff merge: the branch is
+    // Regression for the acmetracker PR #308 zero-diff merge: the branch is
     // EMPTY vs its real feature base but NON-EMPTY vs master. Probing the repo
     // default let it pass the committable gate and ship an empty merge.
     const existing = new Set([`origin/${FEATURE}`, 'origin/main']);

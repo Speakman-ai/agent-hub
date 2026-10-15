@@ -6,7 +6,7 @@
  * opaque token (or a per-browser device token) should pass that through as
  * `voterKey` instead of going through this helper.
  *
- * Salt must stay on the Hub: Survey Tracker cannot hash the same way without
+ * Salt must stay on the Hub: an external client cannot hash the same way without
  * it. The external voting API (and any Hub UI that knows the voter email)
  * should call this, then send the resulting key as `voterKey`.
  */

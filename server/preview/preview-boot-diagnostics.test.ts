@@ -31,8 +31,8 @@ describe('diagnosePreviewBootFailure', () => {
     const tail = [
       'Step 22/22 : LABEL com.docker.compose.image.builder=classic',
       ' ---> Using cache',
-      'Successfully tagged surveytracker-preview-backend:latest',
-      'Image surveytracker-preview-backend:latest Built',
+      'Successfully tagged acmetracker-preview-backend:latest',
+      'Image acmetracker-preview-backend:latest Built',
       'network:default failed to create network session-d2877137_default: Error response from daemon: could not find an available, non-overlapping IPv4 address pool among the defaults to assign to the network',
       'failed to create network session-d2877137_default: Error response from daemon: could not find an available, non-overlapping IPv4 address pool among the defaults to assign to the network',
     ];

@@ -19,8 +19,7 @@
  * stacked session whose card/epic sets a `pr_base_branch` (a feature branch)
  * can be empty vs that feature branch while still being non-empty vs `master`.
  * Probing only against the repo default lets such a branch pass the gate and
- * ship an empty merge (the surveytracker PR #308 "Retire Employee role"
- * zero-diff merge). `makeNetDiffProbe(baseBranch)` targets the caller-resolved
+ * ship an empty zero-diff merge. `makeNetDiffProbe(baseBranch)` targets the caller-resolved
  * base first; `defaultNetDiffProbe` keeps the auto-detect-default behavior for
  * callers with no resolved base.
  */

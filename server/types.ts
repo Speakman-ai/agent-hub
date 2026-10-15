@@ -4038,6 +4038,12 @@ export interface AppConfig {
    */
   codexProfile: string | null;
   /**
+   * `FROM=>TO; FROM2=>TO2` terms replaced in merge commit messages on the
+   * hosted repo. Env `AGENT_HUB_COMMIT_REDACTIONS`, `commitRedactions` in
+   * config.json, or `PATCH /api/config`. Not echoed by `GET /api/config`.
+   */
+  commitRedactions: string | null;
+  /**
    * When true (the default), interactive Codex spawns (chat, rooms, design,
    * outside Ask Mode pass `--dangerously-bypass-approvals-and-sandbox`
    * instead of `--full-auto`, so Codex works in environments where Linux

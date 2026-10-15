@@ -148,7 +148,7 @@ describe('buildHistoryBootstrapPrompt', () => {
     [
       'Please pick up where we left off and finish the migration.',
       '',
-      '--- Forwarded from session with Survey Tracker Dev ---',
+      '--- Forwarded from session with Acme Tracker Dev ---',
       '[User]:\n' + 'x'.repeat(bytes),
       '--- End of forwarded context ---',
     ].join('\n');
@@ -188,7 +188,7 @@ describe('buildHistoryBootstrapPrompt', () => {
     expect(res.truncated).toBe(true);
     expect(Buffer.byteLength(res.prompt, 'utf8')).toBeLessThanOrEqual(SAFE_ARG_STRLEN_BYTES);
     expect(res.prompt).toContain('Please pick up where we left off');
-    expect(res.prompt).toContain('--- Forwarded from session with Survey Tracker Dev ---');
+    expect(res.prompt).toContain('--- Forwarded from session with Acme Tracker Dev ---');
     expect(res.prompt).toContain('--- End of forwarded context ---');
     expect(res.prompt).toContain('omitted from the middle of this message');
     expect(res.prompt).toContain('Human: What is the first thing I should do?');

@@ -1441,8 +1441,8 @@ When you need a secret from the user (a password, API key, login, token, or any 
 
 \`\`\`agenthub:credential-request
 {
-  "requestId": "survey-tracker-login",
-  "service": "Survey Tracker",
+  "requestId": "acme-tracker-login",
+  "service": "Acme Tracker",
   "purpose": "Sign in to query work orders on dev.",
   "ttlSeconds": 900,
   "fields": [
@@ -1468,18 +1468,18 @@ The submitted secret stays retrievable until the request's TTL expires, so you c
 
 \`\`\`agenthub:credential-request
 {
-  "requestId": "survey-tracker-login",
-  "service": "Survey Tracker",
+  "requestId": "acme-tracker-login",
+  "service": "Acme Tracker",
   "purpose": "Sign in to query work orders on dev.",
   "fields": [
     { "key": "username", "label": "Username", "type": "username" },
     { "key": "password", "label": "Password", "type": "password" }
   ],
   "persist": {
-    "skillId": "survey-tracker",
+    "skillId": "acme-tracker",
     "map": {
-      "username": "SURVEYTRACKER_API_DATA_USERNAME",
-      "password": "SURVEYTRACKER_API_DATA_PASSWORD"
+      "username": "ACMETRACKER_API_DATA_USERNAME",
+      "password": "ACMETRACKER_API_DATA_PASSWORD"
     }
   }
 }
@@ -1508,7 +1508,7 @@ The card tells the user their input will be saved for future sessions (rather th
 Need a password, API key, or one-off login from the user mid-session? Do **not** ask for it in plain chat prose, and do **not** claim there is no secure input — the masked card is live on every turn. Emit a **fenced** \`agenthub:credential-request\` block (triple backticks, not an XML tag); web/mobile/Electron replace it with a secure masked card that posts straight to the REST API and never enters \`messages\`. Minimal shape:
 
 \`\`\`agenthub:credential-request
-{"requestId":"survey-tracker-login","service":"Survey Tracker","purpose":"Sign in on dev.","ttlSeconds":900,"fields":[{"key":"username","label":"Username","type":"username"},{"key":"password","label":"Password","type":"password"}]}
+{"requestId":"acme-tracker-login","service":"Acme Tracker","purpose":"Sign in on dev.","ttlSeconds":900,"fields":[{"key":"username","label":"Username","type":"username"},{"key":"password","label":"Password","type":"password"}]}
 \`\`\`
 
 After the user submits, retrieve with \`ah-api.sh POST "/api/sessions/$AGENT_HUB_SESSION_ID/credential-requests/<requestId>/consume"\` — re-consume the same \`requestId\` if you lost the value rather than re-asking.`;

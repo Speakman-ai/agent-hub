@@ -1,7 +1,7 @@
 /**
  * Regression coverage for #1905: a fresh session worktree's node_modules used to
  * be a junction symlink into the shared project checkout, so a project build that
- * ran a package manager in the linked dir (surveytracker's `build_app` runs
+ * ran a package manager in the linked dir (acmetracker's `build_app` runs
  * `npm ci` in `frontend/`) recursed THROUGH the link and deleted packages out of
  * the shared donor tree — corrupting every other worktree pointing at the same
  * inode.

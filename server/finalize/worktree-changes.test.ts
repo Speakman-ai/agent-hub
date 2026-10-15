@@ -235,7 +235,7 @@ describe('getSessionCommittableChanges', () => {
 });
 
 describe('getSessionCommittableChanges with requirePushableHead (the ship gate)', () => {
-  // Regression: surveytracker session-04ebfae9 / PR #470. The agent staged 14
+  // Regression: acmetracker session-04ebfae9 / PR #470. The agent staged 14
   // files and never committed, so the branch was identical to `master`. The
   // dirty-worktree shortcut passed the push gate, Finalize reviewed and tested
   // an unchanged tree, then pushed and auto-merged a zero-diff PR while the run

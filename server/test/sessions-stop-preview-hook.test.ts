@@ -56,7 +56,7 @@ describe('session preview teardown', () => {
 
   it('purges the compose stack (volumes included) on archive, but not on a plain preview stop', async () => {
     // The disk leak: archived sessions left `session-<id>_preview-postgres-data`
-    // volumes behind (~4 GB each on surveytracker) because nothing removed
+    // volumes behind (~4 GB each on acmetracker) because nothing removed
     // daemon-owned resources after the preview process was gone. A plain
     // preview stop must keep them — a restart reuses the restored database.
     const project = await createProject({ id: 'purge-compose-project', cwd: '/tmp' });

@@ -298,7 +298,7 @@ describe('ConnectFirstScreen — actions', () => {
       orgs: [
         {
           id: 'st',
-          name: 'Survey Tracker',
+          name: 'Acme Tracker',
           mode: 'remote',
           color: '#6366f1',
           remote_url: 'https://saved-hub.example.com',
@@ -315,7 +315,7 @@ describe('ConnectFirstScreen — actions', () => {
       </ConnectFirstScreen>,
     );
     const saved = await screen.findByTestId('connect-saved-st');
-    expect(saved).toHaveTextContent('Survey Tracker');
+    expect(saved).toHaveTextContent('Acme Tracker');
     expect(saved).toHaveTextContent('https://saved-hub.example.com');
 
     await act(async () => {
@@ -332,7 +332,7 @@ describe('ConnectFirstScreen — actions', () => {
       orgs: [
         {
           id: 'st',
-          name: 'Survey Tracker',
+          name: 'Acme Tracker',
           mode: 'remote',
           remote_url: 'https://saved-hub.example.com',
           api_key: '',
@@ -360,7 +360,7 @@ describe('ConnectFirstScreen — actions', () => {
     expect(switchOrg).not.toHaveBeenCalled();
     expect(reloadForOrgSwitch).not.toHaveBeenCalled();
     expect(await screen.findByTestId('connect-saved-error')).toHaveTextContent(
-      'Survey Tracker is unreachable. Connection failed: getaddrinfo ENOTFOUND',
+      'Acme Tracker is unreachable. Connection failed: getaddrinfo ENOTFOUND',
     );
     expect(screen.getByTestId('connect-saved-st')).not.toBeDisabled();
   });

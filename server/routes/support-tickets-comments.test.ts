@@ -147,7 +147,7 @@ describe('support-ticket comment thread', () => {
 
     const created = await supertest(app)
       .post(commentsPath(id))
-      .send({ body: 'from survey tracker' })
+      .send({ body: 'from acme tracker' })
       .expect(201);
     expect(created.body.source).toBe('external');
     expect(created.body).not.toHaveProperty('hidden_at');

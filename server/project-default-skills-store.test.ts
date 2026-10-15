@@ -34,21 +34,21 @@ describe('project-default-skills-store', () => {
   });
 
   it('adds skills and lists them sorted, scoped per project', () => {
-    addProjectDefaultSkill('proj-a', 'survey-tracker');
+    addProjectDefaultSkill('proj-a', 'acme-tracker');
     addProjectDefaultSkill('proj-a', 'agent-hub-kanban');
     addProjectDefaultSkill('proj-b', 'other-skill');
-    expect(listProjectDefaultSkillIds('proj-a')).toEqual(['agent-hub-kanban', 'survey-tracker']);
+    expect(listProjectDefaultSkillIds('proj-a')).toEqual(['acme-tracker', 'agent-hub-kanban']);
     expect(listProjectDefaultSkillIds('proj-b')).toEqual(['other-skill']);
   });
 
   it('is idempotent on duplicate add (ON CONFLICT DO NOTHING)', () => {
-    addProjectDefaultSkill('proj-a', 'survey-tracker');
-    expect(listProjectDefaultSkillIds('proj-a')).toEqual(['agent-hub-kanban', 'survey-tracker']);
+    addProjectDefaultSkill('proj-a', 'acme-tracker');
+    expect(listProjectDefaultSkillIds('proj-a')).toEqual(['acme-tracker', 'agent-hub-kanban']);
   });
 
   it('removes a skill and reports ok, false when absent', () => {
-    expect(removeProjectDefaultSkill('proj-a', 'survey-tracker').ok).toBe(true);
+    expect(removeProjectDefaultSkill('proj-a', 'acme-tracker').ok).toBe(true);
     expect(listProjectDefaultSkillIds('proj-a')).toEqual(['agent-hub-kanban']);
-    expect(removeProjectDefaultSkill('proj-a', 'survey-tracker').ok).toBe(false);
+    expect(removeProjectDefaultSkill('proj-a', 'acme-tracker').ok).toBe(false);
   });
 });

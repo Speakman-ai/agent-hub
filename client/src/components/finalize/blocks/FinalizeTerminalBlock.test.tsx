@@ -46,7 +46,7 @@ describe('FinalizeTerminalBlock', () => {
   it('opens the in-app PR detail for an Agent Hub-native PR URL', () => {
     const onOpenPrDetail = vi.fn();
     renderTerminal(
-      { status: 'pushed', prUrl: '/projects/surveytracker/pulls/356' },
+      { status: 'pushed', prUrl: '/projects/acmetracker/pulls/356' },
       { onOpenPrDetail },
     );
     const link = screen.getByTestId('finalize-terminal-pr-link');
@@ -54,11 +54,11 @@ describe('FinalizeTerminalBlock', () => {
     expect(link.tagName).toBe('BUTTON');
     expect(link).toHaveTextContent('View PR #356');
     fireEvent.click(link);
-    expect(onOpenPrDetail).toHaveBeenCalledWith('surveytracker', 356);
+    expect(onOpenPrDetail).toHaveBeenCalledWith('acmetracker', 356);
   });
 
   it('falls back to a non-clickable native PR chip when no navigation handler is wired', () => {
-    renderTerminal({ status: 'pushed', prUrl: '/projects/surveytracker/pulls/356' });
+    renderTerminal({ status: 'pushed', prUrl: '/projects/acmetracker/pulls/356' });
     const link = screen.getByTestId('finalize-terminal-pr-link');
     expect(link.tagName).toBe('SPAN');
     expect(link).toHaveTextContent('PR #356 (Pull Requests page)');

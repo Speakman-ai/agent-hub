@@ -152,7 +152,7 @@ function uploadReferencedByConvertedCard(
  * Per-ticket mutex so write + aggregate + broadcast cannot interleave.
  * Without this, request A can snapshot an older aggregate, request B can
  * write and emit a newer one, then A can emit the stale snapshot and Hub /
- * Survey Tracker clients regress.
+ * external clients regress.
  *
  * A rejecting task does not poison the chain. Different tickets still run
  * concurrently. Test hooks let a regression test park one request after the
@@ -190,8 +190,8 @@ async function withTicketVoteLock<T>(ticketId: string, task: () => Promise<T>): 
 }
 
 /**
- * Per-IP rate limits for the public vote / comment write endpoints. Survey
- * Tracker (and any future keyless surface) can drive these with an API key, so
+ * Per-IP rate limits for the public vote / comment write endpoints. External
+ * clients (and any future keyless surface) can drive these with an API key, so
  * they need a per-IP flood guard.
  *
  * This uses `express-rate-limit` (as the auth routes do) rather than a

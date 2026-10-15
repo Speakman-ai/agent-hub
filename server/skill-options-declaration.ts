@@ -74,7 +74,7 @@ export function parseOptionsDeclaration(raw: unknown): ParsedOptions {
     if (!ENV_NAME_RE.test(name)) {
       return {
         options: [],
-        error: `options[${i}] name "${name}" must look like a POSIX env var (e.g. SURVEY_TRACKER_ENV)`,
+        error: `options[${i}] name "${name}" must look like a POSIX env var (e.g. ACME_TRACKER_ENV)`,
       };
     }
     if (names.has(name)) {

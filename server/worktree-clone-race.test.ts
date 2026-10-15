@@ -36,7 +36,7 @@ const { ensureSessionWorkspace, removeWorkspace, __test } = await import('./work
 const { classifyWorktreeFailure } = await import('./worktree-failure-cause.js');
 
 const BUG_MESSAGE =
-  'Command failed: git clone --quiet /data/git/surveytracker.git /home/node/.agent-hub/workspaces/surveytracker/session-9b1990ab\n' +
+  'Command failed: git clone --quiet /data/git/acmetracker.git /home/node/.agent-hub/workspaces/acmetracker/session-9b1990ab\n' +
   'BUG: refs/files-backend.c:3040: initial ref transaction called with existing refs\n';
 
 // withKeyedLock

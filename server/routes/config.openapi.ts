@@ -360,6 +360,10 @@ export const PatchConfigRequestSchema = z
       description:
         'Codex CLI profile name. Pass null / empty string to clear. Forwarded as `--profile <name>` on every codex spawn.',
     }),
+    commitRedactions: z.string().nullable().optional().openapi({
+      description:
+        'Terms replaced in merge commit messages on the hosted repo, as `FROM=>TO; FROM2=>TO2`. Matching ignores case and word separators; the replacement follows the matched casing. Pass null / empty string to clear. Write-only: not returned by GET.',
+    }),
   })
   .passthrough()
   .openapi({
@@ -567,7 +571,7 @@ registerPath({
   tags: ['Config'],
   summary: 'Update one or more config fields',
   description:
-    'Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `grokBin`, `museBin`, `defaultModel` (deprecated and ignored), `defaultCwd`, `port`, `apiKey`, `openaiApiKey`, `publicUrl`, `codexDangerBypass`, `cursorSandboxBypass`, `codexProfile`. The deprecated `defaultModel` key is accepted but ignored with a deprecation warning. Model selection is per-user and per-agent; unknown keys are silently dropped. Returns the updated subset (with secrets masked).',
+    'Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `grokBin`, `museBin`, `defaultModel` (deprecated and ignored), `defaultCwd`, `port`, `apiKey`, `openaiApiKey`, `publicUrl`, `codexDangerBypass`, `cursorSandboxBypass`, `codexProfile`, `commitRedactions`. The deprecated `defaultModel` key is accepted but ignored with a deprecation warning. Model selection is per-user and per-agent; unknown keys are silently dropped. Returns the updated subset (with secrets masked).',
   request: { body: { content: jsonContent(PatchConfigRequestSchema) } },
   responses: {
     200: {

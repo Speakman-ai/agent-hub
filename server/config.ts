@@ -567,6 +567,11 @@ const config: AppConfig = {
   // gets `--profile <name>` appended so the CLI loads the matching profile
   // from `~/.codex/config.toml`. Empty / whitespace is treated as unset by
   // the spawn site. See https://developers.openai.com/codex/cli/reference.
+  // Terms scrubbed from merge commit messages; see commit-message-redaction.ts.
+  commitRedactions: (() => {
+    const raw = resolve('AGENT_HUB_COMMIT_REDACTIONS', 'commitRedactions', null);
+    return typeof raw === 'string' && raw.trim() ? raw : null;
+  })(),
   codexProfile: (() => {
     const raw = resolve('CODEX_PROFILE', 'codexProfile', null);
     if (raw == null) return null;

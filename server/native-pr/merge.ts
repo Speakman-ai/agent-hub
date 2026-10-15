@@ -14,6 +14,11 @@
  */
 
 import { execFile } from 'child_process';
+import {
+  actorForTrailer,
+  prBodyForCommit,
+  redactCommitMessage,
+} from '../commit-message-redaction.js';
 import { promisify } from 'util';
 import { git, mergeTree, revParse } from './git-read.js';
 
@@ -103,15 +108,20 @@ async function tryMergeOnce(args: MergeArgs): Promise<MergeResult> {
     return { ok: false, reason: 'conflict', detail: tree.conflictDetail ?? 'merge conflicts' };
   }
 
-  const trailer = `\n\nMerged-by: Agent Hub (${args.actor})`;
+  const trailer = `\n\nMerged-by: Agent Hub (${actorForTrailer(args.actor)})`;
   let mergedSha: string;
   if (method === 'squash') {
-    const body = args.prBody.trim();
+    const body = prBodyForCommit(args.prBody ?? '').trim();
     const message = `${args.prTitle} (#${args.prNumber})${body ? `\n\n${body}` : ''}${trailer}`;
-    mergedSha = await commitTree(repoPath, tree.treeOid, [baseSha], message);
+    mergedSha = await commitTree(repoPath, tree.treeOid, [baseSha], redactCommitMessage(message));
   } else {
     const message = `Merge pull request #${args.prNumber} from ${headBranch}\n\n${args.prTitle}${trailer}`;
-    mergedSha = await commitTree(repoPath, tree.treeOid, [baseSha, headSha], message);
+    mergedSha = await commitTree(
+      repoPath,
+      tree.treeOid,
+      [baseSha, headSha],
+      redactCommitMessage(message),
+    );
   }
 
   // CAS: refuse to clobber a base that moved since we computed the merge.

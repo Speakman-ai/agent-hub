@@ -820,7 +820,7 @@ describe('OrganizationsSection — Connection Mode toggle visibility', () => {
       orgs: [
         {
           id: 'st',
-          name: 'Survey Tracker',
+          name: 'Acme Tracker',
           mode: 'remote',
           color: '#6366f1',
           remote_url: 'https://saved-hub.example.com',
@@ -830,7 +830,7 @@ describe('OrganizationsSection — Connection Mode toggle visibility', () => {
     });
     const { findByText } = render(<OrganizationsSection />);
     expect(await findByText('https://saved-hub.example.com')).toBeTruthy();
-    expect(await findByText('Survey Tracker')).toBeTruthy();
+    expect(await findByText('Acme Tracker')).toBeTruthy();
   });
 });
 

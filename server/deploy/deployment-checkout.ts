@@ -61,7 +61,7 @@ function isMissingBlobError(err: unknown): boolean {
  * Read `.agent-hub/deploy.yaml` at `ref` WITHOUT materializing a working
  * checkout. The read-only config endpoints only need the file's contents at a
  * ref, so the full `git clone --no-hardlinks` in {@link prepareDeploymentCheckout}
- * is pure waste — on a large hosted repo (surveytracker.git ~141 MB) it ran
+ * is pure waste — on a large hosted repo (~141 MB) it ran
  * ~11 s and, under load, blew past the 60 s timeout, hanging the Deployments
  * page. A direct `git show <ref>:<path>` reads a single object (sub-100 ms).
  *

@@ -428,16 +428,16 @@ describe('SkillsPage — skill credential configuration', () => {
     // to ask for username/password.
     (api.getProjectSkill as any).mockResolvedValue({
       content:
-        '---\nname: surveytracker-api-data\ndescription: Query Survey Tracker.\ncategory: integration\n---\n# API',
+        '---\nname: acmetracker-api-data\ndescription: Query Acme Tracker.\ncategory: integration\n---\n# API',
       credentials: [],
     });
-    (api.updateProjectSkill as any).mockResolvedValue({ id: 'surveytracker-api-data' });
+    (api.updateProjectSkill as any).mockResolvedValue({ id: 'acmetracker-api-data' });
 
     render(
       <SkillCard
         skill={{
-          id: 'surveytracker-api-data',
-          name: 'Survey Tracker API',
+          id: 'acmetracker-api-data',
+          name: 'Acme Tracker API',
           description: 'Query the live API.',
           category: 'integration',
           source: 'project',
@@ -461,16 +461,16 @@ describe('SkillsPage — skill credential configuration', () => {
 
     expect(api.updateProjectSkill).toHaveBeenCalledWith(
       'agent-hub',
-      'surveytracker-api-data',
+      'acmetracker-api-data',
       expect.objectContaining({
         expectedCredentials: [],
         credentials: [
           expect.objectContaining({
-            name: 'SURVEYTRACKER_API_DATA_USERNAME',
+            name: 'ACMETRACKER_API_DATA_USERNAME',
             type: 'string',
           }),
           expect.objectContaining({
-            name: 'SURVEYTRACKER_API_DATA_PASSWORD',
+            name: 'ACMETRACKER_API_DATA_PASSWORD',
             type: 'secret',
           }),
         ],
@@ -482,14 +482,14 @@ describe('SkillsPage — skill credential configuration', () => {
 
   it('keeps authentication added after the card loaded instead of replacing it', async () => {
     const content =
-      '---\nname: surveytracker-api-data\ndescription: Query Survey Tracker.\ncategory: integration\n---\n# API';
+      '---\nname: acmetracker-api-data\ndescription: Query Acme Tracker.\ncategory: integration\n---\n# API';
     (api.getProjectSkill as any)
       .mockResolvedValueOnce({ content, credentials: [] })
       .mockResolvedValueOnce({
         content,
         credentials: [
           {
-            name: 'SURVEYTRACKER_SESSION_TOKEN',
+            name: 'ACMETRACKER_SESSION_TOKEN',
             label: 'Session token',
             type: 'secret',
             required: true,
@@ -500,8 +500,8 @@ describe('SkillsPage — skill credential configuration', () => {
     render(
       <SkillCard
         skill={{
-          id: 'surveytracker-api-data',
-          name: 'Survey Tracker API',
+          id: 'acmetracker-api-data',
+          name: 'Acme Tracker API',
           description: 'Query the live API.',
           category: 'integration',
           source: 'project',

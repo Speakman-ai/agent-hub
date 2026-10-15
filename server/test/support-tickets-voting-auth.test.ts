@@ -1,5 +1,5 @@
 /**
- * Survey-Tracker-facing voting API auth (P2). The voting feed is reachable
+ * Acme-Tracker-facing voting API auth (P2). The voting feed is reachable
  * with the standard Hub X-API-Key (global config.apiKey); a request with no
  * credentials is rejected. An X-API-Key-only caller (no Hub user) receives the
  * external-safe projection.
@@ -50,7 +50,7 @@ beforeAll(async () => {
   });
 
   // A per-user `ahub_*` key: owned by a real user with a membership role.
-  // The card permits Survey Tracker to present one, so it must be treated as
+  // The card permits Acme Tracker to present one, so it must be treated as
   // an external caller even though it carries an authUserId.
   const orgId = getActiveOrgId();
   const user = createUser({
@@ -59,7 +59,7 @@ beforeAll(async () => {
     createdAt: '2026-01-01T00:00:00Z',
   });
   createMembership(user.id, orgId, 'Admin');
-  userApiKey = createApiKey(user.id, 'survey-tracker').token;
+  userApiKey = createApiKey(user.id, 'acme-tracker').token;
 
   // Enable the global X-API-Key so the middleware enforces auth.
   config.apiKey = API_KEY;
@@ -120,7 +120,7 @@ describe('voting API — X-API-Key auth', () => {
     const res = await request
       .put(`/api/projects/${projectId}/support-tickets/${ticketId}/vote`)
       .set('x-api-key', API_KEY)
-      .send({ voterKey: 'survey-tracker-token', value: 1 })
+      .send({ voterKey: 'acme-tracker-token', value: 1 })
       .expect(200);
     expect(res.body.score).toBe(1);
     expect(res.body.upvotes).toBe(1);
@@ -143,9 +143,9 @@ describe('voting API — X-API-Key auth', () => {
     const res = await request
       .post(`/api/projects/${projectId}/support-tickets/${ticketId}/comments`)
       .set('x-api-key', API_KEY)
-      .send({ body: 'from survey tracker' })
+      .send({ body: 'from acme tracker' })
       .expect(201);
-    expect(res.body.body).toBe('from survey tracker');
+    expect(res.body.body).toBe('from acme tracker');
     // API-key-only callers post as `external`; the projection omits hidden_at.
     expect(res.body.source).toBe('external');
     expect(res.body).not.toHaveProperty('hidden_at');
@@ -157,7 +157,7 @@ describe('voting API — X-API-Key auth', () => {
       .set('x-api-key', API_KEY)
       .expect(200);
     expect(Array.isArray(res.body)).toBe(true);
-    expect(res.body.some((c: { body: string }) => c.body === 'from survey tracker')).toBe(true);
+    expect(res.body.some((c: { body: string }) => c.body === 'from acme tracker')).toBe(true);
     // External projection never exposes the moderation timestamp.
     for (const comment of res.body) {
       expect(comment).not.toHaveProperty('hidden_at');

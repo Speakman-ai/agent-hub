@@ -3094,7 +3094,7 @@ describe('runFinalize — §13 budget integration', () => {
     // timeout_minutes is the pipeline WALL-CLOCK hang limit. A 1-minute
     // CI cap must not park the run after 70s of rebase/agent processing
     // against a 3600s active-time budget (the failure that parked
-    // surveytracker Finalize at Budget 1800s / Consumed 1947s).
+    // acmetracker Finalize at Budget 1800s / Consumed 1947s).
     const ciPipelineCap = {
       ok: true as const,
       config: { ...CI_OK.config, timeoutMinutes: 1 as const },

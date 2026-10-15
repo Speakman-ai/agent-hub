@@ -3,6 +3,7 @@ import { readdirSync, readFileSync, statSync } from 'fs';
 import { dirname, join, relative } from 'path';
 import { fileURLToPath } from 'url';
 import { describe, expect, it } from 'vitest';
+import { findInternalTokens } from './test/internal-tokens.js';
 
 /**
  * Guard against re-introducing internal-only identifiers into the repo's
@@ -25,21 +26,18 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 // Known internal-only tokens that must not appear in the publishable surface.
 const INTERNAL_PATTERNS: Array<{ label: string; re: RegExp }> = [
-  { label: 'private domain (surveytracker)', re: /surveytracker|survey-tracker/i },
   { label: 'real AWS account id', re: /\b(?:120569607241|350025135582|797611956947)\b/ },
   { label: 'real Route53 zone id', re: /Z10407258WTZ0HQ4VDZP/ },
   { label: 'real KMS key id', re: /8bd60c33-06da-4257-8a77-28a99fd67ee4/ },
   { label: 'real EC2 instance id', re: /\bi-[0-9a-f]{17}\b/ },
-  { label: 'private repo owner (mcsteen)', re: /\bmcsteen\b/ },
   // "Ryan Speakman" is the identified licensor legal name in LICENSE/docs.
   // Do not treat that published counterparty name as the retired personal env.
   { label: 'personal env name (ryan)', re: /\bryan\b(?!\s+Speakman)/i },
   { label: 'private customer name (aimetrics)', re: /\baimetrics\b/i },
 ];
 
-// Files/dirs excluded from the scan: the generated OpenAPI spec carries a
-// documented false-green provenance string ("surveytracker#1001") that mirrors
-// its Zod source.
+// Files/dirs excluded from the scan: the generated OpenAPI spec mirrors its Zod
+// source, which is scanned directly.
 const EXCLUDED = new Set([join(REPO_ROOT, 'docs', 'api', 'openapi.yaml')]);
 
 function isExcluded(absPath: string): boolean {
@@ -83,7 +81,7 @@ function terraformModuleSource(): string[] {
 
 function trackedScriptFiles(): string[] {
   // Operator tooling under scripts/ ships in the public repo. Private-project
-  // helpers leaked here before (surveytracker Finalize scripts, card #1401)
+  // helpers leaked here before (private-project Finalize scripts)
   // because this surface was never scanned. Enumerate git-TRACKED shell/mjs/js
   // files so an untracked local helper is ignored but a committed one is caught.
   const dir = join(REPO_ROOT, 'scripts');
@@ -325,6 +323,9 @@ describe('public-repo hygiene', () => {
           if (re.test(line)) {
             offenders.push(`${rel}:${i + 1} [${label}] ${line.trim().slice(0, 120)}`);
           }
+        }
+        for (const label of findInternalTokens(line)) {
+          offenders.push(`${rel}:${i + 1} [${label}]`);
         }
       });
     }

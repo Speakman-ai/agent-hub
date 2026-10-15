@@ -120,8 +120,8 @@ function copyHeaders(src: IncomingMessage): Record<string, string | string[]> {
  * "Manifest: Line 1, column 1, Syntax error" in the console.
  *
  * Bodies that are not HTML *documents* are returned byte-identical.
- * `content-type: text/html` is not a promise of a document: Survey
- * Tracker's `/health` answers `text/html` with the body `OK`, and an
+ * `content-type: text/html` is not a promise of a document: an app's
+ * `/health` answers `text/html` with the body `OK`, and an
  * unconditionally-compressing upstream delivers a document as binary.
  * Prepending a tag to either corrupts the response, and now that API
  * traffic flows through the `/p/<port>` sub-mount those bodies are

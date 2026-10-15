@@ -301,8 +301,8 @@ describe('eventsToBlocks — misc', () => {
   });
   it('extracts credential request blocks from assistant text', () => {
     const body = JSON.stringify({
-      requestId: 'survey-tracker-login',
-      service: 'Survey Tracker',
+      requestId: 'acme-tracker-login',
+      service: 'Acme Tracker',
       purpose: 'Sign in to query work orders.',
       fields: [
         { key: 'username', label: 'Username', type: 'username' },
@@ -319,7 +319,7 @@ describe('eventsToBlocks — misc', () => {
       ]),
     );
     expect(blocks.map((b: any) => b.kind)).toEqual(['credential_request', 'text']);
-    expect(blocks[0].event.request.service).toBe('Survey Tracker');
+    expect(blocks[0].event.request.service).toBe('Acme Tracker');
     expect(blocks[1].text).toBe('Please sign in.');
     expect(blocks[1].text).not.toContain('agenthub:credential-request');
   });

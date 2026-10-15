@@ -135,7 +135,7 @@ describe('injectHtmlPreviewBaseHref', () => {
   });
 
   // Regression: the old fallback prepended the tag to ANY body served as
-  // text/html. Survey Tracker's /health answers text/html with the body "OK",
+  // text/html. Acme Tracker's /health answers text/html with the body "OK",
   // so the proxy turned it into `<base href="...">OK`. Now that API traffic
   // reaches the backend through the /p/<port> sub-mount, non-document bodies
   // with an HTML content type are routine.
@@ -245,7 +245,7 @@ describe('preview proxy routing (end-to-end)', () => {
     return (server.address() as AddressInfo).port;
   }
 
-  // Reproduces the observed corruption: Survey Tracker's /health answers
+  // Reproduces the observed corruption: Acme Tracker's /health answers
   // `text/html` with the body `OK`, and the proxy returned `<base href="…">OK`.
   it('does not inject into a text/html body that is not a document', async () => {
     const port = await startFixedUpstream('OK', { 'content-type': 'text/html; charset=utf-8' });

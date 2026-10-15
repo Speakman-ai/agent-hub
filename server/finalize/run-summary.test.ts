@@ -231,7 +231,7 @@ describe('emitFinalizeRunSummary', () => {
     expect(inserted[0]!.content).toContain(NO_COMMITS_MESSAGE);
   });
 
-  // Regression: surveytracker session-04ebfae9 / PR #470. The branch had no
+  // Regression: acmetracker session-04ebfae9 / PR #470. The branch had no
   // commits, so the narrative's only context was the card — and the model wrote
   // confident prose ("This change removes the Agent Hub configuration…") about
   // work that was never committed, sitting directly above the empty-state line.

@@ -74,7 +74,7 @@ function forwardedContent(transcriptBytes: number): string {
   return [
     'Take over from here and finish the migration.',
     '',
-    '--- Forwarded from session with Survey Tracker Dev ---',
+    '--- Forwarded from session with Acme Tracker Dev ---',
     `[User]:\n${'x'.repeat(transcriptBytes)}`,
     '[Assistant]:\nThe last thing we did was rename the column.',
     '--- End of forwarded context ---',
@@ -87,7 +87,7 @@ function seedForwardedSession(transcriptBytes: number): string {
   stmts.createSession.run(
     sessionId,
     agentId,
-    '[Fwd] Survey Tracker Dev: work',
+    '[Fwd] Acme Tracker Dev: work',
     'claude-code',
     'auto',
     1,
@@ -143,7 +143,7 @@ describe('forwarded-context history bootstrap', () => {
     const prompt = await spawnTurnPrompt(sessionId, 'What should I do first?');
 
     expect(prompt).toContain('Previous conversation:');
-    expect(prompt).toContain('--- Forwarded from session with Survey Tracker Dev ---');
+    expect(prompt).toContain('--- Forwarded from session with Acme Tracker Dev ---');
     expect(prompt).toContain('Take over from here and finish the migration.');
     expect(prompt).toContain('Human: What should I do first?');
   });
@@ -158,7 +158,7 @@ describe('forwarded-context history bootstrap', () => {
     expect(Buffer.byteLength(prompt, 'utf8')).toBeLessThanOrEqual(SAFE_ARG_STRLEN_BYTES);
     expect(prompt).toContain('Previous conversation:');
     expect(prompt).toContain('Take over from here and finish the migration.');
-    expect(prompt).toContain('--- Forwarded from session with Survey Tracker Dev ---');
+    expect(prompt).toContain('--- Forwarded from session with Acme Tracker Dev ---');
     expect(prompt).toContain('The last thing we did was rename the column.');
     expect(prompt).toContain('omitted from the middle of this message');
     expect(prompt).toContain('Human: What should I do first?');

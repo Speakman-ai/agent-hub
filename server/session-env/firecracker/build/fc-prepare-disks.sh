@@ -221,7 +221,7 @@ def stream_worktree(src_fd: int, dest_dir: str) -> None:
                 )
         return chunk
 
-    # Skip generated trees. Survey Tracker (and most Node/Python repos) keep
+    # Skip generated trees. Most Node/Python repos keep
     # live `node_modules` / venvs in the host worktree — often still being
     # written by a background install. Archiving them (a) takes minutes and
     # stalls "Waiting for first event…", (b) races GNU tar ("file changed as

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, onTestFinished, vi } from 'vitest';
 
 // The harness has no acting user, so the assign route's engine-credential
 // pre-check would 409 every request. Tests that cover that check stub it back.
@@ -214,13 +214,17 @@ describe('POST /api/projects/:projectId/board/cards/:cardId/assign', () => {
     expect(mockGetDevHubApiKey).toHaveBeenCalledTimes(1);
   });
 
-  it('calls getDevHubApiKey when card has survey-tracker label (manual assign)', async () => {
+  it('calls getDevHubApiKey when card has a configured project label (manual assign)', async () => {
+    vi.stubEnv('AGENT_HUB_CROSS_HUB_LABELS', 'acme-tracker');
+    onTestFinished(() => {
+      vi.unstubAllEnvs();
+    });
     const project = await createProject();
     const projectId = project.id as string;
     const agent = await createAgent({ projectId });
     const card = await createCard(projectId, {
       title: 'Tracker task',
-      labels: 'survey-tracker',
+      labels: 'acme-tracker',
     });
 
     await request

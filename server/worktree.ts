@@ -2836,7 +2836,7 @@ async function hardlinkCopyDir(source: string, target: string): Promise<void> {
  * project checkout, returning how it was materialized.
  *
  * A junction symlink is near-free but lets a project build that runs a package
- * manager in the linked dir (e.g. surveytracker's `build_app` runs `npm ci` in
+ * manager in the linked dir (e.g. a `build_app` script that runs `npm ci` in
  * `frontend/`) recurse THROUGH the link and delete/mutate packages in the shared
  * donor tree — npm's parallel remover then races to `ENOTEMPTY` on a random
  * nested dir, and, worse, the corruption lands on the inode every other

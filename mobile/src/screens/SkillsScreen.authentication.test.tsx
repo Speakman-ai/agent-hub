@@ -45,10 +45,10 @@ describe('SkillsScreen project-skill authentication setup', () => {
     vi.clearAllMocks();
     apiMock.getProjectSkill.mockResolvedValue({
       content:
-        '---\nname: surveytracker-api-data\ndescription: Query live data.\ncategory: integration\n---\n# API',
+        '---\nname: acmetracker-api-data\ndescription: Query live data.\ncategory: integration\n---\n# API',
       credentials: [],
     });
-    apiMock.updateProjectSkill.mockResolvedValue({ id: 'surveytracker-api-data' });
+    apiMock.updateProjectSkill.mockResolvedValue({ id: 'acmetracker-api-data' });
     apiMock.getSkillCredentials.mockResolvedValue({ credentials: [] });
     apiMock.getSkillOptions.mockResolvedValue({ options: [] });
   });
@@ -59,15 +59,15 @@ describe('SkillsScreen project-skill authentication setup', () => {
       renderer = create(
         <SkillCard
           skill={{
-            id: 'surveytracker-api-data',
-            name: 'Survey Tracker API',
+            id: 'acmetracker-api-data',
+            name: 'Acme Tracker API',
             description: 'Query live data.',
             category: 'integration',
             source: 'project',
             credentials: [],
           }}
           agentId="agent-1"
-          projectId="survey-tracker-user"
+          projectId="acme-tracker-user"
           overrides={[]}
           isInstalled
           canManageCredentials
@@ -76,26 +76,26 @@ describe('SkillsScreen project-skill authentication setup', () => {
     });
 
     await act(async () => {
-      findByTestId(renderer, 'skill-auth-toggle-surveytracker-api-data').props.onPress({
+      findByTestId(renderer, 'skill-auth-toggle-acmetracker-api-data').props.onPress({
         stopPropagation: () => {},
       });
       await flushMicrotasks();
     });
-    expect(findByTestId(renderer, 'skill-auth-setup-surveytracker-api-data')).toBeTruthy();
+    expect(findByTestId(renderer, 'skill-auth-setup-acmetracker-api-data')).toBeTruthy();
 
     await act(async () => {
-      findByTestId(renderer, 'skill-auth-username-password-surveytracker-api-data').props.onPress();
+      findByTestId(renderer, 'skill-auth-username-password-acmetracker-api-data').props.onPress();
       await flushMicrotasks();
     });
 
     expect(apiMock.updateProjectSkill).toHaveBeenCalledWith(
-      'survey-tracker-user',
-      'surveytracker-api-data',
+      'acme-tracker-user',
+      'acmetracker-api-data',
       expect.objectContaining({
         expectedCredentials: [],
         credentials: [
-          expect.objectContaining({ name: 'SURVEYTRACKER_API_DATA_USERNAME', type: 'string' }),
-          expect.objectContaining({ name: 'SURVEYTRACKER_API_DATA_PASSWORD', type: 'secret' }),
+          expect.objectContaining({ name: 'ACMETRACKER_API_DATA_USERNAME', type: 'string' }),
+          expect.objectContaining({ name: 'ACMETRACKER_API_DATA_PASSWORD', type: 'secret' }),
         ],
       }),
     );
@@ -106,14 +106,14 @@ describe('SkillsScreen project-skill authentication setup', () => {
 
   it('keeps authentication added after the card loaded instead of replacing it', async () => {
     const content =
-      '---\nname: surveytracker-api-data\ndescription: Query live data.\ncategory: integration\n---\n# API';
+      '---\nname: acmetracker-api-data\ndescription: Query live data.\ncategory: integration\n---\n# API';
     apiMock.getProjectSkill
       .mockResolvedValueOnce({ content, credentials: [] })
       .mockResolvedValueOnce({
         content,
         credentials: [
           {
-            name: 'SURVEYTRACKER_SESSION_TOKEN',
+            name: 'ACMETRACKER_SESSION_TOKEN',
             label: 'Session token',
             type: 'secret',
             required: true,
@@ -126,15 +126,15 @@ describe('SkillsScreen project-skill authentication setup', () => {
       renderer = create(
         <SkillCard
           skill={{
-            id: 'surveytracker-api-data',
-            name: 'Survey Tracker API',
+            id: 'acmetracker-api-data',
+            name: 'Acme Tracker API',
             description: 'Query live data.',
             category: 'integration',
             source: 'project',
             credentials: [],
           }}
           agentId="agent-1"
-          projectId="survey-tracker-user"
+          projectId="acme-tracker-user"
           overrides={[]}
           isInstalled
           canManageCredentials
@@ -143,13 +143,13 @@ describe('SkillsScreen project-skill authentication setup', () => {
     });
 
     await act(async () => {
-      findByTestId(renderer, 'skill-auth-toggle-surveytracker-api-data').props.onPress({
+      findByTestId(renderer, 'skill-auth-toggle-acmetracker-api-data').props.onPress({
         stopPropagation: () => {},
       });
       await flushMicrotasks();
     });
     await act(async () => {
-      findByTestId(renderer, 'skill-auth-api-key-surveytracker-api-data').props.onPress();
+      findByTestId(renderer, 'skill-auth-api-key-acmetracker-api-data').props.onPress();
       await flushMicrotasks();
     });
 

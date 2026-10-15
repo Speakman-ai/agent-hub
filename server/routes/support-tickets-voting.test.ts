@@ -192,7 +192,7 @@ describe('GET /support-tickets/voting', () => {
 });
 
 describe('GET /support-tickets/voting external projection', () => {
-  // Fields the external (Survey-Tracker) projection must never expose.
+  // Fields the external (Acme-Tracker) projection must never expose.
   const OPERATOR_ONLY_FIELDS = [
     'reporter',
     'reporter_email',
@@ -263,7 +263,7 @@ describe('GET /support-tickets/voting external projection', () => {
     const id = await seedInvestigatedTicket(seed);
 
     // A per-user `ahub_*` key carries an authUserId but is still a
-    // non-interactive API request (the card lets Survey Tracker present one),
+    // non-interactive API request (the card lets Acme Tracker present one),
     // so it must get the external projection — not the full ticket.
     const perUserKey = makeApp({ authViaUserApiKey: true, authUserId: 'user-123' });
     const res = await supertest(perUserKey).get(votingPath()).expect(200);
@@ -308,7 +308,7 @@ describe('GET /support-tickets/voting external projection', () => {
     const id = await seedInvestigatedTicket(seed);
 
     // authViaApiKey with a local-org bypass is the single-tenant desktop
-    // bundle, not Survey Tracker — it must still get the Hub shape.
+    // bundle, not Acme Tracker — it must still get the Hub shape.
     const local = makeApp({ authViaApiKey: true, authLocalOrgBypass: true });
     const res = await supertest(local).get(votingPath()).expect(200);
     const item = res.body.find((row: { id: string }) => row.id === id);

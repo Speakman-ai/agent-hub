@@ -174,8 +174,8 @@ describe('cardLinkedPrMerged', () => {
 
   it('looks up the native PR by project and number', () => {
     const { stmts, calls } = lookup('merged');
-    expect(cardLinkedPrMerged(stmts, { pr_url: '/projects/surveytracker/pulls/1574' })).toBe(true);
-    expect(calls).toEqual([['surveytracker', 1574]]);
+    expect(cardLinkedPrMerged(stmts, { pr_url: '/projects/acmetracker/pulls/1574' })).toBe(true);
+    expect(calls).toEqual([['acmetracker', 1574]]);
   });
 
   it('is false for open, missing, GitHub, and absent PR links', () => {

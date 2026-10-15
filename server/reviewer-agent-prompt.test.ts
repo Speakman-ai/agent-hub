@@ -22,7 +22,7 @@ describe('reviewerSystemPromptIsStale', () => {
 });
 
 describe('buildReviewerAgentSystemPrompt', () => {
-  const sp = buildReviewerAgentSystemPrompt('Survey Tracker');
+  const sp = buildReviewerAgentSystemPrompt('Acme Tracker');
 
   it('is mode-aware: Finalize local-diff and Hub PR review share one severity cut', () => {
     expect(sp).toContain('Mode A');
@@ -64,7 +64,7 @@ describe('buildReviewerAgentSystemPrompt', () => {
 
 describe('buildReviewerIdentityMarkdown', () => {
   it('describes both Finalize and Hub-hosted PR review modes', () => {
-    const md = buildReviewerIdentityMarkdown('Survey Tracker');
+    const md = buildReviewerIdentityMarkdown('Acme Tracker');
     expect(md).toContain('local diff');
     expect(md).toContain('in-session');
     expect(md).toContain('Hub-hosted PR review');

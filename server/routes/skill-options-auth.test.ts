@@ -57,7 +57,7 @@ async function setupOwner(app: ReturnType<typeof buildGatedApp>): Promise<string
 }
 
 /** Register a project whose project-skill store declares an `options:` block. */
-function registerSkillWithOptions(skillId = 'survey-tracker', agentId = 'opt-agent'): void {
+function registerSkillWithOptions(skillId = 'acme-tracker', agentId = 'opt-agent'): void {
   const repo = path.join(_skillOptTestRoot, 'repo');
   mkdirSync(repo, { recursive: true });
   writeFileSync(
@@ -82,7 +82,7 @@ function registerSkillWithOptions(skillId = 'survey-tracker', agentId = 'opt-age
     `---
 name: ${skillId}
 options:
-  - name: SURVEY_TRACKER_ENV
+  - name: ACME_TRACKER_ENV
     label: Environment
     choices:
       - value: dev
@@ -115,7 +115,7 @@ describe('/api/auth/me/skill-options', () => {
     const app = buildGatedApp();
     _skillOptApiKeyOverride = 'sekrit';
     const res = await supertest(app)
-      .get('/api/auth/me/skill-options?skillId=survey-tracker')
+      .get('/api/auth/me/skill-options?skillId=acme-tracker')
       .set('x-api-key', 'sekrit');
     expect(res.status).toBe(401);
   });
@@ -125,11 +125,11 @@ describe('/api/auth/me/skill-options', () => {
     const app = buildGatedApp();
     const token = await setupOwner(app);
     const res = await supertest(app)
-      .get('/api/auth/me/skill-options?skillId=survey-tracker&agentId=opt-agent')
+      .get('/api/auth/me/skill-options?skillId=acme-tracker&agentId=opt-agent')
       .set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(200);
     expect(res.body.options).toHaveLength(1);
-    expect(res.body.options[0].name).toBe('SURVEY_TRACKER_ENV');
+    expect(res.body.options[0].name).toBe('ACME_TRACKER_ENV');
     expect(res.body.options[0].selected).toBe('dev');
     expect(res.body.options[0].choices).toHaveLength(2);
   });
@@ -143,8 +143,8 @@ describe('/api/auth/me/skill-options', () => {
       .put('/api/auth/me/skill-options')
       .set('Authorization', `Bearer ${token}`)
       .send({
-        skill_id: 'survey-tracker',
-        option_name: 'SURVEY_TRACKER_ENV',
+        skill_id: 'acme-tracker',
+        option_name: 'ACME_TRACKER_ENV',
         value: 'prod',
         agent_id: 'opt-agent',
       });
@@ -152,7 +152,7 @@ describe('/api/auth/me/skill-options', () => {
     expect(put.body.option.value).toBe('prod');
 
     const res = await supertest(app)
-      .get('/api/auth/me/skill-options?skillId=survey-tracker&agentId=opt-agent')
+      .get('/api/auth/me/skill-options?skillId=acme-tracker&agentId=opt-agent')
       .set('Authorization', `Bearer ${token}`);
     expect(res.body.options[0].selected).toBe('prod');
   });
@@ -165,8 +165,8 @@ describe('/api/auth/me/skill-options', () => {
       .put('/api/auth/me/skill-options')
       .set('Authorization', `Bearer ${token}`)
       .send({
-        skill_id: 'survey-tracker',
-        option_name: 'SURVEY_TRACKER_ENV',
+        skill_id: 'acme-tracker',
+        option_name: 'ACME_TRACKER_ENV',
         value: 'staging',
         agent_id: 'opt-agent',
       });
@@ -182,7 +182,7 @@ describe('/api/auth/me/skill-options', () => {
       .put('/api/auth/me/skill-options')
       .set('Authorization', `Bearer ${token}`)
       .send({
-        skill_id: 'survey-tracker',
+        skill_id: 'acme-tracker',
         option_name: 'NOPE',
         value: 'dev',
         agent_id: 'opt-agent',
@@ -200,20 +200,20 @@ describe('/api/auth/me/skill-options', () => {
       .put('/api/auth/me/skill-options')
       .set('Authorization', `Bearer ${token}`)
       .send({
-        skill_id: 'survey-tracker',
-        option_name: 'SURVEY_TRACKER_ENV',
+        skill_id: 'acme-tracker',
+        option_name: 'ACME_TRACKER_ENV',
         value: 'prod',
         agent_id: 'opt-agent',
       })
       .expect(200);
 
     await supertest(app)
-      .delete('/api/auth/me/skill-options/survey-tracker/SURVEY_TRACKER_ENV')
+      .delete('/api/auth/me/skill-options/acme-tracker/ACME_TRACKER_ENV')
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
 
     const res = await supertest(app)
-      .get('/api/auth/me/skill-options?skillId=survey-tracker&agentId=opt-agent')
+      .get('/api/auth/me/skill-options?skillId=acme-tracker&agentId=opt-agent')
       .set('Authorization', `Bearer ${token}`);
     expect(res.body.options[0].selected).toBe('dev');
   });

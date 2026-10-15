@@ -83,12 +83,12 @@ function mountCredentialRoutes(
 describe('session credential requests', () => {
   it('stores credentials off-transcript and re-reads them until they expire', async () => {
     const sessionId = createSession();
-    const requestId = 'survey-tracker-login';
+    const requestId = 'acme-tracker-login';
 
     const submit = await request
       .put(`/api/sessions/${sessionId}/credential-requests/${requestId}`)
       .send({
-        service: 'Survey Tracker',
+        service: 'Acme Tracker',
         purpose: 'Sign in to query work orders.',
         ttlSeconds: 900,
         fields: [
@@ -104,7 +104,7 @@ describe('session credential requests', () => {
 
     expect(submit.body).toMatchObject({
       requestId,
-      service: 'Survey Tracker',
+      service: 'Acme Tracker',
       status: 'submitted',
     });
     expect(JSON.stringify(submit.body)).not.toContain('survey-secret-password');
@@ -184,11 +184,11 @@ describe('session credential requests', () => {
 
   it('reports expired (not consumed) and erases the payload for a consumed-then-expired request', async () => {
     const sessionId = createSession();
-    const requestId = 'survey-tracker-consumed-expired';
+    const requestId = 'acme-tracker-consumed-expired';
     await request
       .put(`/api/sessions/${sessionId}/credential-requests/${requestId}`)
       .send({
-        service: 'Survey Tracker',
+        service: 'Acme Tracker',
         purpose: 'Sign in to query work orders.',
         fields: [{ key: 'password', label: 'Password', type: 'password' }],
         values: { password: 'consumed-then-expired-secret' },
@@ -234,11 +234,11 @@ describe('session credential requests', () => {
 
   it('does not return plaintext when another consume wins the row transition', async () => {
     const sessionId = createSession();
-    const requestId = 'survey-tracker-race';
+    const requestId = 'acme-tracker-race';
     await request
       .put(`/api/sessions/${sessionId}/credential-requests/${requestId}`)
       .send({
-        service: 'Survey Tracker',
+        service: 'Acme Tracker',
         purpose: 'Sign in to query work orders.',
         fields: [{ key: 'password', label: 'Password', type: 'password' }],
         values: { password: 'race-secret' },
@@ -261,11 +261,11 @@ describe('session credential requests', () => {
 
   it('erases the payload when the request expires between the initial check and the re-read', async () => {
     const sessionId = createSession();
-    const requestId = 'survey-tracker-toctou-expiry';
+    const requestId = 'acme-tracker-toctou-expiry';
     await request
       .put(`/api/sessions/${sessionId}/credential-requests/${requestId}`)
       .send({
-        service: 'Survey Tracker',
+        service: 'Acme Tracker',
         purpose: 'Sign in to query work orders.',
         fields: [{ key: 'password', label: 'Password', type: 'password' }],
         values: { password: 'toctou-secret' },
@@ -298,11 +298,11 @@ describe('session credential requests', () => {
 
   it('erases encrypted payload when an expired request is observed', async () => {
     const sessionId = createSession();
-    const requestId = 'survey-tracker-expired';
+    const requestId = 'acme-tracker-expired';
     await request
       .put(`/api/sessions/${sessionId}/credential-requests/${requestId}`)
       .send({
-        service: 'Survey Tracker',
+        service: 'Acme Tracker',
         purpose: 'Sign in to query work orders.',
         fields: [{ key: 'password', label: 'Password', type: 'password' }],
         values: { password: 'expired-secret' },
@@ -343,12 +343,12 @@ describe('session credential requests', () => {
   it('rejects credential submission for a session owned by another user', async () => {
     enableStrictAuth();
     const sessionId = createSession('owner-user');
-    const requestId = 'survey-tracker-login';
+    const requestId = 'acme-tracker-login';
 
     await mountCredentialRoutes('other-user')
       .put(`/api/sessions/${sessionId}/credential-requests/${requestId}`)
       .send({
-        service: 'Survey Tracker',
+        service: 'Acme Tracker',
         purpose: 'Sign in to query work orders.',
         fields: [{ key: 'password', label: 'Password', type: 'password' }],
         values: { password: 'poisoned-secret' },
@@ -370,24 +370,24 @@ describe('session credential requests', () => {
     setProjectSkillsDataDir(dataDir);
     try {
       const projectId = 'proj-persist';
-      const skillId = 'survey-tracker';
+      const skillId = 'acme-tracker';
       const skillDir = path.join(dataDir, 'project-skills', projectId, skillId);
       mkdirSync(skillDir, { recursive: true });
       writeFileSync(
         path.join(skillDir, 'SKILL.md'),
         `---
-name: survey-tracker
+name: acme-tracker
 credentials:
-  - name: SURVEYTRACKER_API_DATA_USERNAME
+  - name: ACMETRACKER_API_DATA_USERNAME
     label: Username
     required: false
     type: secret
-  - name: SURVEYTRACKER_API_DATA_PASSWORD
+  - name: ACMETRACKER_API_DATA_PASSWORD
     label: Password
     required: false
     type: secret
 ---
-# Survey Tracker
+# Acme Tracker
 `,
         'utf8',
       );
@@ -403,9 +403,9 @@ credentials:
       })) as unknown as RouteDeps['findAgent'];
 
       const submit = await mountCredentialRoutes(ownerUserId, findAgent)
-        .put(`/api/sessions/${sessionId}/credential-requests/survey-tracker-login`)
+        .put(`/api/sessions/${sessionId}/credential-requests/acme-tracker-login`)
         .send({
-          service: 'Survey Tracker',
+          service: 'Acme Tracker',
           purpose: 'Sign in to query work orders.',
           fields: [
             { key: 'username', label: 'Username', type: 'username' },
@@ -415,8 +415,8 @@ credentials:
           persist: {
             skillId,
             map: {
-              username: 'SURVEYTRACKER_API_DATA_USERNAME',
-              password: 'SURVEYTRACKER_API_DATA_PASSWORD',
+              username: 'ACMETRACKER_API_DATA_USERNAME',
+              password: 'ACMETRACKER_API_DATA_PASSWORD',
             },
           },
         })
@@ -427,8 +427,8 @@ credentials:
       expect(submit.body.persisted.error ?? 'no-error').toBe('no-error');
       expect(submit.body.persisted.skipped).toEqual([]);
       expect(submit.body.persisted.stored.sort()).toEqual([
-        'SURVEYTRACKER_API_DATA_PASSWORD',
-        'SURVEYTRACKER_API_DATA_USERNAME',
+        'ACMETRACKER_API_DATA_PASSWORD',
+        'ACMETRACKER_API_DATA_USERNAME',
       ]);
       // No plaintext ever echoes back on the response.
       expect(JSON.stringify(submit.body)).not.toContain('survey-secret-password');
@@ -436,8 +436,8 @@ credentials:
       // The values now live in the owner's persistent skill credential store.
       const stored = listMaskedUserSkillCredentials(ownerUserId, skillId);
       expect(stored.map((r) => r.key_name).sort()).toEqual([
-        'SURVEYTRACKER_API_DATA_PASSWORD',
-        'SURVEYTRACKER_API_DATA_USERNAME',
+        'ACMETRACKER_API_DATA_PASSWORD',
+        'ACMETRACKER_API_DATA_USERNAME',
       ]);
     } finally {
       setProjectSkillsDataDir(originalDataDir);
@@ -479,11 +479,11 @@ credentials:
   it('rejects credential consumption for a session owned by another user', async () => {
     enableStrictAuth();
     const sessionId = createSession('owner-user');
-    const requestId = 'survey-tracker-login';
+    const requestId = 'acme-tracker-login';
     await mountCredentialRoutes('owner-user')
       .put(`/api/sessions/${sessionId}/credential-requests/${requestId}`)
       .send({
-        service: 'Survey Tracker',
+        service: 'Acme Tracker',
         purpose: 'Sign in to query work orders.',
         fields: [{ key: 'password', label: 'Password', type: 'password' }],
         values: { password: 'owner-secret' },

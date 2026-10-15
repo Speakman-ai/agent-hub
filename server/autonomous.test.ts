@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
+import { describe, it, expect, vi, beforeEach, onTestFinished, type Mock } from 'vitest';
 import type { Project, KanbanCardRow, KanbanEpicRow, KanbanPhaseRow, SessionRow } from './types.js';
 
 // Module mocks (hoisted before imports)
@@ -3651,7 +3651,8 @@ describe('runAutonomousLoop — label routing', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 //  runAutonomousLoop — DEV_HUB_API_KEY label gate
 //
-//  Positive: cards labelled `cross-hub:dev` or `survey-tracker` must cause
+//  Positive: cards labelled `cross-hub:dev` or a label configured in
+//    `AGENT_HUB_CROSS_HUB_LABELS` must cause
 //    handleChat to be called with `extraEnv: { DEV_HUB_API_KEY: '...' }`.
 //  Negative: cards without those labels must NOT inject DEV_HUB_API_KEY.
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3691,8 +3692,12 @@ describe('runAutonomousLoop — DEV_HUB_API_KEY label gate', () => {
     expect(chatMsg.extraEnv.DEV_HUB_API_KEY).toBe('ahub_mock_dev_key');
   });
 
-  it('POSITIVE: survey-tracker label → handleChat called with DEV_HUB_API_KEY', async () => {
-    const card = makeCard({ id: 'c-st', labels: 'survey-tracker,backend' });
+  it('POSITIVE: configured project label → handleChat called with DEV_HUB_API_KEY', async () => {
+    vi.stubEnv('AGENT_HUB_CROSS_HUB_LABELS', 'acme-tracker');
+    onTestFinished(() => {
+      vi.unstubAllEnvs();
+    });
+    const card = makeCard({ id: 'c-st', labels: 'acme-tracker,backend' });
     const deps = makeMinimalSetup(card);
 
     await runAutonomousLoop('proj-1');
