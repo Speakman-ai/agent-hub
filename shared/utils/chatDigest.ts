@@ -121,3 +121,22 @@ export function chatDigestStatusText(
     digest.lastStatus === 'posted' ? 'posted a digest' : 'nothing new, skipped posting';
   return `${paused}Last run ${formatTime(digest.lastRunAt)}: ${outcome}.`;
 }
+
+/**
+ * Whether a channel's digest editor may offer the `my_work` scope: only the
+ * viewer's own Summaries channel, matching the server's `my_work_not_allowed`
+ * check.
+ */
+export function canUseMyWorkDigestScope(
+  channel: { kind: string; createdByUserId: string | null },
+  viewerUserId: string | null,
+): boolean {
+  return channel.kind === 'summary' && !!viewerUserId && channel.createdByUserId === viewerUserId;
+}
+
+/** Whether a draft has the projects its scope needs to be saved. */
+export function digestScopeReady(scope: ChatDigestScope, projectIds: readonly string[]): boolean {
+  return scope !== 'project' || projectIds.length > 0;
+}
+
+export const MY_WORK_DIGEST_SCOPE_LABEL = 'My work (daily summary)';

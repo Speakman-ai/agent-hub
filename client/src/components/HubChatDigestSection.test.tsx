@@ -200,4 +200,70 @@ describe('HubChatDigestSection', () => {
     renderSection();
     expect(await screen.findByRole('button', { name: /Add digest/ })).toBeDisabled();
   });
+
+  describe('my_work scope', () => {
+    const myWork = {
+      ...saved,
+      id: 'd3',
+      name: 'Daily summary',
+      cron: '0,15 8,9 * * * | 30 9,10 * * *',
+      scope: 'my_work',
+      projectIds: [],
+    };
+
+    it('is not offered outside the Summaries channel', async () => {
+      hubChat.digests!.mockResolvedValue({ digests: [] });
+      renderSection();
+      fireEvent.click(await screen.findByRole('button', { name: /Add digest/ }));
+      const scope = screen.getByLabelText('Digest scope');
+      expect(within(scope).queryByRole('option', { name: 'My work (daily summary)' })).toBeNull();
+      expect(scope).toHaveValue('channel');
+    });
+
+    it('defaults new digests to my_work on the Summaries channel and saves them', async () => {
+      hubChat.digests!.mockResolvedValue({ digests: [] });
+      hubChat.createDigest!.mockResolvedValue({ digest: myWork });
+      render(<HubChatDigestSection channelId="c1" channelProjectId={null} allowMyWork />);
+
+      fireEvent.click(await screen.findByRole('button', { name: /Add digest/ }));
+      expect(screen.getByLabelText('Digest scope')).toHaveValue('my_work');
+      fireEvent.change(screen.getByLabelText('Digest timezone'), { target: { value: 'UTC' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Schedule digest' }));
+
+      await waitFor(() =>
+        expect(hubChat.createDigest).toHaveBeenCalledWith(
+          'c1',
+          expect.objectContaining({ scope: 'my_work', projectIds: [] }),
+        ),
+      );
+      expect(getProjects).not.toHaveBeenCalled();
+    });
+
+    it('opens a migrated my_work digest with its scope and schedule, and saves edits', async () => {
+      hubChat.digests!.mockResolvedValue({ digests: [myWork] });
+      hubChat.updateDigest!.mockResolvedValue({ digest: { ...myWork, enabled: false } });
+      render(<HubChatDigestSection channelId="c1" channelProjectId={null} allowMyWork />);
+
+      fireEvent.click(await screen.findByText('Daily summary'));
+      expect(screen.getByLabelText('Digest scope')).toHaveValue('my_work');
+      expect(screen.getByLabelText('Digest cron')).toHaveValue('0,15 8,9 * * * | 30 9,10 * * *');
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Enabled' }));
+      const save = screen.getByRole('button', { name: 'Save digest' });
+      expect(save).toBeEnabled();
+      fireEvent.click(save);
+
+      await waitFor(() =>
+        expect(hubChat.updateDigest).toHaveBeenCalledWith(
+          'c1',
+          'd3',
+          expect.objectContaining({
+            scope: 'my_work',
+            projectIds: [],
+            enabled: false,
+            cron: '0,15 8,9 * * * | 30 9,10 * * *',
+          }),
+        ),
+      );
+    });
+  });
 });

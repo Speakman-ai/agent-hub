@@ -16,6 +16,7 @@ import {
   type HubChatOrgMember,
 } from '../utils/hubChat';
 import { HubChatDigestSection } from './HubChatDigestSection';
+import { canUseMyWorkDigestScope } from '@shared/utils/chatDigest';
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err ?? 'Request failed');
@@ -777,7 +778,11 @@ export function ChannelSettingsDialog({
         )}
 
         {membership && !channel.archivedAt && (
-          <HubChatDigestSection channelId={channel.id} channelProjectId={channel.projectId} />
+          <HubChatDigestSection
+            channelId={channel.id}
+            channelProjectId={channel.projectId}
+            allowMyWork={canUseMyWorkDigestScope(channel, viewerUserId)}
+          />
         )}
 
         <section className="flex flex-col gap-2">

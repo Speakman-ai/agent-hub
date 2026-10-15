@@ -226,4 +226,75 @@ describe('mobile HubChatDigestSection', () => {
     const renderer = await mount();
     expect(renderer.root.findByProps({ testID: 'hub-chat-digest-add' }).props.disabled).toBe(true);
   });
+
+  describe('my_work scope', () => {
+    async function mountSummaries() {
+      let renderer!: ReactTestRenderer;
+      await TestRenderer.act(async () => {
+        renderer = TestRenderer.create(
+          <HubChatDigestSection channelId="c1" channelProjectId={null} allowMyWork />,
+        );
+      });
+      await flush();
+      return renderer;
+    }
+    const myWork = digest({
+      id: 'd3',
+      name: 'Daily summary',
+      cron: '0,15 8,9 * * * | 30 9,10 * * *',
+      scope: 'my_work',
+      projectIds: [],
+    });
+
+    it('is not offered outside the Summaries channel', async () => {
+      hubChat.digests.mockResolvedValue({ digests: [] });
+      const renderer = await mount();
+      await press(renderer, 'hub-chat-digest-add');
+      expect(count(renderer, 'hub-chat-digest-scope-my_work')).toBe(0);
+    });
+
+    it('defaults new digests to my_work on the Summaries channel', async () => {
+      hubChat.digests.mockResolvedValue({ digests: [] });
+      hubChat.createDigest.mockResolvedValue({ digest: myWork });
+      const renderer = await mountSummaries();
+      await press(renderer, 'hub-chat-digest-add');
+      expect(
+        renderer.root.findByProps({ testID: 'hub-chat-digest-scope-my_work' }).props.active,
+      ).toBe(true);
+      await press(renderer, 'hub-chat-digest-save');
+
+      expect(hubChat.createDigest).toHaveBeenCalledWith(
+        'c1',
+        expect.objectContaining({ scope: 'my_work', projectIds: [] }),
+      );
+      expect(api.getProjects).not.toHaveBeenCalled();
+    });
+
+    it('edits a migrated my_work digest without changing its scope', async () => {
+      hubChat.digests.mockResolvedValue({ digests: [myWork] });
+      hubChat.updateDigest.mockResolvedValue({ digest: { ...myWork, enabled: false } });
+      const renderer = await mountSummaries();
+      await press(renderer, 'hub-chat-digest-card-d3');
+      expect(
+        renderer.root.findByProps({ testID: 'hub-chat-digest-scope-my_work' }).props.active,
+      ).toBe(true);
+      const toggle = renderer.root.findByProps({ testID: 'hub-chat-digest-enabled' });
+      await TestRenderer.act(async () => toggle.props.onValueChange(false));
+      expect(renderer.root.findByProps({ testID: 'hub-chat-digest-save' }).props.disabled).toBe(
+        false,
+      );
+      await press(renderer, 'hub-chat-digest-save');
+
+      expect(hubChat.updateDigest).toHaveBeenCalledWith(
+        'c1',
+        'd3',
+        expect.objectContaining({
+          scope: 'my_work',
+          projectIds: [],
+          enabled: false,
+          cron: '0,15 8,9 * * * | 30 9,10 * * *',
+        }),
+      );
+    });
+  });
 });

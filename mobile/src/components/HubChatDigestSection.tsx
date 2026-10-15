@@ -16,7 +16,9 @@ import {
   MAX_CHAT_DIGEST_PROJECTS,
   MAX_CHAT_DIGEST_PROMPT_CHARS,
   MAX_CHAT_DIGESTS_PER_CHANNEL,
+  MY_WORK_DIGEST_SCOPE_LABEL,
   chatDigestStatusText,
+  digestScopeReady,
   describeDigestSchedule,
   deviceTimeZone,
   type ChatDigest,
@@ -45,13 +47,17 @@ interface RunResult {
   error?: string;
 }
 
-function draftFrom(digest: ChatDigest | null, defaultProjectId: string | null): Draft {
+function draftFrom(
+  digest: ChatDigest | null,
+  defaultProjectId: string | null,
+  defaultScope: ChatDigestScope = 'channel',
+): Draft {
   return {
     name: digest?.name ?? '',
     enabled: digest?.enabled ?? true,
     cron: digest?.cron ?? DEFAULT_CHAT_DIGEST_CRON,
     timeZone: digest?.timeZone ?? deviceTimeZone(),
-    scope: digest?.scope ?? 'channel',
+    scope: digest?.scope ?? defaultScope,
     projectIds: digest ? digest.projectIds : defaultProjectId ? [defaultProjectId] : [],
     prompt: digest?.prompt ?? '',
   };
@@ -105,13 +111,17 @@ function Chip({
 export default function HubChatDigestSection({
   channelId,
   channelProjectId,
+  allowMyWork = false,
 }: {
   channelId: string;
   channelProjectId: string | null;
+  /** Offer the `my_work` scope; only true on the viewer's own Summaries channel. */
+  allowMyWork?: boolean;
 }) {
+  const defaultScope: ChatDigestScope = allowMyWork ? 'my_work' : 'channel';
   const [digests, setDigests] = useState<ChatDigest[] | undefined>(undefined);
   const [editing, setEditing] = useState<Editing>(null);
-  const [draft, setDraft] = useState<Draft>(() => draftFrom(null, channelProjectId));
+  const [draft, setDraft] = useState<Draft>(() => draftFrom(null, channelProjectId, defaultScope));
   const [projects, setProjects] = useState<{ id: string; name: string }[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -180,7 +190,7 @@ export default function HubChatDigestSection({
     setNotice(null);
     setEditing(next);
     const digest = next && next !== 'new' ? (digests.find((d) => d.id === next) ?? null) : null;
-    setDraft(draftFrom(digest, channelProjectId));
+    setDraft(draftFrom(digest, channelProjectId, defaultScope));
   };
   const replace = (digest: ChatDigest) =>
     setDigests((list) => (list ?? []).map((d) => (d.id === digest.id ? digest : d)));
@@ -235,7 +245,7 @@ export default function HubChatDigestSection({
     !busy &&
     draft.cron.trim().length > 0 &&
     draft.timeZone.trim().length > 0 &&
-    (draft.scope === 'channel' || draft.projectIds.length > 0);
+    digestScopeReady(draft.scope, draft.projectIds);
 
   const renderEditor = (digest: ChatDigest | null) => (
     <View style={styles.editor} testID="hub-chat-digest-editor">
@@ -273,7 +283,21 @@ export default function HubChatDigestSection({
           active={draft.scope === 'project'}
           onPress={() => setDraft((d) => ({ ...d, scope: 'project' }))}
         />
+        {(allowMyWork || digest?.scope === 'my_work') && (
+          <Chip
+            label={MY_WORK_DIGEST_SCOPE_LABEL}
+            testID="hub-chat-digest-scope-my_work"
+            active={draft.scope === 'my_work'}
+            onPress={() => setDraft((d) => ({ ...d, scope: 'my_work' }))}
+          />
+        )}
       </View>
+      {draft.scope === 'my_work' && (
+        <Text style={styles.muted}>
+          Your sessions, assigned cards and todos since the last summary. Only you can see this
+          channel.
+        </Text>
+      )}
       {draft.scope === 'project' && (
         <>
           <Text style={styles.muted}>

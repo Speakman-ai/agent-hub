@@ -10,7 +10,9 @@ import {
   MAX_CHAT_DIGESTS_PER_CHANNEL,
   MAX_CHAT_DIGEST_PROJECTS,
   MAX_CHAT_DIGEST_PROMPT_CHARS,
+  MY_WORK_DIGEST_SCOPE_LABEL,
   chatDigestStatusText,
+  digestScopeReady,
   describeDigestSchedule,
   deviceTimeZone,
   type ChatDigest,
@@ -42,13 +44,17 @@ interface Draft {
   prompt: string;
 }
 
-function draftFrom(digest: ChatDigest | null, defaultProjectId: string | null): Draft {
+function draftFrom(
+  digest: ChatDigest | null,
+  defaultProjectId: string | null,
+  defaultScope: ChatDigestScope = 'channel',
+): Draft {
   return {
     name: digest?.name ?? '',
     enabled: digest?.enabled ?? true,
     cron: digest?.cron ?? DEFAULT_CHAT_DIGEST_CRON,
     timeZone: digest?.timeZone ?? deviceTimeZone(),
-    scope: digest?.scope ?? 'channel',
+    scope: digest?.scope ?? defaultScope,
     projectIds: digest ? [...digest.projectIds] : defaultProjectId ? [defaultProjectId] : [],
     prompt: digest?.prompt ?? '',
   };
@@ -80,16 +86,20 @@ function runResultText(result: { status: string; reason?: string; error?: string
 }
 
 /**
- * Channel settings: scheduled AI digests of this channel's messages or of
- * projects' activity, posted into the channel. Saving a digest makes the
- * caller its owner (their engine credentials run it).
+ * Channel settings: scheduled AI digests of this channel's messages, of
+ * projects' activity, or (on the viewer's own Summaries channel) of their own
+ * work, posted into the channel. Saving a digest makes the caller its owner
+ * (their engine credentials run it).
  */
 export function HubChatDigestSection({
   channelId,
   channelProjectId,
+  allowMyWork = false,
 }: {
   channelId: string;
   channelProjectId: string | null;
+  /** Offer the `my_work` scope; only true on the viewer's own Summaries channel. */
+  allowMyWork?: boolean;
 }) {
   const [digests, setDigests] = useState<ChatDigest[] | null>(null);
   const [adding, setAdding] = useState(false);
@@ -154,6 +164,7 @@ export function HubChatDigestSection({
   const cardProps = {
     channelId,
     channelProjectId,
+    allowMyWork,
     projects,
     projectsError,
     onNeedProjects: requestProjects,
@@ -227,6 +238,7 @@ export function HubChatDigestSection({
 function DigestCard({
   channelId,
   channelProjectId,
+  allowMyWork,
   digest,
   open,
   projects,
@@ -238,6 +250,7 @@ function DigestCard({
 }: {
   channelId: string;
   channelProjectId: string | null;
+  allowMyWork: boolean;
   /** Null for a digest being added and not yet saved. */
   digest: ChatDigest | null;
   open: boolean;
@@ -248,7 +261,13 @@ function DigestCard({
   onSaved: (digest: ChatDigest) => void;
   onRemoved: () => void;
 }) {
-  const [draft, setDraft] = useState<Draft>(() => draftFrom(digest, channelProjectId));
+  const defaultScope: ChatDigestScope = allowMyWork ? 'my_work' : 'channel';
+  const [draft, setDraft] = useState<Draft>(() =>
+    draftFrom(digest, channelProjectId, defaultScope),
+  );
+  // A saved my_work digest keeps its option visible even if the channel
+  // check fails, so the editor never shows a scope the select cannot hold.
+  const showMyWork = allowMyWork || digest?.scope === 'my_work';
   const [busy, setBusy] = useState<'save' | 'run' | 'remove' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -282,7 +301,7 @@ function DigestCard({
     draft.cron.trim().length > 0 &&
     draft.timeZone.trim().length > 0 &&
     draft.prompt.length <= MAX_CHAT_DIGEST_PROMPT_CHARS &&
-    (draft.scope === 'channel' || draft.projectIds.length > 0);
+    digestScopeReady(draft.scope, draft.projectIds);
 
   const toggleProject = (id: string, on: boolean) =>
     setDraft((d) => ({
@@ -366,8 +385,15 @@ function DigestCard({
             >
               <option value="channel">Messages in this channel since the last digest</option>
               <option value="project">Project activity</option>
+              {showMyWork && <option value="my_work">{MY_WORK_DIGEST_SCOPE_LABEL}</option>}
             </select>
           </label>
+          {draft.scope === 'my_work' && (
+            <p className="text-xs text-gray-500">
+              Your sessions, assigned cards and todos since the last summary. Only you can see this
+              channel.
+            </p>
+          )}
           {draft.scope === 'project' && (
             <fieldset className="text-xs text-gray-400">
               <legend>
@@ -505,7 +531,7 @@ function DigestCard({
                   const res = digest
                     ? await api.hubChat.updateDigest(channelId, digest.id, body)
                     : await api.hubChat.createDigest(channelId, body);
-                  setDraft(draftFrom(res.digest, channelProjectId));
+                  setDraft(draftFrom(res.digest, channelProjectId, defaultScope));
                   onSaved(res.digest);
                   setNotice('Saved.');
                 })

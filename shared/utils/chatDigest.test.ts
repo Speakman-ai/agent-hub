@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { chatDigestStatusText, describeDigestSchedule, splitDigestCron } from './chatDigest.js';
+import {
+  canUseMyWorkDigestScope,
+  chatDigestStatusText,
+  describeDigestSchedule,
+  digestScopeReady,
+  splitDigestCron,
+} from './chatDigest.js';
 
 const fmt = (iso: string) => iso.slice(0, 16);
 
@@ -49,5 +55,23 @@ describe('splitDigestCron', () => {
     const text = describeDigestSchedule('0 8 * * * | 30 9 * * *', 'UTC');
     expect(text.split('; ')).toHaveLength(2);
     expect(text).toContain('(UTC)');
+  });
+});
+
+describe('canUseMyWorkDigestScope', () => {
+  it("allows only the viewer's own Summaries channel", () => {
+    expect(canUseMyWorkDigestScope({ kind: 'summary', createdByUserId: 'u1' }, 'u1')).toBe(true);
+    expect(canUseMyWorkDigestScope({ kind: 'summary', createdByUserId: 'u2' }, 'u1')).toBe(false);
+    expect(canUseMyWorkDigestScope({ kind: 'channel', createdByUserId: 'u1' }, 'u1')).toBe(false);
+    expect(canUseMyWorkDigestScope({ kind: 'summary', createdByUserId: null }, null)).toBe(false);
+  });
+});
+
+describe('digestScopeReady', () => {
+  it('needs projects only for the project scope', () => {
+    expect(digestScopeReady('project', [])).toBe(false);
+    expect(digestScopeReady('project', ['web'])).toBe(true);
+    expect(digestScopeReady('channel', [])).toBe(true);
+    expect(digestScopeReady('my_work', [])).toBe(true);
   });
 });
