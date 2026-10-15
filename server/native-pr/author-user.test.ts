@@ -8,6 +8,7 @@ import {
   resolveNativePrAuthorUserId,
   PR_AUTHOR_SENTINELS,
   LOCAL_NO_AUTH_PR_AUTHOR,
+  prActorLabel,
 } from './author-user.js';
 
 /**
@@ -122,5 +123,27 @@ describe('resolveNativePrAuthorUserId', () => {
       if (prior === undefined) delete process.env.AGENT_HUB_MODE;
       else process.env.AGENT_HUB_MODE = prior;
     }
+  });
+});
+
+describe('prActorLabel', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('maps a known Hub user id to its username', () => {
+    vi.spyOn(usersStore, 'getUserById').mockReturnValue({ id: 'u1', username: 'ryan' } as never);
+    expect(prActorLabel('u1')).toBe('ryan');
+  });
+
+  it('passes unknown values through unchanged', () => {
+    vi.spyOn(usersStore, 'getUserById').mockReturnValue(null);
+    expect(prActorLabel('local')).toBe('local');
+    expect(prActorLabel(null)).toBeNull();
+  });
+
+  it('falls back to the raw value when the user lookup throws', () => {
+    vi.spyOn(usersStore, 'getUserById').mockImplementation(() => {
+      throw new Error('orgs.db not ready');
+    });
+    expect(prActorLabel('u1')).toBe('u1');
   });
 });

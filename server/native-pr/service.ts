@@ -39,7 +39,7 @@ import { hostedRepoDefaultBranch } from '../git-host/repo-store.js';
 import { isSafeBranchName } from '../git-host/repo-read.js';
 import { parseCiConfig } from '../finalize/ci-config.js';
 import { expandJobInstances } from '../finalize/ci-config-jobs.js';
-import { isKnownHubUserId } from './author-user.js';
+import { isKnownHubUserId, prActorLabel } from './author-user.js';
 import { NativePrError } from './errors.js';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -350,7 +350,8 @@ function summarize(
     merged: row.status === 'merged',
     draft: false,
     html_url: buildNativePrUrl(projectId, row.number),
-    user: row.author,
+    user: prActorLabel(row.author),
+    user_id: row.author,
     user_avatar: null,
     head: row.head_branch,
     base: row.base_branch,
@@ -367,7 +368,7 @@ function summarize(
     review_decision: null,
     check_rollup: null,
     review_requested: row.review_requested_at !== null && row.review_requested_at !== undefined,
-    review_requested_by: row.review_requested_by ?? null,
+    review_requested_by: prActorLabel(row.review_requested_by),
     agent_review_requested:
       row.agent_review_requested_at !== null && row.agent_review_requested_at !== undefined,
     // Set when the Reviewer session is dispatched and cleared when its turn
@@ -376,7 +377,7 @@ function summarize(
     reverted: row.revert_sha !== null && row.revert_sha !== undefined,
     revert_sha: row.revert_sha ?? null,
     reverted_at: toIso(row.reverted_at ?? null),
-    reverted_by: row.reverted_by ?? null,
+    reverted_by: prActorLabel(row.reverted_by),
     // Native PR auto-merge arming (boolean; the GitHub path surfaces an
     // `auto_merge` object instead — the client toggle handles both shapes).
     auto_merge: row.auto_merge === 1,
@@ -734,14 +735,15 @@ function inlineComments(
     const thread = threads.get(threadKey(r.file_path, r.line, r.side));
     return {
       id: r.id,
-      user: r.author,
+      user: prActorLabel(r.author),
+      user_id: r.author,
       file_path: r.file_path,
       line: r.line,
       side: r.side,
       body: r.body,
       created_at: toIso(r.created_at),
       resolved: Boolean(thread),
-      resolved_by: thread?.resolved_by ?? null,
+      resolved_by: prActorLabel(thread?.resolved_by),
       resolved_at: thread ? toIso(thread.resolved_at) : null,
     };
   });
@@ -765,7 +767,8 @@ function normalizedReviews(
   }>;
   return rows.map((r) => ({
     id: r.id,
-    user: r.reviewer,
+    user: prActorLabel(r.reviewer),
+    user_id: r.reviewer,
     state: r.state.toUpperCase(), // APPROVED / CHANGES_REQUESTED / COMMENTED
     body: r.body,
     submitted_at: toIso(r.created_at),
@@ -773,7 +776,7 @@ function normalizedReviews(
     // GitHub "Dismiss review": a dismissed verdict stays in history but no
     // longer counts, and renders collapsed with the dismissal note.
     dismissed: Boolean(r.dismissed_at),
-    dismissed_by: r.dismissed_by ?? null,
+    dismissed_by: prActorLabel(r.dismissed_by),
     dismissed_at: r.dismissed_at ? toIso(r.dismissed_at) : null,
     dismissal_reason: r.dismissal_reason ?? null,
   }));
@@ -1424,7 +1427,8 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
       return {
         review: {
           id,
-          user: reviewer,
+          user: prActorLabel(reviewer),
+          user_id: reviewer,
           state: state.toUpperCase(),
           body,
           submitted_at: toIso(now),
@@ -1471,10 +1475,11 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
       return {
         review: {
           id: review.id,
-          user: review.reviewer,
+          user: prActorLabel(review.reviewer),
+          user_id: review.reviewer,
           state: review.state.toUpperCase(),
           dismissed: true,
-          dismissed_by: actor,
+          dismissed_by: prActorLabel(actor),
           dismissal_reason: reason,
           dismissed_at: toIso(now),
         },
@@ -1509,7 +1514,8 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
       return {
         comment: {
           id,
-          user: author,
+          user: prActorLabel(author),
+          user_id: author,
           file_path: filePath,
           line,
           side,
@@ -1594,7 +1600,7 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
           line,
           side,
           resolved,
-          resolved_by: resolved ? actor : null,
+          resolved_by: resolved ? prActorLabel(actor) : null,
           resolved_at: resolved ? toIso(now) : null,
         },
       };

@@ -90,3 +90,21 @@ export function resolveNativePrAuthorUserId(sources: ResolveNativePrAuthorSource
     'Native PR creation requires an attributed Hub user (session owner or finalize trigger user)',
   );
 }
+
+/**
+ * Display label for a stored PR actor value. Rows store Hub user ids, which
+ * mean nothing to a reader, so known ids map to the account's username.
+ * Anything else (the `local` owner, older rows that stored a username) is
+ * returned unchanged.
+ */
+export function prActorLabel(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return value ?? null;
+  try {
+    const user = getUserById(trimmed);
+    if (user?.username) return user.username;
+  } catch {
+    /* orgs.db not ready — show the raw value */
+  }
+  return trimmed;
+}

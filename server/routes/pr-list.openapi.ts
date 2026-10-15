@@ -18,7 +18,15 @@ const PrSummary = registerComponent(
       state: z.string(),
       draft: z.boolean().optional(),
       html_url: z.string().optional(),
-      user: z.string().nullable().optional(),
+      user: z.string().nullable().optional().openapi({
+        description:
+          'Display name of the PR author: GitHub login, or the Hub username for Agent Hub-hosted PRs.',
+      }),
+      user_id: z
+        .string()
+        .nullable()
+        .optional()
+        .openapi({ description: 'Hub user id of the author (Agent Hub-hosted PRs only).' }),
       head: z.string().nullable().optional(),
       base: z.string().nullable().optional(),
       created_at: z.string().nullable().optional(),

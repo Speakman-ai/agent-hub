@@ -12942,6 +12942,11 @@ components:
         user:
           type: string
           nullable: true
+          description: "Display name of the PR author: GitHub login, or the Hub username for Agent Hub-hosted PRs."
+        user_id:
+          type: string
+          nullable: true
+          description: Hub user id of the author (Agent Hub-hosted PRs only).
         head:
           type: string
           nullable: true

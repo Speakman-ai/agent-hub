@@ -80,6 +80,40 @@ async function seedHostedRepoWithBranch(
 const TEST_PR_AUTHOR = '00000000-0000-4000-8000-000000000010';
 
 describe('NativePrService', () => {
+  it('list and detail show the author username, not the raw Hub user id', async () => {
+    const { createUser } = await import('../users-store.js');
+    const author = createUser({ username: `pr-author-${uuidv4().slice(0, 8)}`, passwordHash: 'x' });
+    const projectId = `npr-${uuidv4().slice(0, 8)}`;
+    const project = makeProject(projectId);
+    const branch = 'agent-hub/dev/session-user1234';
+    const { headSha } = await seedHostedRepoWithBranch(projectId, branch);
+    const service = createNativePrService({ stmts, broadcast: () => {} });
+    service.createOrGetOpenPr({
+      project,
+      headBranch: branch,
+      baseBranch: 'main',
+      headSha,
+      title: 'Author label',
+      body: '',
+      author: author.id,
+    });
+
+    const [summary] = await service.listPulls({ project, state: 'open', limit: 10 });
+    expect(summary).toMatchObject({ user: author.username, user_id: author.id });
+
+    const reviewed = service.submitReview({
+      project,
+      number: 1,
+      state: 'commented',
+      body: 'looks fine',
+      reviewer: author.id,
+    });
+    expect(reviewed.review).toMatchObject({ user: author.username, user_id: author.id });
+    const detail = await service.getDetail({ project, number: 1 });
+    expect(detail.pr).toMatchObject({ user: author.username });
+    expect(detail.reviews[0]).toMatchObject({ user: author.username, user_id: author.id });
+  });
+
   it('full lifecycle: create → list/detail shapes → merge → card Done + events + base-branch-moved hook', async () => {
     const projectId = `npr-${uuidv4().slice(0, 8)}`;
     const project = makeProject(projectId);
