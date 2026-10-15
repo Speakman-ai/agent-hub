@@ -302,3 +302,57 @@ describe('digest routes under /api/hub-chat', () => {
     await request(as(carol)).get(base()).expect(404);
   });
 });
+
+describe('my_work digests', () => {
+  const body = { enabled: true, cron: '0 8 * * *', timeZone: 'UTC', scope: 'my_work' };
+
+  it("is only allowed on the caller's own Summaries channel", async () => {
+    const res = await request(as(alice)).post(url()).send(body).expect(400);
+    expect(res.body.code).toBe('my_work_not_allowed');
+
+    const summary = store.createChannel({
+      orgId: 'acme',
+      kind: 'summary',
+      name: 'Summaries',
+      createdByUserId: alice,
+    });
+    const created = await request(as(alice))
+      .post(`/api/chat/channels/${summary.id}/digests`)
+      .send(body)
+      .expect(201);
+    expect(created.body.digest).toMatchObject({
+      scope: 'my_work',
+      name: 'Daily summary',
+      projectIds: [],
+    });
+  });
+
+  it('cannot be switched on for an existing digest outside the Summaries channel', async () => {
+    const created = await request(as(alice))
+      .post(url())
+      .send({ ...body, scope: 'channel' })
+      .expect(201);
+    const res = await request(as(alice)).put(one(created.body.digest.id)).send(body).expect(400);
+    expect(res.body.code).toBe('my_work_not_allowed');
+  });
+});
+
+describe('multi-expression schedules', () => {
+  const body = (cron: string) => ({ enabled: true, cron, timeZone: 'UTC', scope: 'channel' });
+
+  it('accepts expressions joined by | and stores them normalized', async () => {
+    const res = await request(as(alice))
+      .post(url())
+      .send(body('0 8 * * *|30  9 * * *'))
+      .expect(201);
+    expect(res.body.digest.cron).toBe('0 8 * * * | 30 9 * * *');
+  });
+
+  it('rejects a bad expression or too many of them', async () => {
+    const bad = await request(as(alice)).post(url()).send(body('0 8 * * * | nope')).expect(400);
+    expect(bad.body.code).toBe('invalid_cron');
+    const many = Array.from({ length: 13 }, (_, i) => `${i} 8 * * *`).join(' | ');
+    const tooMany = await request(as(alice)).post(url()).send(body(many)).expect(400);
+    expect(tooMany.body.code).toBe('invalid_cron');
+  });
+});

@@ -46,6 +46,7 @@ describe('hub chat schema', () => {
       'hub_chat_agent_session_turns',
       'hub_chat_agent_turns',
       'hub_chat_channels',
+      'hub_chat_daily_summary_migrations',
       'hub_chat_digests',
       'hub_chat_members',
       'hub_chat_messages',

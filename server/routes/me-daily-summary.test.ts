@@ -99,7 +99,7 @@ describe('/api/me/daily-summary', () => {
     expect(generate).toHaveBeenCalledTimes(1);
   });
 
-  it('links the Summaries channel once a scheduled run posted, never on a manual POST', async () => {
+  it('links the Summaries channel once it exists, never creating it on a manual POST', async () => {
     const report: HubDailySummaryStored = {
       date: '2026-08-19',
       timeZone: 'UTC',
@@ -115,8 +115,9 @@ describe('/api/me/daily-summary', () => {
     const before = await request(mount(userA)).get('/api/me/daily-summary').expect(200);
     expect(before.body.summaryChannelId).toBeNull();
 
-    const { postDailySummaryToChannel } = await import('../hub-chat-summaries.js');
-    const { channel } = postDailySummaryToChannel({ userId: userA, report });
+    const { getOrCreateSummaryChannel, summaryOrgForUser } =
+      await import('../hub-chat-summaries.js');
+    const { channel } = getOrCreateSummaryChannel(summaryOrgForUser(userA), userA);
     const after = await request(mount(userA)).get('/api/me/daily-summary').expect(200);
     expect(after.body.summaryChannelId).toBe(channel.id);
   });

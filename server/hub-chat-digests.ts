@@ -1,8 +1,9 @@
 /**
  * Scheduled AI digests for chat channels. A channel holds up to ten digests,
- * each run independently. A digest (cron + timezone) summarizes either the
- * channel's own messages or the activity of up to ten projects over the
- * window since the previous run, with a one-shot model on the digest
+ * each run independently. A digest (cron + timezone) summarizes the channel's
+ * own messages, the activity of up to ten projects, or (`my_work`, only on the
+ * owner's own Summaries channel) the owner's sessions, cards and todos, over
+ * the window since the previous run, with a one-shot model on the digest
  * owner's engine credentials, and posts it into the channel as a system
  * message whose body carries ref chips.
  *
@@ -13,19 +14,19 @@
  * Store: `hub-chat-digests-store.ts`. Routes: `/api/chat/channels/:id/digests`.
  */
 import { HUB_ASSISTANT_AGENT_ID } from '../shared/utils/hub.js';
-import { DEFAULT_CHAT_DIGEST_INSTRUCTIONS } from '../shared/utils/chatDigest.js';
+import { DEFAULT_CHAT_DIGEST_INSTRUCTIONS, splitDigestCron } from '../shared/utils/chatDigest.js';
 import { formatHubChatRefToken, parseHubChatRefTokens } from '../shared/utils/hubChatRefTokens.js';
 import { getDb } from './db.js';
 import { isLocalBundledServer } from './auth.js';
 import { cronMatches, parseCron } from './cron-match.js';
-import { isValidTimeZone } from './daily-summary-schedule.js';
+import { buildDailySummaryCaller, isValidTimeZone } from './daily-summary-schedule.js';
 import { resolveOneShotEngine } from './engine-resolver.js';
 import { runOneShotPromptWithFailover, type OneShotFailoverOutcome } from './one-shot-failover.js';
 import { resolveSessionCliSpawnEnv } from './per-user-cli-spawn.js';
 import { resolveHubEngineAndModel } from './hub-assistant.js';
-import { hubWorkspaceCwd } from './hub-daily-summary.js';
+import { collectMyWorkWindowFacts, hubWorkspaceCwd } from './hub-daily-summary.js';
 import { formatCardShortId } from './kanban-short-id.js';
-import { findProject } from './project-model.js';
+import { findProject, getProjects } from './project-model.js';
 import { canViewProject } from './project-visibility.js';
 import { buildRefViewer, resolveBodyRefs, type RefLookups } from './hub-chat-refs.js';
 import { locateChatMarkdownCode } from './hub-chat-markdown.js';
@@ -40,6 +41,7 @@ import {
   listEnabledChannelDigests,
   recordChannelDigestFailure,
   type ChannelDigestRow,
+  type ChannelDigestScope,
 } from './hub-chat-digests-store.js';
 import type {
   AppConfig,
@@ -95,10 +97,10 @@ export function selectDueChannelDigests(
   const nowMinute = minuteKey(now.getTime());
   return rows.filter((row) => {
     if (!row.enabled) return false;
-    const cron = parseCron(row.cron);
-    if (!cron) return false;
+    const crons = splitDigestCron(row.cron).map((part) => parseCron(part));
+    if (crons.length === 0 || crons.some((c) => !c)) return false;
     const tz = isValidTimeZone(row.time_zone) ? row.time_zone : 'UTC';
-    if (!cronMatches(cron, now, tz)) return false;
+    if (!crons.some((c) => cronMatches(c!, now, tz))) return false;
     const last = row.last_run_at ? Date.parse(row.last_run_at) : NaN;
     return Number.isNaN(last) || minuteKey(last) !== nowMinute;
   });
@@ -117,18 +119,24 @@ export interface DigestFactSection {
 }
 
 export interface DigestFacts {
-  scope: 'channel' | 'project';
+  scope: ChannelDigestScope;
   /** Every item, in prompt order. */
   items: DigestFactItem[];
-  /** Per-project groups; set only for project digests. */
+  /** Grouped items: per project for project digests, per kind for my_work. */
   sections?: DigestFactSection[];
+  /**
+   * How many items are activity in the window, when not all of them are.
+   * A my_work digest also lists current state (open cards, open todos),
+   * which alone is not a reason to post.
+   */
+  activityCount?: number;
   /** True when a list hit its cap, so older items in the window were left out. */
   truncated: boolean;
 }
 
 /** True when the window holds nothing worth summarizing. */
 export function isDigestWindowEmpty(facts: DigestFacts): boolean {
-  return facts.items.length === 0;
+  return (facts.activityCount ?? facts.items.length) === 0;
 }
 
 function oneLine(text: string, max: number): string {
@@ -316,6 +324,83 @@ export function collectProjectsDigestFacts(
   return { scope: 'project', items: sections.flatMap((s) => s.items), sections, truncated };
 }
 
+/**
+ * The owner's own work for a my_work digest, from the daily summary's
+ * collectors: running sessions and what changed in the window count as
+ * activity; open cards and todos are listed as context. Sessions are private
+ * to their owner, which is why this scope only posts to their Summaries channel.
+ */
+export function collectMyWorkDigestFacts(input: {
+  userId: string;
+  window: DigestWindow;
+  getProjects: () => Project[];
+}): DigestFacts {
+  const work = collectMyWorkWindowFacts({
+    userId: input.userId,
+    caller: buildDailySummaryCaller(input.userId),
+    getProjects: input.getProjects,
+    timeMin: input.window.start,
+    timeMax: input.window.end,
+  });
+  const sessionItem = (id: string, name: string, detail: string): DigestFactItem => {
+    const label = oneLine(name || 'Session', 60);
+    return {
+      line: `Session ${token('session', id, label)} ${detail}`,
+      ref: { kind: 'session', targetId: id, label },
+    };
+  };
+  const cardItem = (c: (typeof work.cards)[number]): DigestFactItem => {
+    const label = oneLine(c.title || 'Card', 60);
+    return {
+      line: `Card ${token('card', c.id, label)} in ${c.projectName || c.projectId} / ${c.columnName}`,
+      ref: { kind: 'card', targetId: c.id, label },
+    };
+  };
+  const todoItem = (t: (typeof work.openTodos)[number]): DigestFactItem => ({
+    line: `Todo "${oneLine(t.title, 160)}"`,
+    ref: null,
+  });
+  const activity: DigestFactSection[] = [
+    {
+      heading: 'Running now',
+      items: work.running.map((r) =>
+        sessionItem(r.sessionId, r.sessionName, `running since ${r.startedAt}`),
+      ),
+    },
+    {
+      heading: 'Sessions you worked in',
+      items: work.sessions.map((s) =>
+        sessionItem(s.id, s.name, `${s.kind === 'hub' ? '(Hub chat) ' : ''}updated ${s.updatedAt}`),
+      ),
+    },
+    {
+      heading: 'Your messages',
+      items: work.messages.map((m) => ({
+        line: `[${m.createdAt}] in ${token('session', m.sessionId, oneLine(m.sessionName || 'Session', 60))}: ${m.content}`,
+        ref: {
+          kind: 'session' as const,
+          targetId: m.sessionId,
+          label: oneLine(m.sessionName || 'Session', 60),
+        },
+      })),
+    },
+    { heading: 'Your cards that changed', items: work.cards.map(cardItem) },
+    { heading: 'Todos you finished', items: work.doneTodos.map(todoItem) },
+  ];
+  const state: DigestFactSection[] = [
+    { heading: 'Open cards assigned to you', items: work.openCards.map(cardItem) },
+    { heading: 'Open todos', items: work.openTodos.map(todoItem) },
+  ];
+  const sections = [...activity, ...state];
+  return {
+    scope: 'my_work',
+    items: sections.flatMap((s) => s.items),
+    sections,
+    activityCount: activity.reduce((n, s) => n + s.items.length, 0),
+    truncated: false,
+  };
+}
+
 // Fixed framing the custom prompt cannot replace: facts are data, output is
 // markdown, ref tokens are copied verbatim.
 const SYSTEM_PROMPT = [
@@ -337,9 +422,12 @@ export function buildDigestPrompt(input: {
   instructions?: string | null;
 }): string {
   const sections = input.facts.sections;
-  const subject = sections
-    ? `activity in ${sections.length === 1 ? 'one project' : `${sections.length} projects`}`
-    : `messages in channel "${input.channelName || 'this channel'}"`;
+  const subject =
+    input.facts.scope === 'my_work'
+      ? "the reader's own work (their sessions, assigned cards and todos)"
+      : sections
+        ? `activity in ${sections.length === 1 ? 'one project' : `${sections.length} projects`}`
+        : `messages in channel "${input.channelName || 'this channel'}"`;
   const instructions = input.instructions?.trim() || DEFAULT_CHAT_DIGEST_INSTRUCTIONS;
   const factLines = sections
     ? sections.flatMap((s) => [
@@ -347,7 +435,7 @@ export function buildDigestPrompt(input: {
         `### ${s.heading}`,
         ...(s.items.length > 0
           ? s.items.map((i) => `- ${i.line}`)
-          : ['- No activity in this window.']),
+          : [input.facts.scope === 'my_work' ? '- None.' : '- No activity in this window.']),
       ])
     : input.facts.items.map((i) => `- ${i.line}`);
   return [
@@ -541,7 +629,17 @@ export async function runChannelDigest(
     const projects: Project[] = [];
     let droppedProjectCount = 0;
     let facts: DigestFacts;
-    if (row.scope === 'project') {
+    if (row.scope === 'my_work') {
+      // The owner's private work: only ever posted to their own Summaries channel.
+      if (channel.kind !== 'summary' || channel.created_by_user_id !== row.owner_user_id) {
+        return fail("A my work digest only runs on its owner's Summaries channel");
+      }
+      facts = collectMyWorkDigestFacts({
+        userId: row.owner_user_id,
+        window,
+        getProjects: deps.getProjects ?? getProjects,
+      });
+    } else if (row.scope === 'project') {
       // Checked again at run time: access can change after the save. A hidden
       // project is dropped from this run, not from the digest.
       for (const id of new Set(digestProjectIds(row))) {

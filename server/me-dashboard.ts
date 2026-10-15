@@ -101,7 +101,11 @@ function normalizePriority(value: string): CardPriority {
  * dropped, so the client can show recently-completed work if it wants; counts
  * report open work.
  */
-export function buildMyWork(deps: RouteDeps, uid: string, caller: VisibilityCaller): DashboardWork {
+export function buildMyWork(
+  deps: Pick<RouteDeps, 'getProjects'>,
+  uid: string,
+  caller: VisibilityCaller,
+): DashboardWork {
   const empty: DashboardWork = {
     cards: [],
     counts: { total: 0, open: 0, byPriority: { urgent: 0, high: 0, medium: 0, low: 0 } },

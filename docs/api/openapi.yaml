@@ -7977,7 +7977,7 @@ components:
           type: boolean
         cron:
           type: string
-          description: 5-field cron expression, read in `timeZone`.
+          description: One or more 5-field cron expressions joined by ` | `, read in `timeZone`. The digest runs whenever any of them fires.
         timeZone:
           type: string
           description: IANA timezone the cron is read in.
@@ -7986,7 +7986,8 @@ components:
           enum:
             - channel
             - project
-          description: "`channel` summarizes this channel's messages since the last run; `project` summarizes a project's activity."
+            - my_work
+          description: "`channel` summarizes this channel's messages since the last run; `project` summarizes a project's activity; `my_work` summarizes the owner's own sessions, assigned cards and todos, and is only allowed on the owner's own Summaries channel."
         projectIds:
           type: array
           items:
@@ -37495,7 +37496,8 @@ paths:
                 cron:
                   type: string
                   minLength: 1
-                  maxLength: 120
+                  maxLength: 600
+                  description: Up to 12 5-field cron expressions joined by `|`; the digest runs whenever any fires.
                 timeZone:
                   type: string
                   minLength: 1
@@ -37505,6 +37507,7 @@ paths:
                   enum:
                     - channel
                     - project
+                    - my_work
                 projectIds:
                   type: array
                   items:
@@ -37536,7 +37539,7 @@ paths:
                 required:
                   - digest
         "400":
-          description: Invalid cron, timezone or prompt, a missing project, or a project the caller cannot view.
+          description: Invalid cron, timezone or prompt, a missing project, a project the caller cannot view, or `my_work` outside the caller's own Summaries channel (`my_work_not_allowed`).
           content:
             application/json:
               schema:
@@ -37601,7 +37604,8 @@ paths:
                 cron:
                   type: string
                   minLength: 1
-                  maxLength: 120
+                  maxLength: 600
+                  description: Up to 12 5-field cron expressions joined by `|`; the digest runs whenever any fires.
                 timeZone:
                   type: string
                   minLength: 1
@@ -37611,6 +37615,7 @@ paths:
                   enum:
                     - channel
                     - project
+                    - my_work
                 projectIds:
                   type: array
                   items:
@@ -37642,7 +37647,7 @@ paths:
                 required:
                   - digest
         "400":
-          description: Invalid cron, timezone or prompt, a missing project, or a project the caller cannot view.
+          description: Invalid cron, timezone or prompt, a missing project, a project the caller cannot view, or `my_work` outside the caller's own Summaries channel (`my_work_not_allowed`).
           content:
             application/json:
               schema:
@@ -37878,7 +37883,8 @@ paths:
                 cron:
                   type: string
                   minLength: 1
-                  maxLength: 120
+                  maxLength: 600
+                  description: Up to 12 5-field cron expressions joined by `|`; the digest runs whenever any fires.
                 timeZone:
                   type: string
                   minLength: 1
@@ -37888,6 +37894,7 @@ paths:
                   enum:
                     - channel
                     - project
+                    - my_work
                 projectIds:
                   type: array
                   items:
@@ -37919,7 +37926,7 @@ paths:
                 required:
                   - digest
         "400":
-          description: Invalid cron, timezone or prompt, a missing project, or a project the caller cannot view.
+          description: Invalid cron, timezone or prompt, a missing project, a project the caller cannot view, or `my_work` outside the caller's own Summaries channel (`my_work_not_allowed`).
           content:
             application/json:
               schema:
@@ -37984,7 +37991,8 @@ paths:
                 cron:
                   type: string
                   minLength: 1
-                  maxLength: 120
+                  maxLength: 600
+                  description: Up to 12 5-field cron expressions joined by `|`; the digest runs whenever any fires.
                 timeZone:
                   type: string
                   minLength: 1
@@ -37994,6 +38002,7 @@ paths:
                   enum:
                     - channel
                     - project
+                    - my_work
                 projectIds:
                   type: array
                   items:
@@ -38025,7 +38034,7 @@ paths:
                 required:
                   - digest
         "400":
-          description: Invalid cron, timezone or prompt, a missing project, or a project the caller cannot view.
+          description: Invalid cron, timezone or prompt, a missing project, a project the caller cannot view, or `my_work` outside the caller's own Summaries channel (`my_work_not_allowed`).
           content:
             application/json:
               schema:

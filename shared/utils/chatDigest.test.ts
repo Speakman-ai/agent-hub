@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { chatDigestStatusText, describeDigestSchedule } from './chatDigest.js';
+import { chatDigestStatusText, describeDigestSchedule, splitDigestCron } from './chatDigest.js';
 
 const fmt = (iso: string) => iso.slice(0, 16);
 
@@ -36,5 +36,18 @@ describe('describeDigestSchedule', () => {
   it('describes the cron and names the zone', () => {
     expect(describeDigestSchedule('0 9 * * *', 'UTC')).toContain('(UTC)');
     expect(describeDigestSchedule('not a cron', '')).toBe('not a cron');
+  });
+});
+
+describe('splitDigestCron', () => {
+  it('splits on | and normalizes each expression', () => {
+    expect(splitDigestCron(' 0  8 * * * |30 9 * * *| ')).toEqual(['0 8 * * *', '30 9 * * *']);
+    expect(splitDigestCron('0 9 * * 1-5')).toEqual(['0 9 * * 1-5']);
+  });
+
+  it('describes every expression of a joined schedule', () => {
+    const text = describeDigestSchedule('0 8 * * * | 30 9 * * *', 'UTC');
+    expect(text.split('; ')).toHaveLength(2);
+    expect(text).toContain('(UTC)');
   });
 });

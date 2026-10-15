@@ -270,10 +270,8 @@ import {
 import { initDeploySchedules } from './deploy/deploy-schedule-ticker.js';
 import { initReleaseGates, requestReleaseGateSweep } from './deploy/release-gate-ticker.js';
 import { initDailySummarySchedules } from './daily-summary-schedule.js';
-import { postDailySummaryToChannel } from './hub-chat-summaries.js';
+import { migrateDailySummarySchedules } from './hub-chat-daily-summary-migration.js';
 import { runChannelDigestTick } from './hub-chat-digests.js';
-import { generateDailySummary } from './hub-daily-summary.js';
-import { listUsersWithDailySummarySchedule } from './user-preferences-store.js';
 import createReleaseNotificationSettingsRoutes from './routes/release-notification-settings.js';
 import createRunnerRoutes from './finalize/runner-routes.js';
 import { recordJobResourceSummary } from './finalize/metrics.js';
@@ -3157,16 +3155,12 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
       console.error('[release-gate] init on boot', (e as Error).message);
     }
 
-    // Register the once-a-minute ticker that auto-refreshes each user's Hub
-    // Daily Summary at their configured local times, reusing their own engine
-    // credentials (same path as the on-demand POST).
+    // Once-a-minute ticker for scheduled chat work: converts daily summary
+    // schedules into my_work digests, then runs due channel digests.
     try {
       initDailySummarySchedules({
-        routeDeps,
-        listSchedules: listUsersWithDailySummarySchedule,
-        generate: generateDailySummary,
-        onScheduledReport: (userId, report) => {
-          postDailySummaryToChannel({ userId, report, broadcast });
+        migrateSchedules: () => {
+          migrateDailySummarySchedules({ broadcast });
         },
         onTick: (now) =>
           runChannelDigestTick(now, {

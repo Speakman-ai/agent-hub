@@ -30,7 +30,7 @@ import { resolveOneShotEngine, NoEnginesAvailableError } from './engine-resolver
 import { runOneShotPromptWithFailover, type OneShotFailoverOutcome } from './one-shot-failover.js';
 import { resolveSessionCliSpawnEnv } from './per-user-cli-spawn.js';
 import { ensureHubProject, resolveHubEngineAndModel } from './hub-assistant.js';
-import type { AppConfig, RouteDeps } from './types.js';
+import type { AppConfig, Project, RouteDeps } from './types.js';
 import type { VisibilityCaller } from './project-visibility.js';
 
 const MAX_SESSIONS = 20;
@@ -370,6 +370,55 @@ export function collectDailySummaryFacts(input: {
         status: t.status,
         updatedAt: t.updatedAt,
       })),
+  };
+}
+
+export interface MyWorkWindowFacts {
+  running: DailySummaryRunningFact[];
+  openCards: DailySummaryCardFact[];
+  openTodos: DailySummaryTodoFact[];
+  sessions: DailySummarySessionFact[];
+  messages: DailySummaryMessageFact[];
+  cards: DailySummaryCardFact[];
+  doneTodos: DailySummaryTodoFact[];
+}
+
+/**
+ * The daily summary's facts over an arbitrary window instead of today and
+ * yesterday: the current state (running sessions, open cards, open todos)
+ * plus what the user did in `[timeMin, timeMax)`. Feeds `my_work` digests.
+ */
+export function collectMyWorkWindowFacts(input: {
+  userId: string;
+  caller: VisibilityCaller;
+  getProjects: () => Project[];
+  timeMin: string;
+  timeMax: string;
+}): MyWorkWindowFacts {
+  const { userId, timeMin, timeMax } = input;
+  const work = buildMyWork({ getProjects: input.getProjects }, userId, input.caller);
+  const cards = work.cards.map(toCardFact);
+  const todos = listTodos(userId);
+  const todoFact = (t: (typeof todos)[number]): DailySummaryTodoFact => ({
+    id: t.id,
+    title: t.title,
+    status: t.status,
+    updatedAt: t.updatedAt,
+  });
+  return {
+    running: queryRunning(userId),
+    openCards: cards.filter((c) => !c.isDone).slice(0, MAX_CARDS),
+    openTodos: todos
+      .filter((t) => t.status === 'open')
+      .slice(0, MAX_TODOS)
+      .map(todoFact),
+    sessions: queryOwnedSessions(userId, timeMin, timeMax),
+    messages: queryUserMessages(userId, timeMin, timeMax),
+    cards: cards.filter((c) => inWindow(c.updatedAt, timeMin, timeMax)).slice(0, MAX_CARDS),
+    doneTodos: todos
+      .filter((t) => t.status === 'done' && inWindow(t.updatedAt, timeMin, timeMax))
+      .slice(0, MAX_TODOS)
+      .map(todoFact),
   };
 }
 

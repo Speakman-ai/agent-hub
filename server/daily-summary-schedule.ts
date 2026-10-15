@@ -1,36 +1,18 @@
 /**
- * Hub Daily Summary — auto-refresh schedule.
+ * Hub Daily Summary schedule (`preferences_json.hubDailySummarySchedule`) and
+ * the once-a-minute ticker scheduled chat work rides.
  *
- * The on-demand path (`POST /api/me/daily-summary`) regenerates the report only
- * when the user asks. Lets a user pin one or more times of day at
- * which the Hub regenerates the summary for them automatically, reusing the same
- * per-user engine credentials the on-demand path uses.
- *
- * Design: a single once-a-minute node-cron ticker scans every user with an
- * enabled schedule and fires the ones whose configured local `HH:MM` matches the
- * current minute in their own timezone. This is the "single minute ticker"
- * variant of the crons pattern — there are no per-user node-cron rows to
- * register/re-register, and adding a schedule takes effect on the next tick.
- *
- * Selection (`selectDueDailySummaries`) is separated from the side-effecting
- * ticker so due-time logic does not spawn anything.
+ * Scheduled summaries are `my_work` digests now. Each tick first converts any
+ * schedule not yet converted (`hub-chat-daily-summary-migration.ts`), then
+ * runs due digests, so a schedule converted this minute posts once, through
+ * the digest, never also through a separate summary path.
  */
 import cron from 'node-cron';
 import { wrapCronTick, defaultTickOptions } from './cron-tick.js';
 import { assignedProjectIdsForUser, restrictedProjectIds } from './project-members-store.js';
 import { listMembershipsForUser } from './memberships-store.js';
-import type { RouteDeps } from './types.js';
 import type { VisibilityCaller } from './project-visibility.js';
 import type { Role } from './roles.js';
-// Type-only imports: erased at compile time, so they add no runtime module edge
-// (hub-daily-summary imports the preferences store, which imports this module).
-import type { GenerateDailySummaryInput } from './hub-daily-summary.js';
-import type { HubDailySummaryStored } from './user-preferences-store.js';
-
-/** The generation function, injected so this module never value-imports it. */
-export type GenerateDailySummaryFn = (
-  input: GenerateDailySummaryInput,
-) => Promise<HubDailySummaryStored>;
 
 /** Per-user auto-refresh schedule for the Hub Daily Summary. */
 export interface HubDailySummarySchedule {
@@ -88,57 +70,6 @@ export function normalizeDailySummarySchedule(raw: unknown): HubDailySummarySche
   return { enabled: obj.enabled === true, timeZone, times };
 }
 
-function partsInZone(now: Date, timeZone: string): { date: string; hm: string } {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    hourCycle: 'h23',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).formatToParts(now);
-  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
-  const hour = get('hour') === '24' ? '00' : get('hour');
-  return {
-    date: `${get('year')}-${get('month')}-${get('day')}`,
-    hm: `${hour}:${get('minute')}`,
-  };
-}
-
-export interface DueDailySummary {
-  userId: string;
-  time: string;
-  localDate: string;
-  timeZone: string;
-}
-
-/**
- * Given "now" and every user's schedule, return the (userId, time) pairs
- * whose configured local `HH:MM` matches the current minute in the user's zone.
- * Disabled schedules and unparseable zones are skipped.
- */
-export function selectDueDailySummaries(
-  now: Date,
-  entries: ReadonlyArray<{ userId: string; schedule: HubDailySummarySchedule }>,
-): DueDailySummary[] {
-  const due: DueDailySummary[] = [];
-  for (const { userId, schedule } of entries) {
-    if (!schedule?.enabled || !schedule.times?.length) continue;
-    const timeZone = isValidTimeZone(schedule.timeZone) ? schedule.timeZone : 'UTC';
-    let stamp: { date: string; hm: string };
-    try {
-      stamp = partsInZone(now, timeZone);
-    } catch {
-      continue;
-    }
-    if (schedule.times.includes(stamp.hm)) {
-      due.push({ userId, time: stamp.hm, localDate: stamp.date, timeZone });
-    }
-  }
-  return due;
-}
-
 /**
  * Build the visibility context a scheduled run should act under — the user
  * viewing their own Hub. Mirrors `resolveVisibilityCaller` for a real request
@@ -182,94 +113,28 @@ export function buildDailySummaryCaller(userId: string): VisibilityCaller {
 }
 
 export interface DailySummaryScheduleDeps {
-  routeDeps: RouteDeps;
-  listSchedules: () => Array<{ userId: string; schedule: HubDailySummarySchedule }>;
-  generate: GenerateDailySummaryFn;
   /**
-   * Called with each report a scheduled run produced (never for on-demand
-   * regenerates). Wired to the Summaries channel poster, injected for the same
-   * no-runtime-edge reason as `generate`.
+   * Converts schedules not yet converted into my_work digests. Injected so
+   * this module has no runtime edge to the chat stores (the preferences store
+   * imports this module).
    */
-  onScheduledReport?: (userId: string, report: HubDailySummaryStored) => void;
-  /**
-   * Other schedules that ride this ticker (channel digests). Started before
-   * the daily summaries so a slow summary never delays them; awaited at the end.
-   */
+  migrateSchedules?: () => void;
+  /** Runs due channel digests. */
   onTick?: (now: Date) => Promise<void>;
   now?: () => Date;
 }
 
-// De-dupe guard so a single configured minute fires at most one generation per
-// user, even if the tick callback is nudged across the minute boundary by
-// node-cron jitter. Keyed `${userId}:${localDate}:${time}`. Cleared when the
-// UTC calendar day rolls over so it can't grow without bound.
-const firedThisDay = new Set<string>();
-let firedDayKey = '';
-
-/** Exposed for tests: reset the in-memory de-dupe guard. */
-export function resetDailySummaryFiredGuard(): void {
-  firedThisDay.clear();
-  firedDayKey = '';
-}
-
 export async function runDailySummaryScheduleTick(deps: DailySummaryScheduleDeps): Promise<void> {
   const now = deps.now?.() ?? new Date();
-  const utcDay = now.toISOString().slice(0, 10);
-  if (utcDay !== firedDayKey) {
-    firedThisDay.clear();
-    firedDayKey = utcDay;
-  }
-  const extra = deps.onTick
-    ? deps.onTick(now).catch((err: unknown) => {
-        console.error('[daily-summary-schedule] onTick failed:', (err as Error).message);
-      })
-    : Promise.resolve();
   try {
-    await runDueDailySummaries(deps, now);
-  } finally {
-    await extra;
-  }
-}
-
-async function runDueDailySummaries(deps: DailySummaryScheduleDeps, now: Date): Promise<void> {
-  let entries: Array<{ userId: string; schedule: HubDailySummarySchedule }>;
-  try {
-    entries = deps.listSchedules();
+    deps.migrateSchedules?.();
   } catch (err) {
-    console.error('[daily-summary-schedule] listSchedules failed:', (err as Error).message);
-    return;
+    console.error('[daily-summary-schedule] migrating schedules failed:', (err as Error).message);
   }
-  const due = selectDueDailySummaries(now, entries);
-  const generate = deps.generate;
-  for (const item of due) {
-    const key = `${item.userId}:${item.localDate}:${item.time}`;
-    if (firedThisDay.has(key)) continue;
-    firedThisDay.add(key);
-    let report: HubDailySummaryStored;
-    try {
-      report = await generate({
-        userId: item.userId,
-        timeZone: item.timeZone,
-        deps: deps.routeDeps,
-        caller: buildDailySummaryCaller(item.userId),
-        now,
-      });
-    } catch (err) {
-      // Best-effort: one user's engine/auth failure must not stop the others.
-      console.error(
-        `[daily-summary-schedule] generate failed for ${item.userId}:`,
-        (err as Error).message,
-      );
-      continue;
-    }
-    try {
-      deps.onScheduledReport?.(item.userId, report);
-    } catch (err) {
-      console.error(
-        `[daily-summary-schedule] posting to Summaries failed for ${item.userId}:`,
-        (err as Error).message,
-      );
-    }
+  try {
+    await deps.onTick?.(now);
+  } catch (err) {
+    console.error('[daily-summary-schedule] onTick failed:', (err as Error).message);
   }
 }
 

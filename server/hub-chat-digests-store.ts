@@ -7,7 +7,7 @@ import { randomUUID } from 'crypto';
 import { getDb } from './db.js';
 import { MAX_CHAT_DIGESTS_PER_CHANNEL } from '../shared/utils/chatDigest.js';
 
-export type ChannelDigestScope = 'channel' | 'project';
+export type ChannelDigestScope = 'channel' | 'project' | 'my_work';
 export type ChannelDigestStatus = 'posted' | 'skipped' | 'error';
 
 export interface ChannelDigestRow {
@@ -206,6 +206,31 @@ export function advanceChannelDigestWindow(
       fromStart,
     );
   return r.changes > 0;
+}
+
+/**
+ * Records a run that happened outside the digest runner (a summary the
+ * previous scheduler already posted) as this digest's last posted run: the
+ * same-minute guard then skips that occurrence, and the cursor moves up to it
+ * so the next run covers only what came after. A cursor already past it stays.
+ */
+export function seedChannelDigestLastRun(
+  digestId: string,
+  run: { at: string; messageId: string },
+): void {
+  const row = getChannelDigest(digestId);
+  if (!row) return;
+  const atMs = Date.parse(run.at);
+  if (Number.isNaN(atMs)) return;
+  const windowStart = Date.parse(row.window_start) >= atMs ? row.window_start : run.at;
+  getDb()
+    .prepare(
+      `UPDATE hub_chat_digests SET
+         window_start = ?, last_run_at = ?, last_status = 'posted', last_error = NULL,
+         last_message_id = ?
+       WHERE id = ?`,
+    )
+    .run(windowStart, run.at, run.messageId, digestId);
 }
 
 /** Records a failed run. The cursor stays, so the retry covers the same window. */

@@ -17,8 +17,7 @@ const chat = await import('./hub-chat-store.js');
 const digestStore = await import('./hub-chat-digests-store.js');
 const digests = await import('./hub-chat-digests.js');
 const { DEFAULT_CHAT_DIGEST_INSTRUCTIONS } = await import('../shared/utils/chatDigest.js');
-const { runDailySummaryScheduleTick, resetDailySummaryFiredGuard } =
-  await import('./daily-summary-schedule.js');
+const { runDailySummaryScheduleTick } = await import('./daily-summary-schedule.js');
 
 type Row = import('./hub-chat-digests-store.js').ChannelDigestRow;
 
@@ -41,7 +40,6 @@ beforeEach(() => {
   createMembership(alice, 'acme', 'Owner');
   createMembership(bob, 'acme', 'User');
   digests.resetChannelDigestGuards();
-  resetDailySummaryFiredGuard();
 });
 
 function row(extra: Partial<Row> = {}): Row {
@@ -685,9 +683,6 @@ describe('schedule tick', () => {
     const run = vi.fn().mockResolvedValue({ status: 'skipped', reason: 'empty_window' });
     const now = new Date('2026-10-14T16:30:10Z');
     await runDailySummaryScheduleTick({
-      routeDeps: {} as never,
-      listSchedules: () => [],
-      generate: vi.fn(),
       now: () => now,
       onTick: (t) => digests.runChannelDigestTick(t, { ...runDeps().deps, run }),
     });
@@ -784,5 +779,109 @@ describe('multiple digests per channel', () => {
       }),
     ).toBe(true);
     expect(digestStore.getChannelDigest(sibling.id)?.window_start).toBe(sibling.window_start);
+  });
+});
+
+describe('my_work digests', () => {
+  const now = new Date('2026-10-15T08:00:00.000Z');
+  const created = new Date('2026-10-15T07:30:00.000Z');
+
+  function summaryDigest(ownerChannelKind: 'summary' | 'channel' = 'summary') {
+    const channel = chat.createChannel({
+      orgId: 'acme',
+      kind: ownerChannelKind,
+      name: 'Summaries',
+      createdByUserId: alice,
+    });
+    const digest = digestStore.createChannelDigest(channel.id, {
+      name: 'Daily summary',
+      enabled: true,
+      cron: '0 8 * * *',
+      timeZone: 'UTC',
+      scope: 'my_work',
+      projectIds: [],
+      prompt: null,
+      ownerUserId: alice,
+      now: created,
+    })!;
+    return { channel, digest };
+  }
+
+  function session(id: string, owner: string, name: string, updatedAt: string) {
+    getDb()
+      .prepare(
+        `INSERT INTO sessions (id, agent_id, name, owner_user_id, session_mode, created_at, updated_at)
+         VALUES (?, 'agent-a', ?, ?, 'chat', ?, ?)`,
+      )
+      .run(id, name, owner, updatedAt, updatedAt);
+  }
+
+  it("summarizes the owner's own sessions and todos and posts to their Summaries channel", async () => {
+    const { channel, digest } = summaryDigest();
+    session('s-mine', alice, 'Fix login', '2026-10-15T07:45:00.000Z');
+    session('s-bob', bob, 'Bob secret work', '2026-10-15T07:45:00.000Z');
+    const { createTodo } = await import('./user-todos-store.js');
+    createTodo({ userId: alice, title: 'Write release notes' });
+
+    const { deps, runFailover } = runDeps('Busy morning.');
+    const result = await digests.runChannelDigest(digest, now, deps);
+
+    expect(result.status).toBe('posted');
+    const prompt = runFailover.mock.calls[0]?.[0].prompt as string;
+    expect(prompt).toContain("the reader's own work");
+    expect(prompt).toContain('### Sessions you worked in');
+    expect(prompt).toContain('@[Fix login](session:s-mine)');
+    expect(prompt).toContain('Write release notes');
+    expect(prompt).not.toContain('Bob secret work');
+    const posts = chat.listMessages(channel.id);
+    expect(posts).toHaveLength(1);
+    expect(JSON.parse(posts[0].payload_json ?? '{}')).toMatchObject({
+      scope: 'my_work',
+      projectIds: [],
+    });
+  });
+
+  it('skips a window with only open todos, since nothing happened', async () => {
+    const { channel, digest } = summaryDigest();
+    const { createTodo } = await import('./user-todos-store.js');
+    createTodo({ userId: alice, title: 'Still open' });
+
+    const { deps, runFailover } = runDeps();
+    const result = await digests.runChannelDigest(digest, now, deps);
+
+    expect(result).toEqual({ status: 'skipped', reason: 'empty_window' });
+    expect(runFailover).not.toHaveBeenCalled();
+    expect(chat.listMessages(channel.id)).toHaveLength(0);
+  });
+
+  it("refuses to run anywhere but the owner's Summaries channel", async () => {
+    const { channel, digest } = summaryDigest('channel');
+    session('s-mine', alice, 'Fix login', '2026-10-15T07:45:00.000Z');
+
+    const { deps, runFailover } = runDeps();
+    const result = await digests.runChannelDigest(digest, now, deps);
+
+    expect(result.status).toBe('error');
+    expect(runFailover).not.toHaveBeenCalled();
+    expect(chat.listMessages(channel.id)).toHaveLength(0);
+    expect(digestStore.getChannelDigest(digest.id)?.last_status).toBe('error');
+  });
+});
+
+describe('selectDueChannelDigests with several expressions', () => {
+  it('is due when any expression fires, once per minute', () => {
+    const r = row({ cron: '5 8 * * * | 40 13 * * *' });
+    expect(digests.selectDueChannelDigests(new Date('2026-10-15T08:05:10Z'), [r])).toHaveLength(1);
+    expect(digests.selectDueChannelDigests(new Date('2026-10-15T13:40:10Z'), [r])).toHaveLength(1);
+    expect(digests.selectDueChannelDigests(new Date('2026-10-15T08:40:10Z'), [r])).toHaveLength(0);
+    const ran = { ...r, last_run_at: '2026-10-15T13:40:02.000Z' };
+    expect(digests.selectDueChannelDigests(new Date('2026-10-15T13:40:40Z'), [ran])).toHaveLength(
+      0,
+    );
+  });
+
+  it('never runs a schedule with an invalid expression', () => {
+    const r = row({ cron: '5 8 * * * | nope' });
+    expect(digests.selectDueChannelDigests(new Date('2026-10-15T08:05:10Z'), [r])).toHaveLength(0);
   });
 });

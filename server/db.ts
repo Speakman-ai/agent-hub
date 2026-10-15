@@ -41,6 +41,7 @@ import {
   HUB_CHAT_POST_MIGRATION_SCHEMA,
   HUB_CHAT_SCHEMA,
   migrateHubChatDigestsToIdKeyed,
+  migrateHubChatDigestsScopeCheck,
   applyHubChatSearchIndex,
 } from './hub-chat-schema.js';
 import {
@@ -1358,6 +1359,7 @@ function initDb(dataDir: string): void {
     }
   }
   migrateHubChatDigestsToIdKeyed(db);
+  migrateHubChatDigestsScopeCheck(db);
   db.exec(HUB_CHAT_POST_MIGRATION_SCHEMA);
   applyHubChatSearchIndex(db);
 

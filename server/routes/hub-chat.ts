@@ -114,6 +114,11 @@ import { runChannelDigestNow } from '../hub-chat-digests.js';
 import { defaultDigestName } from '../hub-chat-schema.js';
 import { searchHubChatMessages } from '../hub-chat-search.js';
 import { isValidCron } from '../cron-match.js';
+import {
+  CHAT_DIGEST_CRON_SEPARATOR,
+  MAX_CHAT_DIGEST_CRON_EXPRESSIONS,
+  splitDigestCron,
+} from '../../shared/utils/chatDigest.js';
 import { isValidTimeZone } from '../daily-summary-schedule.js';
 import {
   buildRefViewer,
@@ -1000,12 +1005,37 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
    */
   const digestInput = (
     caller: Caller,
+    channel: HubChatChannelRow,
     body: SaveDigestRequest,
     res: Response,
     existing: ChannelDigestRow | null = null,
   ): ChannelDigestInput | null => {
-    if (!isValidCron(body.cron)) {
-      bad(res, 400, 'Schedule must be a 5-field cron expression', 'invalid_cron');
+    // A my_work digest reads the caller's private sessions and todos, so it
+    // may only post where nobody else can read it.
+    if (
+      body.scope === 'my_work' &&
+      (channel.kind !== 'summary' || channel.created_by_user_id !== caller.userId)
+    ) {
+      bad(
+        res,
+        400,
+        'A my work digest can only be added to your own Summaries channel',
+        'my_work_not_allowed',
+      );
+      return null;
+    }
+    const cronParts = splitDigestCron(body.cron);
+    if (
+      cronParts.length === 0 ||
+      cronParts.length > MAX_CHAT_DIGEST_CRON_EXPRESSIONS ||
+      !cronParts.every((part) => isValidCron(part))
+    ) {
+      bad(
+        res,
+        400,
+        `Schedule must be up to ${MAX_CHAT_DIGEST_CRON_EXPRESSIONS} 5-field cron expressions joined by |`,
+        'invalid_cron',
+      );
       return null;
     }
     if (!isValidTimeZone(body.timeZone)) {
@@ -1037,7 +1067,7 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
     return {
       name: body.name?.trim() || defaultDigestName(body.scope),
       enabled: body.enabled,
-      cron: body.cron.trim().split(/\s+/).join(' '),
+      cron: cronParts.join(CHAT_DIGEST_CRON_SEPARATOR),
       timeZone: body.timeZone.trim(),
       scope: body.scope,
       projectIds,
@@ -1079,7 +1109,7 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
       bad(res, 409, 'This channel is archived', 'channel_archived');
       return;
     }
-    const input = digestInput(caller, body, res);
+    const input = digestInput(caller, m.channel, body, res);
     if (!input) return;
     const row = createChannelDigest(m.channel.id, input);
     if (!row) {
@@ -1109,7 +1139,7 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
         bad(res, 409, 'This channel is archived', 'channel_archived');
         return;
       }
-      const input = digestInput(caller, body, res, existing);
+      const input = digestInput(caller, m.channel, body, res, existing);
       if (!input) return;
       const row = updateChannelDigest(String(req.params.digestId), input);
       if (!row) {

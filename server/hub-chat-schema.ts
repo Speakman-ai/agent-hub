@@ -136,6 +136,8 @@ export const HUB_CHAT_SCHEMA = `
   -- [window_start, now). Only a posted or skipped run moves it (to that run's
   -- end); a failed run leaves it, so the retry covers the same span.
   -- project_ids is a JSON array of project ids (scope='project' only).
+  -- scope='my_work' summarizes the owner's own work and only runs on their
+  -- Summaries channel.
   CREATE TABLE IF NOT EXISTS hub_chat_digests (
     id              TEXT PRIMARY KEY,
     channel_id      TEXT NOT NULL REFERENCES hub_chat_channels(id) ON DELETE CASCADE,
@@ -143,7 +145,7 @@ export const HUB_CHAT_SCHEMA = `
     enabled         INTEGER NOT NULL DEFAULT 1,
     cron            TEXT NOT NULL,
     time_zone       TEXT NOT NULL DEFAULT 'UTC',
-    scope           TEXT NOT NULL CHECK(scope IN ('channel','project')),
+    scope           TEXT NOT NULL CHECK(scope IN ('channel','project','my_work')),
     project_ids     TEXT NOT NULL DEFAULT '[]',
     prompt          TEXT,
     owner_user_id   TEXT NOT NULL,
@@ -157,6 +159,14 @@ export const HUB_CHAT_SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS idx_hub_chat_digests_channel
     ON hub_chat_digests(channel_id, created_at);
+
+  -- Users whose daily summary schedule (preferences hubDailySummarySchedule)
+  -- has been converted into my_work digests. Written with the digests, so a
+  -- user who later removes them does not get them back.
+  CREATE TABLE IF NOT EXISTS hub_chat_daily_summary_migrations (
+    user_id      TEXT PRIMARY KEY,
+    migrated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
 
   -- Emoji reactions: one row per (message, user, emoji).
   CREATE TABLE IF NOT EXISTS hub_chat_reactions (
@@ -203,9 +213,42 @@ export const HUB_CHAT_COLUMN_MIGRATIONS: ReadonlyArray<string> = [
 
 const LEGACY_DIGESTS_TABLE = 'hub_chat_channel_digests';
 
-/** Default name for a digest copied from the one-per-channel table. */
+/** Default name for a digest saved without one. */
 export function defaultDigestName(scope: string): string {
+  if (scope === 'my_work') return 'Daily summary';
   return scope === 'project' ? 'Project digest' : 'Channel digest';
+}
+
+/**
+ * Rebuilds `hub_chat_digests` when its scope CHECK predates `my_work`.
+ * SQLite cannot alter a CHECK, so the rows move into a fresh table with the
+ * current definition. Idempotent: a table that already allows `my_work` is
+ * left alone.
+ */
+export function migrateHubChatDigestsScopeCheck(conn: Database.Database): void {
+  const table = conn
+    .prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'hub_chat_digests'`)
+    .get() as { sql: string } | undefined;
+  if (!table || table.sql.includes("'my_work'")) return;
+  const create = HUB_CHAT_SCHEMA.match(
+    /CREATE TABLE IF NOT EXISTS hub_chat_digests \(([\s\S]*?)\n {2}\);/,
+  );
+  if (!create) throw new Error('hub_chat_digests definition not found');
+  const columns = (
+    conn.prepare(`PRAGMA table_info('hub_chat_digests')`).all() as { name: string }[]
+  ).map((c) => c.name);
+  const list = columns.join(', ');
+  conn.transaction(() => {
+    conn.exec(`CREATE TABLE hub_chat_digests_rebuild (${create[1]}\n  )`);
+    conn.exec(
+      `INSERT INTO hub_chat_digests_rebuild (${list}) SELECT ${list} FROM hub_chat_digests`,
+    );
+    conn.exec('DROP TABLE hub_chat_digests');
+    conn.exec('ALTER TABLE hub_chat_digests_rebuild RENAME TO hub_chat_digests');
+    conn.exec(
+      'CREATE INDEX IF NOT EXISTS idx_hub_chat_digests_channel ON hub_chat_digests(channel_id, created_at)',
+    );
+  })();
 }
 
 /**

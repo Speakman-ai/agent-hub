@@ -4,7 +4,8 @@
  */
 import humanCron from './humanCron.js';
 
-export type ChatDigestScope = 'channel' | 'project';
+/** `my_work` is only allowed on the owner's own Summaries channel. */
+export type ChatDigestScope = 'channel' | 'project' | 'my_work';
 
 export interface ChatDigest {
   id: string;
@@ -36,6 +37,24 @@ export const CHAT_DIGEST_PRESETS: ReadonlyArray<{ label: string; cron: string }>
 ];
 
 export const DEFAULT_CHAT_DIGEST_CRON = '0 9 * * 1-5';
+
+/**
+ * A digest schedule is one or more 5-field cron expressions joined by `|`;
+ * the digest runs whenever any of them fires. Several expressions let one
+ * digest run at times no single cron can express (08:05 and 13:40).
+ */
+export const CHAT_DIGEST_CRON_SEPARATOR = ' | ';
+
+/** Most cron expressions one digest schedule can join. */
+export const MAX_CHAT_DIGEST_CRON_EXPRESSIONS = 12;
+
+/** The expressions of a digest schedule, whitespace-normalized, blanks dropped. */
+export function splitDigestCron(cron: string): string[] {
+  return cron
+    .split('|')
+    .map((part) => part.trim().split(/\s+/).join(' '))
+    .filter((part) => part.length > 0);
+}
 
 /** Longest custom digest prompt the server accepts. */
 export const MAX_CHAT_DIGEST_PROMPT_CHARS = 4000;
@@ -81,7 +100,9 @@ export function deviceTimeZone(): string {
 
 /** Human description of a schedule, falling back to the raw expression. */
 export function describeDigestSchedule(cron: string, timeZone: string): string {
-  const text = humanCron(cron.trim()) || cron.trim();
+  const parts = splitDigestCron(cron);
+  const text =
+    parts.length > 0 ? parts.map((part) => humanCron(part) || part).join('; ') : cron.trim();
   return timeZone ? `${text} (${timeZone})` : text;
 }
 

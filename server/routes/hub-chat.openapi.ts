@@ -803,7 +803,7 @@ registerPath({
   },
 });
 
-export const DigestScopeSchema = z.enum(['channel', 'project']);
+export const DigestScopeSchema = z.enum(['channel', 'project', 'my_work']);
 
 /** Mirrors `MAX_DIGESTS_PER_CHANNEL` in `hub-chat-digests-store.ts`. */
 const MAX_DIGESTS_PER_CHANNEL = 10;
@@ -816,11 +816,14 @@ export const ChannelDigestComponent = registerComponent(
       channelId: z.string(),
       name: z.string(),
       enabled: z.boolean(),
-      cron: z.string().openapi({ description: '5-field cron expression, read in `timeZone`.' }),
+      cron: z.string().openapi({
+        description:
+          'One or more 5-field cron expressions joined by ` | `, read in `timeZone`. The digest runs whenever any of them fires.',
+      }),
       timeZone: z.string().openapi({ description: 'IANA timezone the cron is read in.' }),
       scope: DigestScopeSchema.openapi({
         description:
-          "`channel` summarizes this channel's messages since the last run; `project` summarizes a project's activity.",
+          "`channel` summarizes this channel's messages since the last run; `project` summarizes a project's activity; `my_work` summarizes the owner's own sessions, assigned cards and todos, and is only allowed on the owner's own Summaries channel.",
       }),
       projectIds: z.array(z.string()).openapi({
         description:
@@ -854,7 +857,10 @@ export const SaveDigestRequestSchema = z
       description: 'Display name; defaults from the scope when blank.',
     }),
     enabled: z.boolean().default(true),
-    cron: z.string().trim().min(1).max(120),
+    cron: z.string().trim().min(1).max(600).openapi({
+      description:
+        'Up to 12 5-field cron expressions joined by `|`; the digest runs whenever any fires.',
+    }),
     timeZone: z.string().trim().min(1).max(64),
     scope: DigestScopeSchema,
     projectIds: z
@@ -909,7 +915,7 @@ for (const prefix of DIGEST_ROUTE_PREFIXES) {
     responses: {
       201: { description: 'The created digest.', content: jsonContent(digestEnvelope) },
       400: errorResponse(
-        'Invalid cron, timezone or prompt, a missing project, or a project the caller cannot view.',
+        "Invalid cron, timezone or prompt, a missing project, a project the caller cannot view, or `my_work` outside the caller's own Summaries channel (`my_work_not_allowed`).",
       ),
       404: errorResponse('Channel not found.'),
       409: errorResponse('Not joined, the channel is archived, or it already has the maximum.'),
@@ -928,7 +934,7 @@ for (const prefix of DIGEST_ROUTE_PREFIXES) {
     responses: {
       200: { description: 'The saved digest.', content: jsonContent(digestEnvelope) },
       400: errorResponse(
-        'Invalid cron, timezone or prompt, a missing project, or a project the caller cannot view.',
+        "Invalid cron, timezone or prompt, a missing project, a project the caller cannot view, or `my_work` outside the caller's own Summaries channel (`my_work_not_allowed`).",
       ),
       404: errorResponse('Channel or digest not found.'),
       409: errorResponse('Not joined, or the channel is archived.'),
