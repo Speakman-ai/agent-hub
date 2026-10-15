@@ -3775,6 +3775,25 @@ describe('runFinalize — §10 double-reclaim survival (generation cap > 1)', ()
     expect(stmts.stmts.insertFinalizeRun.run).toHaveBeenCalledTimes(4);
   });
 
+  it('a spot_reclaimed retry at the same commit carries over the jobs that passed', async () => {
+    const steps = vi.fn().mockResolvedValueOnce(STEP_INFRA_SPOT).mockResolvedValueOnce(STEPS_OK);
+    const { deps, stmts } = makeDeps({ runJobPhase: steps as never });
+    (stmts.stmts.listFinalizeRunJobsForRun as unknown as { all: () => unknown }).all = () => [
+      { job_id: 'checks', matrix_key: '', state: 'passed' },
+    ];
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('ready_to_push');
+    expect(steps).toHaveBeenCalledTimes(2);
+    const first = steps.mock.calls[0][1] as { runId: string; carryOver?: unknown };
+    const second = steps.mock.calls[1][1] as {
+      runId: string;
+      carryOver?: { fromRunId: string; instances: Set<string> };
+    };
+    expect(first.carryOver).toBeUndefined();
+    expect(second.carryOver?.fromRunId).toBe(first.runId);
+    expect([...(second.carryOver?.instances ?? [])]).toEqual([jobInstanceKey('checks', '')]);
+  });
+
   it('terminates as spot_reclaimed (not container_unavailable) when reclaim retries are exhausted', async () => {
     process.env.FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS = '2';
     const steps = vi.fn(async () => STEP_INFRA_SPOT);

@@ -387,6 +387,12 @@ export interface StepRunResult {
    * no shard recovered a flake this phase.
    */
   flakeRecoveredInstances?: FlakeRecoveredInstance[];
+  /**
+   * v2 tasks phase only. Instances (`jobInstanceKey`) whose passing result was
+   * copied from the parent run instead of running (see `carryOver` in
+   * job-runner.ts). Absent when nothing carried over.
+   */
+  carriedOverInstances?: string[];
 }
 
 /** A shard that passed only after a same-commit config-`retries` rerun. */
@@ -461,7 +467,10 @@ export interface StepRunnerDeps {
     | 'addMessage'
     | 'touchSession'
     | 'getMessageById'
-  >;
+  > &
+    // Only the infra-retry carry-over uses these; without them nothing carries
+    // over and every instance runs.
+    Partial<Pick<Stmts, 'copyFinalizeRunJobForInstance' | 'copyFinalizeRunStepsForInstance'>>;
   broadcast: BroadcastFn;
   /**
    * Store for per-step CI output blobs (S3 or local dir). When set, each

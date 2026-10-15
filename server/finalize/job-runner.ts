@@ -7,6 +7,7 @@
  */
 import { randomUUID } from 'crypto';
 import type { CiConfig, CiStep, JobInstance } from './ci-config-jobs.js';
+import type { FinalizeRunStepRow } from '../types.js';
 import {
   applyEnvToStep,
   buildFinalizeBuiltinEnv,
@@ -90,6 +91,13 @@ export interface JobRunnerOptions {
    * `fast` policy.
    */
   reuseInstances?: ReadonlySet<string>;
+  /**
+   * Infra retry at the same commit as its parent: instances (keyed by
+   * `jobInstanceKey`) that passed in `fromRunId`. Each one whose step layout
+   * still matches has its job + step rows copied into this run and does not
+   * run. Anything that fails the check runs normally.
+   */
+  carryOver?: { fromRunId: string; instances: ReadonlySet<string> };
 }
 
 interface PlannedStep {
@@ -975,8 +983,9 @@ export async function runJobPhase(
     );
   }
 
+  const reused = new Set<string>(opts.reuseInstances ?? []);
   const isReused = (instance: JobInstance): boolean =>
-    opts.reuseInstances?.has(jobInstanceKey(instance.jobId, instance.matrixKey)) ?? false;
+    reused.has(jobInstanceKey(instance.jobId, instance.matrixKey));
 
   let stepIndex = 0;
   const planned: PlannedStep[] = [];
@@ -1025,6 +1034,14 @@ export async function runJobPhase(
         namePrefix,
       });
     }
+  }
+
+  const carriedOver = opts.carryOver
+    ? copyCarriedOverInstances(deps, opts.runId, opts.carryOver, instances, planned)
+    : [];
+  for (const key of carriedOver) reused.add(key);
+
+  for (const instance of instances) {
     if (isReused(instance)) continue;
     persistJobState(
       deps,
@@ -1296,7 +1313,86 @@ export async function runJobPhase(
   }
 
   emitFinalizeChecksRoundTimeline(deps, { runId: opts.runId, sessionId: opts.sessionId });
-  return flakeRecoveredInstances.length > 0 ? { ...result, flakeRecoveredInstances } : result;
+  if (flakeRecoveredInstances.length > 0) result = { ...result, flakeRecoveredInstances };
+  if (carriedOver.length > 0) result = { ...result, carriedOverInstances: carriedOver };
+  return result;
+}
+
+/**
+ * Copy each carry-over candidate's passing job + step rows from the parent run
+ * into this one. A candidate is copied only when the parent's step rows for it
+ * line up exactly with this run's plan (same global step indexes and names, all
+ * passed or skipped), so a ci config that changed between the runs can never
+ * attach a stale result to a different step. Returns the copied keys.
+ */
+function copyCarriedOverInstances(
+  deps: StepRunnerDeps,
+  runId: string,
+  carryOver: { fromRunId: string; instances: ReadonlySet<string> },
+  instances: JobInstance[],
+  planned: PlannedStep[],
+): string[] {
+  const copyJob = deps.stmts.copyFinalizeRunJobForInstance;
+  const copySteps = deps.stmts.copyFinalizeRunStepsForInstance;
+  if (!copyJob || !copySteps || carryOver.instances.size === 0) return [];
+  let parentSteps: FinalizeRunStepRow[];
+  try {
+    parentSteps = deps.stmts.listFinalizeRunStepsForRun.all(
+      carryOver.fromRunId,
+    ) as FinalizeRunStepRow[];
+  } catch (err) {
+    console.warn(
+      `[finalize-job-runner] carry-over read of run=${carryOver.fromRunId} failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return [];
+  }
+  const copied: string[] = [];
+  for (const instance of instances) {
+    const key = jobInstanceKey(instance.jobId, instance.matrixKey);
+    if (!carryOver.instances.has(key)) continue;
+    const want = planned.filter((p) => p.instance === instance);
+    const have = parentSteps
+      .filter((s) => s.job_id === instance.jobId && (s.matrix_key ?? '') === instance.matrixKey)
+      .sort((a, b) => a.step_index - b.step_index);
+    const matches =
+      want.length > 0 &&
+      want.length === have.length &&
+      want.every((p, i) => {
+        const row = have[i];
+        return (
+          row.step_index === p.stepIndex &&
+          row.name === `${p.namePrefix}${p.step.name}` &&
+          (row.state === 'passed' || row.state === 'skipped')
+        );
+      });
+    if (!matches) {
+      console.warn(
+        `[finalize-job-runner] ${instance.jobId}/${instance.matrixKey} steps differ from ` +
+          `run=${carryOver.fromRunId}; running it instead of carrying it over`,
+      );
+      continue;
+    }
+    try {
+      const res = copyJob.run(runId, carryOver.fromRunId, instance.jobId, instance.matrixKey) as {
+        changes?: number;
+      };
+      if (res?.changes !== 1) continue;
+      copySteps.run(runId, carryOver.fromRunId, instance.jobId, instance.matrixKey);
+    } catch (err) {
+      // Partially copied rows are harmless: the instance runs, and its queued
+      // writes reset them.
+      console.warn(
+        `[finalize-job-runner] carry-over copy of ${instance.jobId}/${instance.matrixKey} failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      continue;
+    }
+    copied.push(key);
+  }
+  return copied;
 }
 
 export { readMaxParallelJobs, sanitizeComposeProjectName };

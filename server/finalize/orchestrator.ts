@@ -39,6 +39,7 @@
  * promise — phase runners that throw are caught here and surfaced as
  * `infra_error` for the trigger to log + present.
  */
+import { collectRetryCarryOver } from './retry-carry-over.js';
 import { randomUUID } from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -890,18 +891,18 @@ export async function runFinalize(
   // both attempts see the same monotonically-narrowing cap). The
   // family-total accounting inside `budgetExhausted` ensures the
   // retry's own bills add to the parent's, not start fresh.
+  // Parsed ci config each attempt's checks ran with, keyed by run id. An infra
+  // retry carries over its parent's passed jobs only when the config is
+  // identical: a step whose command changed keeps its step name, so the job
+  // runner's own layout check cannot see that. The retry chain runs inside this
+  // one call, so the parent's entry is always here when the retry needs it.
+  const attemptCiFingerprints = new Map<string, string>();
   const driveAttempt = async (
     runId: string,
     retryOfRunId: string | null,
     initialSessionId: string | null,
     initialWorktreePath: string | null,
   ): Promise<OrchestratorOutcome> => {
-    // Retain the param so callers reading the type signature see what
-    // it is for, even though the body does not branch on it today (the
-    // §10 retry gate lives in the outer wrapper). Linters keep us
-    // honest with this no-op reference.
-    void retryOfRunId;
-
     // Per-attempt decision tracer. Binds the attempt's `runId` + outer
     // `mode` so call-sites only pass the event name and the fields that
     // distinguish that decision. No-op when `traceEnabled` is false.
@@ -1881,6 +1882,22 @@ export async function runFinalize(
               );
             }
           }
+          // An infra retry testing the same commit as its parent re-runs
+          // only what did not pass there (a reclaimed shard, say). First
+          // round only: later rounds follow a fix commit.
+          const ciFingerprint = JSON.stringify(parsedCi);
+          attemptCiFingerprints.set(runId, ciFingerprint);
+          const carryOverKeys =
+            retryOfRunId &&
+            loopCount === 1 &&
+            !reuseInstances &&
+            attemptCiFingerprints.get(retryOfRunId) === ciFingerprint
+              ? collectRetryCarryOver(deps.stmts, retryOfRunId, headValidatedAgainst)
+              : null;
+          const carryOver =
+            carryOverKeys && carryOverKeys.size > 0
+              ? { fromRunId: retryOfRunId as string, instances: carryOverKeys }
+              : undefined;
           lastStepOutcome = await runJobs(
             {
               stmts: deps.stmts,
@@ -1899,8 +1916,18 @@ export async function runFinalize(
               projectId: opts.project.id,
               ...(opts.signal ? { signal: opts.signal } : {}),
               ...(reuseInstances ? { reuseInstances } : {}),
+              ...(carryOver ? { carryOver } : {}),
             },
           );
+          const carried = lastStepOutcome.carriedOverInstances ?? [];
+          if (carried.length > 0) {
+            const labels = carried.map((k) => k.replace('\u0000', '/').replace(/\/$/, ''));
+            log(
+              `[finalize-orchestrator] run=${runId} reused ${carried.length} passed job(s) from ` +
+                `infra-retry parent run=${retryOfRunId}: ${labels.join(', ')}`,
+            );
+            trace('retry_carry_over', { round: loopCount, from: retryOfRunId, jobs: labels });
+          }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           return terminate(

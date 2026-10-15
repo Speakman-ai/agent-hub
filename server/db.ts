@@ -7541,6 +7541,52 @@ function initDb(dataDir: string): void {
         WHERE run_id = ?
         ORDER BY job_id ASC, matrix_key ASC`,
     ),
+    // Infra-retry carry-over: copy one passed job instance (job row, then its
+    // step rows with their log locations) from the parent run into the retry
+    // run, so a retry at the same commit only re-runs what did not pass.
+    // Params: (toRunId, fromRunId, jobId, matrixKey). The job copy only
+    // matches a `passed` row; callers check `changes` before copying steps.
+    copyFinalizeRunJobForInstance: db.prepare(
+      `INSERT INTO finalize_run_jobs (
+        run_id, job_id, matrix_key, state, exit_code, started_at, ended_at, attempt
+      )
+      SELECT ?, job_id, matrix_key, state, exit_code, started_at, ended_at, attempt
+        FROM finalize_run_jobs
+       WHERE run_id = ? AND job_id = ? AND matrix_key = ? AND state = 'passed'
+      ON CONFLICT(run_id, job_id, matrix_key) DO UPDATE SET
+        state = excluded.state,
+        exit_code = excluded.exit_code,
+        started_at = excluded.started_at,
+        ended_at = excluded.ended_at,
+        attempt = excluded.attempt`,
+    ),
+    copyFinalizeRunStepsForInstance: db.prepare(
+      `INSERT INTO finalize_run_steps (
+        run_id, step_index, name, state, exit_code, started_at, ended_at, job_id, matrix_key,
+        log_storage_kind, log_storage_bucket, log_storage_region, log_key, log_lines,
+        log_truncated, log_attempt
+      )
+      SELECT ?, step_index, name, state, exit_code, started_at, ended_at, job_id, matrix_key,
+             log_storage_kind, log_storage_bucket, log_storage_region, log_key, log_lines,
+             log_truncated, log_attempt
+        FROM finalize_run_steps
+       WHERE run_id = ? AND job_id = ? AND COALESCE(matrix_key, '') = ?
+      ON CONFLICT(run_id, step_index) DO UPDATE SET
+        name = excluded.name,
+        state = excluded.state,
+        exit_code = excluded.exit_code,
+        started_at = excluded.started_at,
+        ended_at = excluded.ended_at,
+        job_id = excluded.job_id,
+        matrix_key = excluded.matrix_key,
+        log_storage_kind = excluded.log_storage_kind,
+        log_storage_bucket = excluded.log_storage_bucket,
+        log_storage_region = excluded.log_storage_region,
+        log_key = excluded.log_key,
+        log_lines = excluded.log_lines,
+        log_truncated = excluded.log_truncated,
+        log_attempt = excluded.log_attempt`,
+    ),
     // Run-history list for the Runners page (all triggers: finalize,
     // autonomous, push-CI). Newest first, capped by the route.
     listFinalizeRunsForProject: db.prepare(
