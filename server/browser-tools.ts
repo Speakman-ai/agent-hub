@@ -1161,7 +1161,31 @@ function hostHintFromNavigateData(data: unknown): string | undefined {
 }
 
 function isBlankPageUrl(url: string | null): boolean {
-  return !url || url === 'about:blank' || url.startsWith('chrome://');
+  return (
+    !url ||
+    url === 'about:blank' ||
+    url.startsWith('chrome://') ||
+    // Chromium's net-error interstitial (DNS failure, refused connection, …).
+    url.startsWith('chrome-error://')
+  );
+}
+
+/** The agent's full sign-in URL when it names the same site, else the site root. */
+function loginLandingUrl(rawUrl: string | undefined, domain: string): string {
+  if (rawUrl) {
+    try {
+      const u = new URL(rawUrl.trim());
+      if (
+        (u.protocol === 'https:' || u.protocol === 'http:') &&
+        u.hostname.toLowerCase() === domain
+      ) {
+        return u.href;
+      }
+    } catch {
+      /* not a full URL */
+    }
+  }
+  return `https://${domain}/`;
 }
 
 function loginSaveLine(
@@ -1216,10 +1240,27 @@ async function runRequestLoginStep(
 
   // Put the human on the site rather than a blank page.
   if (isBlankPageUrl(currentPageUrlOf(host))) {
-    await browserNavigate(host, `https://${domain}/`, opTimeoutMs, policyOpts);
+    const landing = loginLandingUrl(input.url, domain);
+    const nav = await browserNavigate(host, landing, opTimeoutMs, policyOpts);
     // A Stop during the navigation found no request to abort; honour it here
     // rather than parking the stopped turn on a fresh request.
     if (deps.isCancelled?.()) return stoppedBeforeRequest();
+    // Asking the human to sign in on a blank or error page leaves them staring
+    // at nothing; hand the failure back so the agent can find the right URL.
+    if (!nav.ok || isBlankPageUrl(currentPageUrlOf(host))) {
+      const why = nav.error ?? 'the page did not load';
+      return {
+        markdown: [
+          '## Browser tool error',
+          `request_login could not open ${landing}, so no sign-in was requested: ${why}`,
+          '',
+          'The human was not asked to sign in. Check the site address (search the web for the real sign-in URL if unsure), `navigate` to its sign-in page, then call request_login again.',
+        ].join('\n'),
+        hostExit: 1,
+        hostDetail: 'landing_failed',
+        ui: { summary: `Could not open ${domain}`, errorLine: why },
+      };
+    }
   }
 
   const release = holdBrowserSessionOpen(chatSessionId);

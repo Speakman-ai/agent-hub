@@ -232,6 +232,59 @@ describe('runBrowserReActStep request_login', () => {
     await step;
   });
 
+  it('opens the agent-supplied sign-in URL when it names the same site', async () => {
+    const { goto } = makeSession('login-url', { url: 'about:blank' });
+    const step = runBrowserReActStep('login-url', {
+      op: 'request_login',
+      domain: 'github.com',
+      url: 'https://github.com/login?return_to=%2Fsettings',
+    });
+    const pending = await waitForPending('login-url');
+    expect(goto).toHaveBeenCalledWith(
+      'https://github.com/login?return_to=%2Fsettings',
+      expect.anything(),
+    );
+    settleBrowserLogin('login-url', { outcome: 'done' }, pending.requestId);
+    await step;
+  });
+
+  it('does not ask the human to sign in when the site fails to load', async () => {
+    // A DNS failure leaves Chromium on about:blank; the human must not be
+    // handed an empty pane with a "sign in" banner.
+    const { goto } = makeSession('login-dns', { url: 'about:blank' });
+    goto.mockImplementationOnce(async () => {
+      throw new Error('page.goto: net::ERR_NAME_NOT_RESOLVED at https://qualia.io/');
+    });
+    const onRequested = vi.fn();
+    const r = await runBrowserReActStep(
+      'login-dns',
+      { op: 'request_login', domain: 'qualia.io' },
+      {},
+      undefined,
+      { onRequested },
+    );
+    expect(r.hostExit).toBe(1);
+    expect(r.hostDetail).toBe('landing_failed');
+    expect(r.markdown).toContain('ERR_NAME_NOT_RESOLVED');
+    expect(r.markdown).toContain('The human was not asked to sign in');
+    expect(onRequested).not.toHaveBeenCalled();
+    expect(getPendingBrowserLogin('login-dns')).toBeNull();
+  });
+
+  it('treats a Chromium error page as blank and refuses the sign-in', async () => {
+    const { goto } = makeSession('login-err-page', { url: 'chrome-error://chromewebdata/' });
+    goto.mockImplementationOnce(async () => {
+      throw new Error('page.goto: Timeout 30000ms exceeded.');
+    });
+    const r = await runBrowserReActStep('login-err-page', {
+      op: 'request_login',
+      domain: 'qualia.io',
+    });
+    expect(goto).toHaveBeenCalledWith('https://qualia.io/', expect.anything());
+    expect(r.hostDetail).toBe('landing_failed');
+    expect(getPendingBrowserLogin('login-err-page')).toBeNull();
+  });
+
   it('honours a Stop that lands while the initial navigation is pending', async () => {
     const { goto } = makeSession('login-nav-stop', { url: 'about:blank' });
     let finishNavigation!: () => void;
