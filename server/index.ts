@@ -304,6 +304,7 @@ import createDesktopRuntimeRoutes from './routes/desktop-runtime.js';
 import { registerFirecrackerDesktopRuntime } from './desktop/register-firecracker-desktop-runtime.js';
 import { unregisterDesktopRuntime } from './desktop/desktop-runtime-registry.js';
 import {
+  getLiveViewDesktopRuntime,
   registerContainerDesktopRuntimeOnBoot,
   startDesktopHomeJanitor,
 } from './desktop/desktop-runtime-setup.js';
@@ -390,6 +391,8 @@ import { PtySession } from './terminal/pty-session.js';
 import { buildTerminalShellEnv } from './terminal/terminal-shell-env.js';
 import { attachTerminalWebSocket } from './terminal/terminal-websocket.js';
 import { attachBrowserScreencastWebSocket } from './browser-screencast-websocket.js';
+import { createAgentPaneFeedHost } from './agent-pane-screencast.js';
+import { createDesktopScreencastHub } from './desktop/desktop-screencast.js';
 import { effectiveBrowserToolsEnabled } from './browser-agent-settings.js';
 import { parsePreviewSubdomainHost } from './preview/preview-subdomain-host.js';
 import {
@@ -2598,9 +2601,26 @@ const terminalWebSocket = attachTerminalWebSocket(server, {
   },
 });
 
-// Live mirror of the Chromium the agent is driving (`browser` or `preview`)
-// for the Agent browser pane. Same auth + ownership handshake as the terminal.
+// Live mirror of what the agent is driving (its `browser` / `preview` Chromium
+// or its desktop computer) for the Agent browser pane. Same auth + ownership
+// handshake as the terminal.
+const desktopScreencastHub = createDesktopScreencastHub({ runtime: getLiveViewDesktopRuntime });
+const agentPaneFeedHost = createAgentPaneFeedHost({
+  desktop: {
+    hub: desktopScreencastHub,
+    runtime: getLiveViewDesktopRuntime,
+    resolveKey: (sessionId) => {
+      const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
+      const found = session ? findAgent(session.agent_id) : null;
+      const userId = session?.owner_user_id;
+      // Same scope as the browser profile: no owner, no computer.
+      if (!session || !found?.project?.id || !userId) return null;
+      return { userId, agentId: session.agent_id, projectId: found.project.id };
+    },
+  },
+});
 const browserScreencastWebSocket = attachBrowserScreencastWebSocket(server, {
+  feedHost: agentPaneFeedHost,
   sessionExists: (sessionId) => {
     try {
       const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
@@ -2955,6 +2975,8 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
       terminalShutdownStarted = true;
       terminalWebSocket.close();
       browserScreencastWebSocket.close();
+      agentPaneFeedHost.dispose();
+      desktopScreencastHub.dispose();
       ptyHost.disposeAll();
       void sessionEnvManager.disposeAll().catch((err: unknown) => {
         console.warn(

@@ -568,6 +568,23 @@ describe('FirecrackerDesktopRuntime tool ops', () => {
     expect(lastVm().spawns[0]!.command).toContain('scrot');
   });
 
+  it('viewFrame returns null for a stopped computer and never boots it', async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 9]);
+    const { runtime, lastVm, advance } = makeRuntime(store, {
+      configure: (vm) => {
+        vm.respond = () => ({ code: 0, stdout: png.toString('base64') });
+      },
+    });
+    await expect(runtime.viewFrame(ALICE)).resolves.toBeNull();
+    expect(store.get(ALICE, 'firecracker')).toBeNull();
+    await runtime.ensureStarted(ALICE);
+    const before = (await runtime.status(ALICE)).lastActiveAt;
+    advance(60_000);
+    await expect(runtime.viewFrame(ALICE)).resolves.toEqual(png);
+    expect((await runtime.status(ALICE)).lastActiveAt).toBe(before);
+    expect(lastVm().spawns.at(-1)!.command).toContain('scrot');
+  });
+
   it('turns a failed screenshot into an error', async () => {
     const { runtime } = makeRuntime(store, {
       configure: (vm) => {

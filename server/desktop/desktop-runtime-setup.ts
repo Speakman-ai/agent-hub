@@ -31,6 +31,7 @@ import { resolveDesktopHomeStore, type DesktopHomeStore } from './desktop-home-s
 import { hasDesktopContainers, hasTrackedDesktopHomeObjects } from './desktop-containers-store.js';
 import {
   getDesktopRuntime,
+  getDesktopRuntimeForLiveView,
   registerDesktopRuntime,
   unregisterDesktopRuntime,
 } from './desktop-runtime-registry.js';
@@ -113,7 +114,8 @@ export function getContainerDesktopRuntime(
 
 /**
  * The runtime the `computer` tool drives on this host, per the selection
- * rules. Throws DesktopRuntimeUnavailableError when the selected backend is
+ * rules, tracked as agent ops (see getDesktopRuntime) so the Agent browser
+ * pane follows the agent onto the desktop. Throws DesktopRuntimeUnavailableError when the selected backend is
  * not usable (an explicit firecracker that is not registered).
  */
 export function getActiveDesktopRuntime(): DesktopRuntime {
@@ -131,7 +133,11 @@ export function getActiveDesktopRuntime(): DesktopRuntime {
     }
     return fc;
   }
-  return getContainerDesktopRuntime(selection.containerPlacement ?? undefined);
+  const built = getContainerDesktopRuntime(selection.containerPlacement ?? undefined);
+  const container = getDesktopRuntime('container');
+  if (container) return container;
+  registerDesktopRuntime(built);
+  return getDesktopRuntime('container') ?? built;
 }
 
 function placementForThisHost(): DesktopContainerPlacement {
@@ -214,4 +220,19 @@ export function __resetDesktopRuntimeForTests(): void {
   runtime?.dispose();
   runtime = null;
   homeStore = null;
+}
+
+/**
+ * The registered runtime for the backend this host selects, untracked (see
+ * getDesktopRuntimeForLiveView), or null when that backend is unavailable or
+ * was never built. Never builds one: the live view only observes desktops and
+ * must not start the idle sweep.
+ */
+export function getLiveViewDesktopRuntime(): DesktopRuntime | null {
+  const selection = describeDesktopRuntimeSelection({
+    configured: config.desktopRuntime,
+    firecrackerRegistered: isFirecrackerBackendRegistered(),
+    finalizeRunnerBackend: process.env.FINALIZE_RUNNER_BACKEND,
+  });
+  return selection.kind ? getDesktopRuntimeForLiveView(selection.kind) : null;
 }

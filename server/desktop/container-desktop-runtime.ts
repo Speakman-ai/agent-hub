@@ -680,6 +680,13 @@ export function createContainerDesktopRuntime(
         parseScreenshotReply(await client.op(endpoint, token, { op: 'screenshot' })),
       );
     },
+    async viewFrame(key) {
+      const e = entries.get(keyString(key));
+      if (!e || e.state !== 'running' || e.busy > 0) return null;
+      const { endpoint, token } = e;
+      if (!endpoint || !token) return null;
+      return parseScreenshotReply(await client.op(endpoint, token, { op: 'screenshot' }));
+    },
     async input(key, event: DesktopInputEvent) {
       const { body, timeoutMs } = inputEventToOp(event);
       await withComputer(key, (endpoint, token) => client.op(endpoint, token, body, timeoutMs));

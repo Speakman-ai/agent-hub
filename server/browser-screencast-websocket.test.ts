@@ -13,6 +13,13 @@ import {
   type BrowserServerFrame,
 } from './browser-screencast-websocket.js';
 import type { ScreencastViewer } from './browser-screencast.js';
+import { createAgentPaneFeedHost } from './agent-pane-screencast.js';
+import { createDesktopScreencastHub } from './desktop/desktop-screencast.js';
+import {
+  __resetDesktopAgentActivityForTests,
+  beginDesktopAgentOp,
+} from './desktop/desktop-agent-activity.js';
+import { createFakeDesktopRuntime } from './test/fake-desktop-runtime.js';
 import {
   __resetBrowserLoginHandoffsForTests,
   requestBrowserLogin,
@@ -337,5 +344,119 @@ describe('browser screencast WebSocket — sign-in handoff', () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(frames.some((f) => f.type === 'login_request')).toBe(false);
     ws.close();
+  });
+});
+
+describe('agent browser WebSocket route: desktop surface', () => {
+  const KEY = { userId: 'user-1', agentId: 'agent-1', projectId: 'proj-1' };
+
+  async function desktopHarness() {
+    const rt = createFakeDesktopRuntime();
+    rt.state = 'running';
+    const hub = createDesktopScreencastHub({
+      runtime: () => rt,
+      intervalMs: 20,
+      settleMs: 0,
+      logger: { warn: () => {} },
+    });
+    const browserHost = new FakeFeedHost();
+    const feedHost = createAgentPaneFeedHost({
+      browser: {
+        attach: (id, viewer) => {
+          browserHost.attached.push({ sessionId: id, viewer });
+          viewer.onState({ status: 'waiting', url: null, viewport: null, surface: null });
+          return () => {
+            browserHost.detachCount += 1;
+          };
+        },
+        input: (id, input) => browserHost.input(id, input),
+        navigate: (id, url) => browserHost.navigate(id, url),
+        isAgentDriving: () => false,
+        subscribeActivity: () => () => {},
+      },
+      desktop: { hub, runtime: () => rt, resolveKey: () => KEY },
+    });
+    const harness = await makeHarness({ feedHost });
+    return { ...harness, rt, hub, feedHost, browserHost };
+  }
+
+  afterEach(() => {
+    __resetDesktopAgentActivityForTests();
+  });
+
+  it('streams desktop state and PNG frames, and takes human input over the channel', async () => {
+    const { url, rt, hub, feedHost, browserHost } = await desktopHarness();
+    try {
+      const ws = await connect(url);
+      const frames = collectFrames(ws);
+      ws.send(JSON.stringify({ type: 'attach' }));
+      await vi.waitFor(() =>
+        expect(frames.some((f) => f.type === 'state' && f.surface === 'desktop')).toBe(true),
+      );
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'frame')).toBe(true));
+      const frame = frames.find((f) => f.type === 'frame');
+      expect(frame).toMatchObject({ mime: 'image/png', width: 1280, height: 800 });
+
+      ws.send(
+        JSON.stringify({ type: 'input', input: { kind: 'mouse', type: 'down', x: 5, y: 6 } }),
+      );
+      ws.send(JSON.stringify({ type: 'input', input: { kind: 'mouse', type: 'up', x: 5, y: 6 } }));
+      await vi.waitFor(() =>
+        expect(rt.inputs).toEqual([{ type: 'click', x: 5, y: 6, button: 'left' }]),
+      );
+      expect(browserHost.inputs).toEqual([]);
+
+      const end = beginDesktopAgentOp(KEY);
+      ws.send(JSON.stringify({ type: 'input', input: { kind: 'text', text: 'hi' } }));
+      await vi.waitFor(() =>
+        expect(
+          frames.some((f) => f.type === 'input_result' && !f.ok && f.code === 'agent_busy'),
+        ).toBe(true),
+      );
+      end();
+      expect(rt.inputs).toHaveLength(1);
+
+      ws.send(JSON.stringify({ type: 'navigate', url: 'https://example.com' }));
+      await vi.waitFor(() =>
+        expect(frames.some((f) => f.type === 'navigated' && !f.ok)).toBe(true),
+      );
+      expect(browserHost.navigations).toEqual([]);
+      expect(rt.wakeCalls).toBe(0);
+      ws.close();
+    } finally {
+      feedHost.dispose();
+      hub.dispose();
+    }
+  });
+
+  it('keeps gestures from two connections on the same session apart', async () => {
+    const { url, rt, hub, feedHost } = await desktopHarness();
+    try {
+      const a = await connect(url);
+      const b = await connect(url);
+      const aFrames = collectFrames(a);
+      const bFrames = collectFrames(b);
+      a.send(JSON.stringify({ type: 'attach' }));
+      b.send(JSON.stringify({ type: 'attach' }));
+      const liveDesktop = (frames: BrowserServerFrame[]) =>
+        frames.some((f) => f.type === 'state' && f.surface === 'desktop');
+      await vi.waitFor(() => expect(liveDesktop(aFrames) && liveDesktop(bFrames)).toBe(true));
+      const send = (ws: WebSocket, type: 'down' | 'up', x: number, y: number) =>
+        ws.send(JSON.stringify({ type: 'input', input: { kind: 'mouse', type, x, y } }));
+      const results = (frames: BrowserServerFrame[]) =>
+        frames.filter((f) => f.type === 'input_result').length;
+      send(a, 'down', 10, 20);
+      await vi.waitFor(() => expect(results(aFrames)).toBe(1));
+      send(b, 'down', 300, 400);
+      await vi.waitFor(() => expect(results(bFrames)).toBe(1));
+      send(a, 'up', 10, 20);
+      await vi.waitFor(() => expect(rt.inputs).toHaveLength(1));
+      expect(rt.inputs[0]).toEqual({ type: 'click', x: 10, y: 20, button: 'left' });
+      a.close();
+      b.close();
+    } finally {
+      feedHost.dispose();
+      hub.dispose();
+    }
   });
 });

@@ -18,11 +18,15 @@ import {
   BROWSER_PANE_WAITING_HINT,
   browserLoginBannerTitle,
   browserPaneStatusLabel,
+  browserPaneFrameSrc,
+  browserPaneHasUrlBar,
+  browserPaneStateKeepsFrame,
   browserPaneSurfaceBadge,
   fitFrameInBox,
   mapPointerToViewport,
   normalizeUrlBarInput,
   parseBrowserPaneLoginRequest,
+  parseBrowserPaneFrameMime,
   parseBrowserPaneSurface,
   type BrowserPaneFrame,
   type BrowserPaneLoginRequest,
@@ -61,6 +65,8 @@ export default function MobileBrowserPane({
   const [frame, setFrame] = useState<BrowserPaneFrame | null>(null);
   const [viewport, setViewport] = useState<BrowserPaneViewport | null>(null);
   const [surface, setSurface] = useState<BrowserPaneSurface | null>(null);
+  // The socket handler's view of the current surface (state is stale in its closure).
+  const surfaceRef = useRef<BrowserPaneSurface | null>(null);
   const [pageUrl, setPageUrl] = useState<string | null>(null);
   const [urlInput, setUrlInput] = useState('');
   const [urlDirty, setUrlDirty] = useState(false);
@@ -103,6 +109,7 @@ export default function MobileBrowserPane({
     setFrame(null);
     setViewport(null);
     setSurface(null);
+    surfaceRef.current = null;
     setPageUrl(null);
     setUrlDirty(false);
 
@@ -141,12 +148,24 @@ export default function MobileBrowserPane({
           reconnectAttemptRef.current = 0;
           setStatus(msg.status);
           setViewport(msg.viewport ?? null);
-          setSurface(parseBrowserPaneSurface(msg.surface));
+          const nextSurface = parseBrowserPaneSurface(msg.surface);
+          if (!browserPaneStateKeepsFrame(surfaceRef.current, msg.status, nextSurface)) {
+            setFrame(null);
+          }
+          surfaceRef.current = nextSurface;
+          setSurface(nextSurface);
           setPageUrl(msg.url ?? null);
-          if (msg.status !== 'live') setFrame(null);
         } else if (msg.type === 'frame') {
           setStatus('live');
-          setFrame(msg as BrowserPaneFrame);
+          setFrame({
+            data: msg.data,
+            mime: parseBrowserPaneFrameMime(msg.mime),
+            width: msg.width,
+            height: msg.height,
+            viewportWidth: msg.viewportWidth,
+            viewportHeight: msg.viewportHeight,
+            url: typeof msg.url === 'string' ? msg.url : null,
+          });
           if (msg.viewportWidth && msg.viewportHeight) {
             setViewport({ width: msg.viewportWidth, height: msg.viewportHeight });
           }
@@ -252,6 +271,8 @@ export default function MobileBrowserPane({
 
   const live = status === 'live';
   const surfaceBadge = browserPaneSurfaceBadge(surface);
+  // The desktop is view-only on mobile: taps and typing go through the web pane.
+  const viewOnly = surface === 'desktop';
 
   return (
     <View style={styles.container} testID="mobile-browser-pane">
@@ -273,39 +294,41 @@ export default function MobileBrowserPane({
           <X size={16} color={colors.gray400} />
         </TouchableOpacity>
       </View>
-      <View style={styles.urlRow}>
-        <TextInput
-          style={styles.urlInput}
-          value={urlInput}
-          onChangeText={(t) => {
-            setUrlInput(t);
-            setUrlDirty(true);
-          }}
-          onSubmitEditing={submitUrl}
-          editable={live}
-          autoCapitalize="none"
-          autoCorrect={false}
-          keyboardType="url"
-          placeholder={
-            live
-              ? surface === 'preview'
-                ? 'Enter a preview URL'
-                : 'Enter a public URL'
-              : 'No page yet'
-          }
-          placeholderTextColor={colors.gray600}
-          accessibilityLabel="Agent browser URL"
-          testID="mobile-browser-url"
-        />
-        <TouchableOpacity
-          onPress={submitUrl}
-          disabled={!live}
-          style={[styles.goButton, !live && styles.disabled]}
-          accessibilityLabel="Go"
-        >
-          <Text style={styles.goText}>Go</Text>
-        </TouchableOpacity>
-      </View>
+      {browserPaneHasUrlBar(surface) ? (
+        <View style={styles.urlRow}>
+          <TextInput
+            style={styles.urlInput}
+            value={urlInput}
+            onChangeText={(t) => {
+              setUrlInput(t);
+              setUrlDirty(true);
+            }}
+            onSubmitEditing={submitUrl}
+            editable={live}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="url"
+            placeholder={
+              live
+                ? surface === 'preview'
+                  ? 'Enter a preview URL'
+                  : 'Enter a public URL'
+                : 'No page yet'
+            }
+            placeholderTextColor={colors.gray600}
+            accessibilityLabel="Agent browser URL"
+            testID="mobile-browser-url"
+          />
+          <TouchableOpacity
+            onPress={submitUrl}
+            disabled={!live}
+            style={[styles.goButton, !live && styles.disabled]}
+            accessibilityLabel="Go"
+          >
+            <Text style={styles.goText}>Go</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
       {loginRequest ? (
         <View style={styles.loginBanner} testID="mobile-browser-login-banner">
           <View style={styles.loginTitleRow}>
@@ -351,14 +374,22 @@ export default function MobileBrowserPane({
           setBox({ width: Math.floor(width), height: Math.floor(height) });
         }}
       >
-        {live && frame && rendered.width > 0 ? (
+        {live && frame && rendered.width > 0 && viewOnly ? (
+          <Image
+            source={{ uri: browserPaneFrameSrc(frame) }}
+            style={{ width: rendered.width, height: rendered.height }}
+            resizeMode="contain"
+            accessibilityLabel="Live view of the agent's desktop"
+            testID="mobile-browser-frame"
+          />
+        ) : live && frame && rendered.width > 0 ? (
           <Pressable
             onPress={onTap}
             accessibilityLabel="Agent browser viewport — tap to click"
             testID="mobile-browser-frame"
           >
             <Image
-              source={{ uri: `data:image/jpeg;base64,${frame.data}` }}
+              source={{ uri: browserPaneFrameSrc(frame) }}
               style={{ width: rendered.width, height: rendered.height }}
               resizeMode="contain"
             />
@@ -373,48 +404,56 @@ export default function MobileBrowserPane({
           </View>
         )}
       </View>
-      <View style={styles.inputRow}>
-        <TextInput
-          style={styles.typeInput}
-          value={typed}
-          onChangeText={setTyped}
-          onSubmitEditing={sendTyped}
-          editable={live}
-          secureTextEntry={!!loginRequest}
-          placeholder={
-            loginRequest ? 'Type here (hidden while signing in)…' : "Type into the agent's browser…"
-          }
-          placeholderTextColor={colors.gray600}
-          autoCapitalize="none"
-          autoCorrect={false}
-          accessibilityLabel="Text to type into the agent browser"
-          testID="mobile-browser-type"
-        />
-        <TouchableOpacity
-          onPress={sendTyped}
-          disabled={!live}
-          style={[styles.key, !live && styles.disabled]}
-          accessibilityLabel="Send text"
-        >
-          <Text style={styles.keyText}>Send</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          onPress={() => sendKey('Enter')}
-          disabled={!live}
-          style={[styles.key, !live && styles.disabled]}
-          accessibilityLabel="Send Enter"
-        >
-          <Text style={styles.keyText}>⏎</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          onPress={() => sendKey('Tab')}
-          disabled={!live}
-          style={[styles.key, !live && styles.disabled]}
-          accessibilityLabel="Send Tab"
-        >
-          <Text style={styles.keyText}>Tab</Text>
-        </TouchableOpacity>
-      </View>
+      {viewOnly ? (
+        <Text style={styles.notice} testID="mobile-browser-view-only">
+          View only. Use Agent Hub on the web to take over the desktop.
+        </Text>
+      ) : (
+        <View style={styles.inputRow}>
+          <TextInput
+            style={styles.typeInput}
+            value={typed}
+            onChangeText={setTyped}
+            onSubmitEditing={sendTyped}
+            editable={live}
+            secureTextEntry={!!loginRequest}
+            placeholder={
+              loginRequest
+                ? 'Type here (hidden while signing in)…'
+                : "Type into the agent's browser…"
+            }
+            placeholderTextColor={colors.gray600}
+            autoCapitalize="none"
+            autoCorrect={false}
+            accessibilityLabel="Text to type into the agent browser"
+            testID="mobile-browser-type"
+          />
+          <TouchableOpacity
+            onPress={sendTyped}
+            disabled={!live}
+            style={[styles.key, !live && styles.disabled]}
+            accessibilityLabel="Send text"
+          >
+            <Text style={styles.keyText}>Send</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => sendKey('Enter')}
+            disabled={!live}
+            style={[styles.key, !live && styles.disabled]}
+            accessibilityLabel="Send Enter"
+          >
+            <Text style={styles.keyText}>⏎</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => sendKey('Tab')}
+            disabled={!live}
+            style={[styles.key, !live && styles.disabled]}
+            accessibilityLabel="Send Tab"
+          >
+            <Text style={styles.keyText}>Tab</Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </View>
   );
 }

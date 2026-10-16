@@ -8,11 +8,13 @@
 
 export type BrowserPaneStatus = 'connecting' | 'waiting' | 'live' | 'closed' | 'error';
 
-/** Which Chromium the live pane is mirroring. */
-export type BrowserPaneSurface = 'web' | 'preview';
+/** What the live pane is mirroring: one of the agent's Chromiums, or its desktop computer. */
+export type BrowserPaneSurface = 'web' | 'preview' | 'desktop';
 
 export interface BrowserPaneFrame {
   data: string;
+  /** Image type of `data`; absent means JPEG. */
+  mime?: string;
   width: number;
   height: number;
   viewportWidth: number;
@@ -151,18 +153,56 @@ export function browserPaneStatusLabel(status: BrowserPaneStatus): string {
 }
 
 export function parseBrowserPaneSurface(raw: unknown): BrowserPaneSurface | null {
-  return raw === 'preview' || raw === 'web' ? raw : null;
+  return raw === 'preview' || raw === 'web' || raw === 'desktop' ? raw : null;
+}
+
+/**
+ * Whether the frame on screen may stay up after a `state` message. Only when
+ * the pane is still live on the same surface: on a switch (say browser to
+ * desktop) the old image would sit under the new badge until the first frame
+ * of the new surface arrives, which can take a whole agent op.
+ */
+export function browserPaneStateKeepsFrame(
+  prevSurface: BrowserPaneSurface | null,
+  status: unknown,
+  nextSurface: BrowserPaneSurface | null,
+): boolean {
+  return status === 'live' && prevSurface === nextSurface;
 }
 
 /** Badge copy for the live surface; hidden while waiting. */
 export function browserPaneSurfaceBadge(surface: BrowserPaneSurface | null): string | null {
   if (surface === 'preview') return 'preview';
   if (surface === 'web') return 'public web';
+  if (surface === 'desktop') return 'desktop';
   return null;
 }
 
+/** Badge tooltip / accessibility label for the live surface. */
+export function browserPaneSurfaceDescription(surface: BrowserPaneSurface | null): string | null {
+  if (surface === 'preview') return "The agent's preview-drive browser, pinned to the running app";
+  if (surface === 'web') return "The agent's public-internet browser, not the iframe preview";
+  if (surface === 'desktop') return "The agent's Linux desktop computer";
+  return null;
+}
+
+/** The desktop has no page URL, so the URL bar does not apply to it. */
+export function browserPaneHasUrlBar(surface: BrowserPaneSurface | null): boolean {
+  return surface !== 'desktop';
+}
+
+/** `src` for a frame image; JPEG unless the server said otherwise. */
+export function browserPaneFrameSrc(frame: Pick<BrowserPaneFrame, 'data' | 'mime'>): string {
+  const mime = frame.mime === 'image/png' ? 'image/png' : 'image/jpeg';
+  return `data:${mime};base64,${frame.data}`;
+}
+
+export function parseBrowserPaneFrameMime(raw: unknown): 'image/png' | undefined {
+  return raw === 'image/png' ? raw : undefined;
+}
+
 export const BROWSER_PANE_WAITING_HINT =
-  'The pane goes live the moment the agent runs a browser or preview action.';
+  'The pane goes live the moment the agent runs a browser, preview or desktop action.';
 
 /** Normalise a URL-bar submission the way a browser would (bare host → https). */
 export function normalizeUrlBarInput(raw: string): string | null {

@@ -121,4 +121,90 @@ describe('MobileBrowserPane', () => {
     act(() => typeInput.props.onSubmitEditing());
     expect(socket.sent.at(-1)).toEqual({ type: 'input', input: { kind: 'text', text: 'hello' } });
   });
+
+  it('shows the desktop as view-only PNG frames with no input controls', async () => {
+    const { renderer, socket } = await mount();
+    act(() =>
+      socket.receive({
+        type: 'state',
+        status: 'live',
+        url: null,
+        viewport: { width: 1280, height: 800 },
+        surface: 'desktop',
+      }),
+    );
+    const viewportView = renderer.root
+      .findAllByType('View' as any)
+      .find((n) => typeof n.props.onLayout === 'function')!;
+    act(() =>
+      viewportView.props.onLayout({ nativeEvent: { layout: { width: 320, height: 300 } } }),
+    );
+    act(() =>
+      socket.receive({
+        type: 'frame',
+        data: 'UE5H',
+        mime: 'image/png',
+        width: 1280,
+        height: 800,
+        viewportWidth: 1280,
+        viewportHeight: 800,
+        url: null,
+      }),
+    );
+    const badge = renderer.root.findByProps({ testID: 'mobile-browser-surface' });
+    expect(badge.props.children).toBe('desktop');
+    const frame = renderer.root.findByProps({ testID: 'mobile-browser-frame' });
+    expect(frame.type).toBe('Image');
+    expect(frame.props.onPress).toBeUndefined();
+    expect(frame.props.source).toEqual({ uri: 'data:image/png;base64,UE5H' });
+    expect(renderer.root.findAllByProps({ testID: 'mobile-browser-type' })).toHaveLength(0);
+    expect(renderer.root.findAllByProps({ testID: 'mobile-browser-url' })).toHaveLength(0);
+    renderer.root.findByProps({ testID: 'mobile-browser-view-only' });
+  });
+
+  it('drops the browser frame when the pane switches to the desktop, before its first PNG', async () => {
+    const { renderer, socket } = await mount();
+    act(() =>
+      socket.receive({
+        type: 'state',
+        status: 'live',
+        url: 'https://example.com/',
+        viewport: { width: 1280, height: 720 },
+        surface: 'web',
+      }),
+    );
+    const viewportView = renderer.root
+      .findAllByType('View' as any)
+      .find((n) => typeof n.props.onLayout === 'function')!;
+    act(() =>
+      viewportView.props.onLayout({ nativeEvent: { layout: { width: 320, height: 300 } } }),
+    );
+    act(() =>
+      socket.receive({
+        type: 'frame',
+        data: 'SlBFRw==',
+        width: 640,
+        height: 360,
+        viewportWidth: 1280,
+        viewportHeight: 720,
+        url: 'https://example.com/',
+      }),
+    );
+    expect(renderer.root.findAllByProps({ testID: 'mobile-browser-frame' })).toHaveLength(1);
+
+    act(() =>
+      socket.receive({
+        type: 'state',
+        status: 'live',
+        url: null,
+        viewport: { width: 1280, height: 800 },
+        surface: 'desktop',
+      }),
+    );
+    const badge = renderer.root.findByProps({ testID: 'mobile-browser-surface' });
+    expect(badge.props.children).toBe('desktop');
+    expect(renderer.root.findAllByProps({ testID: 'mobile-browser-frame' })).toHaveLength(0);
+    const images = renderer.root.findAllByType('Image' as any);
+    expect(images.some((i) => String(i.props.source?.uri).includes('SlBFRw=='))).toBe(false);
+  });
 });

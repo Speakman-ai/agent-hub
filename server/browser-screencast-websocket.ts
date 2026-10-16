@@ -18,8 +18,11 @@
  *   - `{type:'login_done'|'login_cancel', requestId}` — answer a sign-in handoff
  *
  * Server frames:
- *   - `{type:'state', status:'waiting'|'live'|'closed', url, viewport}`
- *   - `{type:'frame', data(base64 jpeg), width, height, viewportWidth, viewportHeight, url}`
+ *   - `{type:'state', status:'waiting'|'live'|'closed', url, viewport, surface}`
+ *     (`surface`: 'web' | 'preview' | 'desktop'; the desktop comes from the
+ *     feed host in agent-pane-screencast.ts)
+ *   - `{type:'frame', data(base64), mime?, width, height, viewportWidth, viewportHeight, url}`
+ *     (JPEG unless `mime` is 'image/png', which the desktop sends)
  *   - `{type:'input_result', ok, code?, message?}`
  *   - `{type:'navigated', ok, url?, code?, message?}`
  *   - `{type:'detached'}`
@@ -183,7 +186,12 @@ function loginRequestView(r: BrowserLoginRequest | null): BrowserLoginRequestVie
 
 export interface BrowserScreencastFeedHost {
   attach(browserSessionId: string, viewer: ScreencastViewer): () => void;
-  input(browserSessionId: string, input: BrowserViewerInput): Promise<BrowserViewerInputResult>;
+  /** `viewerId` is the connection's viewer id, for hosts that keep per-viewer gesture state. */
+  input(
+    browserSessionId: string,
+    input: BrowserViewerInput,
+    viewerId?: string,
+  ): Promise<BrowserViewerInputResult>;
   navigate(browserSessionId: string, url: string): Promise<BrowserViewerNavigateResult>;
 }
 
@@ -396,7 +404,7 @@ export function attachBrowserScreencastWebSocket(
       }
       if (frame.type === 'input') {
         void feedHost
-          .input(sessionId, frame.input)
+          .input(sessionId, frame.input, viewerId)
           .then((r) => sendFrame({ type: 'input_result', ...r }))
           .catch((err: unknown) =>
             sendFrame({

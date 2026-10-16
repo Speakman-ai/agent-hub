@@ -168,6 +168,24 @@ describe('container desktop runtime', () => {
     );
   });
 
+  it('viewFrame captures a running computer without starting or touching it', async () => {
+    const host = fakeHost();
+    const rt = makeRuntime(host, fakeClient());
+    expect(await rt.viewFrame(KEY)).toBeNull();
+    expect(host.starts).toHaveLength(0);
+
+    await rt.ensureStarted(KEY);
+    const before = (await rt.status(KEY)).lastActiveAt;
+    clock += 60_000;
+    expect((await rt.viewFrame(KEY))?.toString()).toBe('PNG');
+    expect((await rt.status(KEY)).lastActiveAt).toBe(before);
+    // Watching alone does not hold off the idle stop.
+    clock += DESKTOP_IDLE_STOP_MS;
+    expect(await rt.sweepIdle()).toHaveLength(1);
+    expect(await rt.viewFrame(KEY)).toBeNull();
+    expect(host.starts).toHaveLength(1);
+  });
+
   it('maps input events onto daemon ops', async () => {
     const client = fakeClient();
     const rt = makeRuntime(fakeHost(), client);

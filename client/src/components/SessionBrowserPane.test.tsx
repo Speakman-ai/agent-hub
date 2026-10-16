@@ -121,6 +121,117 @@ describe('SessionBrowserPane', () => {
     expect(screen.queryByText('public web')).toBeNull();
   });
 
+  it('drops the browser frame when the pane switches to the desktop, before its first PNG', () => {
+    const { socket } = mountAndOpen();
+    act(() =>
+      socket.receive({
+        type: 'state',
+        status: 'live',
+        url: 'https://example.com/',
+        viewport: { width: 1280, height: 720 },
+        surface: 'web',
+      }),
+    );
+    act(() =>
+      socket.receive({
+        type: 'frame',
+        data: 'SlBFRw==',
+        width: 1280,
+        height: 720,
+        viewportWidth: 1280,
+        viewportHeight: 720,
+        url: 'https://example.com/',
+      }),
+    );
+    expect(screen.getByTestId('session-browser-frame').getAttribute('src')).toBe(
+      'data:image/jpeg;base64,SlBFRw==',
+    );
+    act(() =>
+      socket.receive({
+        type: 'state',
+        status: 'live',
+        url: null,
+        viewport: { width: 1280, height: 800 },
+        surface: 'desktop',
+      }),
+    );
+    expect(screen.getByTestId('session-browser-surface').textContent).toBe('desktop');
+    expect(screen.queryByTestId('session-browser-frame')).toBeNull();
+    expect(screen.getByText(/Waiting for the first frame/)).toBeInTheDocument();
+  });
+
+  it('keeps the frame across a state update on the same surface', () => {
+    const { socket } = mountAndOpen();
+    const webState = {
+      type: 'state',
+      status: 'live',
+      url: 'https://example.com/',
+      viewport: { width: 1280, height: 720 },
+      surface: 'web',
+    };
+    act(() => socket.receive(webState));
+    act(() =>
+      socket.receive({
+        type: 'frame',
+        data: 'SlBFRw==',
+        width: 1280,
+        height: 720,
+        viewportWidth: 1280,
+        viewportHeight: 720,
+        url: 'https://example.com/',
+      }),
+    );
+    act(() => socket.receive({ ...webState, url: 'https://example.com/next' }));
+    expect(screen.getByTestId('session-browser-frame')).toBeInTheDocument();
+  });
+
+  it('shows the desktop surface with PNG frames, no URL bar, and takes pointer input', () => {
+    const { socket } = mountAndOpen();
+    act(() =>
+      socket.receive({
+        type: 'state',
+        status: 'live',
+        url: null,
+        viewport: { width: 1280, height: 800 },
+        surface: 'desktop',
+      }),
+    );
+    act(() =>
+      socket.receive({
+        type: 'frame',
+        data: 'UE5H',
+        mime: 'image/png',
+        width: 1280,
+        height: 800,
+        viewportWidth: 1280,
+        viewportHeight: 800,
+        url: null,
+      }),
+    );
+    expect(screen.getByTestId('session-browser-surface').textContent).toBe('desktop');
+    const img = screen.getByTestId('session-browser-frame') as HTMLImageElement;
+    expect(img.getAttribute('src')).toBe('data:image/png;base64,UE5H');
+    expect(img.getAttribute('alt')).toMatch(/desktop/);
+    expect(screen.queryByTestId('session-browser-url')).toBeNull();
+    expect(screen.getByText(/use the agent's desktop/)).toBeInTheDocument();
+
+    const viewport = screen.getByTestId('session-browser-viewport');
+    fireEvent.keyDown(viewport, { key: 'Enter' });
+    expect(socket.sent.at(-1)).toEqual({
+      type: 'input',
+      input: { kind: 'key', type: 'press', key: 'Enter' },
+    });
+    act(() =>
+      socket.receive({
+        type: 'input_result',
+        ok: false,
+        code: 'agent_busy',
+        message: 'The agent is using the desktop right now. Wait for its step to finish.',
+      }),
+    );
+    expect(screen.getByTestId('session-browser-notice').textContent).toMatch(/using the desktop/);
+  });
+
   it('forwards URL-bar submissions as navigate frames and surfaces refusals', () => {
     const { socket } = mountAndOpen();
     act(() =>

@@ -59,19 +59,24 @@ export const SCREENCAST_MAX_DIMENSION = 2560;
 
 export type ScreencastStatus = 'waiting' | 'live' | 'closed';
 
+/** What the Agent browser pane is mirroring: one of the session's Chromiums, or its desktop. */
+export type ScreencastSurface = BrowserScreencastSurface | 'desktop';
+
 export interface ScreencastState {
   status: ScreencastStatus;
   /** Current page URL when live, else null. */
   url: string | null;
   /** Chromium viewport (CSS px) when live. Input coordinates are in this space. */
   viewport: { width: number; height: number } | null;
-  /** Which Chromium this state describes; null while waiting for either. */
-  surface: BrowserScreencastSurface | null;
+  /** Which surface this state describes; null while waiting for one. */
+  surface: ScreencastSurface | null;
 }
 
 export interface ScreencastFrame {
-  /** Base64 JPEG. */
+  /** Base64 image, JPEG unless `mime` says otherwise. */
   data: string;
+  /** Omitted for JPEG (Chromium screencast); the desktop sends PNG. */
+  mime?: 'image/jpeg' | 'image/png';
   /** Frame pixel size (may be downscaled from the viewport by maxWidth/maxHeight). */
   width: number;
   height: number;
@@ -117,7 +122,7 @@ export type BrowserViewerInputResult =
   | { ok: true }
   | {
       ok: false;
-      code: 'no_browser' | 'agent_busy' | 'unsupported' | 'input_failed';
+      code: 'no_browser' | 'no_desktop' | 'agent_busy' | 'unsupported' | 'input_failed';
       message: string;
     };
 

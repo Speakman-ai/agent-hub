@@ -105,6 +105,12 @@ export interface DesktopRuntime {
   ): Promise<DesktopExecResult>;
   /** PNG of the full DESKTOP_SCREEN. */
   screenshot(key: DesktopComputerKey): Promise<Buffer>;
+  /**
+   * PNG for the live view: null when the computer is not running. Never
+   * starts the computer and does not count as activity, so a pane left open
+   * can't keep an idle desktop alive.
+   */
+  viewFrame(key: DesktopComputerKey): Promise<Buffer | null>;
   input(key: DesktopComputerKey, event: DesktopInputEvent): Promise<void>;
   /** Expose the display to the Hub for the live view. */
   mapDisplayPort(key: DesktopComputerKey): Promise<DesktopDisplayEndpoint>;

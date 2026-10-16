@@ -263,7 +263,17 @@ export class FirecrackerDesktopRuntime implements DesktopRuntime {
   }
 
   async screenshot(key: DesktopComputerKey): Promise<Buffer> {
-    const vm = await this.#runningVm(key);
+    return this.#shoot(await this.#runningVm(key));
+  }
+
+  async viewFrame(key: DesktopComputerKey): Promise<Buffer | null> {
+    assertKey(key);
+    const entry = this.#entries.get(keyString(key));
+    if (!entry?.vm || entry.vm.disposed || entry.state !== 'running') return null;
+    return this.#shoot(entry.vm);
+  }
+
+  async #shoot(vm: FirecrackerDesktopVm): Promise<Buffer> {
     const tag = `${process.pid}-${++this.#shotCounter}`;
     const res = await this.#capture(vm, buildDesktopScreenshotCommand(tag), SCREENSHOT_TIMEOUT_MS);
     if (res.timedOut || res.exitCode !== 0) {

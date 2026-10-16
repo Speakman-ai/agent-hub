@@ -22,8 +22,13 @@ const {
   resolveDesktopMaxRunning,
 } = await import('./desktop-runtime-setup.js');
 const { DesktopRuntimeUnavailableError } = await import('./desktop-runtime-selection.js');
-const { getDesktopRuntime, registerDesktopRuntime, resetDesktopRuntimesForTests } =
-  await import('./desktop-runtime-registry.js');
+
+const {
+  getDesktopRuntime,
+  getDesktopRuntimeForLiveView,
+  registerDesktopRuntime,
+  resetDesktopRuntimesForTests,
+} = await import('./desktop-runtime-registry.js');
 
 afterEach(() => {
   __resetDesktopRuntimeForTests();
@@ -51,7 +56,7 @@ describe('container desktop runtime setup', () => {
     process.env.FINALIZE_RUNNER_BACKEND = 'remote';
     await registerContainerDesktopRuntimeOnBoot();
     const rt = getDesktopRuntime('container');
-    expect(rt).toBe(getContainerDesktopRuntime());
+    expect(getDesktopRuntimeForLiveView('container')).toBe(getContainerDesktopRuntime());
     expect(rt?.kind).toBe('container');
   });
 
@@ -70,12 +75,17 @@ describe('container desktop runtime setup', () => {
   });
 
   it('resolves the active runtime for the computer tool', () => {
-    expect(getActiveDesktopRuntime().kind).toBe('container');
+    const container = getActiveDesktopRuntime();
+    expect(container.kind).toBe('container');
+    // Agent-side: the tracked wrapper, not the raw runtime the live view uses.
+    expect(container).toBe(getDesktopRuntime('container'));
+    expect(container).not.toBe(getDesktopRuntimeForLiveView('container'));
 
     firecracker = true;
     const fc = { kind: 'firecracker' } as Parameters<typeof registerDesktopRuntime>[0];
     registerDesktopRuntime(fc);
-    expect(getActiveDesktopRuntime()).toBe(fc);
+    expect(getActiveDesktopRuntime()).toBe(getDesktopRuntime('firecracker'));
+    expect(getActiveDesktopRuntime()).not.toBe(fc);
 
     resetDesktopRuntimesForTests();
     cfg.desktopRuntime = 'firecracker';

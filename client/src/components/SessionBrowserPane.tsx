@@ -6,12 +6,17 @@ import {
   BROWSER_LOGIN_BANNER_HINT,
   BROWSER_PANE_WAITING_HINT,
   browserLoginBannerTitle,
+  browserPaneFrameSrc,
+  browserPaneHasUrlBar,
+  browserPaneStateKeepsFrame,
   browserPaneStatusLabel,
   browserPaneSurfaceBadge,
+  browserPaneSurfaceDescription,
   fitFrameInBox,
   keyInputFromDomEvent,
   mapPointerToViewport,
   normalizeUrlBarInput,
+  parseBrowserPaneFrameMime,
   parseBrowserPaneLoginRequest,
   parseBrowserPaneSurface,
   type BrowserPaneFrame,
@@ -26,8 +31,9 @@ const POINTER_MOVE_MIN_INTERVAL_MS = 40;
 const defaultWebSocketFactory = (url: string) => new WebSocket(url);
 
 /**
- * Live view of the Chromium the agent is driving — public-web (`browser` tool)
- * or the origin-pinned preview drive (`preview` tool). Distinct from the
+ * Live view of what the agent is driving: its public-web Chromium (`browser`
+ * tool), the origin-pinned preview drive (`preview` tool), or its Linux
+ * desktop computer (`computer` tool; no URL bar). Distinct from the
  * iframe preview pane: that is the human's own view of the running app; this
  * is a screencast of the agent's Playwright session so you can watch it
  * click, screenshot, and verify. The pane follows whichever surface is
@@ -64,6 +70,8 @@ export default function SessionBrowserPane({
   const [frame, setFrame] = useState<BrowserPaneFrame | null>(null);
   const [viewport, setViewport] = useState<BrowserPaneViewport | null>(null);
   const [surface, setSurface] = useState<BrowserPaneSurface | null>(null);
+  // The socket handler's view of the current surface (state is stale in its closure).
+  const surfaceRef = useRef<BrowserPaneSurface | null>(null);
   const [pageUrl, setPageUrl] = useState<string | null>(null);
   const [urlInput, setUrlInput] = useState('');
   const [urlDirty, setUrlDirty] = useState(false);
@@ -120,6 +128,7 @@ export default function SessionBrowserPane({
     setFrame(null);
     setViewport(null);
     setSurface(null);
+    surfaceRef.current = null;
     setPageUrl(null);
     setUrlDirty(false);
 
@@ -164,15 +173,18 @@ export default function SessionBrowserPane({
           const s = msg.status as 'waiting' | 'live' | 'closed';
           setStatus(s);
           setViewport(msg.viewport ?? null);
-          setSurface(parseBrowserPaneSurface(msg.surface));
+          const nextSurface = parseBrowserPaneSurface(msg.surface);
+          if (!browserPaneStateKeepsFrame(surfaceRef.current, s, nextSurface)) setFrame(null);
+          surfaceRef.current = nextSurface;
+          setSurface(nextSurface);
           setPageUrl(msg.url ?? null);
-          if (s !== 'live') setFrame(null);
           return;
         }
         if (msg.type === 'frame') {
           setStatus('live');
           setFrame({
             data: msg.data,
+            mime: parseBrowserPaneFrameMime(msg.mime),
             width: msg.width,
             height: msg.height,
             viewportWidth: msg.viewportWidth,
@@ -341,6 +353,7 @@ export default function SessionBrowserPane({
   const live = status === 'live';
   const statusText = browserPaneStatusLabel(status);
   const surfaceBadge = browserPaneSurfaceBadge(surface);
+  const isDesktop = surface === 'desktop';
 
   return (
     <aside
@@ -355,11 +368,7 @@ export default function SessionBrowserPane({
           <span
             className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-900/60 text-sky-200 border border-sky-800/70"
             data-testid="session-browser-surface"
-            title={
-              surface === 'preview'
-                ? "This is the agent's preview-drive browser, pinned to the running app"
-                : "This is the agent's public-internet browser, not the iframe preview"
-            }
+            title={browserPaneSurfaceDescription(surface) ?? undefined}
           >
             {surfaceBadge}
           </span>
@@ -400,41 +409,43 @@ export default function SessionBrowserPane({
         )}
       </div>
 
-      <form
-        onSubmit={submitUrl}
-        className="flex items-center gap-2 px-3 py-1.5 border-b border-gray-800 bg-gray-900/40"
-      >
-        <input
-          type="text"
-          value={urlInput}
-          onChange={(e) => {
-            setUrlInput(e.target.value);
-            setUrlDirty(true);
-          }}
-          onBlur={() => {
-            if (urlInput.trim() === (pageUrl ?? '')) setUrlDirty(false);
-          }}
-          placeholder={
-            live
-              ? surface === 'preview'
-                ? 'Enter a preview URL'
-                : 'Enter a public URL'
-              : 'No page yet'
-          }
-          disabled={!live}
-          spellCheck={false}
-          className="flex-1 min-w-0 bg-gray-950 border border-gray-800 rounded px-2 py-1 text-xs text-gray-200 font-mono placeholder:text-gray-600 focus:outline-none focus:border-sky-700 disabled:opacity-60"
-          aria-label="Agent browser URL"
-          data-testid="session-browser-url"
-        />
-        <button
-          type="submit"
-          disabled={!live || navigating}
-          className="text-xs px-2 py-1 rounded bg-sky-800/70 hover:bg-sky-700/80 text-sky-100 border border-sky-700/60 disabled:opacity-50"
+      {browserPaneHasUrlBar(surface) ? (
+        <form
+          onSubmit={submitUrl}
+          className="flex items-center gap-2 px-3 py-1.5 border-b border-gray-800 bg-gray-900/40"
         >
-          {navigating ? <Loader2 size={12} className="animate-spin" /> : 'Go'}
-        </button>
-      </form>
+          <input
+            type="text"
+            value={urlInput}
+            onChange={(e) => {
+              setUrlInput(e.target.value);
+              setUrlDirty(true);
+            }}
+            onBlur={() => {
+              if (urlInput.trim() === (pageUrl ?? '')) setUrlDirty(false);
+            }}
+            placeholder={
+              live
+                ? surface === 'preview'
+                  ? 'Enter a preview URL'
+                  : 'Enter a public URL'
+                : 'No page yet'
+            }
+            disabled={!live}
+            spellCheck={false}
+            className="flex-1 min-w-0 bg-gray-950 border border-gray-800 rounded px-2 py-1 text-xs text-gray-200 font-mono placeholder:text-gray-600 focus:outline-none focus:border-sky-700 disabled:opacity-60"
+            aria-label="Agent browser URL"
+            data-testid="session-browser-url"
+          />
+          <button
+            type="submit"
+            disabled={!live || navigating}
+            className="text-xs px-2 py-1 rounded bg-sky-800/70 hover:bg-sky-700/80 text-sky-100 border border-sky-700/60 disabled:opacity-50"
+          >
+            {navigating ? <Loader2 size={12} className="animate-spin" /> : 'Go'}
+          </button>
+        </form>
+      ) : null}
 
       {loginRequest ? (
         <div
@@ -503,8 +514,10 @@ export default function SessionBrowserPane({
         {live && frame ? (
           <img
             ref={imgRef}
-            src={`data:image/jpeg;base64,${frame.data}`}
-            alt="Live view of the agent's browser"
+            src={browserPaneFrameSrc(frame)}
+            alt={
+              isDesktop ? "Live view of the agent's desktop" : "Live view of the agent's browser"
+            }
             draggable={false}
             width={rendered.width || undefined}
             height={rendered.height || undefined}
@@ -529,8 +542,9 @@ export default function SessionBrowserPane({
       </div>
 
       <div className="px-3 py-1 border-t border-gray-800 text-[10px] text-gray-600 truncate">
-        Click, scroll, or type here to act in the agent&apos;s browser. Input is held while the
-        agent is driving.
+        {isDesktop
+          ? "Click, scroll, or type here to use the agent's desktop. Input is held while the agent is acting."
+          : "Click, scroll, or type here to act in the agent's browser. Input is held while the agent is driving."}
       </div>
     </aside>
   );

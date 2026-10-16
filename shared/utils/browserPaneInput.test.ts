@@ -3,12 +3,15 @@ import {
   browserLoginBannerTitle,
   parseBrowserPaneLoginRequest,
   browserPaneStatusLabel,
+  browserPaneFrameSrc,
+  browserPaneHasUrlBar,
   browserPaneSurfaceBadge,
   fitFrameInBox,
   keyInputFromDomEvent,
   mapPointerToViewport,
   normalizeUrlBarInput,
   parseBrowserPaneSurface,
+  browserPaneStateKeepsFrame,
 } from './browserPaneInput';
 
 describe('mapPointerToViewport', () => {
@@ -107,6 +110,19 @@ describe('browserPaneSurfaceBadge', () => {
     expect(browserPaneSurfaceBadge('preview')).toBe('preview');
     expect(browserPaneSurfaceBadge('web')).toBe('public web');
     expect(browserPaneSurfaceBadge(null)).toBeNull();
+    expect(parseBrowserPaneSurface('desktop')).toBe('desktop');
+    expect(browserPaneSurfaceBadge('desktop')).toBe('desktop');
+  });
+
+  it('builds frame sources per mime and hides the URL bar for the desktop', () => {
+    expect(browserPaneFrameSrc({ data: 'AA' })).toBe('data:image/jpeg;base64,AA');
+    expect(browserPaneFrameSrc({ data: 'AA', mime: 'image/png' })).toBe('data:image/png;base64,AA');
+    expect(browserPaneFrameSrc({ data: 'AA', mime: 'text/html' })).toBe(
+      'data:image/jpeg;base64,AA',
+    );
+    expect(browserPaneHasUrlBar('desktop')).toBe(false);
+    expect(browserPaneHasUrlBar('web')).toBe(true);
+    expect(browserPaneHasUrlBar(null)).toBe(true);
   });
 });
 
@@ -121,5 +137,17 @@ describe('parseBrowserPaneLoginRequest', () => {
     expect(parseBrowserPaneLoginRequest(null)).toBeNull();
     expect(parseBrowserPaneLoginRequest({ requestId: 'r1' })).toBeNull();
     expect(parseBrowserPaneLoginRequest({ domain: 'x.com' })).toBeNull();
+  });
+});
+
+describe('browserPaneStateKeepsFrame', () => {
+  it('keeps the frame only while live on the same surface', () => {
+    expect(browserPaneStateKeepsFrame('web', 'live', 'web')).toBe(true);
+    expect(browserPaneStateKeepsFrame('desktop', 'live', 'desktop')).toBe(true);
+    expect(browserPaneStateKeepsFrame('web', 'live', 'desktop')).toBe(false);
+    expect(browserPaneStateKeepsFrame('desktop', 'live', 'web')).toBe(false);
+    expect(browserPaneStateKeepsFrame('web', 'live', 'preview')).toBe(false);
+    expect(browserPaneStateKeepsFrame('web', 'waiting', 'web')).toBe(false);
+    expect(browserPaneStateKeepsFrame('web', 'closed', null)).toBe(false);
   });
 });
