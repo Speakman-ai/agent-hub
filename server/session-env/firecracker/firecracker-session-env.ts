@@ -87,6 +87,18 @@ import {
 } from './vm-agent-client.js';
 import { createVmAgentProcess, createVmAgentPty } from './vm-agent-process.js';
 import {
+  RESTORE_MEM_FILE,
+  RESTORE_STATE_FILE,
+  SNAPSHOT_MEM_FILE,
+  SNAPSHOT_STATE_FILE,
+  assertVmmApiOk,
+  defaultStatFile,
+  defaultVmmApi,
+  snapshotFingerprint,
+  type StatFileFn,
+  type VmmApiFn,
+} from './firecracker-snapshot.js';
+import {
   READ_FILE_CHUNK_BYTES,
   WRITE_FILE_CHUNK_BYTES,
   VM_AGENT_PROTOCOL_VERSION,
@@ -329,7 +341,22 @@ export interface FirecrackerSessionEnvDeps {
   readyTimeoutMs?: number;
   readyPollMs?: number;
   logger?: { warn: (msg: string) => void };
+  /**
+   * Fingerprint of a snapshot stashed by an earlier {@link FirecrackerSessionEnv.suspend}.
+   * The first boot resumes it when the fingerprint still matches and falls
+   * back to a cold boot otherwise. Jailed VMs only.
+   */
+  restoreSnapshot?: string | null;
+  /** VMM API client (pause, snapshot create/load). */
+  vmmApi?: VmmApiFn;
+  /** Stats the kernel and base rootfs for the snapshot fingerprint. */
+  statFile?: StatFileFn;
+  /** Host CPU architecture (`process.arch`); decides clock_realtime on load. */
+  hostArch?: string;
 }
+
+/** How the VM's current boot came up. */
+export type FirecrackerBootMode = 'cold' | 'restored';
 
 export const FIRECRACKER_DEFAULT_VCPU = 2;
 export const FIRECRACKER_DEFAULT_MEM_MIB = 6144;
@@ -340,6 +367,14 @@ const DEFAULT_DISPOSE_GRACE_MS = 5000;
 const DEFAULT_READY_TIMEOUT_MS = 120_000;
 const DEFAULT_READY_POLL_MS = 250;
 const DEFAULT_DISK_HELPER = '/usr/local/lib/agent-hub/fc-prepare-disks.sh';
+const SNAPSHOT_SYNC_TIMEOUT_MS = 30_000;
+const VMM_API_TIMEOUT_MS = 10_000;
+/** Writing a multi-GiB memory file is disk-bound. */
+const SNAPSHOT_CREATE_TIMEOUT_MS = 10 * 60_000;
+const SNAPSHOT_LOAD_TIMEOUT_MS = 2 * 60_000;
+const GUEST_CLOCK_CHECK_TIMEOUT_MS = 10_000;
+/** Allows for the load itself and second-granularity `date`; timesyncd trims the rest. */
+export const GUEST_CLOCK_MAX_SKEW_MS = 30_000;
 
 interface LiveEntry {
   kill(signal: NodeJS.Signals): void;
@@ -370,6 +405,19 @@ export class FirecrackerSessionEnv implements SessionEnv {
   #teardownIncomplete = false;
   #network: VmNetworkPlan | null = null;
   #vmProcess: VmmHandle | null = null;
+  /** Consumed by the first boot: there is at most one stash to resume. */
+  #restoreSnapshot: string | null;
+  #bootMode: FirecrackerBootMode | null = null;
+  /**
+   * Fingerprint of the kernel/rootfs this boot actually runs. A suspend
+   * records this, not the files on disk at suspend time: the host artifacts
+   * may have been rebuilt while the VM ran, and the snapshot still holds the
+   * old guest.
+   */
+  #bootFingerprint: string | null = null;
+  /** Set by suspend once the VMM wrote a snapshot; teardown stashes it. */
+  #stashOnTeardown = false;
+  #snapshotStashed = false;
 
   private readonly worktreePath: string | null;
   private readonly bootArgsExtra: string[];
@@ -396,6 +444,9 @@ export class FirecrackerSessionEnv implements SessionEnv {
   private readonly resolveNameservers: () => Promise<string[]>;
   private readonly readyPollMs: number;
   private readonly logger: { warn: (msg: string) => void };
+  private readonly vmmApi: VmmApiFn;
+  private readonly statFile: StatFileFn;
+  private readonly hostArch: string;
 
   private readonly settledMappings = new Map<number, SessionEnvPortMapping>();
   private readonly live = new Set<LiveEntry>();
@@ -427,6 +478,10 @@ export class FirecrackerSessionEnv implements SessionEnv {
     this.resolveNameservers = deps.resolveNameservers ?? (() => resolveGuestNameservers());
     this.readyPollMs = deps.readyPollMs ?? DEFAULT_READY_POLL_MS;
     this.logger = deps.logger ?? { warn: (msg) => console.warn(msg) };
+    this.vmmApi = deps.vmmApi ?? defaultVmmApi;
+    this.statFile = deps.statFile ?? defaultStatFile;
+    this.hostArch = deps.hostArch ?? process.arch;
+    this.#restoreSnapshot = deps.restoreSnapshot ?? null;
     this.createdAtMs = this.clock.nowMs();
     this.#lastActivityAtMs = this.createdAtMs;
   }
@@ -439,6 +494,10 @@ export class FirecrackerSessionEnv implements SessionEnv {
   }
   get vmStarted(): boolean {
     return this.#started;
+  }
+  /** Whether the current boot was a cold boot or a snapshot resume; null before the first boot. */
+  get bootMode(): FirecrackerBootMode | null {
+    return this.#bootMode;
   }
   /** Guest address, once booted. Exposed for diagnostics and tests. */
   get guestIp(): string | null {
@@ -467,6 +526,11 @@ export class FirecrackerSessionEnv implements SessionEnv {
       rootfsPath: 'unused',
       workspacePath: 'unused',
     }).chrootRoot;
+  }
+
+  /** Host path of the VMM API socket. */
+  private get apiSockHostPath(): string {
+    return this.useJailer ? `${this.jailerChrootRoot}/api.sock` : `${this.vmDir}/api.sock`;
   }
 
   private get vsockPath(): string {
@@ -570,6 +634,47 @@ export class FirecrackerSessionEnv implements SessionEnv {
       );
     }
 
+    const wanted = this.#restoreSnapshot;
+    this.#restoreSnapshot = null;
+    this.#bootFingerprint = null;
+    // Resolved once per boot: a cold boot bakes them into the kernel cmdline,
+    // and a snapshot carries the ones from the boot it was taken in.
+    const nameservers = await this.resolveNameservers();
+    // Taken before the disks are cloned and staged. A rebuild racing the
+    // boot then records the older artifacts, so the next start sees a
+    // mismatch and cold boots, which is the safe direction.
+    const current = await this.#fingerprint(nameservers);
+    if (wanted !== null) {
+      if (current !== null && current === wanted) {
+        try {
+          await this.#boot(true, nameservers);
+          this.#bootMode = 'restored';
+          // The resumed guest is still the one the snapshot was taken from.
+          this.#bootFingerprint = wanted;
+          return;
+        } catch (err) {
+          // Resources are still held; a cold boot would collide with them.
+          if (this.#teardownIncomplete) throw err;
+          this.logger.warn(
+            `[fc ${this.vmId}] snapshot restore failed, cold booting instead: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      } else {
+        this.logger.warn(
+          `[fc ${this.vmId}] snapshot is incompatible with the current kernel/rootfs, ` +
+            `machine config or guest DNS; cold booting`,
+        );
+      }
+      await this.#discardSnapshot();
+    }
+    await this.#boot(false, nameservers);
+    this.#bootMode = 'cold';
+    this.#bootFingerprint = current;
+  }
+
+  async #boot(restore: boolean, nameservers: string[]): Promise<void> {
     // Create ahfc0 here, not only at Hub boot. Chat sessions use the host
     // adapter, so the boot sweep used to skip Firecracker networking whenever
     // `sessionEnvAdapter=host` — then VM mode failed on `tap-create` because
@@ -647,7 +752,6 @@ export class FirecrackerSessionEnv implements SessionEnv {
         vmId: this.vmId,
       });
 
-      const nameservers = await this.resolveNameservers();
       const bootArgsExtra = [`ahvm.session=${this.sessionId}`, ...this.bootArgsExtra];
 
       let apiSockPath: string;
@@ -679,6 +783,7 @@ export class FirecrackerSessionEnv implements SessionEnv {
         const configSrc = `${this.vmDir}/vm-config.json`;
         await this.io.writeFile(configSrc, JSON.stringify(config, null, 2));
         await this.#stageJailerResources(stage, configSrc);
+        if (restore) await this.#stageSnapshot(stage.chrootRoot);
         apiSockPath = stage.apiSockPath;
         configPath = stage.configPath;
         // Jailer without `--cgroup`: the docker VMM helper intentionally is not
@@ -691,10 +796,12 @@ export class FirecrackerSessionEnv implements SessionEnv {
           gid: this.jailerGid,
           chrootBaseDir: this.jailerBase,
           apiSockPath,
-          configPath,
+          // A snapshot load needs an unconfigured VMM.
+          ...(restore ? {} : { configPath }),
           cgroupVersion: 2,
         });
       } else {
+        if (restore) throw new Error('Snapshot restore requires the jailer');
         configPath = `${this.vmDir}/vm-config.json`;
         config = buildFirecrackerVmConfig({
           network,
@@ -740,7 +847,9 @@ export class FirecrackerSessionEnv implements SessionEnv {
         this.logger.warn(`[fc ${this.vmId}] ${chunk.toString().trimEnd()}`);
       });
 
+      if (restore) await this.#loadSnapshot();
       await this.#waitForAgent();
+      if (restore) await this.#verifyGuestClock();
       this.#started = true;
       this.touch();
     } catch (err) {
@@ -1033,6 +1142,10 @@ export class FirecrackerSessionEnv implements SessionEnv {
           'await mountWorktree() (or ensureStarted()) before spawn().',
       );
     }
+    return this.#spawnInGuest(command, opts);
+  }
+
+  #spawnInGuest(command: string, opts: SessionEnvSpawnOpts): SessionEnvProcess {
     const cwd = resolveEnvRelativeCwd(FIRECRACKER_GUEST_WORKSPACE, opts.cwd);
     const name = opts.name ?? command;
     // Synchronous by contract, asynchronous by transport: the handle is wired
@@ -1167,10 +1280,22 @@ export class FirecrackerSessionEnv implements SessionEnv {
    */
   async #execCapture(
     command: string,
-    opts: { cwd: string; timeoutMs: number; maxOutputBytes?: number },
+    opts: {
+      cwd: string;
+      timeoutMs: number;
+      maxOutputBytes?: number;
+      /** Called from inside the boot, before the VM counts as started. */
+      duringBoot?: boolean;
+    },
   ): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
-    await this.ensureStarted();
-    const proc = this.spawn(command, { cwd: opts.cwd, name: 'worktree-io' });
+    let proc: SessionEnvProcess;
+    if (opts.duringBoot) {
+      this.#assertLive('exec');
+      proc = this.#spawnInGuest(command, { cwd: opts.cwd, name: 'boot-check' });
+    } else {
+      await this.ensureStarted();
+      proc = this.spawn(command, { cwd: opts.cwd, name: 'worktree-io' });
+    }
     const maxBytes = opts.maxOutputBytes ?? FIRECRACKER_EXEC_OUTPUT_MAX_BYTES;
     let stdout = '';
     let stderr = '';
@@ -1289,6 +1414,11 @@ export class FirecrackerSessionEnv implements SessionEnv {
     }
     this.#vmProcess = null;
 
+    if (this.useJailer && this.#stashOnTeardown) {
+      this.#stashOnTeardown = false;
+      await this.#stashSnapshot();
+    }
+
     if (this.useJailer) {
       await this.#cleanJailerTree();
     }
@@ -1324,6 +1454,220 @@ export class FirecrackerSessionEnv implements SessionEnv {
         `SessionEnv[${this.sessionId}] failed to clean disk dir ${this.diskDir}: ${
           cleaned.stderr.trim() || cleaned.stdout.trim()
         }`,
+      );
+    }
+  }
+
+  // Snapshots
+
+  /**
+   * Compatibility fingerprint for a snapshot of this VM, or null when this VM
+   * cannot be snapshotted (no jailer) or the guest artifacts cannot be read.
+   */
+  async snapshotFingerprint(): Promise<string | null> {
+    return this.#fingerprint(await this.resolveNameservers());
+  }
+
+  async #fingerprint(nameservers: string[]): Promise<string | null> {
+    if (!this.useJailer) return null;
+    try {
+      const [kernel, rootfs] = await Promise.all([
+        this.statFile(this.paths.kernelPath),
+        this.statFile(this.paths.baseRootfsPath),
+      ]);
+      return snapshotFingerprint({
+        kernelPath: this.paths.kernelPath,
+        kernel,
+        rootfsPath: this.paths.baseRootfsPath,
+        rootfs,
+        vcpuCount: this.vcpuCount,
+        memSizeMib: this.memSizeMib,
+        bootArgsExtra: this.bootArgsExtra,
+        nameservers,
+        protocolVersion: VM_AGENT_PROTOCOL_VERSION,
+      });
+    } catch (err) {
+      this.logger.warn(`[fc ${this.vmId}] cannot fingerprint guest artifacts: ${String(err)}`);
+      return null;
+    }
+  }
+
+  /**
+   * Stop the VM, keeping a snapshot of its memory and device state to resume
+   * from. Pass the returned fingerprint as `restoreSnapshot` to the next env
+   * for this VM id. Returns null when no snapshot was kept (not running, a
+   * guest process still live, no jailer, or the snapshot failed); the VM is
+   * stopped either way and the next start is a cold boot.
+   */
+  async suspend(): Promise<string | null> {
+    let fingerprint: string | null = null;
+    this.#snapshotStashed = false;
+    if (this.#started && !this.#disposed && this.live.size === 0) {
+      fingerprint = this.#bootFingerprint;
+      if (fingerprint !== null) {
+        try {
+          await this.#createSnapshot();
+          this.#stashOnTeardown = true;
+        } catch (err) {
+          this.logger.warn(
+            `[fc ${this.vmId}] snapshot failed, stopping without one: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+          fingerprint = null;
+        }
+      }
+    }
+    try {
+      await this.dispose();
+    } finally {
+      this.#stashOnTeardown = false;
+    }
+    return this.#snapshotStashed ? fingerprint : null;
+  }
+
+  async #api(
+    method: 'GET' | 'PUT' | 'PATCH',
+    path: string,
+    body: unknown,
+    timeoutMs: number,
+  ): Promise<void> {
+    const res = await this.vmmApi({
+      socketPath: this.apiSockHostPath,
+      method,
+      path,
+      body,
+      timeoutMs,
+    });
+    assertVmmApiOk(res, `VMM ${method} ${path}`);
+  }
+
+  async #createSnapshot(): Promise<void> {
+    // Flush the guest page cache first. The snapshot itself is consistent
+    // without it, but if it is later discarded the cold boot mounts the data
+    // disk as it was on the host, and anything still dirty in guest memory
+    // would be lost.
+    try {
+      const res = await this.#execCapture('sync', {
+        cwd: '.',
+        timeoutMs: SNAPSHOT_SYNC_TIMEOUT_MS,
+      });
+      if (res.exitCode !== 0) {
+        this.logger.warn(`[fc ${this.vmId}] guest sync exited ${String(res.exitCode)}`);
+      }
+    } catch (err) {
+      this.logger.warn(`[fc ${this.vmId}] guest sync failed: ${String(err)}`);
+    }
+    await this.#api('PATCH', '/vm', { state: 'Paused' }, VMM_API_TIMEOUT_MS);
+    await this.#api(
+      'PUT',
+      '/snapshot/create',
+      {
+        snapshot_type: 'Full',
+        snapshot_path: SNAPSHOT_STATE_FILE,
+        mem_file_path: SNAPSHOT_MEM_FILE,
+      },
+      SNAPSHOT_CREATE_TIMEOUT_MS,
+    );
+  }
+
+  /** Runs between the VMM stop and the jail clean, which would delete the files. */
+  async #stashSnapshot(): Promise<void> {
+    const tree = jailerVmTree(this.jailerBase, this.vmId);
+    const res = await this.io.run([resolveFcJailManageHelper(), 'stash-snapshot', tree]);
+    if (res.ok) {
+      this.#snapshotStashed = true;
+      return;
+    }
+    this.logger.warn(
+      `[fc ${this.vmId}] failed to stash snapshot: ${res.stderr.trim() || res.stdout.trim()}`,
+    );
+    await this.#discardSnapshot();
+  }
+
+  async #stageSnapshot(chrootRoot: string): Promise<void> {
+    const res = await this.io.run([
+      resolveFcJailManageHelper(),
+      'restore-snapshot',
+      chrootRoot,
+      String(this.jailerUid),
+      String(this.jailerGid),
+    ]);
+    if (!res.ok) {
+      throw new Error(`Failed to stage snapshot: ${res.stderr.trim() || res.stdout.trim()}`);
+    }
+  }
+
+  async #discardSnapshot(): Promise<void> {
+    if (!this.useJailer) return;
+    const res = await this.io.run([resolveFcJailManageHelper(), 'discard-snapshot', this.vmId]);
+    if (!res.ok) {
+      this.logger.warn(
+        `[fc ${this.vmId}] failed to discard snapshot: ${res.stderr.trim() || res.stdout.trim()}`,
+      );
+    }
+  }
+
+  /** Wait for the fresh VMM's API, then load and resume the staged snapshot. */
+  async #loadSnapshot(): Promise<void> {
+    const deadline = this.clock.nowMs() + this.readyTimeoutMs;
+    let lastError = 'no attempt made';
+    for (;;) {
+      try {
+        await this.#api('GET', '/', undefined, VMM_API_TIMEOUT_MS);
+        break;
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
+      }
+      if (this.clock.nowMs() >= deadline) {
+        throw new Error(
+          `VMM API for ${this.vmId} did not answer within ${this.readyTimeoutMs}ms: ${lastError}`,
+        );
+      }
+      await this.clock.sleep(this.readyPollMs);
+    }
+    await this.#api(
+      'PUT',
+      '/snapshot/load',
+      {
+        snapshot_path: RESTORE_STATE_FILE,
+        mem_backend: { backend_type: 'File', backend_path: RESTORE_MEM_FILE },
+        resume_vm: true,
+        // Advance kvmclock by the time the VM spent stopped, so the guest's
+        // wall clock is current on resume (x86_64 only; Firecracker rejects it
+        // elsewhere). Without it the guest resumes at snapshot time and TLS
+        // fails until timesyncd's next poll. A host kernel without
+        // KVM_CLOCK_REALTIME fails the load, which takes the cold-boot path.
+        ...(this.hostArch === 'x64' ? { clock_realtime: true } : {}),
+      },
+      SNAPSHOT_LOAD_TIMEOUT_MS,
+    );
+  }
+
+  /**
+   * A restored guest is ready only once its wall clock is current. Firecracker
+   * resumes it at snapshot time; clock_realtime corrects that where the host
+   * supports it, and this checks the result rather than trusting it (a guest
+   * on a clocksource other than kvm-clock would not move). Throwing here sends
+   * the start down the cold-boot path, whose fresh timesyncd start steps the
+   * clock right away.
+   */
+  async #verifyGuestClock(): Promise<void> {
+    const res = await this.#execCapture('date +%s', {
+      cwd: '.',
+      timeoutMs: GUEST_CLOCK_CHECK_TIMEOUT_MS,
+      maxOutputBytes: 1024,
+      duringBoot: true,
+    });
+    const guestSec = Number.parseInt(res.stdout.trim(), 10);
+    if (res.exitCode !== 0 || !Number.isFinite(guestSec)) {
+      throw new Error(`could not read the restored guest clock (exit ${String(res.exitCode)})`);
+    }
+    const skewMs = Math.abs(guestSec * 1000 - this.clock.nowMs());
+    if (skewMs > GUEST_CLOCK_MAX_SKEW_MS) {
+      throw new Error(
+        `restored guest clock is off by ${Math.round(skewMs / 1000)}s ` +
+          `(limit ${GUEST_CLOCK_MAX_SKEW_MS / 1000}s)`,
       );
     }
   }

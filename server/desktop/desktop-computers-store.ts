@@ -25,6 +25,9 @@ export interface DesktopComputersStore {
   listForKey(key: DesktopComputerKey): DesktopComputerRecord[];
   /** Every slot held by a computer of this kind, stopped or running. */
   listSlots(kind: DesktopRuntimeKind): number[];
+  /** Fingerprint of the snapshot the next start should resume, if any. */
+  getSnapshot(key: DesktopComputerKey, kind: DesktopRuntimeKind): string | null;
+  setSnapshot(key: DesktopComputerKey, kind: DesktopRuntimeKind, fingerprint: string | null): void;
 }
 
 interface Row {
@@ -111,6 +114,17 @@ export function createDesktopComputersStore(
         )
         .all(kind) as { slot: number }[];
       return rows.map((r) => r.slot);
+    },
+    getSnapshot(key, kind) {
+      const row = db()
+        .prepare(`SELECT snapshot FROM desktop_computers WHERE ${KEY_WHERE}`)
+        .get(...keyArgs(key, kind)) as { snapshot: string | null } | undefined;
+      return row?.snapshot ?? null;
+    },
+    setSnapshot(key, kind, fingerprint) {
+      db()
+        .prepare(`UPDATE desktop_computers SET snapshot = ? WHERE ${KEY_WHERE}`)
+        .run(fingerprint, ...keyArgs(key, kind));
     },
   };
 }

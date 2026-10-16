@@ -260,6 +260,105 @@ describe('fc-jail-manage.sh stage', () => {
   });
 });
 
+describe('fc-jail-manage.sh snapshots', () => {
+  function setup(prefix: string) {
+    const base = mkdtempSync(path.join(os.tmpdir(), prefix));
+    const conf = writeRootsConf(base);
+    const env = { AGENT_HUB_FC_ROOTS_CONF: conf };
+    const vmId = 'ahdt-snap';
+    const tree = path.join(base, 'firecracker', vmId);
+    const root = path.join(tree, 'root');
+    const vmDir = path.join(base, vmId);
+    const snap = path.join(vmDir, 'snapshot');
+    mkdirSync(root, { recursive: true });
+    mkdirSync(vmDir, { recursive: true });
+    const uid = String(process.getuid?.() ?? 1000);
+    const gid = String(process.getgid?.() ?? 1000);
+    return { base, env, vmId, tree, root, vmDir, snap, uid, gid };
+  }
+
+  it('stashes the snapshot and the jail rootfs so they survive the jail clean', () => {
+    const t = setup('fc-snap-stash-');
+    try {
+      writeFileSync(path.join(t.root, 'rootfs.ext4'), 'dirty-rootfs');
+      writeFileSync(path.join(t.root, 'snapshot.vmstate'), 'state');
+      writeFileSync(path.join(t.root, 'snapshot.mem'), 'memory');
+      const res = run(jailHelper, ['stash-snapshot', t.tree], t.env);
+      expect(res.status, res.stderr).toBe(0);
+      expect(run(jailHelper, ['clean', t.tree], t.env).status).toBe(0);
+      expect(readFileSync(path.join(t.snap, 'rootfs.ext4'), 'utf8')).toBe('dirty-rootfs');
+      expect(readFileSync(path.join(t.snap, 'vmstate'), 'utf8')).toBe('state');
+      expect(readFileSync(path.join(t.snap, 'mem'), 'utf8')).toBe('memory');
+      expect(statSync(t.snap).mode & 0o777).toBe(0o700);
+    } finally {
+      rmSync(t.base, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses to stash an incomplete snapshot and leaves no stash behind', () => {
+    const t = setup('fc-snap-partial-');
+    try {
+      writeFileSync(path.join(t.root, 'rootfs.ext4'), 'r');
+      writeFileSync(path.join(t.root, 'snapshot.vmstate'), 's');
+      const res = run(jailHelper, ['stash-snapshot', t.tree], t.env);
+      expect(res.status).toBe(3);
+      expect(existsSync(t.snap)).toBe(false);
+    } finally {
+      rmSync(t.base, { recursive: true, force: true });
+    }
+  });
+
+  it('restores the stash into a staged jail and consumes it', () => {
+    const t = setup('fc-snap-restore-');
+    try {
+      mkdirSync(t.snap);
+      writeFileSync(path.join(t.snap, 'rootfs.ext4'), 'snap-rootfs');
+      writeFileSync(path.join(t.snap, 'vmstate'), 'state');
+      writeFileSync(path.join(t.snap, 'mem'), 'memory');
+      // `stage` put a fresh clone here; the snapshot's rootfs must win.
+      writeFileSync(path.join(t.root, 'rootfs.ext4'), 'fresh-clone');
+      const res = run(jailHelper, ['restore-snapshot', t.root, t.uid, t.gid], t.env);
+      expect(res.status, res.stderr).toBe(0);
+      expect(readFileSync(path.join(t.root, 'rootfs.ext4'), 'utf8')).toBe('snap-rootfs');
+      expect(readFileSync(path.join(t.root, 'restore.vmstate'), 'utf8')).toBe('state');
+      expect(readFileSync(path.join(t.root, 'restore.mem'), 'utf8')).toBe('memory');
+      expect(statSync(path.join(t.root, 'restore.mem')).mode & 0o777).toBe(0o600);
+      expect(existsSync(t.snap)).toBe(false);
+      // A second restore has nothing left to load.
+      expect(run(jailHelper, ['restore-snapshot', t.root, t.uid, t.gid], t.env).status).toBe(3);
+    } finally {
+      rmSync(t.base, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses restore paths outside the jailer layout', () => {
+    const t = setup('fc-snap-reject-');
+    try {
+      expect(run(jailHelper, ['restore-snapshot', t.tree, t.uid, t.gid], t.env).status).toBe(2);
+      expect(
+        run(jailHelper, ['restore-snapshot', '/etc/firecracker/x/root', '0', '0'], t.env).status,
+      ).toBe(2);
+      expect(run(jailHelper, ['discard-snapshot', '../etc'], t.env).status).toBe(2);
+    } finally {
+      rmSync(t.base, { recursive: true, force: true });
+    }
+  });
+
+  it('discards a stash without touching the VM disks', () => {
+    const t = setup('fc-snap-discard-');
+    try {
+      mkdirSync(t.snap);
+      writeFileSync(path.join(t.snap, 'mem'), 'm');
+      writeFileSync(path.join(t.vmDir, 'workspace.ext4'), 'w');
+      expect(run(jailHelper, ['discard-snapshot', t.vmId], t.env).status).toBe(0);
+      expect(existsSync(t.snap)).toBe(false);
+      expect(readFileSync(path.join(t.vmDir, 'workspace.ext4'), 'utf8')).toBe('w');
+    } finally {
+      rmSync(t.base, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('fc-launch-vmm.sh', () => {
   it('refuses arbitrary executables', () => {
     const base = mkdtempSync(path.join(os.tmpdir(), 'fc-launch-'));

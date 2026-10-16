@@ -18,7 +18,7 @@ import { registerDesktopRuntime } from './desktop-runtime-registry.js';
 
 export type FirecrackerDesktopVmDefaults = Omit<
   FirecrackerSessionEnvDeps,
-  'sessionId' | 'worktreePath' | 'slots' | 'paths' | 'vmId' | 'bootArgsExtra'
+  'sessionId' | 'worktreePath' | 'slots' | 'paths' | 'vmId' | 'bootArgsExtra' | 'restoreSnapshot'
 > & { paths: FirecrackerPaths };
 
 export class DesktopSlotReservationError extends Error {
@@ -81,6 +81,7 @@ export function createFirecrackerDesktopRuntime(opts: {
         worktreePath: null,
         slots: spec.slots,
         bootArgsExtra: spec.bootArgsExtra,
+        restoreSnapshot: spec.restoreSnapshot,
       }),
   });
 }

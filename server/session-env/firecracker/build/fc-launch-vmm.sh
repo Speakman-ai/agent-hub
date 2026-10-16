@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Narrow root helper: start Firecracker or jailer and chown the vsock to the Hub.
+# Narrow root helper: start Firecracker or jailer and chown its vsock and API
+# sockets to the Hub.
 #
 # Invoked as:
 #   fc-launch-vmm.sh <vsockPath> <uid:gid> firecracker <firecracker-args...>
@@ -64,27 +65,45 @@ fc_assert_argv_paths_under_roots "$@"
 
 "$bin" "$@" &
 vmm=$!
+# The API socket sits beside the vsock socket in both exec modes (the jail
+# root, or the per-VM control dir). The Hub needs it for pause / snapshot /
+# snapshot load. A VMM started for a snapshot load creates api.sock first and
+# vsock.sock only once the Hub has loaded the snapshot, so hand api.sock over
+# as soon as it appears rather than after the vsock.
+api_sock="$(dirname -- "$sock")/api.sock"
+api_done=0
+open_ancestors() {
+  # Every ancestor up through JAILER_DIR must be other-executable (setup uses
+  # 0711 on the jailer base) so uid/gid `owner` can traverse without the tree
+  # being Hub-writable.
+  fc_load_roots
+  local dir
+  dir=$(dirname -- "$1")
+  while [[ -n "$dir" && "$dir" != / ]]; do
+    chmod a+x -- "$dir" 2>/dev/null || true
+    cdir=$(fc_canonical_root "$dir" 2>/dev/null || echo "$dir")
+    cjail=$(fc_canonical_root "${JAILER_DIR}" 2>/dev/null || echo "${JAILER_DIR}")
+    if [[ "$cdir" == "$cjail" ]]; then
+      break
+    fi
+    parent=$(dirname -- "$dir")
+    [[ "$parent" == "$dir" ]] && break
+    dir=$parent
+  done
+}
 i=0
-while [ "$i" -lt 200 ]; do
+while [ "$i" -lt 600 ]; do
+  if [ "$api_done" = 0 ] && [ -S "$api_sock" ] && [ ! -L "$api_sock" ]; then
+    open_ancestors "$api_sock"
+    chown "$owner" "$api_sock"
+    api_done=1
+  fi
   if [ -S "$sock" ]; then
-    # Hub dials this UDS after jailer creates it inside the chroot. Ensure
-    # every ancestor up through JAILER_DIR is other-executable (setup uses
-    # 0711 on the jailer base) so uid/gid `owner` can traverse without the
-    # tree being Hub-writable.
-    fc_load_roots
-    dir=$(dirname -- "$sock")
-    while [[ -n "$dir" && "$dir" != / ]]; do
-      chmod a+x -- "$dir" 2>/dev/null || true
-      cdir=$(fc_canonical_root "$dir" 2>/dev/null || echo "$dir")
-      cjail=$(fc_canonical_root "${JAILER_DIR}" 2>/dev/null || echo "${JAILER_DIR}")
-      if [[ "$cdir" == "$cjail" ]]; then
-        break
-      fi
-      parent=$(dirname -- "$dir")
-      [[ "$parent" == "$dir" ]] && break
-      dir=$parent
-    done
+    open_ancestors "$sock"
     chown "$owner" "$sock"
+    if [ "$api_done" = 0 ] && [ -S "$api_sock" ] && [ ! -L "$api_sock" ]; then
+      chown "$owner" "$api_sock"
+    fi
     break
   fi
   i=$((i + 1))

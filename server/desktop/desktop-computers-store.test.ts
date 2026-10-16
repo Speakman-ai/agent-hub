@@ -36,6 +36,18 @@ describe('desktop computers store', () => {
     ).toThrow(/UNIQUE/);
   });
 
+  it('records and clears the snapshot pointer per computer', () => {
+    const s = store();
+    s.create({ ...key('u1'), kind: 'firecracker', vmId: 'ahdt-1', slot: 3, lastActiveAt: null });
+    s.create({ ...key('u2'), kind: 'firecracker', vmId: 'ahdt-2', slot: 4, lastActiveAt: null });
+    expect(s.getSnapshot(key('u1'), 'firecracker')).toBeNull();
+    s.setSnapshot(key('u1'), 'firecracker', 'sha256:abc');
+    expect(s.getSnapshot(key('u1'), 'firecracker')).toBe('sha256:abc');
+    expect(s.getSnapshot(key('u2'), 'firecracker')).toBeNull();
+    s.setSnapshot(key('u1'), 'firecracker', null);
+    expect(s.getSnapshot(key('u1'), 'firecracker')).toBeNull();
+  });
+
   it('deletes only the matching computer', () => {
     const s = store();
     s.create({ ...key('u1'), kind: 'firecracker', vmId: 'ahdt-1', slot: 3, lastActiveAt: null });

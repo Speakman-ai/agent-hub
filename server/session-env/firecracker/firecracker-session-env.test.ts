@@ -57,6 +57,10 @@ class FakeGuestConnection implements VsockDuplex {
       protocolVersion: VM_AGENT_PROTOCOL_VERSION,
       bootId: 'boot-1',
     },
+    /** Auto-answers exec requests it returns a reply for; others are driven by the test. */
+    readonly execReply:
+      | ((command: string) => { code: number; stdout: string } | null)
+      | null = null,
   ) {}
 
   write(data: Buffer): boolean {
@@ -75,6 +79,15 @@ class FakeGuestConnection implements VsockDuplex {
         if (this.request.kind === 'ping' && this.pong) {
           const pong = this.pong;
           setImmediate(() => this.replyJson('reply', pong));
+        }
+        const req = this.request;
+        const auto = req.kind === 'exec' && this.execReply ? this.execReply(req.command) : null;
+        if (auto) {
+          setImmediate(() => {
+            this.replyJson('started', { pid: 9 });
+            if (auto.stdout) this.reply('stdout', Buffer.from(auto.stdout));
+            this.replyJson('exit', { code: auto.code, signal: null });
+          });
         }
       }
     }
@@ -131,8 +144,10 @@ class FakeGuest {
     bootId: 'boot-1',
   };
 
+  execReply: ((command: string) => { code: number; stdout: string } | null) | null = null;
+
   connect = async (): Promise<VsockDuplex> => {
-    const conn = new FakeGuestConnection(this.accept, this.pong);
+    const conn = new FakeGuestConnection(this.accept, this.pong, this.execReply);
     conn.writable = this.defaultWritable;
     this.connections.push(conn);
     return conn;
@@ -867,5 +882,371 @@ describe('defaultPrepareDisks — worktree path handed to the privileged helper'
       containerWorkspacesDir: null,
     });
     expect(worktreeArg(calls[0] as string[])).toBe(ctx.worktreePath);
+  });
+});
+
+describe('FirecrackerSessionEnv snapshots', () => {
+  type ApiCall = { socketPath: string; method: string; path: string; body?: unknown };
+
+  function snapshotEnv(
+    overrides: Record<string, unknown> = {},
+    opts: {
+      api?: (call: ApiCall) => { status: number; body: string };
+      helper?: (argv: string[]) => { ok: boolean; stdout: string; stderr: string } | undefined;
+      mtimes?: Record<string, number>;
+      /** Host wall clock (ms). */
+      now?: () => number;
+      /** Guest `date +%s` output; defaults to the host clock. */
+      guestEpochSec?: () => string;
+      nameservers?: string[];
+    } = {},
+  ) {
+    const apiCalls: ApiCall[] = [];
+    const vmmApi = vi.fn(async (call: ApiCall) => {
+      apiCalls.push(call);
+      return opts.api?.(call) ?? { status: 204, body: '' };
+    });
+    const statFile = async (p: string) => ({ size: 100, mtimeMs: opts.mtimes?.[p] ?? 1 });
+    const now = opts.now ?? (() => Date.now());
+    const built = makeEnv({
+      vmId: 'ahdt-snap',
+      worktreePath: null,
+      bootArgsExtra: ['ahvm.desktop=1'],
+      vmmApi,
+      statFile,
+      hostArch: 'x64',
+      resolveNameservers: async () => opts.nameservers ?? ['10.0.0.2'],
+      clock: { nowMs: now, sleep: async () => undefined },
+      ioOverrides: {
+        run: async (argv: string[]) => {
+          built.runs.push(argv);
+          return opts.helper?.(argv) ?? { ok: true, stdout: '', stderr: '' };
+        },
+      },
+      ...overrides,
+    });
+    built.guest.execReply = (command) =>
+      command === 'date +%s'
+        ? {
+            code: 0,
+            stdout: `${opts.guestEpochSec?.() ?? String(Math.floor(now() / 1000))}\n`,
+          }
+        : null;
+    return { ...built, apiCalls };
+  }
+
+  /** The guest answers the pre-snapshot `sync`. */
+  async function answerSync(guest: FakeGuest): Promise<void> {
+    let conn: FakeGuestConnection | undefined;
+    await vi.waitFor(() => {
+      conn = guest.connections.find(
+        (c) => c.request?.kind === 'exec' && c.request.command === 'sync',
+      );
+      expect(conn).toBeDefined();
+    });
+    conn!.replyJson('started', { pid: 7 });
+    conn!.replyJson('exit', { code: 0, signal: null });
+  }
+
+  const jailOps = (runs: string[][]) =>
+    runs.filter((a) => a[0]?.endsWith('fc-jail-manage.sh')).map((a) => a[1]);
+
+  async function takeSnapshot(): Promise<string> {
+    const { env, guest } = snapshotEnv();
+    await env.ensureStarted();
+    const suspending = env.suspend();
+    await answerSync(guest);
+    const fp = await suspending;
+    expect(fp).toMatch(/^sha256:/);
+    return fp!;
+  }
+
+  it('suspend syncs, pauses, snapshots, then stashes the files before the jail is cleaned', async () => {
+    const { env, guest, runs, apiCalls, stopVmm, slots } = snapshotEnv();
+    await env.ensureStarted();
+    expect(env.bootMode).toBe('cold');
+    runs.length = 0;
+
+    const suspending = env.suspend();
+    await answerSync(guest);
+    const fp = await suspending;
+
+    expect(fp).toBe(await env.snapshotFingerprint());
+    expect(apiCalls.map((c) => [c.method, c.path])).toEqual([
+      ['PATCH', '/vm'],
+      ['PUT', '/snapshot/create'],
+    ]);
+    expect(apiCalls[0]!.socketPath).toBe('/srv/jailer/firecracker/ahdt-snap/root/api.sock');
+    expect(apiCalls[0]!.body).toEqual({ state: 'Paused' });
+    expect(apiCalls[1]!.body).toEqual({
+      snapshot_type: 'Full',
+      snapshot_path: 'snapshot.vmstate',
+      mem_file_path: 'snapshot.mem',
+    });
+    // VMM stopped, then stash, then the jail clean that would delete the files.
+    expect(stopVmm).toHaveBeenCalled();
+    expect(jailOps(runs)).toEqual(['stash-snapshot', 'clean']);
+    const stash = runs.find((a) => a[1] === 'stash-snapshot')!;
+    expect(stash[2]).toBe('/srv/jailer/firecracker/ahdt-snap');
+    // A normal stop otherwise: disk kept, slot released, env disposed.
+    expect(runs.some((a) => a[0]?.endsWith('fc-prepare-disks.sh') && a[1] === 'clean')).toBe(false);
+    expect(slots.released).toEqual([3]);
+    expect(env.disposed).toBe(true);
+  });
+
+  it('suspend stops without a snapshot when the VMM refuses to create one', async () => {
+    const { env, guest, runs } = snapshotEnv(
+      {},
+      {
+        api: (c) =>
+          c.path === '/snapshot/create'
+            ? { status: 400, body: '{"fault_message":"disk full"}' }
+            : { status: 204, body: '' },
+      },
+    );
+    await env.ensureStarted();
+    const suspending = env.suspend();
+    await answerSync(guest);
+    await expect(suspending).resolves.toBeNull();
+    expect(jailOps(runs)).not.toContain('stash-snapshot');
+    expect(env.disposed).toBe(true);
+  });
+
+  it('suspend reports no snapshot when stashing fails, and discards the partial stash', async () => {
+    const { env, guest, runs } = snapshotEnv(
+      {},
+      {
+        helper: (argv) =>
+          argv[1] === 'stash-snapshot' ? { ok: false, stdout: '', stderr: 'missing' } : undefined,
+      },
+    );
+    await env.ensureStarted();
+    const suspending = env.suspend();
+    await answerSync(guest);
+    await expect(suspending).resolves.toBeNull();
+    expect(jailOps(runs)).toContain('discard-snapshot');
+  });
+
+  it('does not snapshot an unjailed VM', async () => {
+    const { env, apiCalls } = snapshotEnv({ useJailer: false });
+    await env.ensureStarted();
+    await expect(env.snapshotFingerprint()).resolves.toBeNull();
+    await expect(env.suspend()).resolves.toBeNull();
+    expect(apiCalls).toEqual([]);
+  });
+
+  it('restores from a matching snapshot instead of cold booting', async () => {
+    const fp = await takeSnapshot();
+    const { env, runs, spawned, apiCalls } = snapshotEnv({ restoreSnapshot: fp });
+    await env.ensureStarted();
+
+    expect(env.bootMode).toBe('restored');
+    expect(env.vmStarted).toBe(true);
+    // Staged like a cold boot, then the stash replaces the rootfs copy.
+    const ops = jailOps(runs);
+    expect(ops.indexOf('stage')).toBeLessThan(ops.indexOf('restore-snapshot'));
+    const restore = runs.find((a) => a[1] === 'restore-snapshot')!;
+    expect(restore.slice(2)).toEqual(['/srv/jailer/firecracker/ahdt-snap/root', '1000', '1000']);
+    // A snapshot loads into an unconfigured VMM.
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0]!.args).not.toContain('--config-file');
+    expect(apiCalls.map((c) => [c.method, c.path])).toEqual([
+      ['GET', '/'],
+      ['PUT', '/snapshot/load'],
+    ]);
+    expect(apiCalls[1]!.body).toEqual({
+      snapshot_path: 'restore.vmstate',
+      mem_backend: { backend_type: 'File', backend_path: 'restore.mem' },
+      resume_vm: true,
+      clock_realtime: true,
+    });
+  });
+
+  it('waits for the fresh VMM API before loading', async () => {
+    const fp = await takeSnapshot();
+    let refusals = 2;
+    const { env, apiCalls } = snapshotEnv(
+      { restoreSnapshot: fp },
+      {
+        api: (c) => {
+          if (c.path === '/' && refusals-- > 0) throw new Error('connect ENOENT api.sock');
+          return { status: 200, body: '{}' };
+        },
+      },
+    );
+    await env.ensureStarted();
+    expect(env.bootMode).toBe('restored');
+    expect(apiCalls.filter((c) => c.path === '/')).toHaveLength(3);
+  });
+
+  it('falls back to a cold boot when the snapshot load fails', async () => {
+    const fp = await takeSnapshot();
+    const { env, runs, spawned, slots } = snapshotEnv(
+      { restoreSnapshot: fp },
+      {
+        api: (c) =>
+          c.path === '/snapshot/load'
+            ? { status: 400, body: '{"fault_message":"Unsupported snapshot version"}' }
+            : { status: 200, body: '{}' },
+      },
+    );
+    await env.ensureStarted();
+
+    expect(env.bootMode).toBe('cold');
+    expect(env.vmStarted).toBe(true);
+    expect(spawned).toHaveLength(2);
+    expect(spawned[0]!.args).not.toContain('--config-file');
+    expect(spawned[1]!.args).toContain('--config-file');
+    // The failed attempt was unwound (tap deleted, slot released) before the
+    // cold boot, and the snapshot is dropped so it is never retried.
+    expect(slots.released).toEqual([3]);
+    const ops = jailOps(runs);
+    expect(ops).toContain('discard-snapshot');
+    expect(ops.lastIndexOf('restore-snapshot')).toBeLessThan(ops.indexOf('discard-snapshot'));
+    expect(ops.lastIndexOf('stage')).toBeGreaterThan(ops.indexOf('discard-snapshot'));
+  });
+
+  it('falls back to a cold boot when the stash is missing', async () => {
+    const fp = await takeSnapshot();
+    const { env, spawned } = snapshotEnv(
+      { restoreSnapshot: fp },
+      {
+        helper: (argv) =>
+          argv[1] === 'restore-snapshot'
+            ? { ok: false, stdout: '', stderr: 'no complete snapshot for ahdt-snap' }
+            : undefined,
+      },
+    );
+    await env.ensureStarted();
+    expect(env.bootMode).toBe('cold');
+    // The VMM never started for the restore attempt.
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0]!.args).toContain('--config-file');
+  });
+
+  it('cold boots without trying the snapshot after a kernel or rootfs rebuild', async () => {
+    const fp = await takeSnapshot();
+    const { env, runs, apiCalls, spawned } = snapshotEnv(
+      { restoreSnapshot: fp },
+      { mtimes: { '/var/lib/agent-hub/fc/rootfs.ext4': 2 } },
+    );
+    await env.ensureStarted();
+    expect(env.bootMode).toBe('cold');
+    expect(jailOps(runs)).not.toContain('restore-snapshot');
+    expect(jailOps(runs)).toContain('discard-snapshot');
+    expect(apiCalls).toEqual([]);
+    expect(spawned).toHaveLength(1);
+  });
+
+  it('records the artifacts the VM booted with, not ones rebuilt while it ran', async () => {
+    const rootfs = '/var/lib/agent-hub/fc/rootfs.ext4';
+    const mtimes: Record<string, number> = {};
+    const { env, guest } = snapshotEnv({}, { mtimes });
+    await env.ensureStarted();
+    const booted = await env.snapshotFingerprint();
+
+    // Guest image rebuilt on the host while the desktop is running.
+    mtimes[rootfs] = 2;
+    const rebuilt = await env.snapshotFingerprint();
+    expect(rebuilt).not.toBe(booted);
+
+    const suspending = env.suspend();
+    await answerSync(guest);
+    const fp = await suspending;
+    expect(fp).toBe(booted);
+
+    // The next start sees the rebuilt artifacts and must not resume the old guest.
+    const next = snapshotEnv({ restoreSnapshot: fp }, { mtimes });
+    await next.env.ensureStarted();
+    expect(next.env.bootMode).toBe('cold');
+    expect(jailOps(next.runs)).not.toContain('restore-snapshot');
+    expect(next.apiCalls).toEqual([]);
+  });
+
+  it('keeps the original boot fingerprint across a restore', async () => {
+    const rootfs = '/var/lib/agent-hub/fc/rootfs.ext4';
+    const mtimes: Record<string, number> = {};
+    const fp = await takeSnapshot();
+    const { env, guest } = snapshotEnv({ restoreSnapshot: fp }, { mtimes });
+    await env.ensureStarted();
+    expect(env.bootMode).toBe('restored');
+
+    mtimes[rootfs] = 2;
+    const suspending = env.suspend();
+    await answerSync(guest);
+    await expect(suspending).resolves.toBe(fp);
+  });
+
+  describe('guest wall clock after a long stop', () => {
+    const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
+    const suspendedAt = Date.UTC(2026, 9, 1);
+    const resumedAt = suspendedAt + TWO_DAYS_MS;
+
+    it('is ready once the guest clock has caught up with the host', async () => {
+      const fp = await takeSnapshot();
+      const { env, guest } = snapshotEnv(
+        { restoreSnapshot: fp },
+        {
+          now: () => resumedAt,
+          // clock_realtime advanced kvmclock by the two days the VM was stopped.
+          guestEpochSec: () => String(Math.floor(resumedAt / 1000) - 1),
+        },
+      );
+      await env.ensureStarted();
+      expect(env.bootMode).toBe('restored');
+      const dateCheck = guest.connections.find(
+        (c) => c.request?.kind === 'exec' && c.request.command === 'date +%s',
+      );
+      expect(dateCheck).toBeDefined();
+    });
+
+    it('cold boots instead of handing out a guest still living at snapshot time', async () => {
+      const fp = await takeSnapshot();
+      const { env, runs, spawned, apiCalls } = snapshotEnv(
+        { restoreSnapshot: fp },
+        {
+          now: () => resumedAt,
+          guestEpochSec: () => String(Math.floor(suspendedAt / 1000)),
+        },
+      );
+      await env.ensureStarted();
+      // The load itself succeeded; the stale clock is what rejected it.
+      expect(apiCalls.some((c) => c.path === '/snapshot/load')).toBe(true);
+      expect(env.bootMode).toBe('cold');
+      expect(spawned).toHaveLength(2);
+      expect(spawned[1]!.args).toContain('--config-file');
+      expect(jailOps(runs)).toContain('discard-snapshot');
+    });
+
+    it('cold boots when the guest clock cannot be read', async () => {
+      const fp = await takeSnapshot();
+      const { env } = snapshotEnv({ restoreSnapshot: fp }, { guestEpochSec: () => 'garbage' });
+      await env.ensureStarted();
+      expect(env.bootMode).toBe('cold');
+    });
+
+    it('only asks Firecracker for clock_realtime on x86_64', async () => {
+      const fp = await takeSnapshot();
+      const { env, apiCalls } = snapshotEnv({ restoreSnapshot: fp, hostArch: 'arm64' });
+      await env.ensureStarted();
+      const load = apiCalls.find((c) => c.path === '/snapshot/load')!;
+      expect(load.body).not.toHaveProperty('clock_realtime');
+      expect(env.bootMode).toBe('restored');
+    });
+  });
+
+  it('cold boots when the host DNS changed since the snapshot', async () => {
+    const fp = await takeSnapshot();
+    const { env, runs } = snapshotEnv({ restoreSnapshot: fp }, { nameservers: ['10.9.9.9'] });
+    await env.ensureStarted();
+    expect(env.bootMode).toBe('cold');
+    expect(jailOps(runs)).not.toContain('restore-snapshot');
+  });
+
+  it('cold boots when the machine shape changed', async () => {
+    const fp = await takeSnapshot();
+    const { env } = snapshotEnv({ restoreSnapshot: fp, memSizeMib: 2048 });
+    await env.ensureStarted();
+    expect(env.bootMode).toBe('cold');
   });
 });

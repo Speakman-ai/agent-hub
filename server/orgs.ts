@@ -217,6 +217,13 @@ export function initOrgsDb(): void {
   // Persistent desktop computers (VM id + network slot) per (user, agent,
   // project). See desktop/desktop-computers-store.ts.
   orgsDb.exec(DESKTOP_COMPUTERS_SCHEMA);
+  // `snapshot` on desktop_computers for installs predating Firecracker
+  // snapshot/resume. Nullable: an existing computer just cold boots next time.
+  try {
+    orgsDb.prepare('SELECT snapshot FROM desktop_computers LIMIT 1').get();
+  } catch {
+    orgsDb.exec('ALTER TABLE desktop_computers ADD COLUMN snapshot TEXT');
+  }
   // Agent approval requests and remembered always-allow rules. See
   // approvals-store.ts.
   orgsDb.exec(APPROVALS_SCHEMA);

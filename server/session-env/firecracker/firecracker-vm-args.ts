@@ -264,7 +264,11 @@ export interface BuildJailerArgvOpts {
   chrootBaseDir: string;
   /** Paths below are relative to the chroot, not the host root. */
   apiSockPath: string;
-  configPath: string;
+  /**
+   * Omitted to start an unconfigured VMM, which is what a snapshot load needs:
+   * Firecracker refuses /snapshot/load once a machine has been configured.
+   */
+  configPath?: string;
   /** Pre-created network namespace to join, when one is used. */
   netns?: string;
   /**
@@ -303,7 +307,8 @@ export function buildJailerArgv(opts: BuildJailerArgvOpts): string[] {
   ];
   if (opts.netns) argv.push('--netns', opts.netns);
   for (const cgroup of opts.cgroups ?? []) argv.push('--cgroup', cgroup);
-  argv.push('--', '--api-sock', opts.apiSockPath, '--config-file', opts.configPath);
+  argv.push('--', '--api-sock', opts.apiSockPath);
+  if (opts.configPath !== undefined) argv.push('--config-file', opts.configPath);
   return argv;
 }
 

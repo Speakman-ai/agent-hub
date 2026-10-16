@@ -17,7 +17,11 @@
  *     never take it.
  *
  * Idle computers are stopped by {@link FirecrackerDesktopRuntime.sweepIdle};
- * the next call resumes them. Storage goes away only through `destroy`.
+ * the next call resumes them. A stop takes a Firecracker snapshot (memory +
+ * device state) and records its fingerprint on the row, so the next start
+ * resumes the running desktop instead of cold booting it. When the snapshot
+ * is missing or no longer matches the guest kernel/rootfs, the VM cold boots.
+ * Storage, snapshot included, goes away only through `destroy`.
  */
 import { createHash } from 'crypto';
 import type {
@@ -75,6 +79,11 @@ export interface FirecrackerDesktopVm {
   spawn(command: string, opts?: SessionEnvSpawnOpts): SessionEnvProcess;
   liveProcessCount(): number;
   dispose(opts?: SessionEnvDisposeOpts): Promise<void>;
+  /**
+   * Stop the VM, keeping a snapshot to resume from. Returns its fingerprint,
+   * or null when the VM stopped without one.
+   */
+  suspend(): Promise<string | null>;
 }
 
 export interface FirecrackerDesktopVmSpec {
@@ -83,6 +92,8 @@ export interface FirecrackerDesktopVmSpec {
   /** Always-the-same-slot pool for this VM; release is a no-op. */
   slots: FirecrackerSlotPool;
   bootArgsExtra: string[];
+  /** Snapshot fingerprint to resume from, or null to cold boot. */
+  restoreSnapshot: string | null;
 }
 
 export interface FirecrackerDesktopRuntimeDeps {
@@ -175,7 +186,11 @@ export class FirecrackerDesktopRuntime implements DesktopRuntime {
       if (entry.vm && !entry.vm.disposed && entry.state === 'running') {
         return this.#statusOf(entry);
       }
-      if (!entry.vm || entry.vm.disposed) entry.vm = this.#newVm(entry.record);
+      let snapshot: string | null = null;
+      if (!entry.vm || entry.vm.disposed) {
+        snapshot = this.#readSnapshot(key);
+        entry.vm = this.#newVm(entry.record, snapshot);
+      }
       const vm = entry.vm;
       entry.state = 'starting';
       entry.error = undefined;
@@ -194,6 +209,8 @@ export class FirecrackerDesktopRuntime implements DesktopRuntime {
         if (vm.disposed) entry.vm = null;
         throw err;
       }
+      // Restored or cold booted, the stash is gone either way.
+      if (snapshot !== null) this.#writeSnapshot(key, null);
       entry.state = 'running';
       this.#touch(entry);
       return this.#statusOf(entry);
@@ -217,7 +234,8 @@ export class FirecrackerDesktopRuntime implements DesktopRuntime {
       }
       // A stopped computer has no VM object; build one just to run the
       // teardown, which removes the jail tree and the persistent disk.
-      const vm = entry?.vm && !entry.vm.disposed ? entry.vm : this.#newVm(record);
+      // That teardown also removes a stashed snapshot, which sits beside the disks.
+      const vm = entry?.vm && !entry.vm.disposed ? entry.vm : this.#newVm(record, null);
       if (entry) entry.state = 'stopping';
       try {
         await vm.dispose({ forgetWorkspace: true });
@@ -331,13 +349,15 @@ export class FirecrackerDesktopRuntime implements DesktopRuntime {
     }
     const vm = entry.vm;
     entry.state = 'stopping';
+    let snapshot: string | null;
     try {
-      await vm.dispose({ forgetWorkspace: false });
+      snapshot = await vm.suspend();
     } catch (err) {
       entry.state = 'error';
       entry.error = err instanceof Error ? err.message : String(err);
       throw err;
     }
+    this.#writeSnapshot(key, snapshot);
     entry.vm = null;
     entry.state = 'stopped';
     entry.error = undefined;
@@ -387,7 +407,25 @@ export class FirecrackerDesktopRuntime implements DesktopRuntime {
     }
   }
 
-  #newVm(record: DesktopComputerRecord): FirecrackerDesktopVm {
+  #readSnapshot(key: DesktopComputerKey): string | null {
+    try {
+      return this.#store.getSnapshot(key, this.kind);
+    } catch (err) {
+      this.#logger.warn(`[desktop] failed to read snapshot state: ${String(err)}`);
+      return null;
+    }
+  }
+
+  #writeSnapshot(key: DesktopComputerKey, fingerprint: string | null): void {
+    try {
+      this.#store.setSnapshot(key, this.kind, fingerprint);
+    } catch (err) {
+      // Losing the pointer only costs a cold boot next time.
+      this.#logger.warn(`[desktop] failed to record snapshot state: ${String(err)}`);
+    }
+  }
+
+  #newVm(record: DesktopComputerRecord, restoreSnapshot: string | null): FirecrackerDesktopVm {
     if (record.slot === null) {
       throw new Error(`Desktop computer ${record.vmId} has no network slot`);
     }
@@ -396,6 +434,7 @@ export class FirecrackerDesktopRuntime implements DesktopRuntime {
       slot: record.slot,
       slots: fixedSlotPool(record.slot),
       bootArgsExtra: [DESKTOP_GUEST_BOOT_ARG],
+      restoreSnapshot,
     });
   }
 

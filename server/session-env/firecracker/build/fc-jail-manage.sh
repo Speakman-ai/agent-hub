@@ -9,6 +9,21 @@
 #     and assign ownership/modes so the jailer UID can read/write RW disks.
 #     See firecracker jailer.md Observations.
 #
+#   fc-jail-manage.sh stash-snapshot <jailTree>
+#     After the VMM wrote snapshot.vmstate + snapshot.mem into the jail root
+#     and is proven stopped, move them and the jail's rootfs copy (the disk
+#     state the snapshot's memory refers to) to `$RUN_DIR/<vmId>/snapshot/`,
+#     so they survive the jail clean that follows.
+#
+#   fc-jail-manage.sh restore-snapshot <chrootRoot> <uid> <gid>
+#     After `stage`, move the stashed snapshot into the jail root as
+#     rootfs.ext4 + restore.vmstate + restore.mem. The stash is consumed: once
+#     the guest resumes, its disks diverge from the snapshot. Exit 3 when there
+#     is no complete stash.
+#
+#   fc-jail-manage.sh discard-snapshot <vmId>
+#     Remove `$RUN_DIR/<vmId>/snapshot/`.
+#
 # Destination paths must sit under the root-owned JAILER_DIR. Sources are
 # constrained by class (artifact / run / control) — never under Hub-writable
 # worktree roots — and symlink components are refused before any root write.
@@ -34,32 +49,129 @@ fi
 cmd=${1:?command required}
 shift
 
+assert_vm_id() {
+  if [[ ! "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]; then
+    echo "fc-jail-manage: invalid vm id: $1" >&2
+    exit 2
+  fi
+}
+
+# `.../firecracker/<vmId>` under JAILER_DIR, never /firecracker itself.
+assert_jail_tree() {
+  local tree=$1 base leaf parent
+  fc_assert_jailer_under_roots 'jail tree' "$tree"
+  fc_assert_no_symlink_components 'jail tree' "$tree"
+  if [[ "$tree" != */firecracker/* ]]; then
+    echo "fc-jail-manage: clean path must contain /firecracker/: $tree" >&2
+    exit 2
+  fi
+  base=${tree%/}
+  leaf=${base##*/}
+  parent=${base%/*}
+  if [[ -z "$leaf" || "$leaf" == firecracker || "$parent" != */firecracker ]]; then
+    echo "fc-jail-manage: clean path must be .../firecracker/<vmId>: $tree" >&2
+    exit 2
+  fi
+  if [[ -L "$tree" ]]; then
+    echo "fc-jail-manage: refusing to clean symlink at $tree" >&2
+    exit 2
+  fi
+}
+
+# Per-VM disk dir under the root-owned RUN_DIR (same layout as fc-prepare-disks).
+run_vm_dir() {
+  assert_vm_id "$1"
+  fc_load_roots
+  echo "$(fc_canonical_root "${RUN_DIR}")/$1"
+}
+
 case "$cmd" in
   clean)
     tree=${1:?jail tree required}
-    fc_assert_jailer_under_roots 'jail tree' "$tree"
-    fc_assert_no_symlink_components 'jail tree' "$tree"
-    if [[ "$tree" != */firecracker/* ]]; then
-      echo "fc-jail-manage: clean path must contain /firecracker/: $tree" >&2
-      exit 2
-    fi
-    # Refuse cleaning anything that is not a leaf under .../firecracker/<id>
-    # (never /firecracker itself or host root).
-    base=${tree%/}
-    leaf=${base##*/}
-    parent=${base%/*}
-    if [[ -z "$leaf" || "$leaf" == firecracker || "$parent" != */firecracker ]]; then
-      echo "fc-jail-manage: clean path must be .../firecracker/<vmId>: $tree" >&2
-      exit 2
-    fi
-    if [[ -L "$tree" ]]; then
-      echo "fc-jail-manage: refusing to clean symlink at $tree" >&2
-      exit 2
-    fi
+    assert_jail_tree "$tree"
     # File bind-mount leftover from a cross-filesystem stage. Harmless no-op
     # when the workspace was hard-linked (the common same-FS path).
     umount -f "${tree%/}/root/workspace.ext4" 2>/dev/null || true
     rm -rf -- "$tree"
+    ;;
+  stash-snapshot)
+    tree=${1:?jail tree required}
+    assert_jail_tree "$tree"
+    base=${tree%/}
+    vm_id=${base##*/}
+    jroot="$base/root"
+    vm_dir=$(run_vm_dir "$vm_id")
+    for f in rootfs.ext4 snapshot.vmstate snapshot.mem; do
+      if [[ ! -f "$jroot/$f" || -L "$jroot/$f" ]]; then
+        echo "fc-jail-manage: stash-snapshot: $jroot/$f missing or not a regular file" >&2
+        exit 3
+      fi
+    done
+    if [[ ! -d "$vm_dir" || -L "$vm_dir" ]]; then
+      echo "fc-jail-manage: stash-snapshot: VM disk dir missing: $vm_dir" >&2
+      exit 3
+    fi
+    tmp="$vm_dir/snapshot.tmp"
+    rm -rf -- "$tmp"
+    mkdir -m 0700 -- "$tmp"
+    mv -f -- "$jroot/rootfs.ext4" "$tmp/rootfs.ext4"
+    mv -f -- "$jroot/snapshot.vmstate" "$tmp/vmstate"
+    mv -f -- "$jroot/snapshot.mem" "$tmp/mem"
+    # Left owned by the jailer uid: the 0700 root-owned VM dir already keeps
+    # that uid (and the Hub) out.
+    rm -rf -- "$vm_dir/snapshot"
+    mv -- "$tmp" "$vm_dir/snapshot"
+    ;;
+  restore-snapshot)
+    root=${1:?chroot root required}
+    uid=${2:?uid required}
+    gid=${3:?gid required}
+    fc_assert_jailer_under_roots 'chroot root' "$root"
+    fc_assert_no_symlink_components 'chroot root' "$root"
+    if [[ "$root" != */firecracker/*/root ]]; then
+      echo "fc-jail-manage: restore-snapshot root must match */firecracker/*/root: $root" >&2
+      exit 2
+    fi
+    if [[ ! "$uid" =~ ^[0-9]+$ || ! "$gid" =~ ^[0-9]+$ ]]; then
+      echo "fc-jail-manage: uid/gid must be numeric (got uid=$uid gid=$gid)" >&2
+      exit 2
+    fi
+    if [[ ! -d "$root" || -L "$root" ]]; then
+      echo "fc-jail-manage: restore-snapshot: jail root not staged: $root" >&2
+      exit 2
+    fi
+    vm_tree=${root%/root}
+    vm_id=${vm_tree##*/}
+    assert_vm_id "$vm_id"
+    snap="$(run_vm_dir "$vm_id")/snapshot"
+    if [[ -L "$snap" ]]; then
+      echo "fc-jail-manage: refusing symlink snapshot dir: $snap" >&2
+      exit 2
+    fi
+    for f in rootfs.ext4 vmstate mem; do
+      if [[ ! -f "$snap/$f" || -L "$snap/$f" ]]; then
+        echo "fc-jail-manage: restore-snapshot: no complete snapshot for $vm_id" >&2
+        exit 3
+      fi
+    done
+    rm -f -- "$root/rootfs.ext4" "$root/restore.vmstate" "$root/restore.mem"
+    mv -f -- "$snap/rootfs.ext4" "$root/rootfs.ext4"
+    mv -f -- "$snap/vmstate" "$root/restore.vmstate"
+    mv -f -- "$snap/mem" "$root/restore.mem"
+    rm -rf -- "$snap"
+    chown "$uid:$gid" "$root/rootfs.ext4" "$root/restore.vmstate" "$root/restore.mem"
+    chmod 0660 "$root/rootfs.ext4"
+    chmod 0600 "$root/restore.vmstate" "$root/restore.mem"
+    ;;
+  discard-snapshot)
+    vm_id=${1:?vm id required}
+    assert_vm_id "$vm_id"
+    vm_dir=$(run_vm_dir "$vm_id")
+    if [[ -L "$vm_dir" || -L "$vm_dir/snapshot" ]]; then
+      echo "fc-jail-manage: refusing symlink under $vm_dir" >&2
+      exit 2
+    fi
+    rm -rf -- "$vm_dir/snapshot" "$vm_dir/snapshot.tmp"
     ;;
   stage)
     root=${1:?chroot root required}

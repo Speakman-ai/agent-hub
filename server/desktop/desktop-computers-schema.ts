@@ -13,6 +13,10 @@
  *     the slot pool can reserve it again at Hub boot and the computer keeps
  *     its address across restarts. Null for backends without slots.
  *   - last_active_at: epoch ms of the last tool call.
+ *   - snapshot: compatibility fingerprint of the Firecracker snapshot taken
+ *     at the last stop, which the next start resumes. Null when the next
+ *     start is a cold boot. The snapshot files live beside the VM's disks and
+ *     go with them.
  */
 export const DESKTOP_COMPUTERS_SCHEMA = `
   CREATE TABLE IF NOT EXISTS desktop_computers (
@@ -23,6 +27,7 @@ export const DESKTOP_COMPUTERS_SCHEMA = `
     vm_id          TEXT NOT NULL,
     slot           INTEGER,
     last_active_at INTEGER,
+    snapshot       TEXT,
     created_at     TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (user_id, agent_id, project_id, kind)
   );

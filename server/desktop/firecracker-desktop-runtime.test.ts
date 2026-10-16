@@ -107,6 +107,14 @@ class FakeVm implements FirecrackerDesktopVm {
   liveProcessCount() {
     return this.live;
   }
+  /** What suspend reports: the snapshot fingerprint, or null for none taken. */
+  snapshotResult: string | null = 'sha256:snap-1';
+  suspendCalls = 0;
+  async suspend() {
+    this.suspendCalls++;
+    await this.dispose({ forgetWorkspace: false });
+    return this.snapshotResult;
+  }
   disposeGate: Promise<void> | null = null;
   async dispose(opts: SessionEnvDisposeOpts = {}) {
     this.disposeCalls.push(opts);
@@ -300,6 +308,83 @@ describe('FirecrackerDesktopRuntime stop and resume', () => {
     await expect(runtime.ensureStarted(ALICE)).resolves.toMatchObject({ state: 'running' });
     expect(vms).toHaveLength(2);
     expect(vms[1]!.spec.slot).toBe(vms[0]!.spec.slot);
+  });
+});
+
+describe('FirecrackerDesktopRuntime snapshots', () => {
+  let store: DesktopComputersStore;
+  beforeEach(() => {
+    ({ store } = memoryStore());
+  });
+
+  it('idle stop snapshots the VM and the next use resumes from that snapshot', async () => {
+    const { runtime, vms, advance } = makeRuntime(store);
+    await runtime.ensureStarted(ALICE);
+    expect(vms[0]!.spec.restoreSnapshot).toBeNull();
+
+    advance(DESKTOP_IDLE_STOP_MS);
+    expect(await runtime.sweepIdle()).toEqual([ALICE]);
+    expect(vms[0]!.suspendCalls).toBe(1);
+    expect(store.getSnapshot(ALICE, 'firecracker')).toBe('sha256:snap-1');
+
+    await runtime.exec(ALICE, 'true');
+    expect(vms).toHaveLength(2);
+    expect(vms[1]!.spec.restoreSnapshot).toBe('sha256:snap-1');
+    // Consumed: the guest's disks have moved on since the snapshot.
+    expect(store.getSnapshot(ALICE, 'firecracker')).toBeNull();
+  });
+
+  it('survives a Hub restart: the snapshot pointer lives on the row', async () => {
+    const first = makeRuntime(store);
+    await first.runtime.ensureStarted(ALICE);
+    await first.runtime.stop(ALICE);
+
+    const second = makeRuntime(store);
+    await second.runtime.ensureStarted(ALICE);
+    expect(second.vms[0]!.spec.restoreSnapshot).toBe('sha256:snap-1');
+  });
+
+  it('cold boots next time when the stop could not take a snapshot', async () => {
+    const { runtime, vms } = makeRuntime(store, {
+      configure: (vm) => {
+        vm.snapshotResult = null;
+      },
+    });
+    await runtime.ensureStarted(ALICE);
+    await runtime.stop(ALICE);
+    expect(store.getSnapshot(ALICE, 'firecracker')).toBeNull();
+    await runtime.ensureStarted(ALICE);
+    expect(vms[1]!.spec.restoreSnapshot).toBeNull();
+  });
+
+  it('keeps the pointer when the start fails so the next attempt can still resume', async () => {
+    let fail = false;
+    const { runtime, vms } = makeRuntime(store, {
+      configure: (vm) => {
+        if (fail) vm.bootError = new Error('bridge not ready');
+      },
+    });
+    await runtime.ensureStarted(ALICE);
+    await runtime.stop(ALICE);
+    fail = true;
+    await expect(runtime.ensureStarted(ALICE)).rejects.toThrow('bridge not ready');
+    expect(store.getSnapshot(ALICE, 'firecracker')).toBe('sha256:snap-1');
+    fail = false;
+    await runtime.ensureStarted(ALICE);
+    expect(vms[2]!.spec.restoreSnapshot).toBe('sha256:snap-1');
+    expect(store.getSnapshot(ALICE, 'firecracker')).toBeNull();
+  });
+
+  it('destroy of a snapshotted computer removes its disks (snapshot included) and the row', async () => {
+    const { runtime, vms } = makeRuntime(store);
+    await runtime.ensureStarted(ALICE);
+    await runtime.stop(ALICE);
+    await runtime.destroy(ALICE);
+    // The teardown VM must not try to resume anything.
+    expect(vms[1]!.spec.restoreSnapshot).toBeNull();
+    expect(vms[1]!.disposeCalls).toEqual([{ forgetWorkspace: true }]);
+    expect(store.get(ALICE, 'firecracker')).toBeNull();
+    expect(store.getSnapshot(ALICE, 'firecracker')).toBeNull();
   });
 });
 
