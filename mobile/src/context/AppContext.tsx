@@ -20,7 +20,12 @@ import { createOrgDataGeneration, shouldLoadOrgData } from '../utils/orgDataLoad
 import { applyPreviewEvent } from '../utils/previewEvents';
 import { withRestoredSession } from '../utils/sessionRestore';
 import { createOrgSwitcher } from '../utils/orgSwitch';
-import { loadConnectionConfig, getApiBaseUrl, getAuthHeaders } from '../utils/config';
+import {
+  loadConnectionConfig,
+  getApiBaseUrl,
+  getAuthHeaders,
+  getServerBaseUrl,
+} from '../utils/config';
 import {
   loadAuthToken,
   isAuthenticated,
@@ -28,7 +33,17 @@ import {
   getAuthRecord,
   needsEmailUpdate,
   onDeadSession,
+  loginTokenForServer,
 } from '../utils/auth';
+import { signOutOfServer as signOutOfServerFlow } from '../utils/serverSignOut';
+import {
+  answerPushApproval,
+  pushSource,
+  routePushTap,
+  UNKNOWN_SERVER_MESSAGE,
+  type ServerPushDeps,
+} from '../utils/serverPush';
+import { createPushRegistrar } from '../utils/pushRegistrar';
 import {
   loadSetupDismissed,
   saveSetupDismissed,
@@ -107,6 +122,27 @@ async function loadAiSignInStatus(server: string, signal: AbortSignal) {
 }
 
 const AppContext = createContext<any>(null);
+const SERVER_PUSH_DEPS: ServerPushDeps = {
+  fetch: (url, init) => fetch(url, init),
+  // Resolved per call, so importing this module never touches the auth module.
+  loginTokenFor: (serverUrl) => loginTokenForServer(serverUrl),
+};
+const PUSH_SIGNED_OUT_KEY = 'agent-hub-push-signed-out';
+const PUSH_REGISTRAR = createPushRegistrar({
+  deps: SERVER_PUSH_DEPS,
+  getOrgs: () => getOrgs()?.orgs,
+  // Survives restarts, so a server signed out of stays off this phone.
+  signedOutStore: {
+    load: async () => {
+      const raw = await AsyncStorage.getItem(PUSH_SIGNED_OUT_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed.filter((o) => typeof o === 'string') : [];
+    },
+    save: (origins) => AsyncStorage.setItem(PUSH_SIGNED_OUT_KEY, JSON.stringify(origins)),
+  },
+});
+const AMBIGUOUS_SERVER_TAP_MESSAGE =
+  "Can't tell which of your servers sent this. Switch to that server to see it.";
 export function AppProvider({ children }: any) {
   const [agents, setAgents] = useState<any[]>([]);
   const [projects, setProjects] = useState<any[]>([]);
@@ -332,6 +368,13 @@ export function AppProvider({ children }: any) {
   });
   // Mobile push state: Expo token + permission status (used by Settings).
   const [pushToken, setPushToken] = useState<any>(null);
+  // Every push-registration lifecycle event goes through PUSH_REGISTRAR.
+  const syncPushRegistrations = useCallback(() => PUSH_REGISTRAR.syncAll(), []);
+  /** Stop a saved server pushing here. Call before deleting or re-pointing it. */
+  const forgetPushServer = useCallback(
+    (org: any, applyRemoval: () => Promise<unknown>) => PUSH_REGISTRAR.forget(org, applyRemoval),
+    [],
+  );
   const [pushPermissionStatus, setPushPermissionStatus] = useState('unknown');
   const activeAgent = agents.find((a: any) => a.id === activeAgentId);
   const activeSession =
@@ -433,6 +476,7 @@ export function AppProvider({ children }: any) {
           title: mapped.title,
           body: mapped.body,
           data: { event: mapped.event, ...data },
+          serverUrl: getServerBaseUrl(),
         },
       );
     } catch {
@@ -1277,6 +1321,7 @@ export function AppProvider({ children }: any) {
           {
             title: notice.title,
             body: notice.body,
+            serverUrl: getServerBaseUrl(),
             data: {
               event: 'chat_message',
               type: 'chat_message',
@@ -1318,7 +1363,17 @@ export function AppProvider({ children }: any) {
             // A banner shown while the app is open is an in-app notice, so
             // it follows the user's `in_app` pref for its category.
             handleNotification: async (notification: any) => {
-              const show = foregroundBannerAllowed(notification?.request?.content?.data);
+              const data = notification?.request?.content?.data;
+              // Another server's event never reaches this socket, so its push
+              // is the only notice; the server already applied its push prefs.
+              // A push from a server no longer saved is dropped. One whose
+              // server can't be told apart still shows; only acting on it is
+              // refused.
+              const source = pushSource(data, getOrgs()?.orgs, getServerBaseUrl());
+              const show =
+                source.kind === 'other' ||
+                source.kind === 'ambiguous' ||
+                (source.kind === 'active' && foregroundBannerAllowed(data));
               return {
                 shouldShowBanner: show,
                 shouldShowList: show,
@@ -1334,7 +1389,12 @@ export function AppProvider({ children }: any) {
         const Constants = require('expo-constants').default;
         const { Platform } = require('react-native');
         const result = await registerForPushNotifications({
-          api,
+          // Register with every saved server, not just the active one.
+          api: {
+            registerDeviceToken: async (token: string, platform: string) => {
+              await PUSH_REGISTRAR.setDevice(token, platform);
+            },
+          },
           Notifications,
           Device,
           Constants,
@@ -1421,6 +1481,8 @@ export function AppProvider({ children }: any) {
   // pure utils in `src/utils/`) never tries to resolve them.
   // Cold start and the live listener can both see the same button press.
   const answeredPushResponsesRef = useRef<Set<string>>(new Set());
+  // Declared below; a tap on another server's push switches to it first.
+  const switchToOrgRef = useRef<((orgId: string) => Promise<boolean>) | null>(null);
   useEffect(() => {
     if (!configReady) return undefined;
     let listener: { remove: () => void } | null = null;
@@ -1430,8 +1492,35 @@ export function AppProvider({ children }: any) {
       listener = listenForNotificationResponses(
         Notifications,
         {
-          answer: (id, decision) => api.answerApproval(id, decision),
-          route: (data) => applyNotificationRoute(data),
+          answer: (id, decision, data) =>
+            answerPushApproval({
+              data,
+              orgs: getOrgs()?.orgs,
+              activeServerUrl: getServerBaseUrl(),
+              approvalId: id,
+              decision,
+              answerOnActive: (approvalId, d) => api.answerApproval(approvalId, d),
+              deps: SERVER_PUSH_DEPS,
+            }),
+          route: (data) => {
+            // A push from another saved server opens that server first.
+            void routePushTap({
+              data,
+              orgs: getOrgs()?.orgs,
+              activeServerUrl: getServerBaseUrl(),
+              routeOnActive: (d) => applyNotificationRoute(d),
+              switchTo: async (orgId) => (await switchToOrgRef.current?.(orgId)) ?? false,
+              currentServerUrl: getServerBaseUrl,
+            })
+              .then((outcome) => {
+                if (outcome === 'ambiguous') {
+                  Alert.alert('Notification', AMBIGUOUS_SERVER_TAP_MESSAGE);
+                } else if (outcome === 'unknown') {
+                  Alert.alert('Notification', UNKNOWN_SERVER_MESSAGE);
+                }
+              })
+              .catch((err) => console.warn('[push] switch for tap failed', err));
+          },
           onAnswerFailed: (message) => Alert.alert('Could not answer the approval', message),
         },
         answeredPushResponsesRef.current,
@@ -1542,6 +1631,27 @@ export function AppProvider({ children }: any) {
   const completeAuth = useCallback(() => {
     setNeedsAuth(false);
     reconnect();
+    // Signing in is what lets a server push here again after a sign-out.
+    void PUSH_REGISTRAR.signedIn(getServerBaseUrl());
+  }, [reconnect]);
+  /**
+   * Sign out of the active server. The server is asked to stop pushing to
+   * this phone first, while its login still exists; sign-out completes even
+   * if that fails.
+   */
+  const signOutOfServer = useCallback(async () => {
+    // Pinned now: the user may switch servers while the unregister runs.
+    const serverUrl = getServerBaseUrl();
+    if (!serverUrl) return;
+    await signOutOfServerFlow({
+      serverUrl,
+      registrar: PUSH_REGISTRAR,
+      currentServerUrl: getServerBaseUrl,
+      onSignedOutWhileActive: () => {
+        setNeedsAuth(true);
+        reconnect();
+      },
+    });
   }, [reconnect]);
   useEffect(() => onDeadSession(() => setNeedsAuth(true)), []);
   // Shared with org switching so a signed-in load always beats an earlier
@@ -1846,7 +1956,12 @@ export function AppProvider({ children }: any) {
           hubChatAccountGate.invalidate();
           notificationInboxAccountGate.invalidate();
           const { switchOrg } = require('../utils/orgs');
+          // Pinned before the await, so an overlapping switch can't redirect it.
+          const target = getOrgs()?.orgs?.find((o: any) => o.id === orgId)?.remoteUrl;
           await switchOrg(orgId);
+          // Retry this server's registration: it may have been unreachable
+          // at launch. Not awaited, so a slow server can't hold the switch.
+          void PUSH_REGISTRAR.syncServer(target);
         },
         onConnectionChanged: () => {
           // Reset all state
@@ -1909,6 +2024,7 @@ export function AppProvider({ children }: any) {
       }),
     [applyOrgData],
   );
+  switchToOrgRef.current = switchToOrg;
   const handleSwitchOrg = useCallback((orgId: any) => switchToOrg(orgId), [switchToOrg]);
   const handleNewSession = useCallback(
     async (agentIdOverride?: string) => {
@@ -2840,6 +2956,9 @@ export function AppProvider({ children }: any) {
     // Push notification state (Settings screen surfaces these)
     pushToken,
     pushPermissionStatus,
+    syncPushRegistrations,
+    forgetPushServer,
+    signOutOfServer,
     // Navigation bridge — App.js calls this once the NavigationContainer
     // ref is mounted so the notification-tap listener can open screens.
     registerNavigator,

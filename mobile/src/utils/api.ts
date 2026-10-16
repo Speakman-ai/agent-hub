@@ -1712,12 +1712,6 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
-  // Devices (push notifications)
-  registerDevice: (token: any, platform: any = 'ios') =>
-    fetchJSON('/devices', {
-      method: 'POST',
-      body: JSON.stringify({ token, platform }),
-    }),
   // Cron sessions
   getCronSessions: () => fetchJSON('/sessions/cron'),
   // Finalize Code Changes — design doc: finalize-code-changes-architecture-v0
@@ -2431,14 +2425,7 @@ export const api = {
         ...(suppress === false ? { suppress: false } : {}),
       }),
     }),
-  // Push notification device tokens (Expo)
-  registerDeviceToken: (token: any, platform: any) =>
-    fetchJSON('/devices', {
-      method: 'POST',
-      body: JSON.stringify({ token, platform }),
-    }),
-  unregisterDeviceToken: (token: any) =>
-    fetchJSON(`/devices/${encodeURIComponent(token)}`, { method: 'DELETE' }),
+  // Push device registration lives in utils/pushRegistrar.ts (one per saved server).
   // Per-user notification preferences (one matrix for every device).
   getNotificationPreferences: (): Promise<NotificationPreferencesWire> =>
     fetchJSON('/me/notification-preferences'),

@@ -49,7 +49,7 @@ describe('createOrgSwitcher', () => {
       loadData: vi.fn().mockRejectedValue(new Error('boom')),
       onLoadError,
     });
-    await expect(switchToOrg('a')).resolves.toBeUndefined();
+    await expect(switchToOrg('a')).resolves.toBe(true);
     await new Promise((r) => setTimeout(r, 0));
     expect(onLoadError).toHaveBeenCalledWith(expect.objectContaining({ message: 'boom' }));
   });
@@ -63,5 +63,22 @@ describe('createOrgSwitcher', () => {
     });
     await expect(switchToOrg('a')).rejects.toThrow('storage full');
     expect(onConnectionChanged).not.toHaveBeenCalled();
+  });
+});
+
+describe('createOrgSwitcher result', () => {
+  it('resolves true for the latest switch and false for one superseded meanwhile', async () => {
+    const gates: Array<() => void> = [];
+    const switchToOrg = createOrgSwitcher({
+      switchOrg: () => new Promise<void>((resolve) => gates.push(resolve)),
+      onConnectionChanged: vi.fn(),
+      loadData: vi.fn(async () => {}),
+    });
+    const first = switchToOrg('a');
+    const second = switchToOrg('b');
+    await Promise.resolve();
+    gates.forEach((g) => g());
+    expect(await first).toBe(false);
+    expect(await second).toBe(true);
   });
 });

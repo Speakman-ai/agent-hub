@@ -40,6 +40,8 @@ import {
   activateAuthForServer,
   reloadAuthVault,
   discardStaleLogin,
+  loginTokenForServer,
+  LOGOUT_TIMEOUT_MS,
 } from './auth';
 async function resetStore() {
   await clearToken();
@@ -645,5 +647,57 @@ describe('mobile auth network helpers', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token: 'reset-token', newPassword: 'a-new-strong-password' }),
     });
+  });
+});
+
+describe('loginTokenForServer', () => {
+  beforeEach(async () => {
+    await resetStore();
+  });
+
+  it('reads any saved server login without changing the active one', async () => {
+    await setToken({ token: 'token-a', origin: 'https://a.example' });
+    await setToken({ token: 'token-b', origin: 'https://b.example' });
+    await activateAuthForServer('https://a.example');
+    expect(await loginTokenForServer('https://b.example/')).toBe('token-b');
+    expect(await loginTokenForServer('https://a.example')).toBe('token-a');
+    expect(getToken()).toBe('token-a');
+  });
+
+  it('is null for servers never signed in to and for expired logins', async () => {
+    await setToken({
+      token: 'old',
+      origin: 'https://c.example',
+      expiresAt: new Date(Date.now() - 1000).toISOString(),
+    });
+    expect(await loginTokenForServer('https://c.example')).toBeNull();
+    expect(await loginTokenForServer('https://nope.example')).toBeNull();
+    expect(await loginTokenForServer('')).toBeNull();
+  });
+});
+
+describe('logout against a server that never answers', () => {
+  beforeEach(async () => {
+    await resetStore();
+  });
+
+  it('signs out locally and returns once the request times out', async () => {
+    vi.useFakeTimers();
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(() => new Promise(() => {})) as any;
+    try {
+      await setToken({ token: 'tok', origin: 'https://a.example' });
+      const done = vi.fn();
+      const out = logout({ baseUrl: 'https://a.example/api' }).then(done);
+      await vi.advanceTimersByTimeAsync(LOGOUT_TIMEOUT_MS - 1);
+      expect(getToken()).toBeNull();
+      expect(done).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await out;
+      expect(done).toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = realFetch;
+      vi.useRealTimers();
+    }
   });
 });

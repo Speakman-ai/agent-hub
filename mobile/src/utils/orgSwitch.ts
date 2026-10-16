@@ -23,7 +23,12 @@ export interface OrgSwitcherDeps {
 
 export function createOrgSwitcher(deps: OrgSwitcherDeps) {
   let generation = 0;
-  return async function switchToOrg(orgId: string): Promise<void> {
+  /**
+   * Resolves true when this switch is still the latest one once the
+   * connection points at `orgId`; false when a newer switch started while it
+   * was in progress, so callers must not act on `orgId` being active.
+   */
+  return async function switchToOrg(orgId: string): Promise<boolean> {
     const gen = ++generation;
     await deps.switchOrg(orgId);
     deps.onConnectionChanged();
@@ -33,5 +38,6 @@ export function createOrgSwitcher(deps: OrgSwitcherDeps) {
       .catch((err) => {
         if (isCurrent()) deps.onLoadError?.(err);
       });
+    return isCurrent();
   };
 }

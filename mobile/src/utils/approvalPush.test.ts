@@ -50,7 +50,7 @@ describe('answerFromPushResponse', () => {
   it('answers an Allow once press', async () => {
     const answer = vi.fn().mockResolvedValue({});
     const out = await answerFromPushResponse(response('allow_once', data), answer);
-    expect(answer).toHaveBeenCalledWith('ap1', 'allow_once');
+    expect(answer).toHaveBeenCalledWith('ap1', 'allow_once', data);
     expect(out).toEqual({ handled: true, approvalId: 'ap1', decision: 'allow_once', ok: true });
   });
 
@@ -64,7 +64,7 @@ describe('answerFromPushResponse', () => {
       }),
       answer,
     );
-    expect(answer).toHaveBeenCalledWith('ap2', 'deny');
+    expect(answer).toHaveBeenCalledWith('ap2', 'deny', expect.any(Object));
   });
 
   it('leaves plain taps and non-approval pushes to the router', async () => {
@@ -147,9 +147,11 @@ describe('listenForNotificationResponses', () => {
     const { ready } = listenForNotificationResponses(n.api, handlers);
     // Listener exists before the cold-start snapshot is even read.
     expect(n.hasListener()).toBe(true);
-    await vi.waitFor(() => expect(answer).toHaveBeenCalledWith('ap1', 'allow_once'));
+    await vi.waitFor(() =>
+      expect(answer).toHaveBeenCalledWith('ap1', 'allow_once', expect.any(Object)),
+    );
     n.deliver(press('n2', 'deny', 'ap2'));
-    await vi.waitFor(() => expect(answer).toHaveBeenCalledWith('ap2', 'deny'));
+    await vi.waitFor(() => expect(answer).toHaveBeenCalledWith('ap2', 'deny', expect.any(Object)));
     finishFirst();
     await ready;
     expect(n.api.dismissNotificationAsync).toHaveBeenCalledWith('n1');

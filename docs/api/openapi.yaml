@@ -44892,6 +44892,9 @@ paths:
                   minLength: 1
                 platform:
                   type: string
+                serverUrl:
+                  type: string
+                  description: URL the device uses to reach this server. Echoed as `hubServerUrl` in push data so a device saved to several servers can tell them apart.
               required:
                 - token
       responses:

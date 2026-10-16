@@ -64,7 +64,11 @@ export type PushApprovalOutcome =
  */
 export async function answerFromPushResponse(
   response: { actionIdentifier?: unknown; notification?: any } | null | undefined,
-  answer: (approvalId: string, decision: ApprovalDecision) => Promise<unknown>,
+  answer: (
+    approvalId: string,
+    decision: ApprovalDecision,
+    data: Record<string, unknown>,
+  ) => Promise<unknown>,
 ): Promise<PushApprovalOutcome> {
   const decision = pushActionDecision(response?.actionIdentifier);
   if (!decision) return { handled: false };
@@ -72,7 +76,7 @@ export async function answerFromPushResponse(
   const approvalId = approvalIdFromNotification({ category: data.category, data });
   if (!approvalId) return { handled: false };
   try {
-    await answer(approvalId, decision);
+    await answer(approvalId, decision, data);
     return { handled: true, approvalId, decision, ok: true };
   } catch (err) {
     // 409 means it was already answered or expired; nothing more to do.
@@ -96,7 +100,12 @@ interface ResponseNotifications {
 }
 
 export interface NotificationResponseHandlers {
-  answer: (approvalId: string, decision: ApprovalDecision) => Promise<unknown>;
+  /** `data` is the push payload, which names the server it came from. */
+  answer: (
+    approvalId: string,
+    decision: ApprovalDecision,
+    data: Record<string, unknown>,
+  ) => Promise<unknown>;
   /** A plain tap (or a press that isn't an approval answer): open what it points at. */
   route: (data: Record<string, unknown>) => void;
   onAnswerFailed: (message: string) => void;

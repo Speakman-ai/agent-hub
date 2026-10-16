@@ -42,7 +42,7 @@ import {
   testConnection,
   loadOrgs,
 } from '../utils/orgs';
-import { hasRole, getUserRole } from '../utils/auth';
+import { authOriginOf, hasRole, getUserRole, isAuthenticated } from '../utils/auth';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as DocumentPicker from 'expo-document-picker';
@@ -60,7 +60,29 @@ import BrowserProfilesSection from '../components/settings/BrowserProfilesSectio
 import ApprovalRulesSection from '../components/settings/ApprovalRulesSection';
 // Organizations (Server Connections) Tab
 function OrganizationsSection() {
-  const { handleSwitchOrg } = useApp();
+  const { handleSwitchOrg, syncPushRegistrations, forgetPushServer, signOutOfServer } = useApp();
+  const [signingOut, setSigningOut] = useState(false);
+  const handleSignOut = () => {
+    Alert.alert(
+      'Sign Out',
+      'Sign out of this server? It will stop sending notifications to this phone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Sign Out',
+          style: 'destructive',
+          onPress: async () => {
+            setSigningOut(true);
+            try {
+              await signOutOfServer();
+            } finally {
+              setSigningOut(false);
+            }
+          },
+        },
+      ],
+    );
+  };
   const [orgsState, setOrgsState] = useState(() => getOrgs());
   const [expandedOrgId, setExpandedOrgId] = useState<any>(null);
   const [editForm, setEditForm] = useState<any>({});
@@ -116,9 +138,18 @@ function OrganizationsSection() {
   };
   const handleSave = async () => {
     if (!editForm.name?.trim()) return;
-    await updateOrg(expandedOrgId, editForm);
+    const before = orgs.find((o: any) => o.id === expandedOrgId);
+    // Re-pointed at another server: the old one should stop pushing here.
+    if (before && authOriginOf(before.remoteUrl) !== authOriginOf(editForm.remoteUrl)) {
+      await forgetPushServer(before, () => updateOrg(expandedOrgId, editForm));
+    } else {
+      await updateOrg(expandedOrgId, editForm);
+    }
     await refreshOrgs();
-    if (activeOrg?.id === expandedOrgId) {
+    void syncPushRegistrations();
+    // Read now, not at render: the unregister above can take seconds, and
+    // the active server may have changed meanwhile.
+    if (getActiveOrg()?.id === expandedOrgId) {
       await handleSwitchOrg(expandedOrgId);
     }
     setExpandedOrgId(null);
@@ -134,13 +165,22 @@ function OrganizationsSection() {
         text: 'Delete',
         style: 'destructive',
         onPress: async () => {
-          const wasActive = activeOrg?.id === orgId;
-          await deleteOrg(orgId);
+          // Whether it was active is read at the moment of deletion, not
+          // before the unregister (which can take seconds).
+          let wasActive = false;
+          // Unregisters with the saved login, then deletes, as one step.
+          await forgetPushServer(
+            orgs.find((o: any) => o.id === orgId),
+            () => {
+              wasActive = getActiveOrg()?.id === orgId;
+              return deleteOrg(orgId);
+            },
+          );
           await refreshOrgs();
-          if (wasActive) {
-            const newOrgs = getOrgs();
-            if (newOrgs?.orgs?.[0]) await handleSwitchOrg(newOrgs.orgs[0].id);
-          }
+          void syncPushRegistrations();
+          // deleteOrg picked the replacement; connect to it.
+          const replacement = getActiveOrg();
+          if (wasActive && replacement) await handleSwitchOrg(replacement.id);
           setExpandedOrgId(null);
         },
       },
@@ -153,6 +193,7 @@ function OrganizationsSection() {
     }
     await createOrg(newForm);
     await refreshOrgs();
+    void syncPushRegistrations();
     setNewForm({ name: '', color: '#6366f1', remoteUrl: '', apiKey: '' });
     setShowNewForm(false);
   };
@@ -287,6 +328,17 @@ function OrganizationsSection() {
                   >
                     <Text style={styles.deleteBtnText}>Delete</Text>
                   </TouchableOpacity>
+                  {isActive && isAuthenticated() ? (
+                    <TouchableOpacity
+                      style={[styles.deleteBtn, signingOut && { opacity: 0.5 }]}
+                      onPress={handleSignOut}
+                      disabled={signingOut}
+                    >
+                      <Text style={styles.deleteBtnText}>
+                        {signingOut ? 'Signing out…' : 'Sign Out'}
+                      </Text>
+                    </TouchableOpacity>
+                  ) : null}
                   <TouchableOpacity style={styles.saveBtn} onPress={handleSave}>
                     <Text style={styles.saveBtnText}>Save Changes</Text>
                   </TouchableOpacity>

@@ -3351,6 +3351,13 @@ function initDb(dataDir: string): void {
   } catch {
     db.exec('ALTER TABLE device_tokens ADD COLUMN user_id TEXT DEFAULT NULL');
   }
+  // The URL the phone reaches this server at. Echoed in each push so a phone
+  // saved to several servers knows which one a notification came from.
+  try {
+    db.prepare('SELECT server_url FROM device_tokens LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE device_tokens ADD COLUMN server_url TEXT DEFAULT NULL');
+  }
 
   // Per-user notification prefs. The first init that creates the table also
   // folds each device's enabled_events into its owner's push switches.
@@ -5653,11 +5660,12 @@ function initDb(dataDir: string): void {
 
     // Device tokens (push notifications)
     registerDeviceToken: db.prepare(
-      `INSERT INTO device_tokens (token, platform, user_id, last_used)
-       VALUES (?, ?, ?, datetime('now'))
+      `INSERT INTO device_tokens (token, platform, user_id, server_url, last_used)
+       VALUES (?, ?, ?, ?, datetime('now'))
        ON CONFLICT(token) DO UPDATE SET
          platform = excluded.platform,
          user_id = excluded.user_id,
+         server_url = excluded.server_url,
          last_used = datetime('now')`,
     ),
     removeDeviceToken: db.prepare('DELETE FROM device_tokens WHERE token = ?'),

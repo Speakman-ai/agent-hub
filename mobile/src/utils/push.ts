@@ -18,9 +18,10 @@
  * TRIGGER order is:
  *   - `registerForPushNotifications({ api, Notifications, Device, Constants })`
  *     → returns { token, permissionStatus }
- *   - `presentLocalNotification({ Notifications }, { title, body, data })`
+ *   - `presentLocalNotification({ Notifications }, { title, body, data, serverUrl })`
  */
 import { pushCategoryIdFor } from '@shared/utils/approvals';
+import { tagPushData } from '@shared/utils/pushServerTag';
 /**
  * Returns true iff the platform can receive real push notifications.
  * Simulators/emulators cannot. Callers that pass a stub Device can test
@@ -129,16 +130,27 @@ export async function registerForPushNotifications({
  * OS-level push delivery is suppressed for foregrounded apps.
  *
  * @param {{ Notifications: { scheduleNotificationAsync: (req: object) => Promise<string> } }} deps
- * @param {{ title: string, body: string, data?: object }} content
+ * @param {{ title: string, body: string, data?: object, serverUrl: string }} content
+ *   `serverUrl` is the server whose event this is. It is stamped into the
+ *   data so a tap or an approval button acts on that server, not on
+ *   whichever is active when the banner is tapped.
  * @returns {Promise<string | null>} scheduler-returned id, or null on failure
  */
-export async function presentLocalNotification({ Notifications }: any, { title, body, data }: any) {
+export async function presentLocalNotification(
+  { Notifications }: any,
+  { title, body, data, serverUrl }: any,
+) {
   if (!Notifications?.scheduleNotificationAsync) return null;
   try {
     // Approval banners get the same Allow once / Deny buttons as the push.
     const categoryIdentifier = pushCategoryIdFor(data?.event ?? data?.category);
     return await Notifications.scheduleNotificationAsync({
-      content: { title, body, data, ...(categoryIdentifier ? { categoryIdentifier } : {}) },
+      content: {
+        title,
+        body,
+        data: tagPushData(data, serverUrl),
+        ...(categoryIdentifier ? { categoryIdentifier } : {}),
+      },
       trigger: null,
     });
   } catch (err: any) {

@@ -1121,6 +1121,8 @@ export interface DeviceTokenRow {
   token: string;
   platform: string;
   user_id?: string | null;
+  /** URL the registering phone uses for this server, echoed in its pushes. */
+  server_url?: string | null;
   created_at: string;
   last_used: string | null;
   enabled_events: string | null;

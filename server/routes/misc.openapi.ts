@@ -69,6 +69,12 @@ export const BrowseResponseComponent = registerComponent(
 export const RegisterDeviceRequestSchema = z.object({
   token: z.string().min(1, 'token is required'),
   platform: z.string().optional(),
+  serverUrl: z
+    .string()
+    .optional()
+    .describe(
+      'URL the device uses to reach this server. Echoed as `hubServerUrl` in push data so a device saved to several servers can tell them apart.',
+    ),
 });
 
 export const DeviceTokenResponseComponent = registerComponent(

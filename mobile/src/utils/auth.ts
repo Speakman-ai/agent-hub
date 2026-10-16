@@ -178,6 +178,21 @@ async function activateFor(turn: number, serverUrl: string | null | undefined) {
   await persist();
 }
 
+/**
+ * The saved, unexpired login token for `serverUrl`, whether or not it is the
+ * active server. Read-only: never changes which login is active.
+ */
+export async function loginTokenForServer(
+  serverUrl: string | null | undefined,
+): Promise<string | null> {
+  await ensureVault();
+  const origin = authOriginOf(serverUrl);
+  if (!origin) return null;
+  const active = tokenFresh(_cachedToken);
+  if (active && active.origin === origin) return active.token;
+  return tokenFresh(_vault[origin])?.token ?? null;
+}
+
 /** Warm the in-memory mirror from AsyncStorage. Call on app startup. */
 export async function loadAuthToken(serverUrl?: string | null) {
   // Anything that changes the active login while this reads disk (the vault
@@ -410,6 +425,7 @@ export async function getAuthStatus(baseUrl: any, { timeoutMs = 15000 }: any = {
     if (timer) clearTimeout(timer);
   }
 }
+export const LOGOUT_TIMEOUT_MS = 10_000;
 /** POST /api/auth/logout — clears local token (stateless server). */
 export async function logout({ baseUrl }: any = {}) {
   const turn = takeTurn();
@@ -419,15 +435,77 @@ export async function logout({ baseUrl }: any = {}) {
   // interleave. A switch or a newer sign-in made while the server request
   // below is in flight is later and is left alone.
   const clearing = clearFor(turn, token ?? undefined);
-  if (baseUrl && token) {
-    try {
-      await fetch(`${baseUrl}/auth/logout`, {
+  if (baseUrl && token) await postLogout(baseUrl, token);
+  await clearing;
+}
+
+/** Best effort and bounded: a server that never answers must not keep the app signed in. */
+async function postLogout(apiBaseUrl: string, token: string) {
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      fetch(`${apiBaseUrl}/auth/logout`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
-      });
-    } catch {}
+        ...(controller ? { signal: controller.signal } : {}),
+      }),
+      new Promise((resolve) => {
+        timer = setTimeout(() => {
+          controller?.abort();
+          resolve(null);
+        }, LOGOUT_TIMEOUT_MS);
+      }),
+    ]);
+  } catch {
+  } finally {
+    clearTimeout(timer);
   }
-  await clearing;
+}
+
+/**
+ * Synchronous: is there an unexpired login for `serverUrl` right now, active
+ * or saved? Reads the loaded vault; call after anything that loaded it
+ * (`captureLogin`, `logoutLogin`).
+ */
+export function hasLoginFor(serverUrl: string | null | undefined): boolean {
+  const origin = authOriginOf(serverUrl);
+  if (!origin) return false;
+  const active = tokenFresh(_cachedToken);
+  if (active && active.origin === origin) return true;
+  return tokenFresh(_vault[origin]) !== null;
+}
+
+/** One server's login, captured when a sign-out starts. */
+export interface CapturedLogin {
+  serverUrl: string;
+  token: string | null;
+}
+
+/** Capture `serverUrl`'s login now, so a later sign-out acts on exactly it. */
+export async function captureLogin(serverUrl: string): Promise<CapturedLogin> {
+  return { serverUrl, token: await loginTokenForServer(serverUrl) };
+}
+
+/**
+ * Sign out of the login captured by `captureLogin`, however long ago that
+ * was. Only that login is cleared, from the vault and, if it is still the
+ * active one, from the active slot; another server switched to meanwhile, or
+ * a newer sign-in to the same server, is left alone. The server's logout
+ * call goes to the captured server with the captured token.
+ */
+export async function logoutLogin({ serverUrl, token }: CapturedLogin): Promise<void> {
+  const origin = authOriginOf(serverUrl);
+  if (!origin || !token) return;
+  await ensureVault();
+  // Checked and cleared with no await in between, and only while the state
+  // still holds exactly this token, so a newer login can't be undone here.
+  const turn = takeTurn();
+  if (_cachedToken?.token === token) commitActive(turn, null);
+  if (_vault[origin]?.token === token) vaultDelete(turn, origin);
+  const saved = persist();
+  await postLogout(`${serverUrl.replace(/\/+$/, '')}/api`, token);
+  await saved;
 }
 
 export async function forgotPassword({ baseUrl, email }: any) {

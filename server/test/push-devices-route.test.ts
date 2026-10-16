@@ -41,6 +41,23 @@ describe('device token preference routes', () => {
     expect(get.body.enabledEvents).toBeNull();
   });
 
+  it('stores the server URL the device registered with', async () => {
+    const request = await getRequest();
+    const token = `ExponentPushToken[server-url-${Date.now()}]`;
+    await request
+      .post('/api/devices')
+      .send({ token, platform: 'ios', serverUrl: 'https://hub.one.test/' })
+      .expect(200);
+    const { stmts } = await import('../db.js');
+    const row = stmts!.getDeviceToken.get(token) as { server_url: string | null };
+    expect(row.server_url).toBe('https://hub.one.test');
+
+    // Re-registering without a URL (an older app) clears it.
+    await request.post('/api/devices').send({ token, platform: 'ios' }).expect(200);
+    const again = stmts!.getDeviceToken.get(token) as { server_url: string | null };
+    expect(again.server_url).toBeNull();
+  });
+
   it('returns 404 for an unknown token', async () => {
     const request = await getRequest();
     await request.get('/api/devices/does-not-exist').expect(404);

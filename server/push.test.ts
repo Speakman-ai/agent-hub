@@ -11,6 +11,7 @@ import {
   parseEnabledEvents,
   tokenAcceptsEvent,
   buildMessages,
+  normalizeDeviceServerUrl,
   sendExpoPush,
   dispatchPushEvent,
   mapBroadcastToPush,
@@ -198,6 +199,32 @@ describe('buildMessages', () => {
   it('omits the sound when silent', () => {
     const msgs = buildMessages([token('A')], { title: 'T', body: 'B', silent: true });
     expect(msgs[0].sound).toBeNull();
+  });
+
+  it('tags each message with the server URL its device registered under', () => {
+    const msgs = buildMessages(
+      [{ ...token('A'), server_url: 'https://hub.one.test' }, token('B')],
+      { title: 'T', body: 'B', data: { sessionId: 's1' } },
+    );
+    expect(msgs[0].data).toEqual({ sessionId: 's1', hubServerUrl: 'https://hub.one.test' });
+    expect(msgs[1].data).toEqual({ sessionId: 's1' });
+  });
+});
+
+describe('normalizeDeviceServerUrl', () => {
+  it('keeps http(s) URLs and drops the trailing slash', () => {
+    expect(normalizeDeviceServerUrl('https://hub.one.test/')).toBe('https://hub.one.test');
+    expect(normalizeDeviceServerUrl(' http://10.0.0.2:3051/prefix/ ')).toBe(
+      'http://10.0.0.2:3051/prefix',
+    );
+  });
+
+  it('rejects missing, malformed, non-http and credentialed URLs', () => {
+    expect(normalizeDeviceServerUrl(undefined)).toBeNull();
+    expect(normalizeDeviceServerUrl(42)).toBeNull();
+    expect(normalizeDeviceServerUrl('not a url')).toBeNull();
+    expect(normalizeDeviceServerUrl('javascript:alert(1)')).toBeNull();
+    expect(normalizeDeviceServerUrl('https://user:pw@hub.one.test')).toBeNull();
   });
 });
 

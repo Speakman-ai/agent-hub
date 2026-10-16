@@ -151,6 +151,17 @@ describe('presentLocalNotification', () => {
       trigger: null,
     });
   });
+  it('stamps the server whose event it is, so a later tap acts on that server', async () => {
+    const Notifications = { scheduleNotificationAsync: vi.fn().mockResolvedValue('id-3') };
+    await presentLocalNotification(
+      { Notifications },
+      { title: 'T', body: 'B', data: { sessionId: 's1' }, serverUrl: 'https://one.test' },
+    );
+    expect(Notifications.scheduleNotificationAsync.mock.calls[0][0].content.data).toEqual({
+      sessionId: 's1',
+      hubServerUrl: 'https://one.test',
+    });
+  });
   it('adds the approval category so the banner shows Allow once / Deny', async () => {
     const Notifications = { scheduleNotificationAsync: vi.fn().mockResolvedValue('id-2') };
     await presentLocalNotification(

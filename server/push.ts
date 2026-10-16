@@ -34,6 +34,7 @@ import { chatPushRecipients, HUB_CHAT_MESSAGE_EVENT, mentionedUserIds } from './
 import { getChannel, listMembers } from './hub-chat-store.js';
 
 import type { PushEventType } from '../shared/utils/notificationCategories.js';
+import { PUSH_SERVER_URL_KEY, tagPushData } from '../shared/utils/pushServerTag.js';
 
 // Payload shape sent to Expo
 export interface ExpoPushMessage {
@@ -458,6 +459,26 @@ export async function sendExpoPush(
   return sent;
 }
 
+export { PUSH_SERVER_URL_KEY };
+
+/**
+ * The server URL a device sent at registration, reduced to a clean http(s)
+ * URL without a trailing slash, or null when it is missing or malformed.
+ */
+export function normalizeDeviceServerUrl(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed.length > 2048) return null;
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    if (url.username || url.password) return null;
+    return `${url.origin}${url.pathname}`.replace(/\/+$/, '');
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Build Expo push messages for the given set of tokens (already filtered)
  * from a single (title, body, data) triple. Platform sound defaults to
@@ -473,14 +494,19 @@ export function buildMessages(
     categoryId?: string;
   },
 ): ExpoPushMessage[] {
-  return tokens.map((t) => ({
-    to: t.token,
-    sound: payload.silent ? null : 'default',
-    title: payload.title,
-    body: payload.body,
-    data: payload.data,
-    ...(payload.categoryId ? { categoryId: payload.categoryId } : {}),
-  }));
+  return tokens.map((t) => {
+    // A phone saved to several servers gets pushes from all of them; the URL
+    // it registered with tells it which server to open on tap.
+    const data = t.server_url ? tagPushData(payload.data, t.server_url) : payload.data;
+    return {
+      to: t.token,
+      sound: payload.silent ? null : 'default',
+      title: payload.title,
+      body: payload.body,
+      data,
+      ...(payload.categoryId ? { categoryId: payload.categoryId } : {}),
+    };
+  });
 }
 
 /**
