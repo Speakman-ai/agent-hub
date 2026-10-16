@@ -1,4 +1,8 @@
 import type { UploadedAttachment } from '@shared/types/uploads';
+import {
+  ROUTINE_DRAFT_TIMEOUT_MS,
+  type RoutineDraftWire,
+} from '@shared/utils/routineFromRecording';
 import type { ChatDigestSaveRequest } from '@shared/utils/chatDigest';
 import { getApiBase, getAuthHeaders } from './connection';
 import { getToken as getJwt, clearToken, isLocalBundledDeployment } from './auth';
@@ -2737,6 +2741,16 @@ export const api = {
       ),
     }),
 
+  draftRoutineFromRecording: (
+    sessionId: string,
+    body: { artifactId: string; goal?: string },
+  ): Promise<RoutineDraftWire> =>
+    fetchJSON(`/sessions/${encodeURIComponent(sessionId)}/routines/draft`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+      // The server answers after one model call (up to 3 minutes).
+      timeout: ROUTINE_DRAFT_TIMEOUT_MS,
+    }),
   createProjectSkill: (projectId: any, body: any) =>
     fetchJSON(`/projects/${projectId}/skills`, {
       method: 'POST',

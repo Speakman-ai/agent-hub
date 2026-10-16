@@ -58,10 +58,13 @@ describe('chat trigger producers carry occurrence ids', () => {
     const created = broadcastsOf('card_created').filter((h) => h.file === 'routes/board.ts');
     expect(created).toHaveLength(1);
     expect(created[0]!.literal).toMatch(/cardId:[\s\S]*columnName:/);
-    const cron = broadcastsOf('cron_finished').filter((h) => h.file === 'heartbeat.ts');
-    expect(cron).toHaveLength(1);
+    // One shared emitter (`emitCronFinished`) serves classic and routine crons.
+    const cron = broadcastsOf('cron_finished').filter((h) => !h.file.startsWith('chat-trigger'));
+    expect(cron.map((h) => h.file)).toEqual(['routine-runs.ts']);
     for (const field of ['cronId:', 'logId:', 'ownerUserId:', 'cronShared:']) {
       expect(cron[0]!.literal).toContain(field);
     }
+    const heartbeat = readFileSync(path.join(ROOT, 'heartbeat.ts'), 'latin1');
+    expect(heartbeat).toMatch(/emitCronFinished\(broadcastFn, cronJob/);
   });
 });

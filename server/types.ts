@@ -839,6 +839,13 @@ export interface CronRow {
    * every org member. Execution still uses owner_user_id either way.
    */
   shared: number;
+  /**
+   * Project skill id a routine run loads. Set: each run opens a consult chat
+   * session for the owner under `skill_principal_agent_id` with this skill
+   * preloaded, so it gets the browser tool, the owner's browser profile and the
+   * approval gates. Null: the classic headless one-shot cron.
+   */
+  routine_skill?: string | null;
   created_at: string;
 }
 
@@ -2299,6 +2306,12 @@ export interface Stmts {
   deleteCron: Stmt;
   updateCronResult: Stmt;
   updateCronNextRun: Stmt;
+  updateCronRoutineSkill: Stmt;
+  insertRoutineRun: Stmt;
+  getRoutineRun: Stmt;
+  getRoutineRunByCron: Stmt;
+  getAllRoutineRuns: Stmt;
+  deleteRoutineRun: Stmt;
 
   // Cron logs
   addCronLog: Stmt;

@@ -23,7 +23,13 @@ describe('notification category catalog', () => {
       NOTIFICATION_SECTIONS.map((s) => [s.id, s.categories.map((c) => c.id)]),
     );
     expect(bySection).toEqual({
-      sessions: ['awaiting_feedback', 'browser_sign_in', 'approval_requested', 'session_completed'],
+      sessions: [
+        'awaiting_feedback',
+        'browser_sign_in',
+        'approval_requested',
+        'session_completed',
+        'routine_run',
+      ],
       code: ['ready_to_push', 'pushed', 'finalize_failed', 'review_assigned_to_you', 'pr_merged'],
       board: ['card_assigned_to_you', 'escalation'],
       support: ['support_ticket_created'],

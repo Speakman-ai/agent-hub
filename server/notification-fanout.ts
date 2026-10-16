@@ -331,6 +331,42 @@ export function mapBroadcastToNotification(data: BroadcastData): NotificationInt
       };
     }
 
+    case 'routine_run_finished': {
+      // `sessionId` is null when the run failed before it got a session; the
+      // row then links to the project's cron jobs, where the log lives.
+      const sessionId = broadcastSessionId(data) ?? null;
+      const cronId = data.cronId;
+      const logId = data.logId;
+      if (cronId == null || logId == null) return null;
+      const owner = str(data.ownerUserId);
+      const projectId = str(data.projectId) ?? null;
+      const name = str(data.cronName) ?? 'Routine';
+      const ok = data.status === 'success';
+      const preview = str(data.preview);
+      return {
+        category: 'routine_run',
+        pushEvent: null,
+        deviceScope: 'recipients',
+        title: ok ? `Routine finished: ${name}` : `Routine failed: ${name}`,
+        body: preview ?? (ok ? 'Finished with no report' : 'The run failed'),
+        data: {
+          ...(sessionId ? { sessionId, agentId: data.agentId } : {}),
+          projectId,
+          cronId,
+          logId,
+          status: ok ? 'success' : 'error',
+          type: 'routine_run',
+        },
+        projectId,
+        sourceKey: `routine_run:${String(cronId)}:${String(logId)}`,
+        recipients: owner
+          ? { kind: 'users', userIds: [owner] }
+          : sessionId
+            ? { kind: 'session', sessionId }
+            : { kind: 'project' },
+      };
+    }
+
     case 'browser_login_requested': {
       const sessionId = broadcastSessionId(data);
       const request = (data.request ?? {}) as { requestId?: unknown; domain?: unknown };

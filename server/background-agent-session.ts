@@ -26,8 +26,9 @@ import { broadcastSessionCreated } from './session-checkpoint-rewind.js';
 import { resolveEffectiveEngineAndModel } from './effective-model.js';
 import { getProjectMode, defaultSessionUseWorktreeFlag } from './project-mode.js';
 import { isWorkflowProject } from './project-mode-guards.js';
-import { loadSkillByName } from './skill-invoke.js';
+import { loadSkillBody, loadSkillByName } from './skill-invoke.js';
 import { resolveWorkspaceSkillsDir } from './project-paths.js';
+import { resolveProjectSkillsDir } from './project-skill-paths.js';
 
 /**
  * Session control values a background session may start in. Mirrors the
@@ -181,6 +182,13 @@ export function dispatchBackgroundAgentSession(
     sessionName?: string;
     /** Id for the kickoff's user message (see `ChatMessage._userMessageId`). */
     userMessageId?: string;
+    /** Audit reason recorded on each preloaded skill. */
+    skillReason?: string;
+    /**
+     * Id for the new session. Lets a caller record the id before the kickoff
+     * fires (routine runs persist their tracking row first). Defaults to a uuid.
+     */
+    sessionId?: string;
   } = {},
 ): BackgroundSessionDispatchResult {
   const deps = hook;
@@ -218,7 +226,7 @@ export function dispatchBackgroundAgentSession(
     projectMode: getProjectMode(project),
   });
 
-  const sessionId = uuidv4();
+  const sessionId = opts.sessionId ?? uuidv4();
   const { stmts } = deps;
   stmts.createSession.run(
     sessionId,
@@ -238,11 +246,19 @@ export function dispatchBackgroundAgentSession(
   const injections: string[] = [];
   const skills = (cfg.skills ?? []).slice(0, MAX_BACKGROUND_SESSION_SKILLS);
   if (skills.length > 0) {
-    const skillsDir = resolveWorkspaceSkillsDir(project, agent);
+    // Skills saved through the project skills API live in the project skill
+    // store (what chat turns load from); older ones may still sit under the
+    // workspace `skills/` dir.
+    const projectSkillsDir = resolveProjectSkillsDir(project);
+    const workspaceSkillsDir = resolveWorkspaceSkillsDir(project, agent);
     for (const name of skills) {
+      const skillsDir =
+        projectSkillsDir && loadSkillBody(name, { skillsDir: projectSkillsDir })
+          ? projectSkillsDir
+          : workspaceSkillsDir;
       const injection = loadSkillByName({
         name,
-        reason: `default skill for background agent "${cfg.name}"`,
+        reason: opts.skillReason ?? `default skill for background agent "${cfg.name}"`,
         paths: { skillsDir },
         sessionId,
         stmts,

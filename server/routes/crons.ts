@@ -12,6 +12,7 @@ import { resolveOwnerUserId } from '../session-ownership.js';
 import { getUserById } from '../users-store.js';
 import { getActiveOrgId } from '../orgs.js';
 import { listMembersForOrg } from '../memberships-store.js';
+import { validateSkillSlug } from '../skill-write.js';
 
 /**
  * Coerce an `engine` request value into the DB-friendly form: a non-empty
@@ -72,6 +73,17 @@ export function normalizeCronSkillPrincipal(raw: unknown): string | null {
   }
   const trimmed = raw.trim();
   return trimmed ? trimmed : null;
+}
+
+/** A routine skill id: null to clear, else a valid skill slug. */
+export function normalizeCronRoutineSkill(raw: unknown): string | null {
+  if (raw === null || raw === undefined || raw === '') return null;
+  if (typeof raw !== 'string') throw new Error('routine_skill must be a string');
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const checked = validateSkillSlug(trimmed, 'routine_skill');
+  if ('error' in checked) throw new Error(checked.error);
+  return checked.slug;
 }
 
 export function normalizeCronTimezone(raw: unknown): string | null {
@@ -246,7 +258,17 @@ export default function createCronRoutes(deps: RouteDeps): Router {
       skill_principal_agent_id,
       engine,
       shared,
+      routine_skill,
     } = parsed;
+
+    let normalizedRoutineSkill: string | null;
+    try {
+      normalizedRoutineSkill = normalizeCronRoutineSkill(routine_skill);
+      if (normalizedRoutineSkill && !project_id)
+        throw new Error('routine_skill requires project_id');
+    } catch (err) {
+      return res.status(400).json({ error: (err as Error).message });
+    }
 
     const normalizedTimeout = timeout_ms !== undefined ? coerceTimeoutMs(timeout_ms) : null;
     const normalizedNotify = notify_on_run !== undefined ? coerceNotifyOnRun(notify_on_run) : 0;
@@ -310,6 +332,9 @@ export default function createCronRoutes(deps: RouteDeps): Router {
       resolveOwnerUserId(req as AuthenticatedRequest),
       normalizedShared,
     );
+    if (normalizedRoutineSkill) {
+      stmts.updateCronRoutineSkill.run(normalizedRoutineSkill, result.lastInsertRowid);
+    }
     const cronJob = stmts.getCron.get(result.lastInsertRowid) as CronRow;
     rescheduleCron(cronJob);
     res.json(toCronWire(req as AuthenticatedRequest, cronJob));
@@ -343,6 +368,7 @@ export default function createCronRoutes(deps: RouteDeps): Router {
       skill_principal_agent_id,
       engine,
       shared,
+      routine_skill,
     } = parsed;
 
     let nextTimeout: number | null = existing.timeout_ms;
@@ -398,6 +424,16 @@ export default function createCronRoutes(deps: RouteDeps): Router {
       return res.status(400).json({ error: (err as Error).message });
     }
 
+    let nextRoutineSkill: string | null = existing.routine_skill ?? null;
+    try {
+      if (Object.prototype.hasOwnProperty.call(req.body, 'routine_skill')) {
+        nextRoutineSkill = normalizeCronRoutineSkill(routine_skill);
+      }
+      if (nextRoutineSkill && !nextProjectId) throw new Error('routine_skill requires project_id');
+    } catch (err) {
+      return res.status(400).json({ error: (err as Error).message });
+    }
+
     // Resolve the engine the row will run under after this update so model
     // validation lines up with the run-time decision (see POST handler note).
     const projects = getProjects();
@@ -447,6 +483,9 @@ export default function createCronRoutes(deps: RouteDeps): Router {
       nextShared,
       existing.id,
     );
+    if (nextRoutineSkill !== (existing.routine_skill ?? null)) {
+      stmts.updateCronRoutineSkill.run(nextRoutineSkill, existing.id);
+    }
     const updated = stmts.getCron.get(existing.id) as CronRow;
     rescheduleCron(updated);
     res.json(toCronWire(authedReq, updated));

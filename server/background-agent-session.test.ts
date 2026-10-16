@@ -9,10 +9,17 @@ import type { Project, Stmts } from './types.js';
 
 const mocks = vi.hoisted(() => ({
   loadSkillByName: vi.fn(),
+  loadSkillBody: vi.fn(),
   setSessionOwner: vi.fn(),
 }));
 
-vi.mock('./skill-invoke.js', () => ({ loadSkillByName: mocks.loadSkillByName }));
+vi.mock('./skill-invoke.js', () => ({
+  loadSkillByName: mocks.loadSkillByName,
+  loadSkillBody: mocks.loadSkillBody,
+}));
+vi.mock('./project-skill-paths.js', () => ({
+  resolveProjectSkillsDir: () => '/tmp/project-skills/p1',
+}));
 vi.mock('./session-ownership.js', () => ({ setSessionOwner: mocks.setSessionOwner }));
 vi.mock('./session-checkpoint-rewind.js', () => ({ broadcastSessionCreated: vi.fn() }));
 vi.mock('./effective-model.js', () => ({
@@ -86,6 +93,7 @@ describe('dispatchBackgroundAgentSession', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.loadSkillBody.mockReset();
     stmts = fakeStmts();
     handleChat = vi.fn<(ws: unknown, msg: unknown) => Promise<void>>().mockResolvedValue(undefined);
     initBackgroundAgentSessionHook({
@@ -141,6 +149,22 @@ describe('dispatchBackgroundAgentSession', () => {
       sessionId: result.sessionId,
       content: 'Triage new cards',
     });
+  });
+
+  it('loads a skill saved in the project skill store from that store', () => {
+    mocks.loadSkillBody.mockImplementation((name: string) =>
+      name === 'saved-routine' ? { name } : null,
+    );
+    dispatchBackgroundAgentSession(proj(), {
+      id: 'a1',
+      name: 'Routine',
+      prompt: 'Run it',
+      skills: ['saved-routine', 'agent-hub-kanban'],
+    });
+    const dirs = mocks.loadSkillByName.mock.calls.map(
+      (c) => (c[0] as { name: string; paths: { skillsDir: string } }).paths.skillsDir,
+    );
+    expect(dirs).toEqual(['/tmp/project-skills/p1', '/tmp/skills']);
   });
 
   it('leaves build-level sessions in chat mode', () => {

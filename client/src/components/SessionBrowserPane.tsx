@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent, KeyboardEvent, PointerEvent, WheelEvent } from 'react';
-import { Circle, Globe, KeyRound, Loader2, RotateCw, Square, X } from 'lucide-react';
+import { Circle, Globe, KeyRound, Loader2, RotateCw, Square, Wand2, X } from 'lucide-react';
 import { getBrowserWsUrl } from '../utils/connection';
 import {
   BROWSER_LOGIN_BANNER_HINT,
@@ -28,10 +28,13 @@ import {
 import {
   BROWSER_PANE_RECORDING_IDLE,
   browserPaneRecordingSavedNotice,
+  browserPaneSavedRecordingId,
   formatRecordingRemaining,
   parseBrowserPaneRecording,
   type BrowserPaneRecording,
 } from '@shared/utils/browserPaneRecording';
+
+const RoutineFromRecordingDialog = lazy(() => import('./RoutineFromRecordingDialog'));
 
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 10_000];
 const POINTER_MOVE_MIN_INTERVAL_MS = 40;
@@ -88,6 +91,9 @@ export default function SessionBrowserPane({
   const [loginAnswering, setLoginAnswering] = useState(false);
   const [recording, setRecording] = useState<BrowserPaneRecording>(BROWSER_PANE_RECORDING_IDLE);
   const [recordingPending, setRecordingPending] = useState(false);
+  // The last recording saved from this pane, offered to Make routine.
+  const [savedRecordingId, setSavedRecordingId] = useState<string | null>(null);
+  const [routineOpen, setRoutineOpen] = useState(false);
   const [clock, setClock] = useState(() => Date.now());
 
   const showNotice = useCallback((text: string, ms = 2_500) => {
@@ -248,6 +254,7 @@ export default function SessionBrowserPane({
         }
         if (msg.type === 'recording_saved') {
           setRecordingPending(false);
+          setSavedRecordingId(browserPaneSavedRecordingId(msg));
           showNotice(browserPaneRecordingSavedNotice(msg), 6_000);
           return;
         }
@@ -460,6 +467,19 @@ export default function SessionBrowserPane({
             Record
           </button>
         ) : null}
+        {savedRecordingId && !recording.active && (
+          <button
+            type="button"
+            onClick={() => setRoutineOpen(true)}
+            className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded text-sky-200 hover:text-sky-100 hover:bg-sky-900/40 border border-sky-800/70"
+            title="Have the agent turn your last recording into a skill you can schedule"
+            aria-label="Make routine from the last recording"
+            data-testid="session-browser-make-routine"
+          >
+            <Wand2 size={11} aria-hidden />
+            Make routine
+          </button>
+        )}
         <button
           type="button"
           onClick={reconnectNow}
@@ -622,6 +642,15 @@ export default function SessionBrowserPane({
             ? "Click, scroll, or type here to use the agent's desktop. Input is held while the agent is acting."
             : "Click, scroll, or type here to act in the agent's browser. Input is held while the agent is driving."}
       </div>
+      {routineOpen && savedRecordingId && (
+        <Suspense fallback={null}>
+          <RoutineFromRecordingDialog
+            sessionId={sessionId}
+            artifactId={savedRecordingId}
+            onClose={() => setRoutineOpen(false)}
+          />
+        </Suspense>
+      )}
     </aside>
   );
 }

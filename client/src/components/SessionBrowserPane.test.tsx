@@ -343,6 +343,30 @@ describe('SessionBrowserPane', () => {
       'Recording saved to Artifacts (2 steps).',
     );
     expect(screen.getByTestId('session-browser-record')).toBeInTheDocument();
+    expect(screen.getByTestId('session-browser-make-routine')).toBeInTheDocument();
+  });
+
+  it('offers Make routine only after a recording is saved', () => {
+    const { socket } = mountAndOpen();
+    act(() =>
+      socket.receive({
+        type: 'state',
+        status: 'live',
+        url: 'https://example.com/',
+        viewport: { width: 1280, height: 720 },
+        surface: 'web',
+      }),
+    );
+    expect(screen.queryByTestId('session-browser-make-routine')).toBeNull();
+    act(() =>
+      socket.receive({
+        type: 'recording_saved',
+        artifact: { id: 'art-9', filename: 'browser-demo.json', url: '/x' },
+        steps: 3,
+        stopReason: 'stopped',
+      }),
+    );
+    expect(screen.getByTestId('session-browser-make-routine')).toBeInTheDocument();
   });
 
   it('hides Record on the desktop surface', () => {

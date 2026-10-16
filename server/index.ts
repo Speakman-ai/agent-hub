@@ -239,6 +239,8 @@ import createOrgRoutes from './routes/orgs.js';
 import createDashboardRoutes from './routes/dashboard.js';
 import createUploadRoutes from './routes/uploads.js';
 import createArtifactRoutes from './routes/artifacts.js';
+import createRoutineRoutes from './routes/routines.js';
+import { reconcileRoutineRunsOnBoot } from './routine-runs.js';
 import createBackgroundShellRoutes from './routes/background-shells.js';
 import createSessionDiscardRoutes from './routes/session-discard.js';
 import createSessionSidebarRoutes from './routes/session-sidebar.js';
@@ -2466,6 +2468,7 @@ app.use(createSessionDiscardRoutes(routeDeps));
 app.use(createSessionSidebarRoutes(routeDeps));
 app.use(createSessionContextUsageRoutes(routeDeps));
 app.use(createArtifactRoutes(routeDeps));
+app.use(createRoutineRoutes(routeDeps));
 app.use(
   createBackgroundShellRoutes({
     ...routeDeps,
@@ -3204,6 +3207,15 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
       saveErrorMessage: saveErrorMessage!,
       listKilledShells: (sessionId) => backgroundShellRuntime.listBootOrphans(sessionId),
     });
+
+    try {
+      reconcileRoutineRunsOnBoot(
+        { stmts: stmts!, broadcast },
+        sessionsToResume.map((r) => r.sessionId),
+      );
+    } catch (err) {
+      console.error('[Routine] Boot reconcile failed:', (err as Error).message);
+    }
 
     try {
       const drained = drainIdleQueuedSessions({

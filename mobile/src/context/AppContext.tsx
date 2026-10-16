@@ -1359,7 +1359,8 @@ export function AppProvider({ children }: any) {
         case 'pulls':
         case 'infra':
         case 'hubChat':
-        case 'deployments': {
+        case 'deployments':
+        case 'crons': {
           // Navigator-driven kinds share one param mapper (screen + params,
           // including the `pulls` PR number and the `infra` alert id).
           const nav = notificationRouteToNavigation(route);

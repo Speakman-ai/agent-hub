@@ -17,8 +17,10 @@ vi.mock('lucide-react-native', () => ({
   KeyRound: 'KeyRound',
   RotateCw: 'RotateCw',
   Square: 'Square',
+  Wand2: 'Wand2',
   X: 'X',
 }));
+vi.mock('./MobileRoutineDialog', () => ({ default: 'MobileRoutineDialog' }));
 vi.mock('../theme/colors', () => ({ colors: new Proxy({}, { get: () => '#000' }) }));
 vi.mock('../utils/config', () => ({
   getBrowserWsUrl: (id: string) => `wss://hub.test/api/sessions/${id}/browser/ws`,
@@ -250,5 +252,8 @@ describe('MobileBrowserPane', () => {
     });
     expect(JSON.stringify(renderer.toJSON())).toContain('Recording saved to Artifacts (3 steps).');
     expect(renderer.root.findAllByProps({ testID: 'mobile-browser-record-stop' })).toHaveLength(0);
+    expect(
+      renderer.root.findAllByProps({ testID: 'mobile-browser-make-routine' }).length,
+    ).toBeGreaterThan(0);
   });
 });

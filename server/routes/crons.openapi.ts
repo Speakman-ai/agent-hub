@@ -126,12 +126,13 @@ export const CronComponent = registerComponent(
       owner_user_id: z.string().nullable(),
       owner_username: z.string().nullable().optional(),
       shared: z.number().int(),
+      routine_skill: z.string().nullable().optional(),
       can_manage: z.boolean().optional(),
       created_at: z.string(),
     })
     .openapi({
       description:
-        'A cron job row. Booleans (`enabled`, `notify_on_run`, `shared`) are stored as 0/1 SQLite ints. `timezone` is an optional IANA timezone used to interpret the cron expression; null falls back to the server scheduler timezone. `timeout_ms`, `model`, `project_id`, `skill_principal_agent_id`, `engine`, `owner_user_id` are nullable to mean "use default" / legacy system-owned. `engine` falls back to the skill principal agent\'s engine, then to `claude-code`; `owner_user_id` controls the spawn HOME for scheduled runs. `shared=1` makes the cron visible to the org while execution still uses the owner.',
+        'A cron job row. Booleans (`enabled`, `notify_on_run`, `shared`) are stored as 0/1 SQLite ints. `timezone` is an optional IANA timezone used to interpret the cron expression; null falls back to the server scheduler timezone. `timeout_ms`, `model`, `project_id`, `skill_principal_agent_id`, `engine`, `owner_user_id` are nullable to mean "use default" / legacy system-owned. `engine` falls back to the skill principal agent\'s engine, then to `claude-code`; `owner_user_id` controls the spawn HOME for scheduled runs. `shared=1` makes the cron visible to the org while execution still uses the owner. `routine_skill` set makes the cron a routine: each run opens a consult chat session for the owner under the skill principal agent with that project skill preloaded (browser tool, owner browser profile, approval gates), and the result lands in the owner\'s notification inbox.',
     }),
 );
 
@@ -219,6 +220,10 @@ export const CreateCronRequestSchema = z.object({
   model: z.string().nullable().optional(),
   skill_principal_agent_id: z.string().nullable().optional(),
   engine: cronEngine,
+  routine_skill: z.string().nullable().optional().openapi({
+    description:
+      'Project skill id a routine run loads. Requires `project_id`. Null or empty clears it (classic cron).',
+  }),
 });
 
 /**
@@ -248,6 +253,10 @@ export const UpdateCronRequestSchema = z.object({
   model: z.string().nullable().optional(),
   skill_principal_agent_id: z.string().nullable().optional(),
   engine: cronEngine,
+  routine_skill: z.string().nullable().optional().openapi({
+    description:
+      'Project skill id a routine run loads. Requires `project_id`. Null or empty clears it (classic cron).',
+  }),
 });
 
 // OpenAPI path registrations

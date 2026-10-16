@@ -8,6 +8,7 @@
  * @typedef {{ kind: 'infra', projectId: string, alertId: string | null }} InfraRoute
  * @typedef {{ kind: 'hubChat', channelId: string }} HubChatRoute
  * @typedef {{ kind: 'deployments', projectId: string }} DeploymentsRoute
+ * @typedef {{ kind: 'crons', projectId: string }} CronsRoute
  * @typedef {ChatRoute | KanbanRoute | SupportRoute | PullsRoute | InfraRoute | HubChatRoute | DeploymentsRoute} Route
  */
 import type { InboxNotification } from '@shared/utils/notificationInbox';
@@ -67,6 +68,13 @@ export function routeNotificationTap(data: any, ctx: any = {}) {
     case 'pushed':
     case 'finalize_failed':
       return chat();
+    case 'routine_run': {
+      // A run that failed before it got a session points at the cron log.
+      const route = chat();
+      if (route) return route;
+      const projectId = typeof data.projectId === 'string' ? data.projectId : null;
+      return projectId ? { kind: 'crons' as const, projectId } : null;
+    }
     case 'browser_sign_in': {
       // The agent is parked on a sign-in: open its session with the browser view.
       const route = chat();
@@ -316,6 +324,8 @@ export function notificationRouteToNavigation(route: any) {
       return { screen: 'Hub', params: { tab: 'chat', channelId: route.channelId } };
     case 'deployments':
       return { screen: 'Deployments', params: { projectId: route.projectId } };
+    case 'crons':
+      return { screen: 'ProjectCrons', params: { projectId: route.projectId } };
     default:
       return null;
   }

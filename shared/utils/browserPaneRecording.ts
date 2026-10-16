@@ -50,3 +50,11 @@ export function browserPaneRecordingSavedNotice(raw: unknown): string {
     ? `Recording hit the 10 minute limit. Saved ${what} to Artifacts.`
     : `Recording saved to Artifacts (${what}).`;
 }
+
+/** Artifact id from a `{type:'recording_saved', artifact}` payload, for Make routine. */
+export function browserPaneSavedRecordingId(raw: unknown): string | null {
+  const r = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const a =
+    r.artifact && typeof r.artifact === 'object' ? (r.artifact as Record<string, unknown>) : {};
+  return typeof a.id === 'string' && a.id ? a.id : null;
+}

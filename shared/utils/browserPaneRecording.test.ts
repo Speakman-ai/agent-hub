@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   BROWSER_PANE_RECORDING_IDLE,
   browserPaneRecordingSavedNotice,
+  browserPaneSavedRecordingId,
   formatRecordingRemaining,
   parseBrowserPaneRecording,
 } from './browserPaneRecording';
@@ -41,5 +42,14 @@ describe('browser pane recording helpers', () => {
     expect(browserPaneRecordingSavedNotice({ steps: 4, stopReason: 'time_limit' })).toContain(
       '10 minute limit',
     );
+  });
+});
+
+describe('browserPaneSavedRecordingId', () => {
+  it('reads the saved artifact id and rejects malformed payloads', () => {
+    expect(browserPaneSavedRecordingId({ artifact: { id: 'art-1' } })).toBe('art-1');
+    expect(browserPaneSavedRecordingId({ artifact: { id: '' } })).toBeNull();
+    expect(browserPaneSavedRecordingId({})).toBeNull();
+    expect(browserPaneSavedRecordingId(null)).toBeNull();
   });
 });

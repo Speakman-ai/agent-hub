@@ -10,6 +10,7 @@ import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
 import { mergeProjectSecretsSpawnEnv } from './project-secrets-spawn.js';
 import { mergeProjectAwsSpawnEnv } from './project-aws-spawn.js';
 import { resolveCronSkillPrincipalAgentId } from './cron-skill-principal.js';
+import { emitCronFinished, startRoutineRun } from './routine-runs.js';
 import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './claude-cli-args.js';
 import { wrapCronTick, defaultTickOptions, estimateIntervalSeconds } from './cron-tick.js';
 import { getOrCreateProcessWorktree } from './worktree.js';
@@ -368,32 +369,23 @@ function broadcastCronFinished(
   projectId: string | null,
   run: { logId: number | bigint; status: 'success' | 'error'; durationMs: number; preview: string },
 ): void {
-  if (!broadcastFn || !projectId) return;
-  try {
-    broadcastFn({
-      type: 'cron_finished',
-      projectId,
-      cronId: cronJob.id,
-      cronName: cronJob.name,
-      logId: Number(run.logId),
-      status: run.status,
-      durationMs: run.durationMs,
-      preview: run.preview.slice(0, 500),
-      ownerUserId: cronJob.owner_user_id ?? null,
-      cronShared: Boolean(cronJob.shared),
-      suppressWebSocket: true,
-      suppressPush: true,
-    });
-  } catch (err) {
-    console.error(
-      `[Cron] cron_finished broadcast failed for "${cronJob.name}":`,
-      (err as Error).message,
-    );
-  }
+  emitCronFinished(broadcastFn, cronJob, projectId, run);
 }
 
 export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
   console.log(`[Cron] Running "${cronJob.name}"...`);
+  if (cronJob.routine_skill) {
+    try {
+      const started = startRoutineRun(cronJob, findProjectForCron(cronJob), {
+        stmts,
+        broadcast: broadcastFn,
+      });
+      return { id: started.logId, status: started.status, result: started.result };
+    } finally {
+      const task = scheduledTasks.get(`cron:${cronJob.id}`);
+      if (task) persistNextRun(cronJob.id, task);
+    }
+  }
   const logEntry = stmts.addCronLog.run(cronJob.id, 'running');
   const logId = logEntry.lastInsertRowid;
   const startTime = Date.now();

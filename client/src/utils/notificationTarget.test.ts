@@ -81,6 +81,18 @@ describe('notificationTarget', () => {
     });
   });
 
+  it('opens a routine run session, or the cron jobs when the run never got one', () => {
+    expect(
+      notificationTarget(
+        row({ category: 'routine_run', data: { sessionId: 's9', agentId: 'ops' } }),
+      ),
+    ).toEqual({ kind: 'session', sessionId: 's9', agentId: 'ops' });
+    expect(notificationTarget(row({ category: 'routine_run', data: { cronId: 7 } }))).toEqual({
+      kind: 'route',
+      route: { view: 'project-crons:acme' },
+    });
+  });
+
   it('honors an explicit route hash', () => {
     const t = notificationTarget(row({ route: '#/projects/acme/pulls/12', data: null }));
     expect(t?.kind).toBe('route');

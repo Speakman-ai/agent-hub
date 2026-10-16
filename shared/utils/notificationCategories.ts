@@ -57,6 +57,12 @@ export const NOTIFICATION_SECTIONS = [
         description: 'An agent finished its turn',
         defaults: QUIET,
       },
+      {
+        id: 'routine_run',
+        label: 'Routine finished',
+        description: 'A scheduled routine finished running, with its result',
+        defaults: QUIET,
+      },
     ],
   },
   {

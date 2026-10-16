@@ -3970,6 +3970,9 @@ components:
           nullable: true
         shared:
           type: integer
+        routine_skill:
+          type: string
+          nullable: true
         can_manage:
           type: boolean
         created_at:
@@ -3994,7 +3997,7 @@ components:
         - owner_user_id
         - shared
         - created_at
-      description: A cron job row. Booleans (`enabled`, `notify_on_run`, `shared`) are stored as 0/1 SQLite ints. `timezone` is an optional IANA timezone used to interpret the cron expression; null falls back to the server scheduler timezone. `timeout_ms`, `model`, `project_id`, `skill_principal_agent_id`, `engine`, `owner_user_id` are nullable to mean "use default" / legacy system-owned. `engine` falls back to the skill principal agent's engine, then to `claude-code`; `owner_user_id` controls the spawn HOME for scheduled runs. `shared=1` makes the cron visible to the org while execution still uses the owner.
+      description: "A cron job row. Booleans (`enabled`, `notify_on_run`, `shared`) are stored as 0/1 SQLite ints. `timezone` is an optional IANA timezone used to interpret the cron expression; null falls back to the server scheduler timezone. `timeout_ms`, `model`, `project_id`, `skill_principal_agent_id`, `engine`, `owner_user_id` are nullable to mean \"use default\" / legacy system-owned. `engine` falls back to the skill principal agent's engine, then to `claude-code`; `owner_user_id` controls the spawn HOME for scheduled runs. `shared=1` makes the cron visible to the org while execution still uses the owner. `routine_skill` set makes the cron a routine: each run opens a consult chat session for the owner under the skill principal agent with that project skill preloaded (browser tool, owner browser profile, approval gates), and the result lands in the owner's notification inbox."
     CronLog:
       type: object
       properties:
@@ -12386,6 +12389,7 @@ components:
             browser_sign_in: *a3
             approval_requested: *a3
             session_completed: *a3
+            routine_run: *a3
             ready_to_push: *a3
             pushed: *a3
             finalize_failed: *a3
@@ -12439,6 +12443,7 @@ components:
                     - browser_sign_in
                     - approval_requested
                     - session_completed
+                    - routine_run
                     - ready_to_push
                     - pushed
                     - finalize_failed
@@ -12467,6 +12472,7 @@ components:
                   - browser_sign_in
                   - approval_requested
                   - session_completed
+                  - routine_run
                   - ready_to_push
                   - pushed
                   - finalize_failed
@@ -15122,6 +15128,60 @@ components:
         - retentionFlaggedAt
         - relocationPending
       description: Extended-retention state of a segmented session.
+    RoutineErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+      required:
+        - error
+      description: Error envelope for routine routes.
+    RoutineDraft:
+      type: object
+      properties:
+        projectId:
+          type: string
+        agentId:
+          type: string
+        agentName:
+          type: string
+        artifactId:
+          type: string
+        steps:
+          type: integer
+          description: Steps in the source recording.
+        engine:
+          type: string
+        model:
+          type: string
+          nullable: true
+        draft:
+          type: object
+          properties:
+            name:
+              type: string
+              description: Suggested skill slug.
+            description:
+              type: string
+            body:
+              type: string
+              description: SKILL.md Markdown body (no frontmatter).
+          required:
+            - name
+            - description
+            - body
+      required:
+        - projectId
+        - agentId
+        - agentName
+        - artifactId
+        - steps
+        - engine
+        - model
+        - draft
+      description: "A draft project skill the session agent wrote from the recording. Nothing is saved: the client saves it with `POST /api/projects/{projectId}/skills` and schedules it with `POST /api/crons` (`routine_skill`)."
     RumClientErrorResponse:
       type: object
       properties:
@@ -28808,6 +28868,10 @@ paths:
                     - type: string
                       enum:
                         - ""
+                routine_skill:
+                  type: string
+                  nullable: true
+                  description: Project skill id a routine run loads. Requires `project_id`. Null or empty clears it (classic cron).
               required:
                 - name
                 - schedule
@@ -28919,6 +28983,10 @@ paths:
                     - type: string
                       enum:
                         - ""
+                routine_skill:
+                  type: string
+                  nullable: true
+                  description: Project skill id a routine run loads. Requires `project_id`. Null or empty clears it (classic cron).
       responses:
         "200":
           description: Updated cron.
@@ -52417,6 +52485,65 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReplayIngestErrorResponse"
+  /api/sessions/{sessionId}/routines/draft:
+    post:
+      tags:
+        - Routines
+      summary: Draft a routine skill from a browser demo recording
+      description: Reads a browser demo recording artifact from this session and asks the session agent (one model call, as the session owner) to draft a SKILL.md with steps and success checks. Masked recording input is never sent. Responds after the model answers, which can take a few minutes.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                artifactId:
+                  type: string
+                  minLength: 1
+                  description: Id of the browser demo recording artifact in this session.
+                goal:
+                  type: string
+                  maxLength: 500
+                  description: Optional one-line description of the task, passed to the agent.
+              required:
+                - artifactId
+      responses:
+        "200":
+          description: Draft ready for the human to edit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoutineDraft"
+        "400":
+          description: Bad body, not a recording, empty recording, or no engine available.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoutineErrorResponse"
+        "404":
+          description: Session or artifact not found / not owned by caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoutineErrorResponse"
+        "502":
+          description: The model call failed or returned an empty draft.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoutineErrorResponse"
+        "503":
+          description: Artifact storage is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoutineErrorResponse"
   /api/projects/{projectId}/rum/clients:
     post:
       tags:

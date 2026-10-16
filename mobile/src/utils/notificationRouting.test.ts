@@ -341,6 +341,18 @@ describe('routeInboxNotification — bell inbox rows', () => {
     }
   });
 
+  it('routes a routine run with no session to the project cron jobs', () => {
+    const route = routeInboxNotification(row('routine_run', { cronId: 7 }));
+    expect(route).toEqual({ kind: 'crons', projectId: 'p1' });
+    expect(notificationRouteToNavigation(route)).toEqual({
+      screen: 'ProjectCrons',
+      params: { projectId: 'p1' },
+    });
+    expect(routeInboxNotification(row('routine_run', { sessionId: 's9', agentId: 'ops' }))).toEqual(
+      expect.objectContaining({ kind: 'chat', sessionId: 's9' }),
+    );
+  });
+
   it('opens Deployments for deploy outcomes', () => {
     const route = routeInboxNotification(row('deploy_outcome', {}));
     expect(route).toEqual({ kind: 'deployments', projectId: 'p1' });

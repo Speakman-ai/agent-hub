@@ -1,5 +1,6 @@
 import type { UploadedAttachment } from '@shared/types/uploads';
 import type { ChatDigestSaveRequest } from '@shared/utils/chatDigest';
+import type { RoutineDraftWire } from '@shared/utils/routineFromRecording';
 import { getApiBaseUrl, getAuthHeaders } from './config';
 import { buildNotesListUrl, buildNoteUrl } from './notesUrl';
 import { uploadFile as uploadFileImpl } from './uploadFile';
@@ -995,6 +996,21 @@ export const api = {
   exportConfig: () => fetchJSON('/config/export'),
   importConfig: (data: any) =>
     fetchJSON('/config/import', { method: 'POST', body: JSON.stringify(data) }),
+
+  // Routines from browser demo recordings
+  draftRoutineFromRecording: (
+    sessionId: string,
+    body: { artifactId: string; goal?: string },
+  ): Promise<RoutineDraftWire> =>
+    fetchJSON(`/sessions/${encodeURIComponent(sessionId)}/routines/draft`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  createProjectSkill: (projectId: string, body: unknown) =>
+    fetchJSON(`/projects/${encodeURIComponent(projectId)}/skills`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 
   // Crons
   getCrons: () => fetchJSON('/crons'),

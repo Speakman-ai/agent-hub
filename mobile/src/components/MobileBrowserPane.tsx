@@ -10,7 +10,8 @@ import {
   type GestureResponderEvent,
   type LayoutChangeEvent,
 } from 'react-native';
-import { Circle, Globe, KeyRound, RotateCw, Square, X } from 'lucide-react-native';
+import { Circle, Globe, KeyRound, RotateCw, Square, Wand2, X } from 'lucide-react-native';
+import MobileRoutineDialog from './MobileRoutineDialog';
 import { colors } from '../theme/colors';
 import { getBrowserWsUrl } from '../utils/config';
 import {
@@ -37,6 +38,7 @@ import {
 import {
   BROWSER_PANE_RECORDING_IDLE,
   browserPaneRecordingSavedNotice,
+  browserPaneSavedRecordingId,
   formatRecordingRemaining,
   parseBrowserPaneRecording,
   type BrowserPaneRecording,
@@ -83,6 +85,9 @@ export default function MobileBrowserPane({
   const [loginAnswering, setLoginAnswering] = useState(false);
   const [recording, setRecording] = useState<BrowserPaneRecording>(BROWSER_PANE_RECORDING_IDLE);
   const [recordingPending, setRecordingPending] = useState(false);
+  // The last recording saved from this pane, offered to Make routine.
+  const [savedRecordingId, setSavedRecordingId] = useState<string | null>(null);
+  const [routineOpen, setRoutineOpen] = useState(false);
   const [clock, setClock] = useState(() => Date.now());
 
   const showNotice = useCallback((text: string, ms = 2500) => {
@@ -210,6 +215,7 @@ export default function MobileBrowserPane({
           setRecordingPending(false);
         } else if (msg.type === 'recording_saved') {
           setRecordingPending(false);
+          setSavedRecordingId(browserPaneSavedRecordingId(msg));
           showNotice(browserPaneRecordingSavedNotice(msg), 6000);
         } else if (msg.type === 'recording_error') {
           setRecordingPending(false);
@@ -313,6 +319,13 @@ export default function MobileBrowserPane({
 
   return (
     <View style={styles.container} testID="mobile-browser-pane">
+      {routineOpen && savedRecordingId ? (
+        <MobileRoutineDialog
+          sessionId={sessionId}
+          artifactId={savedRecordingId}
+          onClose={() => setRoutineOpen(false)}
+        />
+      ) : null}
       <View style={styles.header}>
         <Globe size={15} color={colors.sky400} />
         <Text style={styles.title}>Agent browser</Text>
@@ -347,6 +360,17 @@ export default function MobileBrowserPane({
           >
             <Circle size={9} color={colors.rose400} fill={colors.rose400} />
             <Text style={styles.recordText}>Record</Text>
+          </TouchableOpacity>
+        ) : null}
+        {savedRecordingId && !recording.active ? (
+          <TouchableOpacity
+            onPress={() => setRoutineOpen(true)}
+            style={styles.recordBtn}
+            accessibilityLabel="Make routine from the last recording"
+            testID="mobile-browser-make-routine"
+          >
+            <Wand2 size={10} color={colors.sky300} />
+            <Text style={styles.recordText}>Routine</Text>
           </TouchableOpacity>
         ) : null}
         <TouchableOpacity onPress={reconnectNow} accessibilityLabel="Reconnect agent browser">

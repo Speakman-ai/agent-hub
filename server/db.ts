@@ -1876,6 +1876,34 @@ function initDb(dataDir: string): void {
   }
   db.exec('CREATE INDEX IF NOT EXISTS idx_crons_shared ON crons(shared)');
 
+  // Routine crons: the project skill a run loads. A set value makes each run a
+  // real chat session for the cron owner instead of a headless one-shot.
+  try {
+    db.prepare('SELECT routine_skill FROM crons LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE crons ADD COLUMN routine_skill TEXT');
+  }
+
+  // In-flight routine runs: which chat session settles which cron log row.
+  // Persisted so a run that outlives a Hub restart still reports, and so the
+  // one-run-per-cron guard holds across restarts.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS routine_runs (
+      session_id TEXT PRIMARY KEY,
+      cron_id INTEGER NOT NULL,
+      cron_name TEXT NOT NULL,
+      log_id INTEGER NOT NULL,
+      skill TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      owner_user_id TEXT,
+      cron_shared INTEGER NOT NULL DEFAULT 0,
+      started_at INTEGER NOT NULL
+    );
+    -- One in-flight run per cron. The insert is the overlap guard.
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_routine_runs_cron ON routine_runs(cron_id);
+  `);
+
   const heartbeatStateColumns = db.prepare('PRAGMA table_info(heartbeat_state)').all() as Array<{
     name: string;
   }>;
@@ -5315,6 +5343,14 @@ function initDb(dataDir: string): void {
       "UPDATE crons SET last_run = datetime('now'), last_result = ? WHERE id = ?",
     ),
     updateCronNextRun: db.prepare('UPDATE crons SET next_run_at = ? WHERE id = ?'),
+    updateCronRoutineSkill: db.prepare('UPDATE crons SET routine_skill = ? WHERE id = ?'),
+    insertRoutineRun: db.prepare(
+      'INSERT INTO routine_runs (session_id, cron_id, cron_name, log_id, skill, project_id, agent_id, owner_user_id, cron_shared, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ),
+    getRoutineRun: db.prepare('SELECT * FROM routine_runs WHERE session_id = ?'),
+    getRoutineRunByCron: db.prepare('SELECT * FROM routine_runs WHERE cron_id = ? LIMIT 1'),
+    getAllRoutineRuns: db.prepare('SELECT * FROM routine_runs ORDER BY started_at ASC'),
+    deleteRoutineRun: db.prepare('DELETE FROM routine_runs WHERE session_id = ?'),
 
     // Cron logs
     addCronLog: db.prepare('INSERT INTO cron_logs (cron_id, status) VALUES (?, ?)'),

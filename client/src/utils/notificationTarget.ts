@@ -48,6 +48,10 @@ export function notificationTarget(n: InboxNotification): NotificationTarget | n
     case 'pushed':
     case 'finalize_failed':
       return sessionId ? { kind: 'session', sessionId, agentId: str(data.agentId) } : null;
+    case 'routine_run':
+      // A run that failed before it got a session points at the cron log.
+      if (sessionId) return { kind: 'session', sessionId, agentId: str(data.agentId) };
+      return projectId ? { kind: 'route', route: { view: `project-crons:${projectId}` } } : null;
     case 'browser_sign_in':
       return sessionId
         ? { kind: 'session', sessionId, agentId: str(data.agentId), pane: 'browser' }
