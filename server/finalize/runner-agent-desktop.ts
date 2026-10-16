@@ -319,7 +319,8 @@ export async function runAgentDesktop(args: {
       .catch(() => {});
     void protection.set(true).catch(() => {});
   }, args.heartbeatMs ?? 30_000);
-  (heartbeat as { unref?: () => void }).unref?.();
+  // Left ref'd on purpose: it keeps the agent process alive while it holds the
+  // desktop (every other handle is unref'd). Cleared in `finally`.
   // A partitioned runner stops its desktop in every phase (startup, the
   // ready report, the hold), not only once the desktop is up. Expiry stops
   // the run; teardown in `finally` then removes the container. The Hub does

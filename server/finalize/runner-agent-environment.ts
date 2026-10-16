@@ -357,7 +357,10 @@ export async function runAgentEnvironment(args: {
     sendHeartbeat();
     void protection.set(true).catch(() => {});
   }, args.heartbeatMs ?? 30_000);
-  (heartbeat as { unref?: () => void }).unref?.();
+  // Left ref'd on purpose: once bring-up's docker children exit, this is the
+  // only handle keeping the agent process alive while it holds the stack. If
+  // it were unref'd, Node would exit right after the ready report and the Hub
+  // would see the lease expire and rebuild the environment. Cleared in `finally`.
   let probeInFlight = false;
   const spotProbe = setInterval(() => {
     if (spotInterruption || probeInFlight) return;

@@ -129,6 +129,37 @@ describe('runAgentDesktop', () => {
     expect(transport.postFinish).toHaveBeenCalledWith('job-1', 0, null);
   });
 
+  it('keeps the agent process alive while it holds the desktop', async () => {
+    const timers: NodeJS.Timeout[] = [];
+    const real = globalThis.setInterval;
+    const spy = vi.spyOn(globalThis, 'setInterval').mockImplementation(((
+      fn: () => void,
+      ms?: number,
+    ) => {
+      const t = real(fn, ms);
+      timers.push(t);
+      return t;
+    }) as typeof setInterval);
+    try {
+      const { docker } = fakeDocker();
+      const transport = fakeTransport({ home: 'old-home' });
+      const run = runAgentDesktop({
+        jobId: 'job-1',
+        spec: SPEC,
+        transport,
+        docker,
+        resolveHost: async () => '10.0.0.5',
+        ...FAST,
+      });
+      await vi.waitFor(() => expect(transport.reports).toHaveLength(1));
+      expect(timers.some((t) => t.hasRef())).toBe(true);
+      transport.stop();
+      await run;
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('never uploads a home it failed to restore', async () => {
     const { docker, events } = fakeDocker();
     const transport = fakeTransport({ downloadFails: true });

@@ -1,3 +1,5 @@
+import { spawn } from 'child_process';
+import { fileURLToPath } from 'url';
 import { describe, expect, it, vi } from 'vitest';
 import {
   SPOT_RECLAIMED_DURING_BRINGUP,
@@ -139,6 +141,33 @@ describe('runAgentEnvironment', () => {
     expect(h.docker.stopContainer).toHaveBeenCalledWith('prenv-prenv-env1-abc');
     expect(h.transport.postFinish).toHaveBeenCalledWith('job-1', 0, null);
   });
+
+  it('keeps a real agent process alive and heartbeating after the ready report', async () => {
+    // In-process tests can't see this: vitest keeps the event loop alive. The
+    // fleet agent exited (code 0) right after reporting ready because nothing
+    // ref'd was left, so its lease expired and the Hub rebuilt the stack.
+    const fixture = fileURLToPath(
+      new URL('./fixtures/environment-hold-process.ts', import.meta.url),
+    );
+    const child = spawn(process.execPath, ['--import', 'tsx', fixture], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let exited: number | null | undefined;
+    child.on('exit', (code) => (exited = code));
+    let out = '';
+    child.stdout.on('data', (d: Buffer) => (out += d.toString()));
+    try {
+      await vi.waitFor(() => expect(out).toContain('ready'), { timeout: 15_000, interval: 20 });
+      const before = out.split('\n').filter((l) => l === 'heartbeat').length;
+      // Several heartbeat intervals (50ms in the fixture) past the ready report.
+      await new Promise((r) => setTimeout(r, 600));
+      const after = out.split('\n').filter((l) => l === 'heartbeat').length;
+      expect(exited).toBeUndefined();
+      expect(after).toBeGreaterThan(before + 3);
+    } finally {
+      child.kill('SIGKILL');
+    }
+  }, 30_000);
 
   it('keeps a healthy stack up while the Hub is down for the ready report, then reports it', async () => {
     const h = harness();
