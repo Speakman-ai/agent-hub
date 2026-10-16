@@ -25,11 +25,11 @@
 # the dispatch is queued, without ever listening for whether the release passed.
 #
 # `mobile-production` is intentionally separate and contains no GitHub step. It
-# sends native iOS and Android builds to EAS Build and asks EAS Submit to deliver
-# each successful binary to its configured store destination. Set `EXPO_TOKEN` as
-# a project secret before using it; Apple and Google submission credentials must
-# also be configured for the EAS project/profile. EAS Submit's default targets
-# are TestFlight and Google Play internal testing, not automatic public release.
+# sends a native iOS build to EAS Build and asks EAS Submit to deliver it to
+# TestFlight (not a public App Store release). Android is not built yet: Google
+# Play submission needs a Google Service Account key, which EAS cannot set up in
+# --non-interactive mode. Set `EXPO_TOKEN` as a project secret before using it;
+# Apple submission credentials must also be configured for the EAS project.
 version: 1
 environments:
   production:
@@ -48,10 +48,10 @@ environments:
     # Gated: an Admin/Owner must approve before binaries are sent to EAS.
     approval: true
     runs-on: ubuntu-24.04
-    # EAS waits for remote iOS and Android builds, then submits both binaries.
+    # EAS waits for the remote iOS build, then submits it to TestFlight.
     timeout_minutes: 240
     steps:
-      - name: build-and-submit-native-mobile
+      - name: build-and-submit-ios
         run: |
           expo_token="${EXPO_TOKEN:-}"
           unset EXPO_TOKEN
@@ -66,4 +66,4 @@ environments:
             echo "Unable to resolve eas-cli@18.4.0." >&2
             exit 1
           }
-          EXPO_TOKEN="$expo_token" "$eas_bin" build --platform all --profile production --auto-submit --non-interactive
+          EXPO_TOKEN="$expo_token" "$eas_bin" build --platform ios --profile production --auto-submit --non-interactive
