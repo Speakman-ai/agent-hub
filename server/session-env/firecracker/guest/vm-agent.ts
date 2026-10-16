@@ -37,6 +37,7 @@ import {
   type VmAgentPtyRequest,
   type VmAgentReadFileRequest,
   type VmAgentRequest,
+  type VmAgentSetClockRequest,
   type VmAgentWriteFileRequest,
   READ_FILE_CHUNK_BYTES,
   VM_AGENT_PROTOCOL_VERSION,
@@ -192,6 +193,30 @@ export function buildChildEnv(
   return env;
 }
 
+/** Steps CLOCK_REALTIME. Needs CAP_SYS_TIME, which only the root agent has. */
+export type SetClockFn = (epochMs: number) => Promise<void>;
+
+/**
+ * Node has no settimeofday binding, so this runs GNU `date -s` as the agent
+ * (root), not through {@link buildChildLaunch}: the workspace user cannot set
+ * the clock, which is the whole reason this request exists.
+ */
+export const setClockWithDate: SetClockFn = (epochMs) =>
+  new Promise((resolve, reject) => {
+    const child = spawn('/bin/date', ['-u', '-s', `@${(epochMs / 1000).toFixed(3)}`], {
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf8');
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`date -s exited ${String(code)}: ${stderr.trim()}`));
+    });
+  });
+
 class Connection {
   #decoder = new VmAgentFrameDecoder();
   #request: VmAgentRequest | null = null;
@@ -203,6 +228,7 @@ class Connection {
   constructor(
     private readonly socket: Socket,
     private readonly workspaceUser: ResolvedUser,
+    private readonly setClock: SetClockFn,
   ) {
     socket.on('data', (chunk: Buffer) => this.#onData(chunk));
     socket.on('error', () => this.#cleanup());
@@ -297,6 +323,9 @@ class Connection {
           return;
         case 'write-file':
           await this.#writeFile(request);
+          return;
+        case 'set-clock':
+          await this.#setClock(request);
           return;
         default: {
           const exhaustive: never = request;
@@ -444,11 +473,23 @@ class Connection {
     this.sendJson('reply', { kind: 'written' });
     this.finish();
   }
+
+  async #setClock(request: VmAgentSetClockRequest): Promise<void> {
+    if (!Number.isFinite(request.epochMs) || request.epochMs <= 0) {
+      throw new Error(`set-clock needs a positive epochMs, got ${String(request.epochMs)}`);
+    }
+    const previousEpochMs = Date.now();
+    await this.setClock(request.epochMs);
+    this.sendJson('reply', { kind: 'clock-set', previousEpochMs, epochMs: Date.now() });
+    this.finish();
+  }
 }
 
 export interface VmAgentServerOpts {
   socketPath?: string;
   workspaceUser: ResolvedUser;
+  /** Defaults to {@link setClockWithDate}. */
+  setClock?: SetClockFn;
 }
 
 /**
@@ -460,7 +501,7 @@ export interface VmAgentServerOpts {
 export function createVmAgentServer(opts: VmAgentServerOpts): Server {
   return createServer((socket) => {
     socket.setNoDelay(true);
-    new Connection(socket, opts.workspaceUser);
+    new Connection(socket, opts.workspaceUser, opts.setClock ?? setClockWithDate);
   });
 }
 

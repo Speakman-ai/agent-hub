@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   FirecrackerSessionEnv,
+  GUEST_CLOCK_MAX_SKEW_MS,
   VmAgentProtocolMismatchError,
   defaultPrepareDisks,
   STREAM_WRITE_TIMEOUT_MS,
@@ -61,6 +62,8 @@ class FakeGuestConnection implements VsockDuplex {
     readonly execReply:
       | ((command: string) => { code: number; stdout: string } | null)
       | null = null,
+    /** Auto-answers non-exec requests it returns a frame for. */
+    readonly requestReply: RequestReplyFn | null = null,
   ) {}
 
   write(data: Buffer): boolean {
@@ -82,6 +85,8 @@ class FakeGuestConnection implements VsockDuplex {
         }
         const req = this.request;
         const auto = req.kind === 'exec' && this.execReply ? this.execReply(req.command) : null;
+        const canned = req.kind !== 'exec' && this.requestReply ? this.requestReply(req) : null;
+        if (canned) setImmediate(() => this.replyJson(canned.type, canned.value));
         if (auto) {
           setImmediate(() => {
             this.replyJson('started', { pid: 9 });
@@ -132,6 +137,10 @@ class FakeGuestConnection implements VsockDuplex {
   }
 }
 
+type RequestReplyFn = (
+  request: VmAgentRequest,
+) => { type: VmAgentFrame['type']; value: unknown } | null;
+
 class FakeGuest {
   readonly connections: FakeGuestConnection[] = [];
   accept = true;
@@ -145,9 +154,10 @@ class FakeGuest {
   };
 
   execReply: ((command: string) => { code: number; stdout: string } | null) | null = null;
+  requestReply: RequestReplyFn | null = null;
 
   connect = async (): Promise<VsockDuplex> => {
-    const conn = new FakeGuestConnection(this.accept, this.pong, this.execReply);
+    const conn = new FakeGuestConnection(this.accept, this.pong, this.execReply, this.requestReply);
     conn.writable = this.defaultWritable;
     this.connections.push(conn);
     return conn;
@@ -896,8 +906,12 @@ describe('FirecrackerSessionEnv snapshots', () => {
       mtimes?: Record<string, number>;
       /** Host wall clock (ms). */
       now?: () => number;
-      /** Guest `date +%s` output; defaults to the host clock. */
-      guestEpochSec?: () => string;
+      /** Guest wall clock (ms) before any resync; defaults to the host clock. */
+      guestNowMs?: () => number;
+      /** Guest `date +%s%3N` output override, e.g. unparseable text. */
+      guestDateOutput?: string;
+      /** How the guest agent answers `set-clock`. */
+      setClock?: 'steps' | 'ignored' | 'fails';
       nameservers?: string[];
     } = {},
   ) {
@@ -914,7 +928,6 @@ describe('FirecrackerSessionEnv snapshots', () => {
       bootArgsExtra: ['ahvm.desktop=1'],
       vmmApi,
       statFile,
-      hostArch: 'x64',
       resolveNameservers: async () => opts.nameservers ?? ['10.0.0.2'],
       clock: { nowMs: now, sleep: async () => undefined },
       ioOverrides: {
@@ -925,13 +938,25 @@ describe('FirecrackerSessionEnv snapshots', () => {
       },
       ...overrides,
     });
+    // Guest clock = host clock + offset; a successful set-clock zeroes it.
+    let guestOffsetMs: number | null = null;
+    const guestNow = () =>
+      guestOffsetMs === null ? (opts.guestNowMs?.() ?? now()) : now() + guestOffsetMs;
     built.guest.execReply = (command) =>
-      command === 'date +%s'
-        ? {
-            code: 0,
-            stdout: `${opts.guestEpochSec?.() ?? String(Math.floor(now() / 1000))}\n`,
-          }
+      command === 'date +%s%3N'
+        ? { code: 0, stdout: `${opts.guestDateOutput ?? String(guestNow())}\n` }
         : null;
+    built.guest.requestReply = (req) => {
+      if (req.kind !== 'set-clock') return null;
+      const mode = opts.setClock ?? 'steps';
+      if (mode === 'fails') return { type: 'error', value: { message: 'date: cannot set date' } };
+      const previousEpochMs = guestNow();
+      if (mode === 'steps') guestOffsetMs = req.epochMs - now();
+      return {
+        type: 'reply',
+        value: { kind: 'clock-set', previousEpochMs, epochMs: guestNow() },
+      };
+    };
     return { ...built, apiCalls };
   }
 
@@ -1058,7 +1083,6 @@ describe('FirecrackerSessionEnv snapshots', () => {
       snapshot_path: 'restore.vmstate',
       mem_backend: { backend_type: 'File', backend_path: 'restore.mem' },
       resume_vm: true,
-      clock_realtime: true,
     });
   });
 
@@ -1182,52 +1206,79 @@ describe('FirecrackerSessionEnv snapshots', () => {
     const suspendedAt = Date.UTC(2026, 9, 1);
     const resumedAt = suspendedAt + TWO_DAYS_MS;
 
-    it('is ready once the guest clock has caught up with the host', async () => {
+    const requestsOf = (guest: FakeGuest) =>
+      guest.connections.map((c) =>
+        c.request?.kind === 'exec' ? `exec:${c.request.command}` : c.request?.kind,
+      );
+
+    it('steps the frozen guest clock to host time before the VM is ready', async () => {
       const fp = await takeSnapshot();
       const { env, guest } = snapshotEnv(
         { restoreSnapshot: fp },
-        {
-          now: () => resumedAt,
-          // clock_realtime advanced kvmclock by the two days the VM was stopped.
-          guestEpochSec: () => String(Math.floor(resumedAt / 1000) - 1),
-        },
+        // The resumed guest still reads the moment the snapshot was taken.
+        { now: () => resumedAt, guestNowMs: () => suspendedAt },
       );
       await env.ensureStarted();
+
       expect(env.bootMode).toBe('restored');
-      const dateCheck = guest.connections.find(
-        (c) => c.request?.kind === 'exec' && c.request.command === 'date +%s',
-      );
-      expect(dateCheck).toBeDefined();
+      const setClock = guest.connections.find((c) => c.request?.kind === 'set-clock');
+      expect(setClock?.request).toEqual({ kind: 'set-clock', epochMs: resumedAt });
+      // Resync first, then the check that it took, all before start resolves.
+      const order = requestsOf(guest);
+      expect(order.indexOf('set-clock')).toBeLessThan(order.indexOf('exec:date +%s%3N'));
     });
 
-    it('cold boots instead of handing out a guest still living at snapshot time', async () => {
+    it('cold boots when the guest agent cannot set the clock', async () => {
       const fp = await takeSnapshot();
-      const { env, runs, spawned, apiCalls } = snapshotEnv(
+      const { env, runs, spawned } = snapshotEnv(
         { restoreSnapshot: fp },
-        {
-          now: () => resumedAt,
-          guestEpochSec: () => String(Math.floor(suspendedAt / 1000)),
-        },
+        { now: () => resumedAt, guestNowMs: () => suspendedAt, setClock: 'fails' },
+      );
+      await env.ensureStarted();
+      expect(env.bootMode).toBe('cold');
+      expect(spawned).toHaveLength(2);
+      expect(jailOps(runs)).toContain('discard-snapshot');
+    });
+
+    it('cold boots when the set did not move the clock', async () => {
+      const fp = await takeSnapshot();
+      const { env, apiCalls } = snapshotEnv(
+        { restoreSnapshot: fp },
+        { now: () => resumedAt, guestNowMs: () => suspendedAt, setClock: 'ignored' },
       );
       await env.ensureStarted();
       // The load itself succeeded; the stale clock is what rejected it.
       expect(apiCalls.some((c) => c.path === '/snapshot/load')).toBe(true);
       expect(env.bootMode).toBe('cold');
-      expect(spawned).toHaveLength(2);
-      expect(spawned[1]!.args).toContain('--config-file');
-      expect(jailOps(runs)).toContain('discard-snapshot');
+    });
+
+    it.each([
+      ['restored', GUEST_CLOCK_MAX_SKEW_MS - 1000],
+      ['cold', GUEST_CLOCK_MAX_SKEW_MS + 1000],
+    ])('boots %s when the guest is %ims off after the resync', async (mode, skewMs) => {
+      const fp = await takeSnapshot();
+      const { env } = snapshotEnv(
+        { restoreSnapshot: fp },
+        { now: () => resumedAt, guestNowMs: () => resumedAt - skewMs, setClock: 'ignored' },
+      );
+      await env.ensureStarted();
+      expect(env.bootMode).toBe(mode);
+    });
+
+    it('allows only a few seconds of skew', () => {
+      expect(GUEST_CLOCK_MAX_SKEW_MS).toBeLessThanOrEqual(5_000);
     });
 
     it('cold boots when the guest clock cannot be read', async () => {
       const fp = await takeSnapshot();
-      const { env } = snapshotEnv({ restoreSnapshot: fp }, { guestEpochSec: () => 'garbage' });
+      const { env } = snapshotEnv({ restoreSnapshot: fp }, { guestDateOutput: 'garbage' });
       await env.ensureStarted();
       expect(env.bootMode).toBe('cold');
     });
 
-    it('only asks Firecracker for clock_realtime on x86_64', async () => {
+    it('does not ask Firecracker for clock_realtime, which fails the load on older hosts', async () => {
       const fp = await takeSnapshot();
-      const { env, apiCalls } = snapshotEnv({ restoreSnapshot: fp, hostArch: 'arm64' });
+      const { env, apiCalls } = snapshotEnv({ restoreSnapshot: fp });
       await env.ensureStarted();
       const load = apiCalls.find((c) => c.path === '/snapshot/load')!;
       expect(load.body).not.toHaveProperty('clock_realtime');

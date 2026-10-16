@@ -351,8 +351,6 @@ export interface FirecrackerSessionEnvDeps {
   vmmApi?: VmmApiFn;
   /** Stats the kernel and base rootfs for the snapshot fingerprint. */
   statFile?: StatFileFn;
-  /** Host CPU architecture (`process.arch`); decides clock_realtime on load. */
-  hostArch?: string;
 }
 
 /** How the VM's current boot came up. */
@@ -373,8 +371,11 @@ const VMM_API_TIMEOUT_MS = 10_000;
 const SNAPSHOT_CREATE_TIMEOUT_MS = 10 * 60_000;
 const SNAPSHOT_LOAD_TIMEOUT_MS = 2 * 60_000;
 const GUEST_CLOCK_CHECK_TIMEOUT_MS = 10_000;
-/** Allows for the load itself and second-granularity `date`; timesyncd trims the rest. */
-export const GUEST_CLOCK_MAX_SKEW_MS = 30_000;
+/**
+ * Skew left after the resync. The step itself lands within one vsock round
+ * trip, so anything past a few seconds means the set did not take.
+ */
+export const GUEST_CLOCK_MAX_SKEW_MS = 5_000;
 
 interface LiveEntry {
   kill(signal: NodeJS.Signals): void;
@@ -446,7 +447,6 @@ export class FirecrackerSessionEnv implements SessionEnv {
   private readonly logger: { warn: (msg: string) => void };
   private readonly vmmApi: VmmApiFn;
   private readonly statFile: StatFileFn;
-  private readonly hostArch: string;
 
   private readonly settledMappings = new Map<number, SessionEnvPortMapping>();
   private readonly live = new Set<LiveEntry>();
@@ -480,7 +480,6 @@ export class FirecrackerSessionEnv implements SessionEnv {
     this.logger = deps.logger ?? { warn: (msg) => console.warn(msg) };
     this.vmmApi = deps.vmmApi ?? defaultVmmApi;
     this.statFile = deps.statFile ?? defaultStatFile;
-    this.hostArch = deps.hostArch ?? process.arch;
     this.#restoreSnapshot = deps.restoreSnapshot ?? null;
     this.createdAtMs = this.clock.nowMs();
     this.#lastActivityAtMs = this.createdAtMs;
@@ -849,7 +848,10 @@ export class FirecrackerSessionEnv implements SessionEnv {
 
       if (restore) await this.#loadSnapshot();
       await this.#waitForAgent();
-      if (restore) await this.#verifyGuestClock();
+      if (restore) {
+        await this.#resyncGuestClock();
+        await this.#verifyGuestClock();
+      }
       this.#started = true;
       this.touch();
     } catch (err) {
@@ -1632,38 +1634,49 @@ export class FirecrackerSessionEnv implements SessionEnv {
       {
         snapshot_path: RESTORE_STATE_FILE,
         mem_backend: { backend_type: 'File', backend_path: RESTORE_MEM_FILE },
+        // No clock_realtime: it needs an x86_64 host on Linux >= 5.16 with a
+        // TSC clocksource, and where it is missing the load fails and the
+        // VMM exits, costing the snapshot. #resyncGuestClock works on every
+        // host instead.
         resume_vm: true,
-        // Advance kvmclock by the time the VM spent stopped, so the guest's
-        // wall clock is current on resume (x86_64 only; Firecracker rejects it
-        // elsewhere). Without it the guest resumes at snapshot time and TLS
-        // fails until timesyncd's next poll. A host kernel without
-        // KVM_CLOCK_REALTIME fails the load, which takes the cold-boot path.
-        ...(this.hostArch === 'x64' ? { clock_realtime: true } : {}),
       },
       SNAPSHOT_LOAD_TIMEOUT_MS,
     );
   }
 
   /**
-   * A restored guest is ready only once its wall clock is current. Firecracker
-   * resumes it at snapshot time; clock_realtime corrects that where the host
-   * supports it, and this checks the result rather than trusting it (a guest
-   * on a clocksource other than kvm-clock would not move). Throwing here sends
-   * the start down the cold-boot path, whose fresh timesyncd start steps the
-   * clock right away.
+   * Firecracker resumes a snapshot with the guest wall clock frozen at
+   * snapshot time, and timesyncd only corrects it on its next poll (up to
+   * ~34 min later), so TLS fails in between. Session commands run as the
+   * workspace user and cannot set the clock; the root vm-agent steps it to
+   * the host's time instead.
+   */
+  async #resyncGuestClock(): Promise<void> {
+    this.#assertLive('exec');
+    const stream = await this.#open({ kind: 'set-clock', epochMs: this.clock.nowMs() });
+    const reply = await awaitReply(stream, GUEST_CLOCK_CHECK_TIMEOUT_MS);
+    if (reply.kind !== 'clock-set') {
+      throw new Error(`Unexpected guest reply setting the clock: ${reply.kind}`);
+    }
+  }
+
+  /**
+   * A restored guest is ready only once its wall clock is current. This
+   * checks the resync rather than trusting it. Throwing sends the start down
+   * the cold-boot path, whose fresh timesyncd start steps the clock right away.
    */
   async #verifyGuestClock(): Promise<void> {
-    const res = await this.#execCapture('date +%s', {
+    const res = await this.#execCapture('date +%s%3N', {
       cwd: '.',
       timeoutMs: GUEST_CLOCK_CHECK_TIMEOUT_MS,
       maxOutputBytes: 1024,
       duringBoot: true,
     });
-    const guestSec = Number.parseInt(res.stdout.trim(), 10);
-    if (res.exitCode !== 0 || !Number.isFinite(guestSec)) {
+    const guestMs = Number.parseInt(res.stdout.trim(), 10);
+    if (res.exitCode !== 0 || !Number.isFinite(guestMs)) {
       throw new Error(`could not read the restored guest clock (exit ${String(res.exitCode)})`);
     }
-    const skewMs = Math.abs(guestSec * 1000 - this.clock.nowMs());
+    const skewMs = Math.abs(guestMs - this.clock.nowMs());
     if (skewMs > GUEST_CLOCK_MAX_SKEW_MS) {
       throw new Error(
         `restored guest clock is off by ${Math.round(skewMs / 1000)}s ` +

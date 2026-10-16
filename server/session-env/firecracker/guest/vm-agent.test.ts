@@ -9,6 +9,7 @@ import {
   buildChildLaunch,
   resolveWorkspaceUser,
   SETPRIV_BIN,
+  type SetClockFn,
 } from './vm-agent.js';
 import {
   VmAgentFrameDecoder,
@@ -42,10 +43,15 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-async function startAgent(): Promise<{ socketPath: string; server: Server }> {
+/** Never the real `date -s`: a test must not move the host clock. */
+const refuseSetClock: SetClockFn = () => Promise.reject(new Error('set-clock not stubbed'));
+
+async function startAgent(
+  setClock: SetClockFn = refuseSetClock,
+): Promise<{ socketPath: string; server: Server }> {
   const dir = await mkdtemp(join(tmpdir(), 'vm-agent-'));
   const socketPath = join(dir, 'agent.sock');
-  const server = createVmAgentServer({ workspaceUser: asCurrentUser });
+  const server = createVmAgentServer({ workspaceUser: asCurrentUser, setClock });
   await new Promise<void>((resolve) => server.listen(socketPath, resolve));
   cleanups.push(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -269,6 +275,38 @@ describe('vm-agent over a real socket', () => {
     };
     expect(Buffer.from(reply.contentBase64, 'base64').toString()).toBe('hello vm');
     expect(reply.eof).toBe(true);
+  });
+
+  it('steps the guest clock to the time the Hub sends', async () => {
+    const stepped: number[] = [];
+    const { socketPath } = await startAgent(async (epochMs) => {
+      stepped.push(epochMs);
+    });
+    const hostNow = Date.now() + 2 * 24 * 3600_000;
+
+    const stream = await openStream(socketPath, { kind: 'set-clock', epochMs: hostNow });
+    const reply = decodeJsonPayload<VmAgentReply>((await stream.waitFor('reply')).payload);
+
+    expect(stepped).toEqual([hostNow]);
+    expect(reply.kind).toBe('clock-set');
+  });
+
+  it('reports a clock it could not set as an error', async () => {
+    const { socketPath } = await startAgent(() => Promise.reject(new Error('EPERM')));
+    const stream = await openStream(socketPath, { kind: 'set-clock', epochMs: Date.now() });
+    const err = decodeJsonPayload<{ message: string }>((await stream.waitFor('error')).payload);
+    expect(err.message).toContain('EPERM');
+  });
+
+  it('rejects a set-clock without a usable time', async () => {
+    const stepped: number[] = [];
+    const { socketPath } = await startAgent(async (epochMs) => {
+      stepped.push(epochMs);
+    });
+    const stream = await openStream(socketPath, { kind: 'set-clock', epochMs: 0 });
+    const err = decodeJsonPayload<{ message: string }>((await stream.waitFor('error')).payload);
+    expect(err.message).toContain('positive epochMs');
+    expect(stepped).toEqual([]);
   });
 
   it('serves a byte range so a large file can be paged out of the guest', async () => {

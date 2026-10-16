@@ -34,7 +34,7 @@
 export const VM_AGENT_VSOCK_PORT = 1024;
 
 /** Bumped only on breaking frame/JSON changes; checked during the handshake. */
-export const VM_AGENT_PROTOCOL_VERSION = 2;
+export const VM_AGENT_PROTOCOL_VERSION = 3;
 
 /**
  * Hard cap on a single frame. Guards the guest against a host bug (and vice
@@ -170,6 +170,17 @@ export interface VmAgentWriteFileRequest {
   mode?: string;
 }
 
+/**
+ * Step the guest wall clock to the host's. A snapshot resumes with the clock
+ * frozen at snapshot time, and the workspace user cannot set it, so the root
+ * agent does it on the Hub's behalf right after a restore.
+ */
+export interface VmAgentSetClockRequest {
+  kind: 'set-clock';
+  /** Host wall clock (ms since the epoch) when the request was sent. */
+  epochMs: number;
+}
+
 export interface VmAgentPingRequest {
   kind: 'ping';
   protocolVersion: number;
@@ -181,6 +192,7 @@ export type VmAgentRequest =
   | VmAgentListPortsRequest
   | VmAgentReadFileRequest
   | VmAgentWriteFileRequest
+  | VmAgentSetClockRequest
   | VmAgentPingRequest;
 
 export interface VmAgentStarted {
@@ -214,7 +226,9 @@ export type VmAgentReply =
    * importantly, without inferring it from a short read, which is ambiguous.
    */
   | { kind: 'file'; contentBase64: string; eof: boolean }
-  | { kind: 'written' };
+  | { kind: 'written' }
+  /** `previousEpochMs` is the guest clock just before it was stepped. */
+  | { kind: 'clock-set'; previousEpochMs: number; epochMs: number };
 
 export type VmAgentControl =
   | { kind: 'resize'; cols: number; rows: number }
