@@ -18,18 +18,26 @@ import { SidebarContext } from '../context/SidebarContext';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import {
+  addMonths,
   defaultCalendarRange,
   eventStartMillis,
+  monthGridRange,
+  startOfMonth,
   eventTimeLabel,
   localTimeZone,
 } from '@shared/utils/calendarEvents';
 import { buildCalendarTodoDraft } from '@shared/utils/captureTodo';
 import { buildCalendarCardDraft, type CaptureCardDraft } from '@shared/utils/captureCard';
 import CaptureToTicketModal from '../components/CaptureToTicketModal';
+import CalendarMonthView from '../components/CalendarMonthView';
 
 export { defaultCalendarRange };
 
 export const CALENDAR_EVENTS_SCOPE = 'https://www.googleapis.com/auth/calendar.events';
+
+const AGENDA_MAX_RESULTS = 100;
+// A busy six-week grid can exceed the agenda's cap; Google allows up to 2500.
+export const MONTH_MAX_RESULTS = 500;
 
 function pad(n: number) {
   return String(n).padStart(2, '0');
@@ -157,6 +165,7 @@ export function CalendarAgendaContent({
   onTicket,
   capturingId,
   capturedId,
+  monthView,
 }: any) {
   const connected = !!status?.connected;
   const configured = status?.serverConfigured !== false;
@@ -226,18 +235,22 @@ export function CalendarAgendaContent({
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
       {empty ? (
-        <View style={styles.emptyCard}>
-          <Text style={styles.emptyTitle}>{empty.title}</Text>
-          <Text style={styles.emptyBody}>{empty.body}</Text>
-          {empty.action ? (
-            <TouchableOpacity onPress={empty.onAction} style={styles.primaryButton}>
-              <Text style={styles.primaryButtonText}>{empty.action}</Text>
-            </TouchableOpacity>
-          ) : null}
-        </View>
+        <ScrollView>
+          <View style={styles.emptyCard}>
+            <Text style={styles.emptyTitle}>{empty.title}</Text>
+            <Text style={styles.emptyBody}>{empty.body}</Text>
+            {empty.action ? (
+              <TouchableOpacity onPress={empty.onAction} style={styles.primaryButton}>
+                <Text style={styles.primaryButtonText}>{empty.action}</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+          {calendarEnabled && connected ? monthView : null}
+        </ScrollView>
       ) : (
         <FlatList
           data={events}
+          ListFooterComponent={monthView || null}
           keyExtractor={(item: any, index) => item.id || `${item.summary}-${index}`}
           renderItem={({ item }: any) => {
             const key = item.id || item.summary || '';
@@ -403,6 +416,11 @@ export default function CalendarScreen({ navigation }: any) {
   const [capturedId, setCapturedId] = useState<string | null>(null);
   const [ticketDraft, setTicketDraft] = useState<CaptureCardDraft | null>(null);
   const range = useMemo(() => defaultCalendarRange(), []);
+  const [month, setMonth] = useState(() => startOfMonth(new Date()));
+  const [monthEvents, setMonthEvents] = useState<any[]>([]);
+  const [monthLoading, setMonthLoading] = useState(false);
+  const [monthError, setMonthError] = useState<string | null>(null);
+  const [monthReload, setMonthReload] = useState(0);
 
   const load = useCallback(async () => {
     setError(null);
@@ -414,7 +432,7 @@ export default function CalendarScreen({ navigation }: any) {
         const body = await api.listGoogleCalendarEvents({
           ...range,
           timeZone: localTimeZone(),
-          maxResults: 100,
+          maxResults: AGENDA_MAX_RESULTS,
         });
         setEvents(
           [...(body.events || [])].sort((a, b) => eventStartMillis(a) - eventStartMillis(b)),
@@ -434,6 +452,46 @@ export default function CalendarScreen({ navigation }: any) {
   useEffect(() => {
     load();
   }, [load]);
+
+  const calendarReady = !!status?.connected && hasCalendarScope(status);
+
+  useEffect(() => {
+    if (!calendarReady) {
+      setMonthEvents([]);
+      setMonthError(null);
+      return;
+    }
+    let cancelled = false;
+    setMonthLoading(true);
+    setMonthError(null);
+    api
+      .listGoogleCalendarEvents({
+        ...monthGridRange(month),
+        timeZone: localTimeZone(),
+        maxResults: MONTH_MAX_RESULTS,
+      })
+      .then((body: any) => {
+        if (!cancelled) setMonthEvents(body?.events || []);
+      })
+      .catch((err: any) => {
+        // Keep the error on the grid itself: month navigation only fires this
+        // request, so the agenda banner above never sees the failure.
+        if (cancelled) return;
+        setMonthEvents([]);
+        setMonthError(err?.message || 'Failed to load this month');
+      })
+      .finally(() => {
+        if (!cancelled) setMonthLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [calendarReady, month, monthReload]);
+
+  const refresh = () => {
+    setMonthReload((n) => n + 1);
+    return load();
+  };
 
   const connect = async () => {
     try {
@@ -468,7 +526,7 @@ export default function CalendarScreen({ navigation }: any) {
         await api.createGoogleCalendarEvent({ calendarId: 'primary', event });
       }
       setModalEvent(undefined);
-      await load();
+      await refresh();
     } catch (err: any) {
       setModalError(err.message || 'Failed to save event');
     } finally {
@@ -490,7 +548,7 @@ export default function CalendarScreen({ navigation }: any) {
         error={error}
         status={status}
         events={events}
-        onRefresh={load}
+        onRefresh={refresh}
         onConnect={connect}
         onOpenSettings={() => navigation.navigate('Settings', { tab: 'account' })}
         onCreate={() => setModalEvent(null)}
@@ -499,6 +557,21 @@ export default function CalendarScreen({ navigation }: any) {
         onTicket={(event: any) => setTicketDraft(buildCalendarCardDraft(event))}
         capturingId={capturingId}
         capturedId={capturedId}
+        monthView={
+          calendarReady ? (
+            <CalendarMonthView
+              month={month}
+              events={monthEvents}
+              loading={monthLoading}
+              error={monthError}
+              onRetry={() => setMonthReload((n) => n + 1)}
+              onPrev={() => setMonth((m) => addMonths(m, -1))}
+              onNext={() => setMonth((m) => addMonths(m, 1))}
+              onToday={() => setMonth(startOfMonth(new Date()))}
+              onSelectEvent={(event: any) => setModalEvent(event)}
+            />
+          ) : null
+        }
       />
       {modalEvent !== undefined ? (
         <EventModal

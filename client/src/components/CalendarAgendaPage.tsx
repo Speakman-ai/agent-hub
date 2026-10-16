@@ -16,20 +16,28 @@ import { api } from '../utils/api';
 import { buildCalendarTodoDraft } from '@shared/utils/captureTodo';
 import { buildCalendarCardDraft, type CaptureCardDraft } from '@shared/utils/captureCard';
 import CaptureToTicketModal from './CaptureToTicketModal';
+import CalendarMonthView from './CalendarMonthView';
 import {
   CALENDAR_EVENTS_SCOPE,
   hasCalendarScope,
   type GoogleStatusLike,
 } from '../utils/googleSurface';
 import {
+  addMonths,
   defaultCalendarRange,
   eventStartMillis,
+  monthGridRange,
+  startOfMonth,
   eventTimeLabel,
   localTimeZone,
   type CalendarEventLike,
 } from '@shared/utils/calendarEvents';
 
 export { CALENDAR_EVENTS_SCOPE, defaultCalendarRange };
+
+const AGENDA_MAX_RESULTS = 100;
+// A busy six-week grid can exceed the agenda's cap; Google allows up to 2500.
+export const MONTH_MAX_RESULTS = 500;
 
 type GoogleStatus = NonNullable<GoogleStatusLike>;
 
@@ -321,6 +329,11 @@ export default function CalendarAgendaPage({
   // this draft (spec CAPTURE-PROVENANCE); null when the picker is closed.
   const [ticketDraft, setTicketDraft] = useState<CaptureCardDraft | null>(null);
   const range = useMemo(() => defaultCalendarRange(), []);
+  const [month, setMonth] = useState(() => startOfMonth(new Date()));
+  const [monthEvents, setMonthEvents] = useState<CalendarEvent[]>([]);
+  const [monthLoading, setMonthLoading] = useState(false);
+  const [monthError, setMonthError] = useState<string | null>(null);
+  const [monthReload, setMonthReload] = useState(0);
 
   const load = useCallback(async () => {
     setError(null);
@@ -332,7 +345,7 @@ export default function CalendarAgendaPage({
         const body = await api.listGoogleCalendarEvents({
           ...range,
           timeZone: localTimeZone(),
-          maxResults: 100,
+          maxResults: AGENDA_MAX_RESULTS,
         });
         setEvents(
           [...(body.events || [])].sort((a, b) => eventStartMillis(a) - eventStartMillis(b)),
@@ -352,6 +365,46 @@ export default function CalendarAgendaPage({
   useEffect(() => {
     load();
   }, [load]);
+
+  const calendarReady = !!status?.connected && hasCalendarScope(status);
+
+  useEffect(() => {
+    if (!calendarReady) {
+      setMonthEvents([]);
+      setMonthError(null);
+      return;
+    }
+    let cancelled = false;
+    setMonthLoading(true);
+    setMonthError(null);
+    api
+      .listGoogleCalendarEvents({
+        ...monthGridRange(month),
+        timeZone: localTimeZone(),
+        maxResults: MONTH_MAX_RESULTS,
+      })
+      .then((body) => {
+        if (!cancelled) setMonthEvents(body?.events || []);
+      })
+      .catch((err) => {
+        // Keep the error on the grid itself: month navigation only fires this
+        // request, so the agenda banner above never sees the failure.
+        if (cancelled) return;
+        setMonthEvents([]);
+        setMonthError(err?.message || 'Failed to load this month');
+      })
+      .finally(() => {
+        if (!cancelled) setMonthLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [calendarReady, month, monthReload]);
+
+  const refresh = () => {
+    setMonthReload((n) => n + 1);
+    return load();
+  };
 
   const startOAuth = async () => {
     setOauthBusy(true);
@@ -377,7 +430,7 @@ export default function CalendarAgendaPage({
         await api.createGoogleCalendarEvent({ calendarId: 'primary', event });
       }
       setModalEvent(undefined);
-      await load();
+      await refresh();
     } catch (err: any) {
       setModalError(err.message || 'Failed to save event');
     } finally {
@@ -454,7 +507,7 @@ export default function CalendarAgendaPage({
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              onClick={load}
+              onClick={refresh}
               disabled={eventsLoading}
               className="inline-flex items-center gap-2 rounded border border-gray-700 px-3 py-2 text-sm text-gray-300 hover:bg-gray-800 disabled:opacity-50"
             >
@@ -577,6 +630,19 @@ export default function CalendarAgendaPage({
               </div>
             ))}
           </div>
+        )}
+        {!loading && calendarReady && (
+          <CalendarMonthView
+            month={month}
+            events={monthEvents}
+            loading={monthLoading}
+            error={monthError}
+            onRetry={() => setMonthReload((n) => n + 1)}
+            onPrev={() => setMonth((m) => addMonths(m, -1))}
+            onNext={() => setMonth((m) => addMonths(m, 1))}
+            onToday={() => setMonth(startOfMonth(new Date()))}
+            onSelectEvent={(event) => setModalEvent(event)}
+          />
         )}
       </div>
       {modalEvent !== undefined && (

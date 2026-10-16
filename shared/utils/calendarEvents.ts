@@ -68,3 +68,128 @@ export function eventTimeLabel(event: CalendarEventLike): string {
       : '';
   return `${date}, ${startTime}${endTime ? ` to ${endTime}` : ''}`;
 }
+
+/** Weeks rendered by the month grid; six rows fits every month layout. */
+export const MONTH_GRID_DAYS = 42;
+
+export const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
+
+export type MonthGridDay<T extends CalendarEventLike = CalendarEventLike> = {
+  key: string;
+  date: Date;
+  dayOfMonth: number;
+  inMonth: boolean;
+  isToday: boolean;
+  events: T[];
+};
+
+function dayKey(date: Date): string {
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${date.getFullYear()}-${m}-${d}`;
+}
+
+/** First of the month at local midnight. */
+export function startOfMonth(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), 1);
+}
+
+export function addMonths(date: Date, months: number): Date {
+  return new Date(date.getFullYear(), date.getMonth() + months, 1);
+}
+
+/** Sunday on or before the 1st of the anchor's month, at local midnight. */
+export function monthGridStart(anchor: Date): Date {
+  const first = startOfMonth(anchor);
+  return addDays(first, -first.getDay());
+}
+
+/** Fetch window covering every cell of the month grid. */
+export function monthGridRange(anchor: Date): { timeMin: string; timeMax: string } {
+  const start = monthGridStart(anchor);
+  return {
+    timeMin: start.toISOString(),
+    timeMax: addDays(start, MONTH_GRID_DAYS).toISOString(),
+  };
+}
+
+export function monthLabel(anchor: Date): string {
+  return anchor.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+}
+
+/**
+ * Local-midnight days an event covers. All-day ends are exclusive per the
+ * Google Calendar API; timed events ending exactly at midnight do not spill
+ * into the next day.
+ */
+function eventDayBounds(event: CalendarEventLike): { first: Date; last: Date } | null {
+  if (event.start?.date) {
+    const first = new Date(`${event.start.date}T00:00:00`);
+    if (Number.isNaN(first.getTime())) return null;
+    const endRaw = event.end?.date ? new Date(`${event.end.date}T00:00:00`) : null;
+    const last =
+      endRaw && !Number.isNaN(endRaw.getTime()) && endRaw > first ? addDays(endRaw, -1) : first;
+    return { first, last };
+  }
+  if (!event.start?.dateTime) return null;
+  const start = new Date(event.start.dateTime);
+  if (Number.isNaN(start.getTime())) return null;
+  const first = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+  const end = event.end?.dateTime ? new Date(event.end.dateTime) : null;
+  if (!end || Number.isNaN(end.getTime()) || end <= start) return { first, last: first };
+  const endInclusive = new Date(end.getTime() - 1);
+  const last = new Date(
+    endInclusive.getFullYear(),
+    endInclusive.getMonth(),
+    endInclusive.getDate(),
+  );
+  return { first, last: last < first ? first : last };
+}
+
+/** 42 day cells for the month containing `anchor`, each with its events in start order. */
+export function buildMonthGrid<T extends CalendarEventLike>(
+  anchor: Date,
+  events: T[] = [],
+  today: Date = new Date(),
+): MonthGridDay<T>[] {
+  const start = monthGridStart(anchor);
+  const month = anchor.getMonth();
+  const todayKey = dayKey(today);
+  const days: MonthGridDay<T>[] = [];
+  const byKey = new Map<string, MonthGridDay<T>>();
+  for (let i = 0; i < MONTH_GRID_DAYS; i += 1) {
+    const date = addDays(start, i);
+    const key = dayKey(date);
+    const day: MonthGridDay<T> = {
+      key,
+      date,
+      dayOfMonth: date.getDate(),
+      inMonth: date.getMonth() === month,
+      isToday: key === todayKey,
+      events: [],
+    };
+    days.push(day);
+    byKey.set(key, day);
+  }
+  for (const event of sortCalendarEvents(events)) {
+    const bounds = eventDayBounds(event);
+    if (!bounds) continue;
+    // Clamp to the grid so a months-long event doesn't loop far outside it.
+    let cursor = bounds.first < start ? new Date(start) : bounds.first;
+    const gridEnd = days[days.length - 1].date;
+    const last = bounds.last > gridEnd ? gridEnd : bounds.last;
+    while (cursor <= last) {
+      byKey.get(dayKey(cursor))?.events.push(event);
+      cursor = addDays(cursor, 1);
+    }
+  }
+  return days;
+}
+
+/** Compact start time for a grid chip; empty for all-day events. */
+export function eventChipTime(event: CalendarEventLike): string {
+  if (event.start?.date || !event.start?.dateTime) return '';
+  const start = new Date(event.start.dateTime);
+  if (Number.isNaN(start.getTime())) return '';
+  return start.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+}

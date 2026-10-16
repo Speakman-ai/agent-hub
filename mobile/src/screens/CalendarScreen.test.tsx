@@ -69,6 +69,31 @@ describe('CalendarScreen mobile parity', () => {
     expect(html).toContain('Room 4');
   });
 
+  it('renders the month view below the agenda empty state once Calendar is enabled', () => {
+    const html = renderToStaticMarkup(
+      <CalendarAgendaContent
+        loading={false}
+        eventsLoading={false}
+        error={null}
+        status={{
+          connected: true,
+          grantedScopes: [CALENDAR_EVENTS_SCOPE],
+          serverConfigured: true,
+        }}
+        events={[]}
+        onRefresh={() => undefined}
+        onConnect={() => undefined}
+        onOpenSettings={() => undefined}
+        onCreate={() => undefined}
+        onEdit={() => undefined}
+        monthView={<div>MONTH-GRID</div>}
+      />,
+    );
+
+    expect(html).toContain('No events this week');
+    expect(html.indexOf('MONTH-GRID')).toBeGreaterThan(html.indexOf('No events this week'));
+  });
+
   it('renders the not-linked route to connect Google', () => {
     const html = renderToStaticMarkup(
       <CalendarAgendaContent
