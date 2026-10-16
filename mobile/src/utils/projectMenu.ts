@@ -1,55 +1,38 @@
 /**
  * Per-project sidebar menu, grouped into labeled sections.
  *
- * Mirrors the web sidebar (`client/src/components/Sidebar.tsx`), which renders
- * the per-project navigation as five collapsible groups:
+ * Mirrors the web sidebar (`client/src/components/Sidebar.tsx`):
  *   - Git       — Repository, Pulls, Deployments
- *   - Planning  — Board, Workflows, Epics, Notes
- *   - Support   — Customer Issues, Logs, RUM, Replays, AWS, Security
- *   - AI        — Agents, Wiki
+ *   - Planning  — Board, Epics, Stats, Notes
+ *   - Support   — Customer Issues, Logs, RUM, Replays, AWS, Infrastructure, Security
+ *   - AI        — Reviewer, Agents, Background Agents, Skills, Wiki
  *   - Settings  — Project Configuration, Finalize CI, Previews, Cron Jobs
  *
- * Mobile-specific divergences from web (intentional, no mobile surface exists):
- *   - Previews, Reviewer, and per-project Skills are web-only and omitted here.
- *   - `icon` values are Lucide icon names (rendered via `HubIcon`).
+ * Git is omitted when it has no items. Support stays even when a workflow
+ * project has nothing under it, matching the web group header.
  */
 import { isWorkflowProject } from './project-mode';
 
 /**
- * Destinations hidden for workflow projects (dev/deploy surfaces that a
- * workflow-only project has no use for). Mirrors the `!workflowProject` gates in
- * the web sidebar. `repo` is intentionally NOT excluded — a workflow project can
- * still be Agent Hub-hosted.
- */
-const WORKFLOW_EXCLUDED_KEYS = new Set([
-  'pulls',
-  'deployments',
-  'stats',
-  'support',
-  'security',
-  'replays',
-  'logs',
-  'rum',
-  'runners',
-  'dev-server',
-]);
-
-/**
- * @typedef {{ key: string, label: string, icon: string, screen: string, gate?: string }} MenuEntry
+ * @typedef {{ key: string, label: string, icon: string, screen: string }} MenuEntry
  * @typedef {{ key: string, label: string, entries: MenuEntry[] }} MenuGroup
  */
 
 /**
- * The five labeled nav groups for a project, with per-item visibility applied
- * and empty groups removed.
+ * The labeled nav groups for a project, with per-item visibility applied.
  *
- * @param {{ githubRepo?: string, gitHost?: string, mode?: string, awsEnabled?: boolean, infraEnabled?: boolean }|null|undefined} project
- * @returns {MenuGroup[]}
+ * `agents` is the project's agent list when the caller has it flat (the mobile
+ * drawer). Falls back to `project.agents`, which is what the web sidebar reads.
+ *
+ * @param {{ githubRepo?: string, gitHost?: string, mode?: string, awsEnabled?: boolean, infraEnabled?: boolean, agents?: Array<{ role?: string }> }|null|undefined} project
+ * @param {Array<{ role?: string }>|undefined} [agents]
  */
-export function projectNavGroups(project: any) {
+export function projectNavGroups(project: any, agents?: any[]) {
   const workflow = isWorkflowProject(project);
   const hasRepo = project?.gitHost === 'agenthub';
-  const hasPulls = project?.githubRepo || project?.gitHost === 'agenthub';
+  const hasPulls = (!!project?.githubRepo || project?.gitHost === 'agenthub') && !workflow;
+  const agentList = Array.isArray(agents) ? agents : project?.agents || [];
+  const hasReviewer = agentList.some((agent: any) => agent?.role === 'reviewer');
 
   const groups = [
     {
@@ -63,7 +46,12 @@ export function projectNavGroups(project: any) {
           screen: 'Repository',
         },
         hasPulls && { key: 'pulls', label: 'Pulls', icon: 'ListOrdered', screen: 'PullRequests' },
-        { key: 'deployments', label: 'Deployments', icon: 'Cloud', screen: 'Deployments' },
+        !workflow && {
+          key: 'deployments',
+          label: 'Deployments',
+          icon: 'Cloud',
+          screen: 'Deployments',
+        },
       ],
     },
     {
@@ -71,15 +59,8 @@ export function projectNavGroups(project: any) {
       label: 'Planning',
       entries: [
         { key: 'board', label: 'Board', icon: 'LayoutGrid', screen: 'Kanban' },
-        {
-          key: 'card-templates',
-          label: 'Card Templates',
-          icon: 'FileSpreadsheet',
-          screen: 'KanbanCardTemplates',
-        },
-        { key: 'workflows', label: 'Workflows', icon: 'ListOrdered', screen: 'Workflows' },
         { key: 'epics', label: 'Epics', icon: 'Target', screen: 'Epics' },
-        { key: 'stats', label: 'Stats', icon: 'BarChart3', screen: 'Stats' },
+        !workflow && { key: 'stats', label: 'Stats', icon: 'BarChart3', screen: 'Stats' },
         { key: 'notes', label: 'Notes', icon: 'StickyNote', screen: 'Notes' },
       ],
     },
@@ -87,10 +68,15 @@ export function projectNavGroups(project: any) {
       key: 'support',
       label: 'Support',
       entries: [
-        { key: 'support', label: 'Customer Issues', icon: 'LifeBuoy', screen: 'CustomerSupport' },
-        { key: 'logs', label: 'Logs', icon: 'ScrollText', screen: 'Logs' },
-        { key: 'rum', label: 'RUM', icon: 'Activity', screen: 'RumSettings' },
-        { key: 'replays', label: 'Replays', icon: 'MonitorPlay', screen: 'Replays' },
+        !workflow && {
+          key: 'support',
+          label: 'Customer Issues',
+          icon: 'LifeBuoy',
+          screen: 'CustomerSupport',
+        },
+        !workflow && { key: 'logs', label: 'Logs', icon: 'ScrollText', screen: 'Logs' },
+        !workflow && { key: 'rum', label: 'RUM', icon: 'Activity', screen: 'RumSettings' },
+        !workflow && { key: 'replays', label: 'Replays', icon: 'MonitorPlay', screen: 'Replays' },
         project?.awsEnabled && { key: 'aws', label: 'AWS', icon: 'Cloud', screen: 'AwsProfiles' },
         project?.infraEnabled && {
           key: 'infra',
@@ -98,14 +84,27 @@ export function projectNavGroups(project: any) {
           icon: 'Server',
           screen: 'Infrastructure',
         },
-        { key: 'security', label: 'Security', icon: 'ShieldAlert', screen: 'Security' },
+        !workflow && {
+          key: 'security',
+          label: 'Security',
+          icon: 'ShieldAlert',
+          screen: 'Security',
+        },
       ],
     },
     {
       key: 'ai',
       label: 'AI',
       entries: [
+        hasReviewer && { key: 'reviewer', label: 'Reviewer', icon: 'ScanEye', screen: 'Reviewer' },
         { key: 'project-agents', label: 'Agents', icon: 'Bot', screen: 'ProjectAgents' },
+        {
+          key: 'background-agents',
+          label: 'Background Agents',
+          icon: 'Sparkles',
+          screen: 'BackgroundAgents',
+        },
+        { key: 'skills', label: 'Skills', icon: 'Puzzle', screen: 'Skills' },
         { key: 'wiki', label: 'Wiki', icon: 'BookOpen', screen: 'Wiki' },
       ],
     },
@@ -119,8 +118,13 @@ export function projectNavGroups(project: any) {
           icon: 'Settings',
           screen: 'ProjectSettings',
         },
-        { key: 'runners', label: 'Finalize CI', icon: 'Play', screen: 'Runners' },
-        { key: 'dev-server', label: 'Previews', icon: 'Terminal', screen: 'DevServer' },
+        !workflow && { key: 'runners', label: 'Finalize CI', icon: 'Play', screen: 'Runners' },
+        !workflow && {
+          key: 'dev-server',
+          label: 'Previews',
+          icon: 'Terminal',
+          screen: 'DevServer',
+        },
         { key: 'project-crons', label: 'Cron Jobs', icon: 'Clock', screen: 'ProjectCrons' },
       ],
     },
@@ -129,9 +133,7 @@ export function projectNavGroups(project: any) {
   return groups
     .map((group) => ({
       ...group,
-      entries: group.entries
-        .filter(Boolean)
-        .filter((entry: any) => !(workflow && WORKFLOW_EXCLUDED_KEYS.has(entry.key))),
+      entries: group.entries.filter(Boolean),
     }))
-    .filter((group) => group.entries.length > 0);
+    .filter((group) => group.key === 'support' || group.entries.length > 0);
 }

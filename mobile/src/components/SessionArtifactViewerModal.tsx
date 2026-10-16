@@ -7,13 +7,14 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
+  Platform,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { PdfView } from '@kishannareshpal/expo-pdf';
 import Markdown from 'react-native-markdown-display';
 import { artifactRenderKind } from '@shared/utils/artifactView';
 import AppIcon from './AppIcon';
+import { IosPdfWebView, loadNativePdfView } from './nativePdfView';
 import { loadArtifactPreview, shareArtifact } from '../utils/artifactContent';
 import { colors } from '../theme/colors';
 
@@ -59,15 +60,28 @@ export function SessionArtifactViewerContent({
     );
   }
   if (kind === 'pdf') {
+    const PdfView = loadNativePdfView();
+    if (PdfView) {
+      return (
+        <PdfView
+          uri={resource?.uri}
+          style={styles.pdf}
+          fitMode="width"
+          doubleTapToZoom
+          testID="session-artifact-viewer-pdf"
+          onError={(event) => onRenderError?.(rendererErrorMessage('pdf', event))}
+        />
+      );
+    }
+    if (Platform.OS === 'ios' && resource?.uri) {
+      return <IosPdfWebView uri={resource.uri} style={styles.pdf} />;
+    }
     return (
-      <PdfView
-        uri={resource?.uri}
-        style={styles.pdf}
-        fitMode="width"
-        doubleTapToZoom
-        testID="session-artifact-viewer-pdf"
-        onError={(event) => onRenderError?.(rendererErrorMessage('pdf', event))}
-      />
+      <View style={styles.center} testID="session-artifact-viewer-pdf-unavailable">
+        <Text style={styles.muted}>
+          PDF preview isn't available in Expo Go. Use the download button to open the file.
+        </Text>
+      </View>
     );
   }
   if (kind === 'markdown') {

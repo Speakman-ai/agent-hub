@@ -5,7 +5,7 @@
  */
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import { api } from './api';
-import type { ChatMessage } from './googleChat';
+import type { ChatMessage } from '@shared/utils/googleChat';
 import type { ChatDraft, DraftFilter } from '@shared/utils/googleChatDrafts';
 import { DraftListController, EMPTY_DRAFT_SNAPSHOT } from '@shared/utils/googleChatDraftList';
 

@@ -233,7 +233,7 @@ const styles = StyleSheet.create({
   frameWrap: { flex: 1, backgroundColor: '#0b0d12', position: 'relative' },
   webview: { flex: 1, backgroundColor: '#0b0d12' },
   overlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,

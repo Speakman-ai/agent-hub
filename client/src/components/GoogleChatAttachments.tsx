@@ -19,7 +19,7 @@ import {
   viewerMimeType,
   type AttachmentViewKind,
   type ChatAttachment,
-} from '../utils/googleChat';
+} from '@shared/utils/googleChat';
 
 type Props = {
   spaceId: string;

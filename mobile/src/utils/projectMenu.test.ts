@@ -22,16 +22,23 @@ describe('projectNavGroups', () => {
   it('places core destinations in the expected groups', () => {
     expect(group({}, 'planning').entries.map((e) => e.key)).toEqual([
       'board',
-      'card-templates',
-      'workflows',
       'epics',
       'stats',
       'notes',
     ]);
-    expect(group({}, 'support').entries.map((e) => e.key)).toEqual(
-      expect.arrayContaining(['support', 'logs', 'rum', 'replays', 'security']),
-    );
-    expect(group({}, 'ai').entries.map((e) => e.key)).toEqual(['project-agents', 'wiki']);
+    expect(group({}, 'support').entries.map((e) => e.key)).toEqual([
+      'support',
+      'logs',
+      'rum',
+      'replays',
+      'security',
+    ]);
+    expect(group({}, 'ai').entries.map((e) => e.key)).toEqual([
+      'project-agents',
+      'background-agents',
+      'skills',
+      'wiki',
+    ]);
     expect(group({}, 'settings').entries.map((e) => e.key)).toEqual([
       'project-settings',
       'runners',
@@ -49,24 +56,34 @@ describe('projectNavGroups', () => {
     expect(flat({}).map((e) => e.key)).not.toContain('threads');
   });
 
-  it('groups Wiki and Agents under AI', () => {
-    expect(group({}, 'ai').entries.map((e) => e.key)).toEqual(['project-agents', 'wiki']);
+  it('groups Wiki, Agents, Background Agents, and Skills under AI', () => {
+    expect(group({}, 'ai').entries.map((e) => e.key)).toEqual([
+      'project-agents',
+      'background-agents',
+      'skills',
+      'wiki',
+    ]);
   });
 
   it('no longer exposes a Secrets entry (removed from the nav)', () => {
     expect(keys({})).not.toContain('project-secrets');
   });
 
-  it('omits web-only surfaces (preview, per-project skills, reviewer)', () => {
+  it('includes Reviewer, Skills, and Background Agents when the web sidebar does', () => {
     const all = keys({
       gitHost: 'agenthub',
       githubRepo: 'x/y',
       awsEnabled: true,
       agents: [{ role: 'reviewer' }],
     });
-    expect(all).not.toContain('preview');
-    expect(all).not.toContain('skills');
-    expect(all).not.toContain('reviewer');
+    expect(all).toContain('skills');
+    expect(all).toContain('background-agents');
+    expect(all).toContain('reviewer');
+    expect(group({ agents: [{ role: 'reviewer' }] }, 'ai').entries[0].key).toBe('reviewer');
+  });
+
+  it('hides Reviewer when the project has no reviewer agent', () => {
+    expect(keys({ agents: [{ role: 'lead' }] })).not.toContain('reviewer');
   });
 
   it('omits Calendar (a global Google surface, not project-scoped)', () => {
@@ -134,16 +151,23 @@ describe('projectNavGroups', () => {
     }
     for (const kept of [
       'board',
-      'workflows',
       'epics',
       'notes',
       'wiki',
+      'skills',
+      'background-agents',
       'project-agents',
       'project-settings',
       'project-crons',
     ]) {
       expect(k, `expected workflow project to keep ${kept}`).toContain(kept);
     }
+    expect(k).not.toContain('workflows');
+    expect(k).not.toContain('card-templates');
+  });
+
+  it('keeps an empty Support header on a workflow project, matching web', () => {
+    expect(group({ mode: 'workflow' }, 'support').entries).toEqual([]);
   });
 
   it('uses registered Lucide icon names for every entry', () => {

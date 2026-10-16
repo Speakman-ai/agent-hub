@@ -246,7 +246,9 @@ export default function HubScreen({ navigation, route }: any) {
       </View>
       <ScrollView
         horizontal
+        testID="hub-tabs"
         showsHorizontalScrollIndicator={false}
+        style={styles.tabBar}
         contentContainerStyle={styles.tabs}
       >
         {TABS.map((item) => {
@@ -297,7 +299,16 @@ const styles = StyleSheet.create({
   },
   menuButton: { padding: 6 },
   menuIcon: { color: colors.gray300, fontSize: 22 },
-  tabs: { paddingHorizontal: 12, paddingBottom: 8, gap: 6, flexDirection: 'row' },
+  // A horizontal ScrollView defaults to flexGrow: 1, so this row was
+  // stretching to fill the screen and the chips became tall columns.
+  tabBar: { flexGrow: 0, flexShrink: 0 },
+  tabs: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    gap: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
   tab: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -13,7 +13,10 @@ vi.mock('react-native', () => ({
   Modal: 'Modal',
 }));
 vi.mock('react-native-safe-area-context', () => ({ SafeAreaView: 'SafeAreaView' }));
-vi.mock('@kishannareshpal/expo-pdf', () => ({ PdfView: 'PdfView' }));
+vi.mock('./nativePdfView', () => ({
+  loadNativePdfView: () => 'PdfView',
+  IosPdfWebView: () => null,
+}));
 vi.mock('react-native-markdown-display', () => ({ default: 'Markdown' }));
 vi.mock('./AppIcon', () => ({ default: 'AppIcon' }));
 

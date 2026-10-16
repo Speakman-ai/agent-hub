@@ -27,7 +27,10 @@ vi.mock('react-native', () => ({
   View: nativeHost('View'),
 }));
 vi.mock('react-native-safe-area-context', () => ({ SafeAreaView: nativeHost('SafeAreaView') }));
-vi.mock('@kishannareshpal/expo-pdf', () => ({ PdfView: nativeHost('NativePdfView') }));
+vi.mock('./nativePdfView', () => ({
+  loadNativePdfView: () => nativeHost('NativePdfView'),
+  IosPdfWebView: () => null,
+}));
 vi.mock('react-native-webview', () => ({
   WebView: (props: any) => {
     testState.webViewRender(props);

@@ -10,6 +10,7 @@ import {
   Platform,
   Pressable,
   ActivityIndicator,
+  TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../context/AppContext';
@@ -21,6 +22,11 @@ import { daysUntilPurge, parseDate } from '../utils/time';
 import humanCron from '@shared/utils/humanCron';
 import { isWorkflowProject } from '../utils/project-mode';
 import { projectNavGroups } from '../utils/projectMenu';
+import {
+  isSidebarSessionActionable,
+  projectCanFullyCollapse,
+  projectHostsScheduledTasks,
+} from '../utils/sidebarSchedule';
 import {
   loadNavGroupCollapsed,
   saveNavGroupCollapsed,
@@ -72,15 +78,19 @@ export default function DrawerContent({ navigation }: any) {
     handleRestoreSession,
     restoringSessionIds,
     handleSwitchOrg,
-    refreshProjects,
-    refreshAgents,
     cronSessions,
     activeTasks,
     finalizeStatusBySession,
     unreadTicketCounts,
     openPullCounts,
     securityOpenCounts,
-    skillImprovementPendingTotal,
+    skillImprovementCounts,
+    activeReviews,
+    changesReady,
+    handleRenameSession,
+    reloadAgentSessions,
+    handleReorderProjects,
+    handleOpenHandoffSession,
     reloadMessages,
     connected,
     reconnecting,
@@ -228,6 +238,16 @@ export default function DrawerContent({ navigation }: any) {
     saveNavGroupCollapsed(collapsedNavGroups);
   }, [collapsedNavGroups, navGroupsHydrated]);
   const [archivedExpanded, setArchivedExpanded] = useState(false);
+  // Session-list open state, independent of which agent is the active chat.
+  // `collapsedAgents` (below) is the "actionable only" filter, matching web.
+  const [expandedAgents, setExpandedAgents] = useState<Record<string, boolean>>({});
+  const [sessionsByAgentId, setSessionsByAgentId] = useState<Record<string, any[]>>({});
+  const [archivedByAgentId, setArchivedByAgentId] = useState<Record<string, any[]>>({});
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+  const [editingSessionName, setEditingSessionName] = useState('');
+  const [confirmAction, setConfirmAction] = useState<null | 'clear-all' | 'clear-merged'>(null);
+  const [confirmAgentId, setConfirmAgentId] = useState<string | null>(null);
+  const [clearingBulk, setClearingBulk] = useState(false);
   const [showOrgPicker, setShowOrgPicker] = useState(false);
   // Server version / git hash for the footer (matches the web sidebar footer).
   const [health, setHealth] = useState<any>(null);
@@ -248,8 +268,74 @@ export default function DrawerContent({ navigation }: any) {
   const orgState = getOrgs();
   const orgs = orgState?.orgs || [];
   const activeOrg = getActiveOrg();
-  const toggleCollapse = (agentId: any) => {
+  const toggleSessionFilter = (agentId: string) => {
     setCollapsedAgents((prev: any) => ({ ...prev, [agentId]: !prev[agentId] }));
+  };
+  const sessionsForAgent = (agentId: string) =>
+    agentId === activeAgentId ? sessions : sessionsByAgentId[agentId] || [];
+  const archivedForAgent = (agentId: string) =>
+    agentId === activeAgentId ? archivedSessions || [] : archivedByAgentId[agentId] || [];
+  // Inactive agents' lists are fetched on every expand (the cache only fills
+  // the gap while the request runs); the newest request per agent wins.
+  const agentLoadGen = useRef<Record<string, number>>({});
+  const loadAgentSessions = async (agentId: string) => {
+    if (!agentId || agentId === activeAgentId) return;
+    const gen = (agentLoadGen.current[agentId] || 0) + 1;
+    agentLoadGen.current[agentId] = gen;
+    try {
+      const loaded = await reloadAgentSessions(agentId);
+      if (agentLoadGen.current[agentId] !== gen) return;
+      setSessionsByAgentId((prev) => ({ ...prev, [agentId]: loaded.sessions }));
+      setArchivedByAgentId((prev) => ({ ...prev, [agentId]: loaded.archived }));
+    } catch {
+      /* leave the list empty; the chevron can be tapped again */
+    }
+  };
+  // While an agent is active its rows live in AppContext and change there, so
+  // its cached copy goes stale. When it stops being active, refetch it if its
+  // list is open and drop the cache otherwise.
+  const previousActiveAgent = useRef(activeAgentId);
+  const latest = useRef({ loadAgentSessions, expandedAgents });
+  latest.current = { loadAgentSessions, expandedAgents };
+  useEffect(() => {
+    const prev = previousActiveAgent.current;
+    previousActiveAgent.current = activeAgentId;
+    if (!prev || prev === activeAgentId) return;
+    agentLoadGen.current[prev] = (agentLoadGen.current[prev] || 0) + 1;
+    if (latest.current.expandedAgents[prev]) {
+      void latest.current.loadAgentSessions(prev);
+      return;
+    }
+    const drop = (cache: Record<string, any[]>) => {
+      if (!(prev in cache)) return cache;
+      const next = { ...cache };
+      delete next[prev];
+      return next;
+    };
+    setSessionsByAgentId(drop);
+    setArchivedByAgentId(drop);
+  }, [activeAgentId]);
+  const toggleAgentExpanded = (agentId: string) => {
+    setExpandedAgents((prev) => {
+      const next = !prev[agentId];
+      if (next) void loadAgentSessions(agentId);
+      return { ...prev, [agentId]: next };
+    });
+  };
+  const sessionFlags = {
+    activeTaskSessionIds: activeTasks,
+    changesReadyBySession: changesReady,
+    finalizeStatusBySession,
+  };
+  const moveProject = (projectId: string, direction: -1 | 1) => {
+    const ids = projects.map((p: any) => p.id);
+    const index = ids.indexOf(projectId);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= ids.length) return;
+    const next = ids.slice();
+    const [moved] = next.splice(index, 1);
+    next.splice(target, 0, moved);
+    handleReorderProjects(next);
   };
   const isRecent = (dateStr: any) => {
     const d = parseDate(dateStr);
@@ -275,12 +361,10 @@ export default function DrawerContent({ navigation }: any) {
         `Status: ${connected ? 'Connected' : reconnecting ? 'Reconnecting' : 'Disconnected'}`,
     );
   };
-  const handleSessionSelect = (sessionId: any) => {
-    // If the user taps the already-active session, `setActiveSessionId` is
-    // a no-op and React Navigation's focus event won't fire either — so the
-    // chat wouldn't refresh at all. Explicitly reload so every drawer tap
-    // pulls the latest message history from the server.
-    if (sessionId === activeSessionId) {
+  const focusSession = (agentId: string, sessionId: string) => {
+    if (agentId && agentId !== activeAgentId) {
+      handleOpenHandoffSession(agentId, sessionId);
+    } else if (sessionId === activeSessionId) {
       reloadMessages();
     } else {
       setActiveSessionId(sessionId);
@@ -288,188 +372,387 @@ export default function DrawerContent({ navigation }: any) {
     navigation.navigate('Chat');
     navigation.closeDrawer();
   };
-  const confirmDeleteSession = (sessionId: any) => {
-    // The confirmation copy already explains the 7-day window, so the
-    // archive action completes silently — no second "Archived" modal that
-    // would block interaction. The row appears in the Archived drawer
-    // section immediately and failures surface via an error Alert from
-    // handleDeleteSession itself.
+  const saveSessionName = async (session: any) => {
+    const name = editingSessionName.trim();
+    setEditingSessionId(null);
+    if (!name || name === session.name) return;
+    try {
+      await handleRenameSession(session.id, name);
+      const agentId = session.agent_id;
+      if (agentId && agentId !== activeAgentId) {
+        setSessionsByAgentId((prev) => ({
+          ...prev,
+          [agentId]: (prev[agentId] || []).map((row: any) =>
+            row.id === session.id ? { ...row, name } : row,
+          ),
+        }));
+      }
+    } catch (err: any) {
+      Alert.alert('Rename failed', err?.message || 'Failed to rename session');
+    }
+  };
+  const runClear = async (agentId: string, action: 'clear-all' | 'clear-merged') => {
+    setClearingBulk(true);
+    try {
+      if (action === 'clear-all') await api.clearAllSessions(agentId);
+      // Same as the web sidebar: "Clear pushed" archives sessions whose work
+      // has merged, the settled state once per-session auto-merge runs.
+      // Users read "pushed" as "shipped"; the pushed endpoint would also
+      // archive branches still waiting on review.
+      else await api.clearMergedSessions(agentId);
+      const loaded = await reloadAgentSessions(agentId);
+      if (agentId !== activeAgentId) {
+        setSessionsByAgentId((prev) => ({ ...prev, [agentId]: loaded.sessions }));
+        setArchivedByAgentId((prev) => ({ ...prev, [agentId]: loaded.archived }));
+      }
+    } catch (err: any) {
+      Alert.alert('Clear failed', err?.message || 'Failed to clear sessions');
+    } finally {
+      setClearingBulk(false);
+      setConfirmAction(null);
+      setConfirmAgentId(null);
+    }
+  };
+  // Archive/restore handlers in AppContext only maintain the active agent's
+  // lists; an inactive agent's expanded lists live in this component's caches.
+  const moveInAgentCache = (
+    agentId: string | null | undefined,
+    row: any,
+    to: 'archived' | 'live',
+  ) => {
+    if (!agentId || agentId === activeAgentId || !row?.id) return;
+    const drop = (list: any[] | undefined) => (list || []).filter((s: any) => s.id !== row.id);
+    const add = (list: any[] | undefined) => [row, ...drop(list)];
+    const [setFrom, setTo] =
+      to === 'archived'
+        ? [setSessionsByAgentId, setArchivedByAgentId]
+        : [setArchivedByAgentId, setSessionsByAgentId];
+    setFrom((prev) => (prev[agentId] ? { ...prev, [agentId]: drop(prev[agentId]) } : prev));
+    setTo((prev) => (prev[agentId] ? { ...prev, [agentId]: add(prev[agentId]) } : prev));
+  };
+  const restoreSession = async (agentId: string, archivedRow: any) => {
+    const restored = await handleRestoreSession(archivedRow.id);
+    if (!restored) return;
+    moveInAgentCache(
+      agentId,
+      restored.id ? restored : { ...archivedRow, deleted_at: null },
+      'live',
+    );
+  };
+  const confirmDeleteSession = (sessionId: any, session?: any, agentId?: string) => {
+    // Holding a session deletes it. The copy explains the 7-day window, so
+    // the archive completes without a second modal. The row moves to Archived
+    // immediately; failures surface from handleDeleteSession.
+    const buttons: any[] = [{ text: 'Cancel', style: 'cancel' }];
+    if (session) {
+      buttons.push({
+        text: 'Rename',
+        onPress: () => {
+          setEditingSessionId(session.id);
+          setEditingSessionName(session.name || '');
+        },
+      });
+    }
+    buttons.push({
+      text: 'Delete',
+      style: 'destructive',
+      onPress: () => {
+        handleDeleteSession(sessionId)
+          .then(() => {
+            moveInAgentCache(
+              session?.agent_id || agentId,
+              {
+                ...(session || { id: sessionId }),
+                deleted_at: new Date().toISOString(),
+                message_count: session?.message_count ?? 0,
+              },
+              'archived',
+            );
+          })
+          .catch(() => {});
+      },
+    });
     Alert.alert(
       'Delete Session',
       'Archive this session? You can restore it within 7 days from the Archived section.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Archive',
-          style: 'destructive',
-          onPress: () => {
-            // Swallow the rejection — handleDeleteSession surfaces its own
-            // alert on failure, so we just need to avoid an unhandled promise.
-            handleDeleteSession(sessionId).catch(() => {});
-          },
-        },
-      ],
+      buttons,
     );
   };
-  // Same reload-on-re-tap logic as handleSessionSelect — if the user taps the
-  // already-active cron session, explicitly reload since neither setState nor
-  // navigation focus will trigger a refresh.
-  const handleCronSessionSelect = (sessionId: any) => {
-    if (sessionId === activeSessionId) {
-      reloadMessages();
-    } else {
-      setActiveSessionId(sessionId);
-    }
-    navigation.navigate('Chat');
-    navigation.closeDrawer();
-  };
-  // Agents that belong to a known project
-  const projectAgentIds = new Set();
-  projects.forEach((p: any) => {
-    agents.forEach((a: any) => {
-      if (a.projectId === p.id) projectAgentIds.add(a.id);
-    });
-  });
-  const orphanAgents = agents.filter((a: any) => !projectAgentIds.has(a.id) && a.active !== false);
-  const renderAgentRow = (agent: any) => (
-    <View key={agent.id}>
-      <TouchableOpacity
-        style={[styles.agentItem, activeAgentId === agent.id && styles.agentItemActive]}
-        onPress={() => handleAgentSelect(agent.id)}
-      >
-        <View style={styles.agentDotContainer}>
-          <View style={[styles.agentDot, { backgroundColor: agent.color }]} />
-          {isRecent(agent.lastActivity) && <View style={styles.activityIndicator} />}
+  const renderCronSection = (rows: any[], testID?: string) => {
+    if (!rows.length) return null;
+    return (
+      <View style={styles.cronSection} testID={testID}>
+        <View style={styles.sectionLabelRow}>
+          <HubIcon name="Clock" size={12} color={colors.gray500} />
+          <Text style={[styles.sectionLabel, styles.sectionLabelInline]}>SCHEDULED TASKS</Text>
         </View>
-        <View style={styles.agentInfo}>
-          <Text
-            style={[styles.agentName, activeAgentId === agent.id && styles.agentNameActive]}
-            numberOfLines={1}
-          >
-            {agent.name}
-          </Text>
-          {agent.lastMessage && (
-            <Text style={styles.agentLastMessage} numberOfLines={1}>
-              {agent.lastMessage.content}
-            </Text>
-          )}
-        </View>
-        {activeAgentId === agent.id && (
+        {rows.map((cs: any) => (
           <TouchableOpacity
-            onPress={() => toggleCollapse(agent.id)}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            key={cs.id}
+            style={[styles.cronRow, activeSessionId === cs.id && styles.agentItemActive]}
+            onPress={() => focusSession(cs.agent_id || activeAgentId, cs.id)}
           >
-            <Text style={styles.collapseIcon}>
-              {collapsedAgents[agent.id] ? '\u25B8' : '\u25BE'}
+            <SessionStateIcon
+              state={deriveSessionState(cs, {
+                activeTaskSessionIds: activeTasks,
+                finalizeStatusBySession,
+              })}
+              testID={`session-state-icon-${cs.id}`}
+            />
+            <Text
+              style={[
+                styles.agentName,
+                styles.cronName,
+                activeSessionId === cs.id && styles.agentNameActive,
+              ]}
+              numberOfLines={1}
+            >
+              {cs.cron_name || cs.name}
+            </Text>
+            <Text style={styles.cronScheduleInline}>{humanCron(cs.cron_schedule)}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+    );
+  };
+  const renderAgentRow = (agent: any, project: any) => {
+    if (agent.role === 'reviewer' || agent.role === 'skill-builder') return null;
+    const isExpanded = !!expandedAgents[agent.id];
+    const agentSessions = sessionsForAgent(agent.id);
+    const agentArchived = archivedForAgent(agent.id);
+    const actionableOnly = !!collapsedAgents[agent.id];
+    const visibleSessions = actionableOnly
+      ? agentSessions.filter((session: any) => isSidebarSessionActionable(session, sessionFlags))
+      : agentSessions;
+    const isActive = activeAgentId === agent.id;
+    const review = project?.mode === 'workflow' ? null : activeReviews?.[agent.name];
+    return (
+      <View key={agent.id}>
+        <View style={[styles.agentItem, isActive && styles.agentItemActive]}>
+          <TouchableOpacity style={styles.agentMain} onPress={() => handleAgentSelect(agent.id)}>
+            <View style={styles.agentDotContainer}>
+              <View style={[styles.agentDot, { backgroundColor: agent.color }]} />
+              {isRecent(agent.lastActivity) && <View style={styles.activityIndicator} />}
+            </View>
+            <Text style={[styles.agentName, isActive && styles.agentNameActive]} numberOfLines={1}>
+              {agent.name}
+              {agent.role === 'lead' ? <Text style={styles.leadTag}> lead</Text> : null}
             </Text>
           </TouchableOpacity>
-        )}
-      </TouchableOpacity>
-
-      {/* Sessions */}
-      {activeAgentId === agent.id && !collapsedAgents[agent.id] && (
-        <View style={styles.sessionsContainer}>
-          {sessions.map((session: any) => (
+          <TouchableOpacity
+            onPress={() => toggleAgentExpanded(agent.id)}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            accessibilityLabel={`${isExpanded ? 'Collapse' : 'Expand'} ${agent.name} sessions`}
+          >
+            <Text style={styles.collapseIcon}>{isExpanded ? '\u25BE' : '\u25B8'}</Text>
+          </TouchableOpacity>
+          {review ? (
             <TouchableOpacity
-              key={session.id}
-              style={[
-                styles.sessionItem,
-                activeSessionId === session.id && styles.sessionItemActive,
-              ]}
-              onPress={() => handleSessionSelect(session.id)}
-              onLongPress={() => confirmDeleteSession(session.id)}
-            >
-              <SessionStateIcon
-                state={deriveSessionState(session, {
-                  activeTaskSessionIds: activeTasks,
-                  finalizeStatusBySession,
-                })}
-                testID={`session-state-icon-${session.id}`}
-              />
-              <Text
-                style={[
-                  styles.sessionName,
-                  activeSessionId === session.id && styles.sessionNameActive,
-                ]}
-                numberOfLines={1}
-              >
-                {session.name}
-              </Text>
-            </TouchableOpacity>
-          ))}
-          {/* Reviewer agents are spawned only by the Finalize review phase —
-                  hide manual "+ New Session" so the user can't kick a 403 from
-                  the POST /api/agents/:id/sessions gate. */}
-          {agent.role !== 'reviewer' && (
-            <TouchableOpacity
-              style={styles.newSessionButton}
-              onPress={async () => {
-                await handleNewSession();
-                navigation.navigate('Chat');
-                navigation.closeDrawer();
+              style={styles.reviewingBadge}
+              onPress={() => {
+                if (review.sessionId) focusSession(agent.id, review.sessionId);
               }}
             >
-              <Text style={styles.newSessionText}>+ New Session</Text>
+              <Text style={styles.reviewingBadgeText}>reviewing PR</Text>
             </TouchableOpacity>
-          )}
-
-          {/* Archived (soft-deleted within 7 days) — collapsed by default so
-                  the drawer stays quiet when nothing is pending recovery. Mirror
-                  of the web sidebar's Archived section in Sidebar.jsx. */}
-          {archivedSessions && archivedSessions.length > 0 && (
-            <View style={styles.archivedSection} testID="archived-sessions-section">
-              <TouchableOpacity
-                onPress={() => setArchivedExpanded((v: any) => !v)}
-                style={styles.archivedHeader}
-              >
-                <Text style={styles.archivedHeaderText}>Archived ({archivedSessions.length})</Text>
-                <Text style={styles.archivedChevron}>{archivedExpanded ? '\u25BE' : '\u25B8'}</Text>
-              </TouchableOpacity>
-              {archivedExpanded && (
-                <View testID="archived-sessions-list">
-                  {archivedSessions.map((a: any) => {
-                    const purge = daysUntilPurge(a.deleted_at);
-                    // AppContext always passes a Set; optional chaining keeps
-                    // this safe if a test mounts DrawerContent without it.
-                    const isRestoring = restoringSessionIds.has(a.id);
-                    const urgent = purge && purge.daysLeft <= 1;
-                    return (
-                      <View key={a.id} style={styles.archivedRow}>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.archivedName} numberOfLines={1}>
-                            {a.name}
-                          </Text>
-                          {purge && (
-                            <Text
-                              style={[styles.archivedPurge, urgent && styles.archivedPurgeUrgent]}
-                            >
-                              {purge.label}
-                            </Text>
-                          )}
-                        </View>
-                        <TouchableOpacity
-                          onPress={() => handleRestoreSession(a.id)}
-                          disabled={isRestoring}
-                          style={[
-                            styles.restoreButton,
-                            isRestoring && styles.restoreButtonDisabled,
-                          ]}
-                        >
-                          <Text style={styles.restoreButtonText}>
-                            {isRestoring ? '…' : 'Restore'}
-                          </Text>
-                        </TouchableOpacity>
-                      </View>
-                    );
-                  })}
-                </View>
-              )}
-            </View>
-          )}
+          ) : null}
+          {isExpanded ? (
+            <TouchableOpacity
+              onPress={() => toggleSessionFilter(agent.id)}
+              accessibilityLabel={actionableOnly ? 'Show all sessions' : 'Show actionable only'}
+            >
+              <Text style={styles.collapseIcon}>{actionableOnly ? '···' : '≡'}</Text>
+            </TouchableOpacity>
+          ) : null}
         </View>
-      )}
-    </View>
-  );
+
+        {isExpanded && !(actionableOnly && visibleSessions.length === 0) && (
+          <View style={styles.sessionsContainer} testID="agent-sessions-list">
+            {visibleSessions.map((session: any) => (
+              <View
+                key={session.id}
+                style={[
+                  styles.sessionItem,
+                  activeSessionId === session.id && styles.sessionItemActive,
+                ]}
+              >
+                {editingSessionId === session.id ? (
+                  <TextInput
+                    style={styles.sessionRenameInput}
+                    value={editingSessionName}
+                    autoFocus
+                    onChangeText={setEditingSessionName}
+                    onSubmitEditing={() => saveSessionName(session)}
+                    onBlur={() => saveSessionName(session)}
+                  />
+                ) : (
+                  <TouchableOpacity
+                    style={styles.sessionMain}
+                    onPress={() => focusSession(agent.id, session.id)}
+                    onLongPress={() => confirmDeleteSession(session.id, session, agent.id)}
+                    delayLongPress={400}
+                  >
+                    <SessionStateIcon
+                      state={deriveSessionState(session, {
+                        activeTaskSessionIds: activeTasks,
+                        finalizeStatusBySession,
+                      })}
+                      testID={`session-state-icon-${session.id}`}
+                    />
+                    <Text
+                      style={[
+                        styles.sessionName,
+                        activeSessionId === session.id && styles.sessionNameActive,
+                      ]}
+                      numberOfLines={1}
+                    >
+                      {session.name}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity
+                  onPress={() => confirmDeleteSession(session.id, session, agent.id)}
+                  accessibilityLabel="Delete session"
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Text style={styles.sessionDelete}>✕</Text>
+                </TouchableOpacity>
+              </View>
+            ))}
+            {!actionableOnly && (
+              <>
+                <View style={styles.sessionActions}>
+                  <TouchableOpacity
+                    style={styles.newSessionButton}
+                    onPress={async () => {
+                      await handleNewSession(agent.id);
+                      navigation.navigate('Chat');
+                      navigation.closeDrawer();
+                    }}
+                  >
+                    <Text style={styles.newSessionText}>+ New Session</Text>
+                  </TouchableOpacity>
+                  {agentSessions.length > 0 && (
+                    <View style={styles.sessionBulk}>
+                      <TouchableOpacity
+                        disabled={clearingBulk}
+                        onPress={() => {
+                          setConfirmAgentId(agent.id);
+                          setConfirmAction('clear-merged');
+                        }}
+                      >
+                        <Text style={styles.clearPushedText}>
+                          {clearingBulk ? '...' : 'Clear pushed'}
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        disabled={clearingBulk}
+                        onPress={() => {
+                          setConfirmAgentId(agent.id);
+                          setConfirmAction('clear-all');
+                        }}
+                        accessibilityLabel="Clear all sessions"
+                      >
+                        <HubIcon name="Trash2" size={12} color={colors.gray600} />
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                </View>
+                {agentArchived.length > 0 && (
+                  <View style={styles.archivedSection} testID="archived-sessions-section">
+                    <TouchableOpacity
+                      onPress={() => setArchivedExpanded((v: any) => !v)}
+                      style={styles.archivedHeader}
+                    >
+                      <Text style={styles.archivedHeaderText}>
+                        Archived ({agentArchived.length})
+                      </Text>
+                      <Text style={styles.archivedChevron}>
+                        {archivedExpanded ? '\u25BE' : '\u25B8'}
+                      </Text>
+                    </TouchableOpacity>
+                    {archivedExpanded && (
+                      <View testID="archived-sessions-list">
+                        {agentArchived.map((a: any) => {
+                          const purge = daysUntilPurge(a.deleted_at);
+                          // AppContext always passes a Set; optional chaining keeps
+                          // this safe if a test mounts DrawerContent without it.
+                          const isRestoring = restoringSessionIds.has(a.id);
+                          const urgent = purge && purge.daysLeft <= 1;
+                          return (
+                            <View key={a.id} style={styles.archivedRow}>
+                              <View style={{ flex: 1 }}>
+                                <Text style={styles.archivedName} numberOfLines={1}>
+                                  {a.name}
+                                </Text>
+                                {purge && (
+                                  <Text
+                                    style={[
+                                      styles.archivedPurge,
+                                      urgent && styles.archivedPurgeUrgent,
+                                    ]}
+                                  >
+                                    {purge.label}
+                                  </Text>
+                                )}
+                              </View>
+                              <TouchableOpacity
+                                onPress={() => void restoreSession(agent.id, a)}
+                                disabled={isRestoring}
+                                style={[
+                                  styles.restoreButton,
+                                  isRestoring && styles.restoreButtonDisabled,
+                                ]}
+                              >
+                                <Text style={styles.restoreButtonText}>
+                                  {isRestoring ? '…' : 'Restore'}
+                                </Text>
+                              </TouchableOpacity>
+                            </View>
+                          );
+                        })}
+                      </View>
+                    )}
+                  </View>
+                )}
+                {confirmAction && confirmAgentId === agent.id && (
+                  <View style={styles.confirmBox}>
+                    <Text style={styles.confirmText}>
+                      {confirmAction === 'clear-all'
+                        ? `Delete all ${agentSessions.length} session${agentSessions.length === 1 ? '' : 's'}? This cannot be undone.`
+                        : 'Delete all sessions with pushed changes? Sessions in any other state will be kept.'}
+                    </Text>
+                    <View style={styles.confirmActions}>
+                      <TouchableOpacity onPress={() => setConfirmAction(null)}>
+                        <Text style={styles.confirmCancel}>Cancel</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        disabled={clearingBulk}
+                        style={
+                          confirmAction === 'clear-all'
+                            ? styles.confirmDelete
+                            : styles.confirmPushed
+                        }
+                        onPress={() => runClear(agent.id, confirmAction)}
+                      >
+                        <Text style={styles.confirmConfirmText}>
+                          {clearingBulk
+                            ? 'Deleting...'
+                            : confirmAction === 'clear-all'
+                              ? 'Delete All'
+                              : 'Delete Pushed'}
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                )}
+              </>
+            )}
+          </View>
+        )}
+      </View>
+    );
+  };
   const renderMenuItem = (project: any, entry: any) => (
     <TouchableOpacity
       key={entry.key}
@@ -491,15 +774,26 @@ export default function DrawerContent({ navigation }: any) {
       <Text style={styles.projectMenuItemText} numberOfLines={1}>
         {entry.label}
       </Text>
+      {entry.key === 'skills' && (skillImprovementCounts?.[project.id] || 0) > 0 && (
+        <View testID="skills-pending-badge" style={[styles.unreadBadge, styles.skillBadge]}>
+          <Text style={styles.unreadBadgeText}>
+            {
+              (skillImprovementCounts[project.id] > 99
+                ? '99+'
+                : skillImprovementCounts[project.id]) as any
+            }
+          </Text>
+        </View>
+      )}
       {entry.key === 'support' && unreadTicketCounts?.[project.id] > 0 && (
-        <View style={styles.unreadBadge}>
+        <View style={[styles.unreadBadge, styles.countBadge]}>
           <Text style={styles.unreadBadgeText}>
             {unreadTicketCounts[project.id] > 99 ? '99+' : unreadTicketCounts[project.id]}
           </Text>
         </View>
       )}
       {entry.key === 'pulls' && openPullCounts?.[project.id] > 0 && (
-        <View style={styles.unreadBadge}>
+        <View style={[styles.unreadBadge, styles.countBadge]}>
           <Text style={styles.unreadBadgeText}>
             {openPullCounts[project.id] > 99 ? '99+' : openPullCounts[project.id]}
           </Text>
@@ -521,7 +815,10 @@ export default function DrawerContent({ navigation }: any) {
   // Grouped nav (Git / Planning / Support / AI / Settings), each group a
   // collapsible section (default collapsed), mirroring the web sidebar.
   const renderProjectMenu = (project: any) => {
-    const groups = projectNavGroups(project);
+    const groups = projectNavGroups(
+      project,
+      agents.filter((a: any) => a.projectId === project.id),
+    );
     return (
       <View style={styles.projectMenu}>
         {groups.map((group: any) => {
@@ -560,6 +857,33 @@ export default function DrawerContent({ navigation }: any) {
       </View>
     );
   };
+  const scheduledTaskHomeIds = new Set(
+    projects
+      .filter((project: any) => {
+        const activeAgentCount = agents.filter(
+          (agent: any) => agent.projectId === project.id && agent.active !== false,
+        ).length;
+        return projectHostsScheduledTasks({
+          activeAgentCount,
+          workflow: isWorkflowProject(project),
+          collapsed: !!collapsedProjects[project.id],
+        });
+      })
+      .map((project: any) => project.id),
+  );
+  const ungroupedCronSessions = (cronSessions || []).filter(
+    (cs: any) => !cs.project_id || !scheduledTaskHomeIds.has(cs.project_id),
+  );
+  const routeName = navigation.getCurrentRoute?.()?.name;
+  const hubActive = [
+    'Hub',
+    'Home',
+    'Dashboard',
+    'Todos',
+    'Calendar',
+    'Gmail',
+    'SupportOverview',
+  ].includes(routeName);
   return (
     <SafeAreaView style={styles.container}>
       {/* Org Switcher Header */}
@@ -609,7 +933,7 @@ export default function DrawerContent({ navigation }: any) {
       <ScrollView style={styles.agentList}>
         <TouchableOpacity
           testID="drawer-global-hub"
-          style={styles.dashboardItem}
+          style={[styles.dashboardItem, hubActive && styles.dashboardItemActive]}
           onPress={() => {
             navigation.navigate('Hub');
             navigation.closeDrawer();
@@ -617,23 +941,6 @@ export default function DrawerContent({ navigation }: any) {
           accessibilityLabel="Hub"
         >
           <BrandLogo size="sm" />
-        </TouchableOpacity>
-        <TouchableOpacity
-          testID="drawer-chat"
-          style={styles.chatItem}
-          onPress={() => {
-            navigation.navigate('Hub', { tab: 'chat' });
-            navigation.closeDrawer();
-          }}
-          accessibilityLabel={chatBadge > 0 ? `Chat, ${chatBadge} unread` : 'Chat'}
-        >
-          <HubIcon name="MessageSquare" size={14} color={colors.gray400} />
-          <Text style={styles.chatItemText}>Chat</Text>
-          {chatBadge > 0 ? (
-            <View style={styles.unreadBadge} testID="drawer-chat-badge">
-              <Text style={styles.unreadBadgeText}>{chatBadge > 99 ? '99+' : chatBadge}</Text>
-            </View>
-          ) : null}
         </TouchableOpacity>
         <View style={styles.connectionRow}>
           <Pressable
@@ -682,38 +989,7 @@ export default function DrawerContent({ navigation }: any) {
           />
         </View>
 
-        {cronSessions.length > 0 && (
-          <View style={{ marginBottom: 16 }}>
-            <View style={styles.sectionLabelRow}>
-              <HubIcon name="Clock" size={12} color={colors.gray500} />
-              <Text style={[styles.sectionLabel, styles.sectionLabelInline]}>SCHEDULED TASKS</Text>
-            </View>
-            {cronSessions.map((cs: any) => (
-              <TouchableOpacity
-                key={cs.id}
-                style={[styles.agentItem, activeSessionId === cs.id && styles.agentItemActive]}
-                onPress={() => handleCronSessionSelect(cs.id)}
-              >
-                <SessionStateIcon
-                  state={deriveSessionState(cs, {
-                    activeTaskSessionIds: activeTasks,
-                    finalizeStatusBySession,
-                  })}
-                  testID={`session-state-icon-${cs.id}`}
-                />
-                <View style={styles.agentInfo}>
-                  <Text
-                    style={[styles.agentName, activeSessionId === cs.id && styles.agentNameActive]}
-                    numberOfLines={1}
-                  >
-                    {cs.cron_name || cs.name}
-                  </Text>
-                  <Text style={styles.cronScheduleText}>{humanCron(cs.cron_schedule)}</Text>
-                </View>
-              </TouchableOpacity>
-            ))}
-          </View>
-        )}
+        {renderCronSection(ungroupedCronSessions, 'drawer-ungrouped-scheduled-tasks')}
 
         {!projectCollapseCacheHydrated && (
           <View style={styles.projectCollapseLoading} testID="drawer-projects-loading">
@@ -721,44 +997,82 @@ export default function DrawerContent({ navigation }: any) {
           </View>
         )}
 
-        {projectCollapseCacheHydrated && projects.length > 0 && (
+        {projectCollapseCacheHydrated && (
           <>
             <Text style={styles.sectionLabel}>PROJECTS</Text>
-            {projects.map((project: any, index: any) => {
+            <TouchableOpacity
+              testID="drawer-new-project"
+              style={styles.newProjectCta}
+              onPress={() => {
+                navigation.navigate('NewProject');
+                navigation.closeDrawer();
+              }}
+            >
+              <HubIcon name="Plus" size={18} color={colors.white} strokeWidth={2.5} />
+              <Text style={styles.newProjectCtaText}>New Project</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              testID="drawer-import-project"
+              style={styles.importProjectCta}
+              onPress={() => {
+                navigation.navigate('ImportProject');
+                navigation.closeDrawer();
+              }}
+            >
+              <HubIcon name="Plus" size={14} color={colors.gray400} />
+              <Text style={styles.importProjectCtaText}>Import existing project</Text>
+            </TouchableOpacity>
+            {projects.map((project: any) => {
               const projectAgents = agents.filter(
                 (a: any) => a.projectId === project.id && a.active !== false,
               );
               if (projectAgents.length === 0) return null;
-              const isCollapsed = collapsedProjects[project.id];
+              const workflow = isWorkflowProject(project);
+              const canCollapse = projectCanFullyCollapse(projectAgents.length, workflow);
+              const isCollapsed = !!collapsedProjects[project.id] && canCollapse;
+              const isActiveProject = projectAgents.some((a: any) => a.id === activeAgentId);
+              const projectIndex = projects
+                .filter((candidate: any) =>
+                  agents.some(
+                    (agent: any) => agent.projectId === candidate.id && agent.active !== false,
+                  ),
+                )
+                .findIndex((candidate: any) => candidate.id === project.id);
+              const actionableWhileCollapsed =
+                isCollapsed && isActiveProject
+                  ? (sessions || []).filter((session: any) =>
+                      isSidebarSessionActionable(session, sessionFlags),
+                    )
+                  : [];
               return (
-                <View key={project.id}>
-                  {index > 0 && <View style={styles.projectDivider} />}
+                <View key={project.id} testID={`drawer-project-row-${project.id}`}>
+                  {projectIndex > 0 && <View style={styles.projectDivider} />}
                   <View style={styles.projectHeaderRow}>
                     <TouchableOpacity
                       testID={`drawer-project-${project.id}`}
                       style={[styles.projectHeader, { flex: 1 }]}
-                      onPress={() => toggleProjectCollapse(project.id)}
+                      onPress={() => {
+                        if (canCollapse) toggleProjectCollapse(project.id);
+                        else if (projectAgents[0]) toggleAgentExpanded(projectAgents[0].id);
+                      }}
                       onLongPress={() => {
-                        Alert.alert(
-                          'Delete Project',
-                          `Delete "${project.name}" and all its agents, sessions, board, and wiki data? This cannot be undone.`,
-                          [
-                            { text: 'Cancel', style: 'cancel' },
-                            {
-                              text: 'Delete',
-                              style: 'destructive',
-                              onPress: async () => {
-                                try {
-                                  await api.deleteProject(project.id);
-                                  refreshProjects();
-                                  refreshAgents();
-                                } catch (err: any) {
-                                  Alert.alert('Error', 'Failed to delete project');
-                                }
-                              },
-                            },
-                          ],
-                        );
+                        const ids = projects.map((p: any) => p.id);
+                        const at = ids.indexOf(project.id);
+                        const buttons: any[] = [];
+                        if (at > 0) {
+                          buttons.push({
+                            text: 'Move up',
+                            onPress: () => moveProject(project.id, -1),
+                          });
+                        }
+                        if (at >= 0 && at < ids.length - 1) {
+                          buttons.push({
+                            text: 'Move down',
+                            onPress: () => moveProject(project.id, 1),
+                          });
+                        }
+                        buttons.push({ text: 'Cancel', style: 'cancel' });
+                        Alert.alert(project.name, 'Reorder project', buttons);
                       }}
                     >
                       <View
@@ -766,91 +1080,71 @@ export default function DrawerContent({ navigation }: any) {
                       />
                       <Text style={styles.projectName} numberOfLines={1}>
                         {project.name}
-                        {isWorkflowProject(project) ? (
-                          <Text style={styles.workflowTag}> Wf</Text>
-                        ) : null}
+                        {workflow ? <Text style={styles.workflowTag}> Wf</Text> : null}
                       </Text>
-                      <Text style={styles.collapseIcon}>{isCollapsed ? '\u25B8' : '\u25BE'}</Text>
+                      {project.visibility === 'private' && (
+                        <HubIcon
+                          name="Lock"
+                          size={11}
+                          color={colors.gray500}
+                          accessibilityLabel="Private project"
+                        />
+                      )}
+                      {canCollapse && (
+                        <Text style={styles.collapseIcon}>{isCollapsed ? '\u25B8' : '\u25BE'}</Text>
+                      )}
                     </TouchableOpacity>
                   </View>
 
                   {!isCollapsed && (
                     <>
-                      {projectAgents.map((agent: any) => renderAgentRow(agent))}
+                      {projectAgents.map((agent: any) => renderAgentRow(agent, project))}
                       {renderProjectMenu(project)}
+                      {renderCronSection(
+                        (cronSessions || []).filter((cs: any) => cs.project_id === project.id),
+                        `drawer-project-scheduled-tasks-${project.id}`,
+                      )}
                     </>
+                  )}
+                  {actionableWhileCollapsed.length > 0 && (
+                    <View style={styles.collapsedActionable} testID="project-collapsed-actionable">
+                      {actionableWhileCollapsed.map((session: any) => (
+                        <TouchableOpacity
+                          key={session.id}
+                          style={styles.sessionItem}
+                          onPress={() =>
+                            focusSession(session.agent_id || activeAgentId, session.id)
+                          }
+                          onLongPress={() => confirmDeleteSession(session.id, session)}
+                          delayLongPress={400}
+                        >
+                          <SessionStateIcon
+                            state={deriveSessionState(session, {
+                              activeTaskSessionIds: activeTasks,
+                              finalizeStatusBySession,
+                            })}
+                            testID={`session-state-icon-${session.id}`}
+                          />
+                          <Text style={styles.sessionName} numberOfLines={1}>
+                            {session.name}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
                   )}
                 </View>
               );
             })}
           </>
         )}
-
-        {/* Agents without a project (fallback / orphans) */}
-        {orphanAgents.length > 0 && (
-          <View>
-            <Text style={styles.sectionLabel}>
-              {projects.length > 0 ? 'OTHER AGENTS' : 'AGENTS'}
-            </Text>
-            {orphanAgents.map((agent: any) => renderAgentRow(agent))}
-          </View>
-        )}
       </ScrollView>
 
-      {/* Bottom Nav — mirrors the web sidebar footer (Skills, Settings, then
-              the server version line). Wiki / Notes now live under each project's
-              "Settings" submenu, matching the web sidebar's project-scoped grouping. */}
+      {/* Footer matches the web sidebar: Settings, Chat, then the version
+          line (tap opens What's new). */}
       <View style={styles.bottomNav}>
-        <TouchableOpacity
-          style={styles.navButton}
-          onPress={() => {
-            navigation.navigate('Skills');
-            navigation.closeDrawer();
-          }}
-        >
-          <HubIcon name="BookOpen" size={16} style={styles.navButtonIcon} />
-          <Text style={styles.navButtonText}>Skills</Text>
-          {skillImprovementPendingTotal > 0 && (
-            <View testID="skills-pending-badge" style={[styles.unreadBadge, styles.skillBadge]}>
-              <Text style={styles.unreadBadgeText}>
-                {skillImprovementPendingTotal > 99 ? '99+' : skillImprovementPendingTotal}
-              </Text>
-            </View>
-          )}
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.navButton}
-          onPress={() => {
-            navigation.navigate('Releases');
-            navigation.closeDrawer();
-          }}
-        >
-          <HubIcon name="Sparkles" size={16} style={styles.navButtonIcon} />
-          <Text style={styles.navButtonText}>What's new</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.navButton}
-          onPress={() => {
-            navigation.navigate('NewProject');
-            navigation.closeDrawer();
-          }}
-        >
-          <HubIcon name="Plus" size={18} strokeWidth={2.5} style={styles.navButtonIcon} />
-          <Text style={styles.navButtonText}>New Project</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.navButton}
-          onPress={() => {
-            navigation.navigate('ImportProject');
-            navigation.closeDrawer();
-          }}
-        >
-          <HubIcon name="FolderOpen" size={17} style={styles.navButtonIcon} />
-          <Text style={styles.navButtonText}>Import Project</Text>
-        </TouchableOpacity>
         {showAiSignInGuide && <AiSignInHint target="Settings" onDismiss={dismissAiSignInGuide} />}
         <TouchableOpacity
-          style={styles.navButton}
+          style={[styles.navButton, routeName === 'Settings' && styles.navButtonActive]}
           onPress={() => {
             navigation.navigate('Settings');
             navigation.closeDrawer();
@@ -859,11 +1153,35 @@ export default function DrawerContent({ navigation }: any) {
           <HubIcon name="Settings" size={16} style={styles.navButtonIcon} />
           <Text style={styles.navButtonText}>Settings</Text>
         </TouchableOpacity>
+        <TouchableOpacity
+          testID="drawer-chat"
+          style={[styles.navButton, routeName === 'Chat' && styles.navButtonActive]}
+          onPress={() => {
+            navigation.navigate('Hub', { tab: 'chat' });
+            navigation.closeDrawer();
+          }}
+          accessibilityLabel={chatBadge > 0 ? `Chat, ${chatBadge} unread` : 'Chat'}
+        >
+          <HubIcon name="MessageSquare" size={16} color={colors.gray400} />
+          <Text style={styles.navButtonText}>Chat</Text>
+          {chatBadge > 0 ? (
+            <View style={[styles.unreadBadge, styles.countBadge]} testID="drawer-chat-badge">
+              <Text style={styles.unreadBadgeText}>{chatBadge > 99 ? '99+' : chatBadge}</Text>
+            </View>
+          ) : null}
+        </TouchableOpacity>
         {health?.version && (
-          <View style={styles.versionBox}>
+          <TouchableOpacity
+            style={styles.versionBox}
+            onPress={() => {
+              navigation.navigate('Releases');
+              navigation.closeDrawer();
+            }}
+            accessibilityLabel="What's new in Agent Hub"
+          >
             <Text style={styles.versionText}>v{health.version}</Text>
-            {health.gitHash && <Text style={styles.versionHash}>{health.gitHash}</Text>}
-          </View>
+            {health.gitHash ? <Text style={styles.versionHash}>{health.gitHash}</Text> : null}
+          </TouchableOpacity>
         )}
       </View>
     </SafeAreaView>
@@ -1022,8 +1340,38 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderRadius: 8,
-    marginBottom: 16,
+    marginBottom: 12,
+  },
+  dashboardItemActive: {
     backgroundColor: colors.gray800,
+  },
+  newProjectCta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: colors.emerald600,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 8,
+  },
+  newProjectCtaText: {
+    color: colors.white,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  importProjectCta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginBottom: 8,
+    borderRadius: 8,
+  },
+  importProjectCtaText: {
+    color: colors.gray400,
+    fontSize: 12,
   },
   projectCollapseLoading: {
     minHeight: 44,
@@ -1051,8 +1399,9 @@ const styles = StyleSheet.create({
   },
   workflowTag: {
     fontSize: 10,
-    fontWeight: '700',
-    color: colors.amber400,
+    fontWeight: '500',
+    color: colors.purple400,
+    letterSpacing: 0.4,
   },
   projectHeaderRow: {
     flexDirection: 'row',
@@ -1072,6 +1421,10 @@ const styles = StyleSheet.create({
   },
   skillBadge: {
     backgroundColor: colors.amber400,
+    marginLeft: 'auto',
+  },
+  countBadge: {
+    backgroundColor: colors.blue500,
     marginLeft: 'auto',
   },
   unreadBadgeText: {
@@ -1120,6 +1473,29 @@ const styles = StyleSheet.create({
     backgroundColor: colors.emerald500,
     borderWidth: 1.5,
     borderColor: colors.gray900,
+  },
+  agentMain: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  leadTag: {
+    fontSize: 12,
+    color: colors.gray600,
+  },
+  reviewingBadge: {
+    backgroundColor: 'rgba(245, 158, 11, 0.2)',
+    borderRadius: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    marginRight: 4,
+  },
+  reviewingBadgeText: {
+    color: colors.amber400,
+    fontSize: 10,
+    fontWeight: '600',
   },
   agentInfo: {
     flex: 1,
@@ -1172,6 +1548,108 @@ const styles = StyleSheet.create({
   },
   sessionNameActive: {
     color: colors.white,
+  },
+  sessionMain: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+  },
+  sessionRenameInput: {
+    flex: 1,
+    minWidth: 0,
+    color: colors.gray200,
+    fontSize: 12,
+    backgroundColor: colors.gray700,
+    borderRadius: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  sessionDelete: {
+    color: colors.gray600,
+    fontSize: 12,
+    paddingHorizontal: 4,
+  },
+  sessionActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  sessionBulk: {
+    marginLeft: 'auto',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingRight: 4,
+  },
+  clearPushedText: {
+    fontSize: 10,
+    color: colors.gray600,
+  },
+  confirmBox: {
+    marginHorizontal: 4,
+    marginTop: 4,
+    padding: 8,
+    backgroundColor: colors.gray800,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+  },
+  confirmText: {
+    fontSize: 12,
+    color: colors.gray300,
+    marginBottom: 8,
+  },
+  confirmActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 8,
+  },
+  confirmCancel: {
+    fontSize: 12,
+    color: colors.gray400,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  confirmDelete: {
+    backgroundColor: colors.red600,
+    borderRadius: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  confirmPushed: {
+    backgroundColor: '#d97706',
+    borderRadius: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  confirmConfirmText: {
+    fontSize: 12,
+    color: colors.white,
+  },
+  collapsedActionable: {
+    marginLeft: 12,
+    paddingLeft: 8,
+    borderLeftWidth: 1,
+    borderLeftColor: colors.gray800,
+  },
+  cronSection: {
+    marginBottom: 12,
+  },
+  cronRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  cronName: {
+    flex: 1,
+  },
+  cronScheduleInline: {
+    fontSize: 12,
+    color: colors.gray600,
   },
   newSessionButton: {
     paddingHorizontal: 8,
@@ -1249,6 +1727,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 12,
     borderRadius: 8,
+  },
+  navButtonActive: {
+    backgroundColor: colors.gray800,
   },
   navButtonIcon: {
     flexShrink: 0,

@@ -1,5 +1,5 @@
 import { compareRfc3339 } from '@shared/utils/rfc3339';
-import type { ChatSpace } from './googleChat';
+import type { ChatSpace } from '@shared/utils/googleChat';
 
 /**
  * Unread dots for the conversation list when push isn't delivering counts.

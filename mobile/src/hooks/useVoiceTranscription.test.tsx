@@ -7,18 +7,37 @@ const act = TestRenderer.act as (cb: () => unknown) => Promise<void>;
 const create = TestRenderer.create as (element: any) => any;
 
 const recording = vi.hoisted(() => ({
-  stopAndUnloadAsync: vi.fn(async () => {}),
-  getURI: vi.fn(() => 'file:///rec.m4a'),
-  setProgressUpdateInterval: vi.fn(),
-  setOnRecordingStatusUpdate: vi.fn(),
+  stop: vi.fn(async () => {}),
+  uri: 'file:///rec.m4a',
+  isRecording: true,
+  prepareToRecordAsync: vi.fn(async () => {}),
+  record: vi.fn(),
+  release: vi.fn(),
+  getStatus: vi.fn(() => ({ isRecording: true, metering: -160 })),
 }));
-vi.mock('expo-av', () => ({
-  Audio: {
-    requestPermissionsAsync: vi.fn(async () => ({ status: 'granted' })),
-    setAudioModeAsync: vi.fn(async () => {}),
-    Recording: { createAsync: vi.fn(async () => ({ recording })) },
-    RecordingOptionsPresets: { HIGH_QUALITY: {} },
+const audio = vi.hoisted(() => ({
+  requestRecordingPermissionsAsync: vi.fn(async () => ({ status: 'granted' })),
+  setAudioModeAsync: vi.fn(async () => {}),
+  AudioRecorder: vi.fn(function () {
+    return recording;
+  }),
+}));
+vi.mock('react-native', () => ({ Platform: { OS: 'ios' } }));
+vi.mock('expo-audio', () => ({
+  requestRecordingPermissionsAsync: audio.requestRecordingPermissionsAsync,
+  setAudioModeAsync: audio.setAudioModeAsync,
+  RecordingPresets: {
+    HIGH_QUALITY: {
+      extension: '.m4a',
+      sampleRate: 44100,
+      numberOfChannels: 2,
+      bitRate: 128000,
+      android: {},
+      ios: {},
+      web: { bitsPerSecond: 128000 },
+    },
   },
+  AudioModule: { AudioRecorder: audio.AudioRecorder },
 }));
 const transcribe = vi.hoisted(() => ({ resolve: null as null | ((v: any) => void) }));
 vi.mock('../utils/transcribeAudio', () => ({
@@ -102,18 +121,23 @@ describe('useVoiceTranscription', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     transcribe.resolve = null;
+    recording.getStatus.mockReset();
+    recording.getStatus.mockImplementation(() => ({ isRecording: true, metering: -160 }));
+    recording.stop.mockReset();
+    recording.stop.mockImplementation(async () => {});
+    recording.prepareToRecordAsync.mockReset();
+    recording.prepareToRecordAsync.mockImplementation(async () => {});
+    recording.release.mockReset();
   });
 
   it('meters the live input while recording and clears the meter on stop', async () => {
+    recording.getStatus.mockReturnValue({ isRecording: true, metering: -30 });
     const h = mount(1);
     await h.render();
     await act(async () => {
       h.state.hook.handleMicClick();
       await flush();
     });
-    expect(recording.setOnRecordingStatusUpdate).toHaveBeenCalledTimes(1);
-    const onStatus = (recording.setOnRecordingStatusUpdate.mock.calls as any[])[0][0];
-    onStatus({ isRecording: true, metering: -30 });
     expect(h.state.hook.levelStore.get().level).toBeCloseTo(0.5);
     await act(async () => {
       h.state.hook.handleMicClick();
@@ -252,9 +276,8 @@ describe('useVoiceTranscription', () => {
   });
 
   it('does not start recording when cancelled during the permission prompt', async () => {
-    const { Audio } = (await import('expo-av')) as any;
     let grant: (v: any) => void = () => {};
-    Audio.requestPermissionsAsync.mockImplementationOnce(
+    audio.requestRecordingPermissionsAsync.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
           grant = resolve;
@@ -274,11 +297,11 @@ describe('useVoiceTranscription', () => {
       grant({ status: 'granted' });
       await flush();
     });
-    expect(Audio.Recording.createAsync).not.toHaveBeenCalled();
+    expect(audio.AudioRecorder).not.toHaveBeenCalled();
     expect(h.state.hook.isRecording).toBe(false);
   });
 
-  it('cancel while stopAndUnloadAsync is pending starts no upload and leaves the mic usable', async () => {
+  it('cancel while stop is pending starts no upload and leaves the mic usable', async () => {
     const { transcribeAudio } = (await import('../utils/transcribeAudio')) as any;
     let finishUnload: () => void = () => {};
     const h = mount(1);
@@ -287,7 +310,7 @@ describe('useVoiceTranscription', () => {
       h.state.hook.handleMicClick();
       await flush();
     });
-    recording.stopAndUnloadAsync.mockImplementationOnce(
+    recording.stop.mockImplementationOnce(
       () =>
         new Promise<void>((resolve) => {
           finishUnload = resolve;
@@ -312,9 +335,8 @@ describe('useVoiceTranscription', () => {
   });
 
   it('a stale start failing after cancel never resets the newer recording audio mode', async () => {
-    const { Audio } = (await import('expo-av')) as any;
     let failStart: (e: any) => void = () => {};
-    Audio.Recording.createAsync.mockImplementationOnce(
+    recording.prepareToRecordAsync.mockImplementationOnce(
       () =>
         new Promise((_resolve, reject) => {
           failStart = reject;
@@ -323,7 +345,7 @@ describe('useVoiceTranscription', () => {
     const onError = vi.fn();
     const h = mount(1, onError);
     await h.render();
-    // Attempt A: parks inside createAsync.
+    // Attempt A: parks inside prepareToRecordAsync.
     await act(async () => {
       h.state.hook.handleMicClick();
       await flush();
@@ -345,12 +367,11 @@ describe('useVoiceTranscription', () => {
     expect(h.state.hook.isRecording).toBe(true);
     expect(onError).not.toHaveBeenCalled();
     // A's cleanup reset happens before B takes the mode; nothing resets after.
-    const modes = Audio.setAudioModeAsync.mock.calls.map((c: any[]) => c[0].allowsRecordingIOS);
+    const modes = audio.setAudioModeAsync.mock.calls.map((c: any[]) => c[0].allowsRecording);
     expect(modes).toEqual([true, false, true]);
   });
 
   it('unmounting one instance does not reset another instance that is recording', async () => {
-    const { Audio } = (await import('expo-av')) as any;
     const a = mount(1);
     await a.render();
     await act(async () => {
@@ -368,16 +389,15 @@ describe('useVoiceTranscription', () => {
       await flush();
     });
     expect(b.state.hook.isRecording).toBe(true);
-    Audio.setAudioModeAsync.mockClear();
+    audio.setAudioModeAsync.mockClear();
     await act(async () => {
       a.unmount();
       await flush();
     });
-    expect(Audio.setAudioModeAsync).not.toHaveBeenCalled();
+    expect(audio.setAudioModeAsync).not.toHaveBeenCalled();
   });
 
   it('a second instance cannot start while another is recording, and leaves it untouched', async () => {
-    const { Audio } = (await import('expo-av')) as any;
     const composerError = vi.fn();
     const notesError = vi.fn();
     const composer = mount(1, composerError);
@@ -387,8 +407,8 @@ describe('useVoiceTranscription', () => {
       await flush();
     });
     expect(composer.state.hook.isRecording).toBe(true);
-    Audio.setAudioModeAsync.mockClear();
-    Audio.Recording.createAsync.mockClear();
+    audio.setAudioModeAsync.mockClear();
+    audio.AudioRecorder.mockClear();
 
     const notes = mount(1, notesError);
     await notes.render();
@@ -400,8 +420,8 @@ describe('useVoiceTranscription', () => {
     expect(notesError).toHaveBeenCalledWith(
       'Another voice recording is in progress. Stop it first.',
     );
-    expect(Audio.Recording.createAsync).not.toHaveBeenCalled();
-    expect(Audio.setAudioModeAsync).not.toHaveBeenCalled();
+    expect(audio.AudioRecorder).not.toHaveBeenCalled();
+    expect(audio.setAudioModeAsync).not.toHaveBeenCalled();
     expect(composer.state.hook.isRecording).toBe(true);
     await act(async () => {
       composer.state.hook.cancel();

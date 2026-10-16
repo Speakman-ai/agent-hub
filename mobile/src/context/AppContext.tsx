@@ -15,6 +15,9 @@ import { api } from '../utils/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { extractSubmittedAskIds } from '../utils/askAnswers';
 import { loadOrgs, migrateFromLegacy, getOrgs, getActiveOrg } from '../utils/orgs';
+import { createOrgDataGeneration, shouldLoadOrgData } from '../utils/orgDataLoad';
+import { applyPreviewEvent } from '../utils/previewEvents';
+import { withRestoredSession } from '../utils/sessionRestore';
 import { createOrgSwitcher } from '../utils/orgSwitch';
 import { loadConnectionConfig, getApiBaseUrl, getAuthHeaders } from '../utils/config';
 import {
@@ -23,6 +26,7 @@ import {
   getAuthStatus,
   getAuthRecord,
   needsEmailUpdate,
+  onDeadSession,
 } from '../utils/auth';
 import {
   loadSetupDismissed,
@@ -170,6 +174,7 @@ export function AppProvider({ children }: any) {
   const [eventsByMessage, setEventsByMessage] = useState<any>({});
   // Live browser screenshot previews: { [messageId]: { [actionId]: dataUrl } }
   const [browserScreensBySession, setBrowserScreensBySession] = useState<any>({});
+  const [previewEventBySession, setPreviewEventBySession] = useState<Record<string, any>>({});
   // Per-session nonce bumped on each `artifact_created` / `artifact_deleted`
   // WS event so the SessionArtifactsPanel reloads its list live. Shape:
   //   { [sessionId]: number }
@@ -274,10 +279,12 @@ export function AppProvider({ children }: any) {
   // drawer badge so a captured skill-improvement is discoverable without
   // opening the Skills screen. Recomputed on load and whenever the
   // `skill_improvement_update` broadcast bumps skillImprovementRefreshKey.
-  // Total pending learned-lessons across all projects, driving the Skills
-  // drawer badge. The hook owns the fetch lifecycle (preserve-on-failure,
-  // prune-on-departure); see usePendingLessonTotal.
-  const skillImprovementPendingTotal = usePendingLessonTotal(projects, skillImprovementRefreshKey);
+  // Per-project pending learned-lessons (sidebar Skills badges) and their sum.
+  // The hook owns the fetch lifecycle (preserve-on-failure, prune-on-departure).
+  const { total: skillImprovementPendingTotal, counts: skillImprovementCounts } =
+    usePendingLessonTotal(projects, skillImprovementRefreshKey);
+  // Lead-review pills on agent rows (`lead_review` / `lead_review_complete`).
+  const [activeReviews, setActiveReviews] = useState<Record<string, any>>({});
   // Ad-hoc PR creation: Map of sessionId -> { agentId, branch, hasUncommitted, hasUnpushed }
   const [changesReady, setChangesReady] = useState<any>({});
   // Map of sessionId -> latest Finalize Code Changes status string. Mirrors
@@ -821,6 +828,9 @@ export function AppProvider({ children }: any) {
             }));
           }
           break;
+        case 'agenthub_preview':
+          setPreviewEventBySession((prev) => applyPreviewEvent(prev, data));
+          break;
         case 'browser_activity_screenshot': {
           const sid = data.sessionId;
           const mid = data.messageId;
@@ -881,6 +891,25 @@ export function AppProvider({ children }: any) {
           break;
         case 'skill_improvement_update':
           setSkillImprovementRefreshKey((k: any) => (k || 0) + 1);
+          break;
+        case 'lead_review':
+          setActiveReviews((prev) => ({
+            ...prev,
+            [data.reviewerAgent]: {
+              prUrl: data.prUrl,
+              cardTitle: data.cardTitle,
+              sessionId: data.sessionId,
+            },
+          }));
+          break;
+        case 'lead_review_complete':
+          setActiveReviews((prev) => {
+            const next = { ...prev };
+            for (const [key, val] of Object.entries(next)) {
+              if ((val as any).sessionId === data.sessionId) delete next[key];
+            }
+            return next;
+          });
           break;
         case 'kanban_update':
           if (typeof data.projectId === 'string') {
@@ -948,12 +977,9 @@ export function AppProvider({ children }: any) {
           const restoredId = data.sessionId || data.session?.id;
           if (!restoredId) break;
           setArchivedSessions((prev: any) => prev.filter((s: any) => s.id !== restoredId));
-          if (data.session && data.session.agent_id === activeAgentIdRef.current) {
-            setSessions((prev: any) => {
-              if (prev.some((s: any) => s.id === restoredId)) return prev;
-              return [data.session, ...prev];
-            });
-          }
+          setSessions((prev: any) =>
+            withRestoredSession(prev, data.session, activeAgentIdRef.current),
+          );
           break;
         }
         // A session was forwarded from another agent — if the new session
@@ -1422,7 +1448,7 @@ export function AppProvider({ children }: any) {
       // Warm the in-memory JWT mirror from AsyncStorage so sync callers
       // (getAuthHeaders / getWsUrl) can read it immediately. Must happen
       // before we reconnect the WebSocket below.
-      await loadAuthToken();
+      await loadAuthToken(activeOrg?.remoteUrl || '');
       // Decide whether to show the first-run wizard before we signal ready.
       // `shouldShowWizard` returns true only when no org has a remoteUrl AND
       // the user hasn't previously dismissed the wizard.
@@ -1487,34 +1513,41 @@ export function AppProvider({ children }: any) {
   }, [reconnect]);
   /**
    * Called by `LoginScreen` after a successful login or setup call. The JWT
-   * is already persisted to AsyncStorage at this point; we just need to
-   * flip `needsAuth` and reconnect the WebSocket so it picks up the new
-   * `?token=` credential.
+   * is already persisted to AsyncStorage at this point. Clearing `needsAuth`
+   * reconnects the WebSocket and re-runs the project/agent load, which is
+   * skipped while the login screen is up.
    */
   const completeAuth = useCallback(() => {
     setNeedsAuth(false);
     reconnect();
   }, [reconnect]);
-  // Load agents and projects once config is ready
+  useEffect(() => onDeadSession(() => setNeedsAuth(true)), []);
+  // Shared with org switching so a signed-in load always beats an earlier
+  // unauthenticated fetch (login-screen org change clears the token first).
+  const orgDataGenerationRef = useRef(createOrgDataGeneration());
+  const applyOrgData = useCallback(async (isCurrent: () => boolean) => {
+    const [agentData, projectData, cronSessionData] = await Promise.all([
+      api.getAgents(),
+      api.getProjects().catch(() => []),
+      api.getCronSessions().catch(() => []),
+    ]);
+    if (!isCurrent()) return;
+    setAgents(agentData);
+    setProjects(projectData);
+    setCronSessions(cronSessionData);
+    if (agentData.length > 0) setActiveAgentId(agentData[0].id);
+  }, []);
+  // Load agents and projects once we can actually authenticate the request.
+  // `needsAuth` is a dependency on purpose: the provider stays mounted behind
+  // the login screen, and a fetch made before the JWT exists would stick an
+  // empty project list on screen until the next full reload.
   useEffect(() => {
-    if (!configReady) return;
-    if (!getApiBaseUrl()) return; // No server configured yet
-    (async () => {
-      try {
-        const [agentData, projectData, cronSessionData] = await Promise.all([
-          api.getAgents(),
-          api.getProjects().catch(() => []),
-          api.getCronSessions().catch(() => []),
-        ]);
-        setAgents(agentData);
-        setProjects(projectData);
-        setCronSessions(cronSessionData);
-        if (agentData.length > 0) setActiveAgentId(agentData[0].id);
-      } catch (err: any) {
-        console.error('Failed to load initial data:', err);
-      }
-    })();
-  }, [configReady]);
+    if (!shouldLoadOrgData({ configReady, needsAuth, hasServerUrl: !!getApiBaseUrl() })) return;
+    const isCurrent = orgDataGenerationRef.current.begin();
+    void applyOrgData(isCurrent).catch((err: any) => {
+      if (isCurrent()) console.error('Failed to load initial data:', err);
+    });
+  }, [applyOrgData, configReady, needsAuth]);
   // Load sessions when agent changes (guarded on configReady)
   useEffect(() => {
     if (!configReady || !activeAgentId || !getApiBaseUrl()) return;
@@ -1778,6 +1811,7 @@ export function AppProvider({ children }: any) {
   }, [activeSessionId]);
   const reconnectRef = useRef(reconnect);
   reconnectRef.current = reconnect;
+  const authProbeGenRef = useRef(0);
   // Resolves once the connection points at the new org; the data reload runs
   // in the background so a hung endpoint can't freeze the caller's UI.
   const switchToOrg = useMemo(
@@ -1817,62 +1851,117 @@ export function AppProvider({ children }: any) {
           // loads it then (and drops anything that slipped in meanwhile).
           hubChatAccountGate.invalidate();
           notificationInboxAccountGate.invalidate();
-          // Reconnect WebSocket to new org
+          // Reconnect WebSocket to new org. The token for this server was
+          // restored before we got here, so the socket is not opened with the
+          // previous org's login.
           reconnectRef.current();
-          // Re-probe the new server's auth mode so notification owner-scoping
-          // uses the right local-bypass. Reset to the secure default (strict)
-          // first so a stale value from the previous server can never leak
-          // owner-only banners if the probe fails.
+          // A server we have never signed into should show the login screen
+          // now. Leaving needsAuth false strands the app on a dead socket
+          // until it is force-quit.
+          const probeUrl = getApiBaseUrl();
+          const probeGen = ++authProbeGenRef.current;
           serverAuthConfiguredRef.current = true;
-          (async () => {
-            const probeUrl = getApiBaseUrl();
-            if (!probeUrl) return;
-            try {
-              const status = await getAuthStatus(probeUrl);
-              serverAuthConfiguredRef.current = Boolean(status?.authConfigured);
-            } catch {
-              /* unreachable — keep the strict default */
-            }
-          })();
+          if (probeUrl) {
+            void getAuthStatus(probeUrl)
+              .then((status) => {
+                if (probeGen !== authProbeGenRef.current) return;
+                serverAuthConfiguredRef.current = Boolean(status?.authConfigured);
+                setNeedsAuth(
+                  shouldGateAuthFromStatus({
+                    status,
+                    isAuthenticated: isAuthenticated(),
+                    needsEmailUpdate: needsEmailUpdate(),
+                  }),
+                );
+              })
+              .catch(() => {
+                /* unreachable — keep the strict default, don't trap login */
+              });
+          }
         },
-        loadData: async (isCurrent) => {
-          const [agentData, projectData, cronSessionData] = await Promise.all([
-            api.getAgents(),
-            api.getProjects().catch(() => []),
-            api.getCronSessions().catch(() => []),
-          ]);
-          if (!isCurrent()) return;
-          setAgents(agentData);
-          setProjects(projectData);
-          setCronSessions(cronSessionData);
-          if (agentData.length > 0) setActiveAgentId(agentData[0].id);
+        loadData: async (isSwitchCurrent) => {
+          const isGenerationCurrent = orgDataGenerationRef.current.begin();
+          await applyOrgData(() => isSwitchCurrent() && isGenerationCurrent());
         },
         onLoadError: (err) => console.error('Failed to load data after org switch:', err),
       }),
-    [],
+    [applyOrgData],
   );
   const handleSwitchOrg = useCallback((orgId: any) => switchToOrg(orgId), [switchToOrg]);
-  const handleNewSession = useCallback(async () => {
-    if (!activeAgentId) return;
-    // A brand-new session always starts at the project default mode. Consult is
-    // a per-session mode opted into via the session-control picker, not a sticky
-    // global — inheriting the previous session's consult flag made tapping `+`
-    // from a Consult session create another Consult session, overriding the
-    // project's default Finalize automation. Matches the web client.
-    const session = await api.createSession(activeAgentId, undefined);
+  const handleNewSession = useCallback(
+    async (agentIdOverride?: string) => {
+      const agentId = agentIdOverride || activeAgentId;
+      if (!agentId) return;
+      const agent = agents.find((a: any) => a.id === agentId);
+      if (agent?.role === 'reviewer') {
+        Alert.alert(
+          'Reviewer',
+          'Reviewer agents only run from the Finalize review phase — sessions cannot be started manually.',
+        );
+        return;
+      }
+      // A brand-new session always starts at the project default mode. Consult is
+      // a per-session mode opted into via the session-control picker, not a sticky
+      // global — inheriting the previous session's consult flag made tapping `+`
+      // from a Consult session create another Consult session, overriding the
+      // project's default Finalize automation. Matches the web client.
+      const session = await api.createSession(agentId, undefined);
+      if (agentId !== activeAgentId) {
+        pendingSessionIdRef.current = session.id;
+        setActiveAgentId(agentId);
+      }
+      setSessions((prev: any) =>
+        prev.some((s: any) => s.id === session.id) ? prev : [session, ...prev],
+      );
+      setActiveSessionId(session.id);
+      setSessionEngine(session.engine || agent?.engine || 'claude-code');
+      setSessionModel(
+        session.model || defaultModelForEngine(session.engine || agent?.engine || 'claude-code'),
+      );
+      setSessionConsultMode(isSessionConsultModeEnabled(session));
+      setSessionReasoningEffort(session.reasoning_effort === 'pro' ? 'pro' : 'high');
+      setMessages([]);
+    },
+    [activeAgentId, agents],
+  );
+  const handleRenameSession = useCallback(async (sessionId: string, name: string) => {
+    const updated = await api.renameSession(sessionId, name);
+    const nextName = updated?.name || name;
     setSessions((prev: any) =>
-      prev.some((s: any) => s.id === session.id) ? prev : [session, ...prev],
+      prev.map((s: any) => (s.id === sessionId ? { ...s, name: nextName } : s)),
     );
-    setActiveSessionId(session.id);
-    const agent = agents.find((a: any) => a.id === activeAgentId);
-    setSessionEngine(session.engine || agent?.engine || 'claude-code');
-    setSessionModel(
-      session.model || defaultModelForEngine(session.engine || agent?.engine || 'claude-code'),
-    );
-    setSessionConsultMode(isSessionConsultModeEnabled(session));
-    setSessionReasoningEffort(session.reasoning_effort === 'pro' ? 'pro' : 'high');
-    setMessages([]);
-  }, [activeAgentId, agents]);
+    return nextName;
+  }, []);
+  const reloadAgentSessions = useCallback(async (agentId: string) => {
+    const [live, archived] = await Promise.all([
+      api.getSessions(agentId),
+      api.getArchivedSessions(agentId).catch(() => []),
+    ]);
+    const sessions = Array.isArray(live) ? live : [];
+    const archivedRows = Array.isArray(archived) ? archived : [];
+    if (agentId === activeAgentIdRef.current) {
+      setSessions(sessions);
+      setArchivedSessions(archivedRows);
+      setChangesReady((prev: any) => ({ ...prev, ...hydrateChangesReady(sessions) }));
+    }
+    return { sessions, archived: archivedRows };
+  }, []);
+  const handleReorderProjects = useCallback((newOrderIds: string[]) => {
+    setProjects((prev: any) => {
+      const byId = new Map(prev.map((p: any) => [p.id, p]));
+      const reordered = newOrderIds.map((id) => byId.get(id)).filter(Boolean);
+      for (const project of prev) {
+        if (!newOrderIds.includes(project.id)) reordered.push(project);
+      }
+      return reordered;
+    });
+    api.reorderProjects(newOrderIds).catch(() => {
+      api
+        .getProjects()
+        .then((data: any) => setProjects(data))
+        .catch(() => {});
+    });
+  }, []);
   // Start a chat session with a SPECIFIC agent (not necessarily the active one)
   // and make it active. The caller navigates to the Chat screen. Used by the
   // Skills screen "Build a skill" button to open the project's Skill Builder
@@ -2086,6 +2175,12 @@ export function AppProvider({ children }: any) {
         delete (next as any)[sessionId];
         return next;
       });
+      setPreviewEventBySession((prev) => {
+        if (!prev[sessionId]) return prev;
+        const next = { ...prev };
+        delete next[sessionId];
+        return next;
+      });
       setSessions((prev: any) => {
         const remaining = prev.filter((s: any) => s.id !== sessionId);
         if (activeSessionIdRef.current === sessionId) {
@@ -2130,17 +2225,14 @@ export function AppProvider({ children }: any) {
       // path for re-inserting into `sessions`, but we mirror here to cover
       // the initiating device on a slow WS.
       setArchivedSessions((prev: any) => prev.filter((s: any) => s.id !== sessionId));
-      if (restored && restored.id) {
-        setSessions((prev: any) => {
-          if (prev.some((s: any) => s.id === restored.id)) return prev;
-          return [restored, ...prev];
-        });
-      }
+      setSessions((prev: any) => withRestoredSession(prev, restored, activeAgentIdRef.current));
+      return restored || {};
     } catch (err: any) {
       Alert.alert(
         'Restore failed',
         err?.message || 'Could not restore this session. Please try again.',
       );
+      return null;
     } finally {
       setRestoringSessionIds((prev: any) => {
         const next = new Set(prev);
@@ -2647,6 +2739,7 @@ export function AppProvider({ children }: any) {
     messageQueues,
     eventsByMessage,
     browserScreensBySession,
+    previewEventBySession,
     artifactReloadBySession,
     presentedArtifactBySession,
     acknowledgePresentedArtifact,
@@ -2661,6 +2754,11 @@ export function AppProvider({ children }: any) {
     acknowledgeKanbanRefresh,
     skillImprovementRefreshKey,
     skillImprovementPendingTotal,
+    skillImprovementCounts,
+    activeReviews,
+    handleRenameSession,
+    reloadAgentSessions,
+    handleReorderProjects,
     changesReady,
     dismissChangesReady,
     // Finalize Code Changes (card 2bce78c2)

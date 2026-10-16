@@ -1109,6 +1109,34 @@ describe('api PR preview helpers — URL + method + body parity with web client'
     expect(url).toBe('https://example.test/api/projects/p1/pulls/7/preview/state');
     expect(init?.method ?? 'GET').toBe('GET');
   });
+  it('startSessionPreview → POST /sessions/:id/preview/start', async () => {
+    await api.startSessionPreview('s1', { reason: 'phone' });
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/sessions/s1/preview/start');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ reason: 'phone' });
+  });
+  it('getSessionPreviewState and mintSessionPreviewTicket hit the session preview routes', async () => {
+    await api.getSessionPreviewState('s1');
+    expect(lastCall()[0]).toBe('https://example.test/api/sessions/s1/preview/state');
+    await api.mintSessionPreviewTicket('s1');
+    const [url, init] = mockFetch.mock.calls.at(-1);
+    expect(url).toBe('https://example.test/api/sessions/s1/preview/ticket');
+    expect(init.method).toBe('POST');
+  });
+  it('lists Google Chat spaces and posts a message', async () => {
+    await api.listGoogleChatSpaces({ pageSize: 50 });
+    expect(lastCall()[0]).toBe('https://example.test/api/google/chat/spaces?pageSize=50');
+    await api.listGoogleChatMessages('AAA', { pageSize: 50, order: 'desc' });
+    expect(mockFetch.mock.calls.at(-1)[0]).toBe(
+      'https://example.test/api/google/chat/spaces/AAA/messages?pageSize=50&order=desc',
+    );
+    await api.sendGoogleChatMessage('AAA', { text: 'hi' });
+    const [url, init] = mockFetch.mock.calls.at(-1);
+    expect(url).toBe('https://example.test/api/google/chat/spaces/AAA/messages');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ text: 'hi' });
+  });
   it('errors keep the HTTP status and server code (web parity)', async () => {
     mockFetch.mockResolvedValue({
       ok: false,

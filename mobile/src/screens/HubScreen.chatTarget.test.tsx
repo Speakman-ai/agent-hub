@@ -69,6 +69,23 @@ const tab = (r: any, id: string) =>
   });
 const shownChat = (r: any) => JSON.stringify(r.toJSON()).match(/chat:([^"]+)/)?.[1] ?? null;
 
+describe('HubScreen tab row', () => {
+  it('keeps the pane tabs at chip height instead of stretching down the screen', async () => {
+    let r: any;
+    await act(async () => {
+      r = TestRenderer.create(
+        React.createElement(HubScreen, {
+          navigation: { setParams: vi.fn() },
+          route: { params: {} },
+        }),
+      );
+    });
+    const bar = r.root.find((n: any) => n.props?.testID === 'hub-tabs');
+    expect(bar.props.style).toMatchObject({ flexGrow: 0, flexShrink: 0 });
+    expect(bar.props.contentContainerStyle).toMatchObject({ alignItems: 'center' });
+  });
+});
+
 describe('HubScreen retained chat channel', () => {
   it('drops the retained channel when the account changes while Chat is closed', async () => {
     api.hubChat.channels.mockResolvedValue({ channels: [channel], viewerUserId: 'u1' });

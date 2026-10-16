@@ -5,7 +5,7 @@
  */
 import { createRoot } from 'react-dom/client';
 import GoogleChatAttachments from '../components/GoogleChatAttachments';
-import type { ChatAttachment } from '../utils/googleChat';
+import type { ChatAttachment } from '@shared/utils/googleChat';
 
 export function mount(attachments: ChatAttachment[]) {
   const host = document.createElement('div');

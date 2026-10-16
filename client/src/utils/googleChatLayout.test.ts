@@ -7,7 +7,7 @@ import {
   layoutChatMessages,
   newestTopLevelTime,
 } from './googleChatLayout';
-import type { ChatMessage } from './googleChat';
+import type { ChatMessage } from '@shared/utils/googleChat';
 
 function m(over: Partial<ChatMessage>): ChatMessage {
   return {

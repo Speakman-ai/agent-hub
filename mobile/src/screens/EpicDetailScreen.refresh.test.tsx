@@ -48,6 +48,7 @@ vi.mock('../utils/auth', () => ({
   getAuthStatus: vi.fn(),
   getAuthRecord: () => null,
   needsEmailUpdate: () => false,
+  onDeadSession: () => () => {},
 }));
 vi.mock('../utils/setupState', () => ({
   loadSetupDismissed: vi.fn(),

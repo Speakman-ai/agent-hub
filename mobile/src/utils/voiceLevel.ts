@@ -24,7 +24,7 @@ export interface VoiceLevelStore {
   subscribe: (listener: () => void) => () => void;
   /** Starts metering a new take. */
   begin: (now: number) => void;
-  /** Feeds one expo-av metering reading (dBFS). */
+  /** Feeds one expo-audio metering reading (dBFS). */
   push: (dbfs: number | undefined, now: number) => void;
   reset: () => void;
 }
@@ -50,7 +50,7 @@ export function createVoiceLevelStore(): VoiceLevelStore {
     },
     push: (dbfs, now) => {
       if (!tracker) return;
-      // expo-av omits metering when the platform has no reading; count that as silence.
+      // expo-audio omits metering when the platform has no reading; count that as silence.
       const db = typeof dbfs === 'number' && Number.isFinite(dbfs) ? dbfs : -Infinity;
       tracker = trackLevel(tracker, db, now);
       set({ level: dbfsToMeter(db), warning: silenceWarning(tracker, now) });

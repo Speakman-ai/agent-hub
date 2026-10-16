@@ -53,6 +53,7 @@ import ReplaysScreen from './src/screens/ReplaysScreen';
 import AwsProfilesScreen from './src/screens/AwsProfilesScreen';
 import InfrastructureScreen from './src/screens/InfrastructureScreen';
 import ReviewerScreen from './src/screens/ReviewerScreen';
+import BackgroundAgentsScreen from './src/screens/BackgroundAgentsScreen';
 import EpicsScreen from './src/screens/EpicsScreen';
 import EpicDetailScreen from './src/screens/EpicDetailScreen';
 import RepositoryScreen from './src/screens/RepositoryScreen';
@@ -156,6 +157,7 @@ function AppContent() {
       }, 50);
     },
     closeDrawer: () => closeSidebar(),
+    getCurrentRoute: () => navigationRef.current?.getCurrentRoute?.() ?? null,
   }).current;
   // Keep closeSidebar reference current
   navigation.closeDrawer = closeSidebar;
@@ -276,6 +278,7 @@ function AppContent() {
             <Stack.Screen name="AwsProfiles" component={AwsProfilesScreen} />
             <Stack.Screen name="Infrastructure" component={InfrastructureScreen} />
             <Stack.Screen name="Reviewer" component={ReviewerScreen} />
+            <Stack.Screen name="BackgroundAgents" component={BackgroundAgentsScreen} />
             <Stack.Screen name="Epics" component={EpicsScreen} />
             <Stack.Screen name="EpicDetail" component={EpicDetailScreen} />
             <Stack.Screen name="Repository" component={RepositoryScreen} />
@@ -332,7 +335,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   overlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(0,0,0,0.5)',
     zIndex: 10,
     elevation: 10,

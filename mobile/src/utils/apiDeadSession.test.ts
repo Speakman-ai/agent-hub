@@ -11,16 +11,20 @@ vi.mock('./uploadFile', () => ({
   uploadFile: vi.fn(async (ref: any) => ({ __mockedWith: ref })),
 }));
 
-const clearToken = vi.fn(async () => {});
+const clearToken = vi.fn(async (_token?: string) => true);
+const notifyDeadSession = vi.fn();
 vi.mock('./auth', () => ({
   getToken: () => 'jwt-token',
-  clearToken: () => clearToken(),
+  clearToken: (token?: string) => clearToken(token),
+  tokenBelongsTo: () => true,
+  notifyDeadSession: () => notifyDeadSession(),
 }));
 
 const { api } = await import('./api.js');
 
 beforeEach(() => {
-  clearToken.mockReset();
+  clearToken.mockReset().mockResolvedValue(true);
+  notifyDeadSession.mockReset();
 });
 
 function mockFetchOnce(status: number, body: unknown) {
@@ -39,6 +43,23 @@ describe('mobile fetchJSON dead-session handling', () => {
     });
     await expect(api.getAgents()).rejects.toThrow(/403/);
     expect(clearToken).toHaveBeenCalledTimes(1);
+    expect(notifyDeadSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears only the token the request carried', async () => {
+    mockFetchOnce(401, { error: 'Token is no longer valid.', code: 'invalid_session' });
+    await expect(api.getAgents()).rejects.toThrow(/401/);
+    expect(clearToken).toHaveBeenCalledWith('jwt-token');
+  });
+
+  // Another server's login was activated while the request was in flight, so
+  // the sent token is no longer active: nothing is cleared and the login gate
+  // stays down.
+  it('does not raise the login gate when the sent token is no longer active', async () => {
+    clearToken.mockResolvedValue(false);
+    mockFetchOnce(401, { error: 'Token is no longer valid.', code: 'invalid_session' });
+    await expect(api.getAgents()).rejects.toThrow(/401/);
+    expect(notifyDeadSession).not.toHaveBeenCalled();
   });
 
   it('leaves an ordinary permission 403 alone', async () => {
@@ -51,6 +72,7 @@ describe('mobile fetchJSON dead-session handling', () => {
     mockFetchOnce(401, { error: 'Token is no longer valid.', code: 'invalid_session' });
     await expect(api.getAgents()).rejects.toThrow(/401/);
     expect(clearToken).toHaveBeenCalledTimes(1);
+    expect(notifyDeadSession).toHaveBeenCalledTimes(1);
   });
 
   // An unconnected integration answering 401 says nothing about the

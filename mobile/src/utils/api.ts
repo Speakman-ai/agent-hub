@@ -4,7 +4,7 @@ import { getApiBaseUrl, getAuthHeaders } from './config';
 import { buildNotesListUrl, buildNoteUrl } from './notesUrl';
 import { uploadFile as uploadFileImpl } from './uploadFile';
 import { transcribeAudio as transcribeAudioImpl } from './transcribeAudio';
-import { getToken as getJwt, clearToken } from './auth';
+import { getToken as getJwt, clearToken, notifyDeadSession, tokenBelongsTo } from './auth';
 import { normalizeSessionMessagesResponse } from '@shared/utils/sessionMessagesResponse';
 import { isDeadSessionResponse } from '@shared/utils/authErrorCodes';
 import type { SessionContextUsage } from '@shared/utils/contextUsage';
@@ -42,6 +42,7 @@ async function fetchJSON(url: any, options: any = {}) {
   const base = getApiBaseUrl();
   if (!base) throw new Error('No server configured');
   const authHeaders = getAuthHeaders();
+  const sentToken = getJwt();
   const res = await fetch(`${base}${url}`, {
     ...options,
     headers: { 'Content-Type': 'application/json', ...authHeaders, ...(options.headers || {}) },
@@ -63,8 +64,13 @@ async function fetchJSON(url: any, options: any = {}) {
     // caller hasn't connected) and ordinary permission 403s are left
     // alone — neither means the cached credentials are bad.
     const deadSession = isDeadSessionResponse(res.status, errBody?.code);
-    if (deadSession && getJwt()) {
-      await clearToken().catch(() => {});
+    // A 401 from the server we just left must not wipe the login we just
+    // restored for the server we switched to.
+    // Only the token this request carried is cleared: a login activated while
+    // it was in flight stays signed in and keeps the gate down.
+    if (deadSession && sentToken && tokenBelongsTo(base)) {
+      const cleared = await clearToken(sentToken).catch(() => false);
+      if (cleared) notifyDeadSession();
     }
     // Keep the HTTP status and the server's machine-readable code on the
     // error (web parity) so callers can branch without parsing the message.
@@ -153,13 +159,8 @@ export const api = {
     fetchJSON(`/sessions/${sessionId}/restore`, { method: 'POST' }),
   clearAllSessions: (agentId: any) =>
     fetchJSON(`/agents/${agentId}/sessions`, { method: 'DELETE' }),
-  // NOTE: the bulk-clear actions (clearAllSessions / clearPushedSessions) are
-  // web-only — the mobile drawer has no bulk-clear UI surface, so these
-  // helpers currently have no mobile call site. They're kept in lockstep with
-  // client/src/utils/api.js for parity so a future mobile bulk-clear screen can
-  // use them directly. `clearPushedSessions` (renamed from the former
-  // `clearInactiveSessions`) hits the pushed-only archive endpoint;
-  // `clearMergedSessions` is its merged-only companion.
+  // Bulk-clear companions of the sidebar's "Clear pushed" / trash actions.
+  // `clearMergedSessions` archives sessions whose work has merged.
   clearPushedSessions: (agentId: any) =>
     fetchJSON(`/agents/${agentId}/sessions/pushed`, { method: 'DELETE' }),
   clearMergedSessions: (agentId: any) =>
@@ -365,6 +366,20 @@ export const api = {
     fetchJSON('/projects/provision', { method: 'POST', body: JSON.stringify(data) }),
   updateProject: (projectId: any, data: any) =>
     fetchJSON(`/projects/${projectId}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  reorderProjects: (projectIds: string[]) =>
+    fetchJSON('/projects/order', {
+      method: 'PUT',
+      body: JSON.stringify({ projectIds }),
+    }),
+  runBackgroundAgent: (projectId: string, agentId: string) =>
+    fetchJSON(
+      `/projects/${encodeURIComponent(projectId)}/background-agents/${encodeURIComponent(agentId)}/run`,
+      { method: 'POST' },
+    ),
+  getBackgroundAgentLastRun: (projectId: string, agentId: string) =>
+    fetchJSON(
+      `/projects/${encodeURIComponent(projectId)}/background-agents/${encodeURIComponent(agentId)}/last-run`,
+    ),
   // Per-project email/deployment logo override (web parity).
   getProjectEmailLogo: (projectId: string) => fetchJSON(`/projects/${projectId}/email-logo`),
   updateProjectEmailLogo: (projectId: string, dataUrl: string) =>
@@ -1539,6 +1554,38 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ revision }),
     }),
+  listGoogleChatSpaces: ({
+    pageSize,
+    pageToken,
+  }: { pageSize?: number; pageToken?: string } = {}) => {
+    const params = new URLSearchParams();
+    if (pageSize) params.set('pageSize', String(pageSize));
+    if (pageToken) params.set('pageToken', pageToken);
+    const qs = params.toString();
+    return fetchJSON(`/google/chat/spaces${qs ? `?${qs}` : ''}`);
+  },
+  listGoogleChatMessages: (
+    spaceId: string,
+    {
+      pageSize,
+      pageToken,
+      order,
+    }: { pageSize?: number; pageToken?: string; order?: 'asc' | 'desc' } = {},
+  ) => {
+    const params = new URLSearchParams();
+    if (pageSize) params.set('pageSize', String(pageSize));
+    if (pageToken) params.set('pageToken', pageToken);
+    if (order) params.set('order', order);
+    const qs = params.toString();
+    return fetchJSON(
+      `/google/chat/spaces/${encodeURIComponent(spaceId)}/messages${qs ? `?${qs}` : ''}`,
+    );
+  },
+  sendGoogleChatMessage: (spaceId: string, data: { text?: string; threadName?: string }) =>
+    fetchJSON(`/google/chat/spaces/${encodeURIComponent(spaceId)}/messages`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
   getGoogleChatSettings: () => fetchJSON('/google/chat/settings'),
   setGoogleChatSettings: (data: { autoSendAgentReplies: boolean }) =>
     fetchJSON('/google/chat/settings', { method: 'PUT', body: JSON.stringify(data) }),
@@ -1982,6 +2029,15 @@ export const api = {
     fetchJSON(`/projects/${projectId}/pulls/${number}/preview/stop`, { method: 'POST' }),
   getPullPreviewState: (projectId: any, number: any) =>
     fetchJSON(`/projects/${projectId}/pulls/${number}/preview/state`),
+  /** Boot this session's dev preview (the running app, not the agent browser). */
+  startSessionPreview: (sessionId: string, body: { route?: string; reason?: string } = {}) =>
+    fetchJSON(`/sessions/${sessionId}/preview/start`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  getSessionPreviewState: (sessionId: string) => fetchJSON(`/sessions/${sessionId}/preview/state`),
+  mintSessionPreviewTicket: (sessionId: string) =>
+    fetchJSON(`/sessions/${sessionId}/preview/ticket`, { method: 'POST' }),
   // PR environments of a project (Settings) and their cost controls.
   getProjectPrEnvironments: (projectId: string) =>
     fetchJSON(`/projects/${projectId}/pr-environments`),

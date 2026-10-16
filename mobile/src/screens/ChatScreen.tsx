@@ -32,6 +32,8 @@ import SessionChatDraftsPanel from '../components/SessionChatDraftsPanel';
 import SessionTimelinePanel from '../components/SessionTimelinePanel';
 import MobileTerminalPane from '../components/MobileTerminalPane';
 import MobileBrowserPane from '../components/MobileBrowserPane';
+import MobilePreviewPane from '../components/MobilePreviewPane';
+import PreviewChatLayout from '../components/PreviewChatLayout';
 import MobileContextUsagePanel from '../components/MobileContextUsagePanel';
 import {
   ChevronDown,
@@ -39,6 +41,7 @@ import {
   Globe,
   History,
   MessageCircleQuestion,
+  Monitor,
   SquareTerminal,
 } from 'lucide-react-native';
 import SessionSideBarSheet from '../components/SessionSideBarSheet';
@@ -95,6 +98,7 @@ export default function ChatScreen({
     messageQueues,
     eventsByMessage,
     browserScreensBySession,
+    previewEventBySession,
     handleDequeue,
     handleInterruptQueuedMessage,
     handleEditQueuedMessage,
@@ -128,6 +132,8 @@ export default function ChatScreen({
   const [showSwitcher, setShowSwitcher] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
   const [showBrowser, setShowBrowser] = useState(false);
+  const [showPreview, setShowPreview] = useState(false);
+  const [previewFullscreen, setPreviewFullscreen] = useState(false);
   useEffect(() => {
     if (browserPaneRequest && browserPaneRequest.sessionId === activeSessionId) {
       setShowBrowser(true);
@@ -543,6 +549,23 @@ export default function ChatScreen({
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
+                testID="toggle-mobile-preview"
+                accessibilityRole="button"
+                accessibilityState={{ expanded: showPreview }}
+                onPress={() => {
+                  setShowPreview((open) => {
+                    if (open) setPreviewFullscreen(false);
+                    return !open;
+                  });
+                }}
+                style={[styles.actionRow, showPreview && styles.actionRowActive]}
+              >
+                <Monitor size={14} color={showPreview ? colors.sky300 : colors.gray300} />
+                <Text style={styles.terminalToggleText}>
+                  {showPreview ? 'Hide preview' : 'Preview'}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
                 testID="toggle-mobile-sidebar"
                 accessibilityRole="button"
                 accessibilityState={{ expanded: showSideBar }}
@@ -624,98 +647,118 @@ export default function ChatScreen({
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         keyboardVerticalOffset={0}
       >
-        {/* Messages */}
-        <FlatList
-          ref={flatListRef}
-          data={listData}
-          renderItem={renderItem}
-          keyExtractor={(item: any) => item.key}
-          ListEmptyComponent={!thinking && !streamingContent ? renderEmpty : null}
-          contentContainerStyle={
-            listData.length === 0 ? styles.emptyListContent : styles.listContent
-          }
-          showsVerticalScrollIndicator={false}
-          onScrollToIndexFailed={() => undefined}
-          onContentSizeChange={() => {
-            if (listData.length > 0) {
-              flatListRef.current?.scrollToEnd({ animated: false });
-            }
-          }}
-        />
-
-        {listData.length > 0 && configuringAutopilot && activeSessionId ? (
-          <View style={{ paddingHorizontal: 16, paddingBottom: 8 }}>
-            <AutopilotSetupPrompt
-              key={activeSessionId}
-              mainlineAvailable={activeSession?.can_autopilot_mainline === true}
-              sessionId={activeSessionId}
-              onStarted={() => {
-                void reloadMessages();
-              }}
-              onError={(message) => Alert.alert('Autopilot', message)}
-            />
-          </View>
-        ) : null}
-        <SessionApprovalCard sessionId={activeSessionId ?? null} />
-        {/* Input */}
-        <MessageInput
-          onSend={sendChat}
-          onCancel={handleCancel}
-          disabled={
-            !activeAgentId ||
-            !connected ||
-            isProcessing ||
-            hubComposerLocked ||
-            configuringAutopilot
-          }
-          isProcessing={isProcessing}
-          agentColor={activeAgent?.color}
-          skills={skills}
-          queueLength={(messageQueues[activeSessionId] || []).length}
-          consultMode={consultLike}
-          consultHint={
-            hubSession ? 'Hub assistant — org & account help, no code ship or Finalize' : null
-          }
-          toolbarStart={
-            hubSession ? (
-              <TouchableOpacity
-                testID="hub-model-picker"
-                onPress={() => setShowHubModelPicker(true)}
-                style={styles.hubModelChip}
-                accessibilityLabel="Hub model"
-              >
-                <Text style={styles.hubModelLabel} numberOfLines={1}>
-                  {sessionModel || 'Model'}
-                </Text>
-              </TouchableOpacity>
+        <PreviewChatLayout
+          fullscreen={previewFullscreen}
+          preview={
+            showPreview && activeSessionId && !hubSession ? (
+              <MobilePreviewPane
+                sessionId={activeSessionId}
+                event={previewEventBySession?.[activeSessionId]}
+                fullscreen={previewFullscreen}
+                onToggleFullscreen={() => setPreviewFullscreen((v) => !v)}
+                onClose={() => {
+                  setShowPreview(false);
+                  setPreviewFullscreen(false);
+                }}
+              />
             ) : null
           }
-        />
-        {hubSession ? (
-          <SessionEngineModelSheet
-            visible={showHubModelPicker}
-            onClose={() => setShowHubModelPicker(false)}
-            modelConfig={modelConfig}
-            engine={sessionEngine}
-            model={sessionModel}
-            reasoningEffort={sessionReasoningEffort}
-            onSelectEngine={(engine: string) => {
-              // Never fall back to the previous engine's model — a cross-engine
-              // model is invalid for `engine` and the server would 400 it. Skip
-              // the persist when the new engine has no resolvable default.
-              const next =
-                modelConfig?.engineDefaultModels?.[engine] ||
-                modelConfig?.engineValidModels?.[engine]?.[0] ||
-                '';
-              if (!next) return;
-              void persistHubModel(engine, next);
-            }}
-            onSelectModel={(model: string) => {
-              void persistHubModel(sessionEngine, model);
-            }}
-            onSelectReasoningEffort={handleReasoningEffortChange}
-          />
-        ) : null}
+        >
+          <>
+            {/* Messages */}
+            <FlatList
+              ref={flatListRef}
+              data={listData}
+              renderItem={renderItem}
+              keyExtractor={(item: any) => item.key}
+              ListEmptyComponent={!thinking && !streamingContent ? renderEmpty : null}
+              contentContainerStyle={
+                listData.length === 0 ? styles.emptyListContent : styles.listContent
+              }
+              showsVerticalScrollIndicator={false}
+              onScrollToIndexFailed={() => undefined}
+              onContentSizeChange={() => {
+                if (listData.length > 0) {
+                  flatListRef.current?.scrollToEnd({ animated: false });
+                }
+              }}
+            />
+
+            {listData.length > 0 && configuringAutopilot && activeSessionId ? (
+              <View style={{ paddingHorizontal: 16, paddingBottom: 8 }}>
+                <AutopilotSetupPrompt
+                  key={activeSessionId}
+                  mainlineAvailable={activeSession?.can_autopilot_mainline === true}
+                  sessionId={activeSessionId}
+                  onStarted={() => {
+                    void reloadMessages();
+                  }}
+                  onError={(message) => Alert.alert('Autopilot', message)}
+                />
+              </View>
+            ) : null}
+            <SessionApprovalCard sessionId={activeSessionId ?? null} />
+            {/* Input */}
+            <MessageInput
+              onSend={sendChat}
+              onCancel={handleCancel}
+              disabled={
+                !activeAgentId ||
+                !connected ||
+                isProcessing ||
+                hubComposerLocked ||
+                configuringAutopilot
+              }
+              isProcessing={isProcessing}
+              agentColor={activeAgent?.color}
+              skills={skills}
+              queueLength={(messageQueues[activeSessionId] || []).length}
+              consultMode={consultLike}
+              consultHint={
+                hubSession ? 'Hub assistant — org & account help, no code ship or Finalize' : null
+              }
+              toolbarStart={
+                hubSession ? (
+                  <TouchableOpacity
+                    testID="hub-model-picker"
+                    onPress={() => setShowHubModelPicker(true)}
+                    style={styles.hubModelChip}
+                    accessibilityLabel="Hub model"
+                  >
+                    <Text style={styles.hubModelLabel} numberOfLines={1}>
+                      {sessionModel || 'Model'}
+                    </Text>
+                  </TouchableOpacity>
+                ) : null
+              }
+            />
+            {hubSession ? (
+              <SessionEngineModelSheet
+                visible={showHubModelPicker}
+                onClose={() => setShowHubModelPicker(false)}
+                modelConfig={modelConfig}
+                engine={sessionEngine}
+                model={sessionModel}
+                reasoningEffort={sessionReasoningEffort}
+                onSelectEngine={(engine: string) => {
+                  // Never fall back to the previous engine's model — a cross-engine
+                  // model is invalid for `engine` and the server would 400 it. Skip
+                  // the persist when the new engine has no resolvable default.
+                  const next =
+                    modelConfig?.engineDefaultModels?.[engine] ||
+                    modelConfig?.engineValidModels?.[engine]?.[0] ||
+                    '';
+                  if (!next) return;
+                  void persistHubModel(engine, next);
+                }}
+                onSelectModel={(model: string) => {
+                  void persistHubModel(sessionEngine, model);
+                }}
+                onSelectReasoningEffort={handleReasoningEffortChange}
+              />
+            ) : null}
+          </>
+        </PreviewChatLayout>
       </KeyboardAvoidingView>
 
       {/* Agent Switcher Modal */}

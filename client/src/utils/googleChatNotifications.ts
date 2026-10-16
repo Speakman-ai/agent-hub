@@ -1,5 +1,10 @@
 import { compareRfc3339 } from '@shared/utils/rfc3339';
-import { chatSenderLabel, chatSpaceLabel, type ChatMessage, type ChatSpace } from './googleChat';
+import {
+  chatSenderLabel,
+  chatSpaceLabel,
+  type ChatMessage,
+  type ChatSpace,
+} from '@shared/utils/googleChat';
 import { spaceIdFromName } from './googleChatPush';
 
 /**

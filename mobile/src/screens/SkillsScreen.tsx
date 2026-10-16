@@ -10,7 +10,7 @@ import {
   Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import Markdown from 'react-native-markdown-display';
 import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
@@ -820,8 +820,12 @@ export default function SkillsScreen() {
     handleOpenHandoffSession,
   } = useApp();
   const navigation = useNavigation<any>();
+  const route = useRoute<any>();
+  const routedProjectId = route.params?.projectId || null;
   const visibleProjects = useMemo(() => (projects || []).filter((p: any) => p?.id), [projects]);
-  const [activeProjectId, setActiveProjectId] = useState(visibleProjects[0]?.id || null);
+  const [activeProjectId, setActiveProjectId] = useState(
+    routedProjectId || visibleProjects[0]?.id || null,
+  );
   // Live ref so async completions (read effect AND the toggle callback) can drop
   // their result when the active project changed while the request was pending.
   const activeProjectIdRef = useLiveRef(activeProjectId);
@@ -854,6 +858,9 @@ export default function SkillsScreen() {
   const defaultSkillIds =
     defaultSkills.projectId === activeProjectId ? defaultSkills.ids : EMPTY_STRING_ARRAY;
   const canEditDefaults = hasRole('Admin') || !getUserRole();
+  useEffect(() => {
+    if (routedProjectId) setActiveProjectId(routedProjectId);
+  }, [routedProjectId]);
   useEffect(() => {
     if (!activeProjectId && visibleProjects[0]?.id) setActiveProjectId(visibleProjects[0].id);
   }, [activeProjectId, visibleProjects]);

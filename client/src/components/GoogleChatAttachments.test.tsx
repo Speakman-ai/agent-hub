@@ -15,7 +15,7 @@ vi.mock('./PdfPages', () => ({
 
 import GoogleChatAttachments from './GoogleChatAttachments';
 import { api } from '../utils/api';
-import type { ChatAttachment } from '../utils/googleChat';
+import type { ChatAttachment } from '@shared/utils/googleChat';
 
 const fetchAttachment = api.fetchGoogleChatAttachment as unknown as ReturnType<typeof vi.fn>;
 

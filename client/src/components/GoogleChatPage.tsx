@@ -66,7 +66,7 @@ import {
   LINKS_UNKNOWN_WARNING,
   type SpaceLinks,
   chatSetupHelpLink,
-} from '../utils/googleChat';
+} from '@shared/utils/googleChat';
 import { isSubmitEnter } from '../utils/keyboard';
 import { createKeyedQueue } from '../utils/keyedQueue';
 import {

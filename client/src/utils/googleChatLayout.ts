@@ -1,7 +1,7 @@
 import { compareRfc3339 } from '@shared/utils/rfc3339';
 import { chatDayLabel } from '@shared/utils/hubChat';
 import { parseDate } from './time';
-import { chatSenderLabel, type ChatMessage, type ChatUser } from './googleChat';
+import { chatSenderLabel, type ChatMessage, type ChatUser } from '@shared/utils/googleChat';
 
 export { chatDayLabel };
 

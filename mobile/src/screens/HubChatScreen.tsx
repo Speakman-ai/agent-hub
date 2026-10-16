@@ -70,6 +70,7 @@ import HubChatSearch from '../components/HubChatSearch';
 import type { HubChatSearchResult } from '@shared/utils/hubChatSearch';
 import { readChatTriggerCard } from '@shared/utils/chatTriggers';
 import { colors } from '../theme/colors';
+import GoogleChatPane from './GoogleChatScreen';
 
 type Side = 'hub' | 'google';
 
@@ -193,9 +194,7 @@ export default function HubChatScreen({
         />
       </View>
       {side === 'google' ? (
-        <View style={styles.center}>
-          <Text style={styles.muted}>Google Chat is available in the web app.</Text>
-        </View>
+        <GoogleChatPane />
       ) : channelId ? (
         <ChannelView
           key={`${account}:${channelId}`}

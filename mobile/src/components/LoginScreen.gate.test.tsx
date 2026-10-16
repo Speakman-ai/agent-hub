@@ -50,12 +50,15 @@ vi.mock('../utils/auth', () => ({
   getAuthStatus: (...a: any[]) => auth.getAuthStatus(...a),
   isAuthenticated: () => auth.isAuthenticated(),
   login: (...a: any[]) => auth.login(...a),
-  clearToken: (...a: any[]) => auth.clearToken(...a),
+  discardStaleLogin: vi.fn(),
   needsEmailUpdate: () => auth.needsEmailUpdate(),
   setup: vi.fn(),
   updateEmail: vi.fn(),
 }));
-vi.mock('../utils/config', () => ({ getApiBaseUrl: vi.fn(() => 'https://hub.example.com/api') }));
+vi.mock('../utils/config', () => ({
+  getApiBaseUrl: vi.fn(() => 'https://hub.example.com/api'),
+  getServerBaseUrl: vi.fn(() => 'https://hub.example.com'),
+}));
 
 const { default: LoginScreen, resolveProbedLoginMode } = await import('./LoginScreen');
 

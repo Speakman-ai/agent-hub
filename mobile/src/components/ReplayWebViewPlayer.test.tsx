@@ -7,7 +7,7 @@ vi.mock('react-native', () => ({
   ScrollView: ({ children }: any) => <div>{children}</div>,
   StyleSheet: {
     create: (s: any) => s,
-    absoluteFillObject: {},
+    absoluteFill: {},
   },
   Text: 'Text',
   TouchableOpacity: ({ children }: any) => <button>{children}</button>,

@@ -1,6 +1,6 @@
 /**
  * Live input-level metering for voice recordings, shared by the web recorder
- * (Web Audio AnalyserNode) and mobile (expo-av metering, already in dBFS).
+ * (Web Audio AnalyserNode) and mobile (expo-audio metering, already in dBFS).
  *
  * The point is to show the user, while recording, whether audio is actually
  * arriving, so a take that is capturing silence is caught before Stop.

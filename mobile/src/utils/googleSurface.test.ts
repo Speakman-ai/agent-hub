@@ -12,7 +12,12 @@ import {
   SHEETS_READONLY_SCOPE,
   SHEETS_SCOPE,
   SHEETS_SURFACE_SCOPES,
+  CHAT_MESSAGES_CREATE_SCOPE,
+  CHAT_MESSAGES_READONLY_SCOPE,
+  CHAT_SPACES_READONLY_SCOPE,
   hasCalendarScope,
+  hasChatReadScope,
+  hasChatSendScope,
   hasDriveFileScope,
   hasGmailReadScope,
   hasGmailSendScope,
@@ -90,6 +95,17 @@ describe('googleSurface (mobile)', () => {
     expect(hasDriveFileScope({ grantedScopes: [DRIVE_FILE_SCOPE] })).toBe(true);
     expect(hasDriveFileScope({ grantedScopes: [SHEETS_SCOPE] })).toBe(false);
     expect(hasDriveFileScope(null)).toBe(false);
+  });
+
+  it('hasChatReadScope needs spaces and messages; send accepts create or full messages', () => {
+    expect(
+      hasChatReadScope({
+        grantedScopes: [CHAT_SPACES_READONLY_SCOPE, CHAT_MESSAGES_READONLY_SCOPE],
+      }),
+    ).toBe(true);
+    expect(hasChatReadScope({ grantedScopes: [CHAT_SPACES_READONLY_SCOPE] })).toBe(false);
+    expect(hasChatSendScope({ grantedScopes: [CHAT_MESSAGES_CREATE_SCOPE] })).toBe(true);
+    expect(hasChatSendScope({ grantedScopes: [CHAT_MESSAGES_READONLY_SCOPE] })).toBe(false);
   });
 
   it('DRIVE_SURFACE_SCOPES requests only the non-restricted drive.file scope', () => {

@@ -1420,23 +1420,6 @@ describe('unpatched advisories (containment guards)', () => {
       flags: { optional: true },
       why: 'puppeteer-core pins @puppeteer/browsers at exactly 2.3.0 (an override to the 3.x line that drops extract-zip breaks that pin), 22.15.0 is the top of the 22.x line stagehand accepts, and the only clean escape is stagehand 3 -> 4, which replaces the whole browser backend',
     },
-    // Two advisories, same shape: an infinite loop in a format parser (JXL/HEIF
-    // and ICNS). Vulnerable range `<= 2.0.2`; the fix exists only on the 2.x
-    // line (2.0.3). 2.x removed file-path input from `imageSize()`, and the
-    // metro@0.83 that Expo SDK 54 pins calls it with a path
-    // (`metro/src/Assets.js` getAssetData), so an override would break asset
-    // bundling. metro@0.87.1 drops image-size entirely, but reaching it means an
-    // Expo SDK upgrade.
-    {
-      workspace: 'mobile',
-      pkg: 'image-size',
-      advisory: ['GHSA-5p2g-fcmc-qvqq', 'GHSA-w3rx-r6r6-pgpr'],
-      vulnerableRange: '<= 2.0.2',
-      dependents: ['metro'],
-      // Metro is the bundler: it measures image assets committed to this repo
-      // at build time and never runs inside the shipped app.
-      why: 'the only patched line is image-size 2.x, which no longer accepts a file path, and metro@0.83 (pinned by Expo SDK 54, range `^1.0.2`) passes one; the clean escape is an Expo SDK bump that brings metro >= 0.87.1, which drops image-size',
-    },
     // RSA PKCS#1 v1.5 verification accepts extra nested DigestAlgorithm
     // elements (signature forgery). Vulnerable `<= 1.4.0`; 1.4.0 is the newest
     // node-forge release and `first_patched_version` is null.
@@ -1510,14 +1493,6 @@ describe('unpatched advisories (containment guards)', () => {
       why: 'no sprintf-js release fixes it; argparse 1.x only formats its own hardcoded help/error templates, so no caller-controlled format string reaches it',
     },
     {
-      workspace: 'mobile',
-      pkg: 'sprintf-js',
-      advisory: ['GHSA-hp3w-g68c-fv3c'],
-      vulnerableRange: '<= 1.1.3',
-      dependents: ['argparse'],
-      why: 'no sprintf-js release fixes it; argparse 1.x (via the js-yaml 3 that jest coverage config loading uses) only formats its own hardcoded templates',
-    },
-    {
       workspace: 'root',
       pkg: 'sprintf-js',
       advisory: ['GHSA-hp3w-g68c-fv3c'],
@@ -1557,6 +1532,39 @@ describe('unpatched advisories (containment guards)', () => {
       why: 'the fix is on katex 0.18 and mermaid 11 declares ^0.16.x (only the mermaid 12 major reaches 0.18); the advisory is low severity and needs a pre-existing prototype pollution to matter, so forcing 0.18 under mermaid is the riskier change',
     },
   ];
+
+  // Unfixed advisories a workspace used to carry under a containment note and
+  // has since shed. They must not come back: there is still no patched
+  // release, so a new copy would need a fresh accepted-risk review.
+  const SHED: Array<{ workspace: string; pkg: string; advisory: string[]; how: string }> = [
+    {
+      workspace: 'mobile',
+      pkg: 'image-size',
+      advisory: ['GHSA-5p2g-fcmc-qvqq', 'GHSA-w3rx-r6r6-pgpr'],
+      how: 'the Expo SDK 57 upgrade moved metro past its image-size dependency',
+    },
+    {
+      workspace: 'mobile',
+      pkg: 'sprintf-js',
+      advisory: ['GHSA-hp3w-g68c-fv3c'],
+      how: 'the Expo SDK 57 upgrade dropped the jest / js-yaml 3 / argparse 1 chain that pulled it in',
+    },
+  ];
+
+  for (const { workspace, pkg, advisory, how } of SHED) {
+    it(`${workspace}: ${pkg} stays out of the tree (${advisory.join(', ')})`, () => {
+      const entry = LOCKFILES.find((l) => l.name === workspace);
+      expect(entry, `unknown workspace ${workspace}`).toBeDefined();
+      const copies = Object.keys(lockPackages(entry!.lock)).filter(
+        (key) => packageNameOf(key) === pkg,
+      );
+      expect(
+        copies,
+        `${workspace}: ${pkg} has no patched release (${advisory.join(', ')}) and was removed when ` +
+          `${how}. Bringing it back needs a new accepted-risk note in CONTAINED.`,
+      ).toEqual([]);
+    });
+  }
 
   for (const { workspace, pkg, advisory, vulnerableRange, dependents, flags, why } of CONTAINED) {
     const label = advisory.join(', ');

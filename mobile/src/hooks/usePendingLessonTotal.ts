@@ -5,24 +5,36 @@ import {
   reconcilePendingLessonProjects,
   applyPendingLessonSuccess,
   applyPendingLessonFailure,
+  pendingLessonCountsSnapshot,
   totalPendingLessons,
 } from '@shared/utils/pendingLessonCounts';
 
+export type PendingLessonBadge = {
+  total: number;
+  counts: Record<string, number>;
+};
+
 /**
- * Total pending skill-lessons across all projects, driving the mobile drawer
- * Skills badge. Refetches every project on load and whenever `refreshKey`
- * changes (bumped by the `skill_improvement_update` broadcast). A failed
- * project fetch PRESERVES its last known count rather than dropping to 0, so a
- * single transient error never erases the total; departed projects are pruned
- * so the sum stays accurate after an org switch. See @shared/utils/
- * pendingLessonCounts for the fetch-lifecycle contract.
+ * Pending skill-lessons per project, plus the cross-project total.
+ * `counts` drives each project's Skills row in the sidebar (same as web).
+ * `total` is their sum. Refetches every project on load and whenever
+ * `refreshKey` changes. A failed project fetch keeps its last known count;
+ * departed projects are pruned. See @shared/utils/pendingLessonCounts.
  */
 export function usePendingLessonTotal(
   projects: Array<{ id?: string | null }> | null | undefined,
   refreshKey: number,
-): number {
-  const [total, setTotal] = useState(0);
+): PendingLessonBadge {
+  const [badge, setBadge] = useState<PendingLessonBadge>({ total: 0, counts: {} });
   const stateRef = useRef(createPendingLessonCountsState());
+
+  const publish = () => {
+    const state = stateRef.current;
+    setBadge({
+      total: totalPendingLessons(state),
+      counts: pendingLessonCountsSnapshot(state),
+    });
+  };
 
   useEffect(() => {
     const state = stateRef.current;
@@ -32,7 +44,7 @@ export function usePendingLessonTotal(
       'refresh',
     );
     // Reflect pruning of departed projects immediately.
-    setTotal(totalPendingLessons(state));
+    publish();
     if (toFetch.length === 0) return;
     let cancelled = false;
     for (const { projectId: pid, token } of toFetch) {
@@ -41,15 +53,11 @@ export function usePendingLessonTotal(
         .then((data: any) => {
           if (cancelled) return;
           const count = Array.isArray(data?.improvements) ? data.improvements.length : 0;
-          if (applyPendingLessonSuccess(state, pid, token, count)) {
-            setTotal(totalPendingLessons(state));
-          }
+          if (applyPendingLessonSuccess(state, pid, token, count)) publish();
         })
         .catch(() => {
           if (cancelled) return;
-          if (applyPendingLessonFailure(state, pid, token)) {
-            setTotal(totalPendingLessons(state));
-          }
+          if (applyPendingLessonFailure(state, pid, token)) publish();
         });
     }
     return () => {
@@ -60,7 +68,8 @@ export function usePendingLessonTotal(
         applyPendingLessonFailure(state, pid, token);
       }
     };
+    // publish closes over stateRef, which is stable.
   }, [projects, refreshKey]);
 
-  return total;
+  return badge;
 }

@@ -1,4 +1,4 @@
-import { compareRfc3339, isRfc3339 } from '@shared/utils/rfc3339';
+import { compareRfc3339, isRfc3339 } from './rfc3339';
 
 /**
  * Pure helpers for the Google Chat pane. Shapes mirror the server proxy's Zod

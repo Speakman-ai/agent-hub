@@ -102,3 +102,38 @@ export function hasSheetsWriteScope(status: any): boolean {
 export function hasDriveFileScope(status: any): boolean {
   return hasGoogleScope(status, DRIVE_FILE_SCOPE);
 }
+
+// Google Chat. Same scopes the web pane requests: list spaces, read messages,
+// and post replies. Broader `chat.spaces` / `chat.messages` grants still count.
+export const CHAT_SPACES_READONLY_SCOPE = 'https://www.googleapis.com/auth/chat.spaces.readonly';
+export const CHAT_SPACES_SCOPE = 'https://www.googleapis.com/auth/chat.spaces';
+export const CHAT_MESSAGES_READONLY_SCOPE =
+  'https://www.googleapis.com/auth/chat.messages.readonly';
+export const CHAT_MESSAGES_CREATE_SCOPE = 'https://www.googleapis.com/auth/chat.messages.create';
+export const CHAT_MESSAGES_SCOPE = 'https://www.googleapis.com/auth/chat.messages';
+export const CHAT_MEMBERSHIPS_READONLY_SCOPE =
+  'https://www.googleapis.com/auth/chat.memberships.readonly';
+export const CHAT_SURFACE_SCOPES = [
+  CHAT_SPACES_READONLY_SCOPE,
+  CHAT_MESSAGES_READONLY_SCOPE,
+  CHAT_MESSAGES_CREATE_SCOPE,
+  CHAT_MEMBERSHIPS_READONLY_SCOPE,
+];
+
+/** True when the account can list spaces and read their messages. */
+export function hasChatReadScope(status: any): boolean {
+  const spaces =
+    hasGoogleScope(status, CHAT_SPACES_READONLY_SCOPE) || hasGoogleScope(status, CHAT_SPACES_SCOPE);
+  const messages =
+    hasGoogleScope(status, CHAT_MESSAGES_READONLY_SCOPE) ||
+    hasGoogleScope(status, CHAT_MESSAGES_SCOPE);
+  return spaces && messages;
+}
+
+/** True when the account can post Chat messages. */
+export function hasChatSendScope(status: any): boolean {
+  return (
+    hasGoogleScope(status, CHAT_MESSAGES_CREATE_SCOPE) ||
+    hasGoogleScope(status, CHAT_MESSAGES_SCOPE)
+  );
+}

@@ -6,6 +6,7 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { saveConnectionConfig, loadConnectionConfig } from './config';
+import { activateAuthForServer } from './auth';
 const STORAGE_KEY = 'agent-hub-orgs';
 function uid() {
   return Math.random().toString(36).slice(2, 10);
@@ -33,7 +34,7 @@ async function saveOrgs(state: any) {
 }
 /** Sync an org's connection fields into the shared connection config. */
 function syncToConnection(org: any) {
-  saveConnectionConfig({
+  return saveConnectionConfig({
     remoteUrl: org.remoteUrl || '',
     apiKey: org.apiKey || '',
   });
@@ -68,7 +69,11 @@ export async function switchOrg(orgId: any) {
   if (!org) return;
   state.activeOrgId = orgId;
   await saveOrgs(state);
-  syncToConnection(org);
+  await syncToConnection(org);
+  // Each server keeps its own login, the way a desktop window keeps one per
+  // origin. Switching restores that server's token instead of sending the
+  // previous server's.
+  await activateAuthForServer(org.remoteUrl);
 }
 /** Create a new org (remote server connection). Returns the new org. */
 export async function createOrg({ name, remoteUrl = '', apiKey = '', color = '#6366f1' }: any) {

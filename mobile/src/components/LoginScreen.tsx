@@ -32,9 +32,9 @@ import {
   completeMfaLogin,
   forgotPassword,
   isAuthenticated,
-  clearToken,
+  discardStaleLogin,
 } from '../utils/auth';
-import { getApiBaseUrl } from '../utils/config';
+import { getApiBaseUrl, getServerBaseUrl } from '../utils/config';
 import { shouldGateAuthFromStatus } from '../utils/setupState';
 import BrandLogo from './BrandLogo';
 import LoginServerPicker from './LoginServerPicker';
@@ -192,21 +192,21 @@ export default function LoginScreen({ onAuthenticated, onSwitchOrg }: any) {
     const epoch = serverEpochRef.current;
     // True (after dropping any token it stored) when the server changed while
     // this request was in flight; the caller then abandons the result.
-    const isStale = async () => {
+    const isStale = async (response: any) => {
       if (epoch === serverEpochRef.current) return false;
-      await clearToken();
+      await discardStaleLogin(response, getServerBaseUrl());
       return true;
     };
     if (pendingMfa) {
       if (!mfaCode.trim()) return;
       setSubmitting(true);
       try {
-        await completeMfaLogin({
+        const result = await completeMfaLogin({
           baseUrl: getApiBaseUrl(),
           challengeId: pendingMfa.challengeId,
           code: mfaCode.trim().replace(/\s+/g, ''),
         });
-        if (await isStale()) return;
+        if (await isStale(result)) return;
         setMfaCode('');
         setPendingMfa(null);
         finishAuthentication();
@@ -237,8 +237,8 @@ export default function LoginScreen({ onAuthenticated, onSwitchOrg }: any) {
       }
       setSubmitting(true);
       try {
-        await updateEmail({ baseUrl: getApiBaseUrl(), email: username.trim() });
-        if (await isStale()) return;
+        const result = await updateEmail({ baseUrl: getApiBaseUrl(), email: username.trim() });
+        if (await isStale(result)) return;
         onAuthenticated?.();
       } catch (err: any) {
         setError(err?.message || 'Failed to save email');
@@ -259,11 +259,11 @@ export default function LoginScreen({ onAuthenticated, onSwitchOrg }: any) {
     try {
       const baseUrl = getApiBaseUrl();
       if (mode === 'setup') {
-        await setup({ baseUrl, username, password });
-        if (await isStale()) return;
+        const result = await setup({ baseUrl, username, password });
+        if (await isStale(result)) return;
       } else {
         const result = await login({ baseUrl, username, password });
-        if (await isStale()) return;
+        if (await isStale(result)) return;
         if (result?.mfaRequired) {
           setPendingMfa(result);
           setPassword('');

@@ -21,7 +21,7 @@ function improvements(n: number) {
 type Props = { projects: Array<{ id?: string | null }>; refreshKey: number };
 
 function harness() {
-  let latest = 0;
+  let latest = { total: 0, counts: {} as Record<string, number> };
   function Harness({ projects, refreshKey }: Props) {
     latest = usePendingLessonTotal(projects, refreshKey);
     return null;
@@ -61,7 +61,8 @@ describe('usePendingLessonTotal', () => {
     );
     const h = harness();
     await h.render({ projects: [{ id: 'a' }, { id: 'b' }], refreshKey: 0 });
-    expect(h.value).toBe(5);
+    expect(h.value.total).toBe(5);
+    expect(h.value.counts).toEqual({ a: 3, b: 2 });
   });
 
   // Reviewer finding 2: a transient failure during a refresh must NOT zero the
@@ -72,7 +73,8 @@ describe('usePendingLessonTotal', () => {
     );
     const h = harness();
     await h.render({ projects: [{ id: 'a' }, { id: 'b' }], refreshKey: 0 });
-    expect(h.value).toBe(5);
+    expect(h.value.total).toBe(5);
+    expect(h.value.counts).toEqual({ a: 3, b: 2 });
 
     // WS-triggered refresh: 'a' now has 4, 'b' fails transiently.
     apiMock.getSkillImprovements.mockImplementation((pid: string) =>
@@ -81,7 +83,8 @@ describe('usePendingLessonTotal', () => {
     await h.update({ projects: [{ id: 'a' }, { id: 'b' }], refreshKey: 1 });
 
     // 4 (fresh a) + 2 (preserved b), NOT 4 + 0.
-    expect(h.value).toBe(6);
+    expect(h.value.total).toBe(6);
+    expect(h.value.counts.b).toBe(2);
   });
 
   it('prunes a departed project from the total after an org switch', async () => {
@@ -90,17 +93,19 @@ describe('usePendingLessonTotal', () => {
     );
     const h = harness();
     await h.render({ projects: [{ id: 'a' }, { id: 'b' }], refreshKey: 0 });
-    expect(h.value).toBe(5);
+    expect(h.value.total).toBe(5);
+    expect(h.value.counts).toEqual({ a: 3, b: 2 });
 
     // 'b' leaves the project list; its 2 must drop out of the total.
     await h.update({ projects: [{ id: 'a' }], refreshKey: 0 });
-    expect(h.value).toBe(3);
+    expect(h.value.total).toBe(3);
+    expect(h.value.counts).toEqual({ a: 3 });
   });
 
   it('is 0 with no projects', async () => {
     const h = harness();
     await h.render({ projects: [], refreshKey: 0 });
-    expect(h.value).toBe(0);
+    expect(h.value.total).toBe(0);
     expect(apiMock.getSkillImprovements).not.toHaveBeenCalled();
   });
 });

@@ -37,10 +37,14 @@ import {
   resetPassword,
   getUserRole,
   hasRole,
+  activateAuthForServer,
+  reloadAuthVault,
+  discardStaleLogin,
 } from './auth';
 async function resetStore() {
+  await clearToken();
   await AsyncStorage.clear();
-  await clearToken(); // also resets the in-memory mirror
+  await reloadAuthVault();
 }
 describe('mobile auth role helpers', () => {
   beforeEach(async () => {
@@ -130,6 +134,362 @@ describe('mobile auth token helpers', () => {
     const loaded = await loadAuthToken();
     expect(loaded).toBeNull();
     expect(getToken()).toBeNull();
+  });
+  it('remembers each server’s login and restores it when that server is active again', async () => {
+    await setToken({
+      token: 'token-a',
+      user: { username: 'a' },
+      origin: 'https://a.example',
+    });
+    await setToken({
+      token: 'token-b',
+      user: { username: 'b' },
+      origin: 'https://b.example',
+    });
+    expect(getToken()).toBe('token-b');
+    await activateAuthForServer('https://a.example');
+    expect(getToken()).toBe('token-a');
+    await clearToken();
+    expect(getToken()).toBeNull();
+    await activateAuthForServer('https://b.example');
+    expect(getToken()).toBe('token-b');
+    await reloadAuthVault();
+    await loadAuthToken('https://a.example');
+    expect(getToken()).toBeNull();
+    await loadAuthToken('https://b.example');
+    expect(getToken()).toBe('token-b');
+  });
+});
+describe('mobile auth overlapping clear and switch', () => {
+  beforeEach(async () => {
+    await resetStore();
+  });
+
+  async function twoLogins() {
+    await setToken({ token: 'token-a', origin: 'https://a.example' });
+    await setToken({ token: 'token-b', origin: 'https://b.example' });
+    await activateAuthForServer('https://a.example');
+  }
+
+  /** Holds the next AsyncStorage.setItem until `release` is called. */
+  function holdNextWrite() {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const real = AsyncStorage.setItem.getMockImplementation();
+    AsyncStorage.setItem.mockImplementationOnce(async (key, value) => {
+      await gate;
+      return real(key, value);
+    });
+    return release;
+  }
+
+  it('keeps a login activated while a clear is still persisting', async () => {
+    await twoLogins();
+    const release = holdNextWrite();
+    const clearing = clearToken();
+    expect(getToken()).toBeNull();
+    const switching = activateAuthForServer('https://b.example');
+    release();
+    await Promise.all([clearing, switching]);
+    expect(getToken()).toBe('token-b');
+
+    // Disk agrees with memory: a cold start restores B and A's login is gone.
+    await reloadAuthVault();
+    expect(await loadAuthToken('https://b.example')).toMatchObject({ token: 'token-b' });
+    await reloadAuthVault();
+    expect(await loadAuthToken('https://a.example')).toBeNull();
+  });
+
+  it('reports no clear when another login is activated while the clear is saving', async () => {
+    await twoLogins();
+    const release = holdNextWrite();
+    const clearing = clearToken('token-a');
+    const switching = activateAuthForServer('https://b.example');
+    release();
+    await switching;
+    expect(await clearing).toBe(false);
+    expect(getToken()).toBe('token-b');
+  });
+
+  it('discarding a stale sign-in keeps the login of the server switched to', async () => {
+    await setToken({ token: 'token-b', origin: 'https://b.example' });
+    // A's sign-in stores its token; the switch to B lands while that write is held.
+    const release = holdNextWrite();
+    const signingIn = setToken({ token: 'token-a', origin: 'https://a.example' });
+    const switching = activateAuthForServer('https://b.example');
+    release();
+    await Promise.all([signingIn, switching]);
+    await discardStaleLogin({ token: 'token-a' }, 'https://b.example');
+    expect(getToken()).toBe('token-b');
+    // B's saved login survives on disk too.
+    await reloadAuthVault();
+    expect(await loadAuthToken('https://b.example')).toMatchObject({ token: 'token-b' });
+  });
+
+  it('discarding a stale sign-in drops it when it is still active', async () => {
+    await setToken({ token: 'token-b', origin: 'https://b.example' });
+    await setToken({ token: 'token-a', origin: 'https://a.example' });
+    await discardStaleLogin({ token: 'token-a' }, 'https://b.example');
+    expect(getToken()).toBe('token-b');
+    await activateAuthForServer('https://a.example');
+    expect(getToken()).toBeNull();
+  });
+
+  it('logout leaves a login activated while the logout request was in flight', async () => {
+    await twoLogins();
+    let finish!: () => void;
+    globalThis.fetch = vi.fn(
+      () =>
+        new Promise((r) => {
+          finish = () => r({ ok: true, json: async () => ({}) });
+        }),
+    );
+    const loggingOut = logout({ baseUrl: 'https://a.example/api' });
+    await activateAuthForServer('https://b.example');
+    finish();
+    await loggingOut;
+    expect(getToken()).toBe('token-b');
+    // The login that was logged out is gone, in memory and on disk.
+    await activateAuthForServer('https://a.example');
+    expect(getToken()).toBeNull();
+    await reloadAuthVault();
+    expect(await loadAuthToken('https://a.example')).toBeNull();
+    expect((await loadAuthToken('https://b.example'))?.token).toBe('token-b');
+  });
+
+  it('logout keeps a newer sign-in to the same server made while it was in flight', async () => {
+    await setToken({ token: 'token-a', origin: 'https://a.example' });
+    let finish!: () => void;
+    globalThis.fetch = vi.fn(
+      () =>
+        new Promise((r) => {
+          finish = () => r({ ok: true, json: async () => ({}) });
+        }),
+    );
+    const loggingOut = logout({ baseUrl: 'https://a.example/api' });
+    await setToken({ token: 'token-a2', origin: 'https://a.example' });
+    finish();
+    await loggingOut;
+    expect(getToken()).toBe('token-a2');
+    await reloadAuthVault();
+    expect((await loadAuthToken('https://a.example'))?.token).toBe('token-a2');
+  });
+
+  it('lets a switch made while stale-login cleanup is saving win over its restore', async () => {
+    await setToken({ token: 'token-b', origin: 'https://b.example' });
+    await setToken({ token: 'token-c', origin: 'https://c.example' });
+    // The stale sign-in to A landed and is active; B is the selected server.
+    await setToken({ token: 'token-a', origin: 'https://a.example' });
+    const release = holdNextWrite();
+    const cleanup = discardStaleLogin({ token: 'token-a' }, 'https://b.example');
+    // The user switches to C while the cleanup's write is held.
+    const switching = activateAuthForServer('https://c.example');
+    release();
+    await Promise.all([cleanup, switching]);
+    expect(getToken()).toBe('token-c');
+    await reloadAuthVault();
+    expect((await loadAuthToken('https://b.example'))?.token).toBe('token-b');
+  });
+
+  it('saves a sign-in that resolves after a later switch without making it active', async () => {
+    await setToken({ token: 'token-c', origin: 'https://c.example' });
+    let respond!: () => void;
+    globalThis.fetch = vi.fn(
+      () =>
+        new Promise((r) => {
+          respond = () =>
+            r({ ok: true, status: 200, json: async () => ({ token: 'token-a', user: {} }) });
+        }),
+    );
+    const signingIn = login({ baseUrl: 'https://a.example/api', username: 'u', password: 'p' });
+    await activateAuthForServer('https://c.example');
+    respond();
+    await signingIn;
+    expect(getToken()).toBe('token-c');
+    await activateAuthForServer('https://a.example');
+    expect(getToken()).toBe('token-a');
+  });
+
+  it('keeps the newer of two same-server sign-ins that resolve in reverse order', async () => {
+    const responders: Record<string, () => void> = {};
+    globalThis.fetch = vi.fn(
+      (_url: string, init: any) =>
+        new Promise((r) => {
+          const who = JSON.parse(init.body).email;
+          responders[who] = () =>
+            r({ ok: true, status: 200, json: async () => ({ token: `token-${who}`, user: {} }) });
+        }),
+    );
+    const older = login({ baseUrl: 'https://a.example/api', username: 'old', password: 'p' });
+    const newer = login({ baseUrl: 'https://a.example/api', username: 'new', password: 'p' });
+    responders.new();
+    await newer;
+    responders.old();
+    await older;
+    expect(getToken()).toBe('token-new');
+    // Restart: the saved login for the server is the newer one too.
+    await reloadAuthVault();
+    expect((await loadAuthToken('https://a.example'))?.token).toBe('token-new');
+  });
+
+  it('still remembers a late sign-in to another server', async () => {
+    let respond!: () => void;
+    globalThis.fetch = vi.fn(
+      () =>
+        new Promise((r) => {
+          respond = () =>
+            r({ ok: true, status: 200, json: async () => ({ token: 'token-a', user: {} }) });
+        }),
+    );
+    const signingIn = login({ baseUrl: 'https://a.example/api', username: 'u', password: 'p' });
+    await setToken({ token: 'token-b', origin: 'https://b.example' });
+    respond();
+    await signingIn;
+    expect(getToken()).toBe('token-b');
+    await reloadAuthVault();
+    expect((await loadAuthToken('https://a.example'))?.token).toBe('token-a');
+  });
+
+  it('does not let a stale sign-in bring back a login cleared after it started', async () => {
+    await setToken({ token: 'token-a', origin: 'https://a.example' });
+    let respond!: () => void;
+    globalThis.fetch = vi.fn(
+      () =>
+        new Promise((r) => {
+          respond = () =>
+            r({ ok: true, status: 200, json: async () => ({ token: 'token-stale', user: {} }) });
+        }),
+    );
+    const signingIn = login({ baseUrl: 'https://a.example/api', username: 'u', password: 'p' });
+    await clearToken('token-a');
+    respond();
+    await signingIn;
+    expect(getToken()).toBeNull();
+    await reloadAuthVault();
+    expect(await loadAuthToken('https://a.example')).toBeNull();
+  });
+
+  it('only clears the expected token', async () => {
+    await twoLogins();
+    await activateAuthForServer('https://b.example');
+    expect(await clearToken('token-a')).toBe(false);
+    expect(getToken()).toBe('token-b');
+    expect(await clearToken('token-b')).toBe(true);
+    expect(getToken()).toBeNull();
+  });
+
+  it('does not let a slow startup read overwrite a newer activation', async () => {
+    await setToken({ token: 'legacy' });
+    await setToken({ token: 'token-b', origin: 'https://b.example' });
+    await reloadAuthVault();
+    let releaseRead!: () => void;
+    const gate = new Promise<void>((r) => {
+      releaseRead = r;
+    });
+    const realGet = AsyncStorage.getItem.getMockImplementation();
+    AsyncStorage.getItem.mockImplementationOnce(async (key) => {
+      await gate;
+      return realGet(key);
+    });
+    const loading = loadAuthToken('https://unsaved.example');
+    await activateAuthForServer('https://b.example');
+    releaseRead();
+    await loading;
+    expect(getToken()).toBe('token-b');
+  });
+});
+describe('mobile auth while the vault is still loading', () => {
+  beforeEach(async () => {
+    await resetStore();
+  });
+
+  /** Seed disk with logins for A and C, then drop memory so the next read is from disk. */
+  async function seedDisk() {
+    await setToken({ token: 'token-a', origin: 'https://a.example' });
+    await setToken({ token: 'token-c', origin: 'https://c.example' });
+    await reloadAuthVault();
+  }
+
+  /**
+   * Reload from disk with the vault read held in flight. Resolves once the
+   * read has started (memory is empty, the vault not yet loaded); call the
+   * returned function to let it finish, then await the returned reload.
+   */
+  async function holdVaultRead() {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let started!: () => void;
+    const reading = new Promise<void>((r) => {
+      started = r;
+    });
+    const realGet = AsyncStorage.getItem.getMockImplementation();
+    AsyncStorage.getItem.mockImplementation(async (key) => {
+      if (key === 'agent-hub-jwt-by-origin') {
+        started();
+        await gate;
+      }
+      return realGet(key);
+    });
+    const reloading = reloadAuthVault();
+    await reading;
+    return async () => {
+      release();
+      await reloading;
+      AsyncStorage.getItem.mockImplementation(realGet);
+    };
+  }
+
+  it('keeps a login made before the vault read resolves, and the logins on disk', async () => {
+    await seedDisk();
+    const release = await holdVaultRead();
+    const starting = loadAuthToken('https://a.example');
+    const signingIn = setToken({ token: 'token-b', origin: 'https://b.example' });
+    await release();
+    await Promise.all([starting, signingIn]);
+    expect(getToken()).toBe('token-b');
+    // Disk now has all three: the pending read did not drop or overwrite any.
+    await reloadAuthVault();
+    expect((await loadAuthToken('https://b.example'))?.token).toBe('token-b');
+    expect((await loadAuthToken('https://a.example'))?.token).toBe('token-a');
+    expect((await loadAuthToken('https://c.example'))?.token).toBe('token-c');
+  });
+
+  it('lets a later server activation win over a startup load waiting on the vault', async () => {
+    await seedDisk();
+    const release = await holdVaultRead();
+    const starting = loadAuthToken('https://a.example');
+    const switching = activateAuthForServer('https://c.example');
+    await release();
+    await Promise.all([starting, switching]);
+    expect(getToken()).toBe('token-c');
+  });
+
+  it('applies overlapping activations in the order they were requested', async () => {
+    await seedDisk();
+    const release = await holdVaultRead();
+    const first = activateAuthForServer('https://a.example');
+    const second = activateAuthForServer('https://c.example');
+    await release();
+    await Promise.all([first, second]);
+    expect(getToken()).toBe('token-c');
+  });
+
+  it('does not bring back a login cleared before the vault read resolves', async () => {
+    await seedDisk();
+    const release = await holdVaultRead();
+    // A fresh sign-in to A, then the server rejects it, all before the read lands.
+    const signingIn = setToken({ token: 'token-a2', origin: 'https://a.example' });
+    const clearing = clearToken('token-a2');
+    await release();
+    await signingIn;
+    expect(await clearing).toBe(true);
+    await activateAuthForServer('https://a.example');
+    expect(getToken()).toBeNull();
+    expect((await loadAuthToken('https://c.example'))?.token).toBe('token-c');
   });
 });
 describe('mobile auth network helpers', () => {
