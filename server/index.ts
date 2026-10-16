@@ -303,6 +303,10 @@ import createApprovalsRoutes from './routes/approvals.js';
 import createDesktopRuntimeRoutes from './routes/desktop-runtime.js';
 import { registerFirecrackerDesktopRuntime } from './desktop/register-firecracker-desktop-runtime.js';
 import { unregisterDesktopRuntime } from './desktop/desktop-runtime-registry.js';
+import {
+  registerContainerDesktopRuntimeOnBoot,
+  startDesktopHomeJanitor,
+} from './desktop/desktop-runtime-setup.js';
 import { cancelOrphanedApprovalRequests } from './approvals-store.js';
 import createGithubOAuthRoutes from './routes/github-oauth.js';
 import createGoogleOAuthRoutes from './routes/google-oauth.js';
@@ -3050,6 +3054,11 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
         console.error(`[session-env] firecracker backend not registered: ${(e as Error).message}`);
       }
     }
+    // Container desktops, after the Firecracker attempt so `auto` sees whether
+    // microVMs won: registers the backend when selected (or when container
+    // desktops already exist) and re-attaches ones left running.
+    void registerContainerDesktopRuntimeOnBoot();
+    startDesktopHomeJanitor();
 
     void initSessionEnvSelection(
       config.sessionEnvAdapter,

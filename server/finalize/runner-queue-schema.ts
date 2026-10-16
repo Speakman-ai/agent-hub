@@ -65,9 +65,10 @@ CREATE TABLE IF NOT EXISTS runner_agents (
  * in-process channel and ends when they do. An `environment` is a PR
  * environment: the agent boots a compose stack itself, reports its endpoint,
  * and keeps it up until the row goes terminal (stop/rebuild), independent of
- * the Hub process, so it survives a Hub restart.
+ * the Hub process, so it survives a Hub restart. A `desktop` is an agent
+ * desktop container (server/desktop/fleet-desktop-host.ts), held the same way.
  */
-export type RunnerJobKind = 'job' | 'environment';
+export type RunnerJobKind = 'job' | 'environment' | 'desktop';
 
 /** Terminal job states (a run leaving any of these needs no further work). */
 export const RUNNER_JOB_TERMINAL_STATES = ['succeeded', 'failed', 'cancelled', 'lost'] as const;

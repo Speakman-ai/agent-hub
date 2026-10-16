@@ -9,6 +9,7 @@ import { USER_SKILL_OPTIONS_SCHEMA } from './skill-options-schema.js';
 import { GOOGLE_CONNECTIONS_SCHEMA } from './google-connections-schema.js';
 import { BROWSER_PROFILES_SCHEMA } from './browser-profiles-schema.js';
 import { DESKTOP_COMPUTERS_SCHEMA } from './desktop/desktop-computers-schema.js';
+import { DESKTOP_CONTAINERS_SCHEMA } from './desktop/desktop-containers-schema.js';
 import { APPROVALS_SCHEMA } from './approvals-schema.js';
 import { GOOGLE_CHAT_DRAFTS_SCHEMA } from './google-chat-drafts-schema.js';
 import { GMAIL_IMPORTANCE_SCHEMA } from './gmail-importance-schema.js';
@@ -224,6 +225,8 @@ export function initOrgsDb(): void {
   } catch {
     orgsDb.exec('ALTER TABLE desktop_computers ADD COLUMN snapshot TEXT');
   }
+  // Persistent agent desktops, same scope. See desktop/desktop-containers-store.ts.
+  orgsDb.exec(DESKTOP_CONTAINERS_SCHEMA);
   // Agent approval requests and remembered always-allow rules. See
   // approvals-store.ts.
   orgsDb.exec(APPROVALS_SCHEMA);

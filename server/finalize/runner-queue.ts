@@ -38,6 +38,11 @@ export interface EnqueueRunnerJobInput {
   priority?: number;
   /** Defaults to `job`. */
   kind?: RunnerJobKind;
+  /**
+   * Row id to use instead of a fresh one, for callers that record the id
+   * before the job exists (write-ahead ownership).
+   */
+  id?: string;
   now: number;
 }
 
@@ -72,7 +77,7 @@ interface RunnerJobRow {
 
 /** Insert a queued job. Returns the queue job id. */
 export function enqueueRunnerJob(input: EnqueueRunnerJobInput): string {
-  const id = randomUUID();
+  const id = input.id ?? randomUUID();
   getOrgsDb()
     .prepare(
       `INSERT INTO runner_jobs
@@ -164,7 +169,7 @@ export function getRunnerJobStatus(jobId: string): RunnerJobStatus | null {
 }
 
 /**
- * Record the endpoint of a healthy environment job. Only the claiming agent of
+ * Record the endpoint of a healthy environment (or desktop) job. Only the claiming agent of
  * a live `environment` row may set it. Returns false otherwise (the row was
  * stopped meanwhile, or the caller does not own it).
  */
@@ -178,7 +183,7 @@ export function setRunnerEnvironmentEndpoint(args: {
     .prepare(
       `UPDATE runner_jobs
           SET endpoint=@endpoint, state='running', heartbeat_at=@now
-        WHERE id=@jobId AND claimed_by=@agentId AND kind='environment'
+        WHERE id=@jobId AND claimed_by=@agentId AND kind IN ('environment','desktop')
           AND state IN ('claimed','running')`,
     )
     .run({
@@ -235,11 +240,16 @@ export function claimRunnerJob(args: {
   orgId?: string | null;
   /** False for agents that did not declare the environment capability. */
   canRunEnvironments?: boolean;
+  /** False for agents that did not declare the desktop capability. */
+  canRunDesktops?: boolean;
   leaseMs: number;
   now: number;
 }): ClaimedRunnerJob | null {
   const orgFilter = args.orgId ? 'AND org_id = @orgId' : '';
-  const kindFilter = args.canRunEnvironments === false ? "AND kind != 'environment'" : '';
+  const kindFilter = [
+    args.canRunEnvironments === false ? "AND kind != 'environment'" : '',
+    args.canRunDesktops === false ? "AND kind != 'desktop'" : '',
+  ].join(' ');
   const row = getOrgsDb()
     .prepare(
       `UPDATE runner_jobs
@@ -543,10 +553,10 @@ function countRunnerJobs(
   states: readonly string[],
   orgId: string | undefined,
   filter: RunnerClassFilter | undefined,
-  kind?: RunnerJobKind,
+  kinds?: readonly RunnerJobKind[],
 ): number {
   const clauses = [`state IN (${states.map((st) => `'${st}'`).join(',')})`];
-  if (kind) clauses.push(`kind='${kind}'`);
+  if (kinds?.length) clauses.push(`kind IN (${kinds.map((k) => `'${k}'`).join(',')})`);
   const params: Record<string, unknown> = {};
   if (orgId) {
     clauses.push('org_id=@orgId');
@@ -594,12 +604,12 @@ export function runnerInflightCount(orgId?: string, filter?: RunnerClassFilter):
 }
 
 /**
- * Environment jobs that currently hold an agent (claimed + running). Each pins
- * its agent for the life of the PR environment, so the scaler treats them as
- * standing capacity rather than a backlog that will drain.
+ * Environment and desktop jobs that currently hold an agent (claimed +
+ * running). Each pins its agent until the Hub stops it, so the scaler treats
+ * them as standing capacity rather than a backlog that will drain.
  */
 export function runnerLiveEnvironmentCount(orgId?: string, filter?: RunnerClassFilter): number {
-  return countRunnerJobs(['claimed', 'running'], orgId, filter, 'environment');
+  return countRunnerJobs(['claimed', 'running'], orgId, filter, ['environment', 'desktop']);
 }
 
 /**

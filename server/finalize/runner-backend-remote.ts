@@ -30,6 +30,7 @@ import {
 import { isMacosRunsOn, runnerClassForRunsOn } from './runner-images.js';
 import { resolveFleetNativePlatforms } from './runner-fleet-constants.js';
 import type { RunnerEnvironmentSpec } from './runner-environment.js';
+import type { RunnerDesktopSpec } from '../desktop/fleet-desktop-host.js';
 
 // How long a dispatched job waits for an agent to claim it before it's marked
 // lost. With uncapped Hub dispatch (the remote default) every shard is enqueued
@@ -91,8 +92,10 @@ export interface RunnerJobWireSpec {
    * {@link RunnerJobWireSpec.environment} itself instead of waiting for step
    * directives. Omitted for Finalize and deploy jobs.
    */
-  kind?: 'environment';
+  kind?: 'environment' | 'desktop';
   environment?: RunnerEnvironmentSpec;
+  /** Set for `desktop` jobs: the agent runs the desktop image itself. */
+  desktop?: RunnerDesktopSpec;
   /** Commit the worktree bundle must be checked out at (environment jobs). */
   headSha?: string;
 }

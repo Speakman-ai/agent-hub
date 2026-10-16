@@ -11,7 +11,10 @@
  * `realDockerOps`/`httpTransport`/`runAgentMain` wire the production implementations.
  */
 import { spawn } from 'child_process';
-import { readFileSync } from 'fs';
+import { createReadStream, createWriteStream, readFileSync } from 'fs';
+import { stat } from 'fs/promises';
+import { Readable } from 'stream';
+import { pipeline } from 'stream/promises';
 import path from 'path';
 import { buildExecJobStepArgv, sanitizeJobContainerName } from './runner-exec-args.js';
 import { startJobContainer, stopJobContainer } from './job-container.js';
@@ -22,7 +25,12 @@ import {
 } from './job-resource-sampler.js';
 import type { RunnerDirective } from './runner-job-channel.js';
 import type { RunnerJobWireSpec } from './runner-backend-remote.js';
-import { ENVIRONMENT_CAPABILITY } from './runner-fleet-constants.js';
+import { DESKTOP_CAPABILITY, ENVIRONMENT_CAPABILITY } from './runner-fleet-constants.js';
+import {
+  realDesktopAgentDocker,
+  runAgentDesktop,
+  type DesktopTransport,
+} from './runner-agent-desktop.js';
 import { LocalDirBundleStore, materializeWorktree, type BundleStore } from './worktree-bundle.js';
 import {
   ecsTaskProtection,
@@ -38,11 +46,7 @@ import {
   chownWorktreeForJobRunner,
   clearWorktreeDestForRematerialize,
 } from './worktree-job-ownership.js';
-import {
-  realEnvironmentDockerOps,
-  runAgentEnvironment,
-  type EnvironmentTransport,
-} from './runner-agent-environment.js';
+import { realEnvironmentDockerOps, runAgentEnvironment } from './runner-agent-environment.js';
 
 export interface AgentLogFrame {
   seq: number;
@@ -870,10 +874,10 @@ export function runExecStepChild(args: {
   });
 }
 
-export function httpTransport(
-  hubUrl: string,
-  token: string,
-): AgentTransport & EnvironmentTransport {
+/** A desktop home can be large; bound the transfer, not the first byte. */
+const DESKTOP_HOME_TRANSFER_TIMEOUT_MS = 30 * 60_000;
+
+export function httpTransport(hubUrl: string, token: string): AgentTransport & DesktopTransport {
   const base = hubUrl.replace(/\/$/, '');
   const auth = { Authorization: `Bearer ${token}`, 'content-type': 'application/json' };
   return {
@@ -949,6 +953,67 @@ export function httpTransport(
       if (res.status === 410) return { gone: true };
       if (!res.ok) throw new Error(`environment post failed: ${res.status}`);
       return { gone: false };
+    },
+    async downloadDesktopHome(jobId, destPath) {
+      const res = await fetch(`${base}/api/runners/jobs/${jobId}/desktop-home`, {
+        headers: { Authorization: auth.Authorization },
+        signal: AbortSignal.timeout(DESKTOP_HOME_TRANSFER_TIMEOUT_MS),
+      });
+      if (res.status === 404) return false;
+      if (!res.ok || !res.body) throw new Error(`desktop home download failed: ${res.status}`);
+      await pipeline(
+        Readable.fromWeb(res.body as import('stream/web').ReadableStream),
+        createWriteStream(destPath),
+      );
+      return true;
+    },
+    async uploadDesktopHome(jobId, filePath) {
+      const { size } = await stat(filePath);
+      const res = await fetch(`${base}/api/runners/jobs/${jobId}/desktop-home`, {
+        method: 'PUT',
+        headers: {
+          Authorization: auth.Authorization,
+          'content-type': 'application/gzip',
+          'content-length': String(size),
+        },
+        body: Readable.toWeb(createReadStream(filePath)) as unknown as BodyInit,
+        duplex: 'half',
+        signal: AbortSignal.timeout(DESKTOP_HOME_TRANSFER_TIMEOUT_MS),
+      } as RequestInit & { duplex: 'half' });
+      // 410: the computer moved past this run or was deleted; never wanted.
+      if (res.status === 410) return { outcome: 'discarded' };
+      // 413: refused for good; retrying the same file can't succeed.
+      if (res.status === 413) {
+        const body = (await res.json().catch(() => ({}))) as { error?: unknown };
+        return {
+          outcome: 'rejected',
+          detail: typeof body.error === 'string' ? body.error : 'home snapshot too large',
+        };
+      }
+      if (!res.ok) throw new Error(`desktop home upload failed: ${res.status}`);
+      return { outcome: 'accepted' };
+    },
+    async getDesktopHomeDecision(jobId) {
+      const res = await fetch(`${base}/api/runners/jobs/${jobId}/desktop-home-decision`, {
+        headers: { Authorization: auth.Authorization },
+        signal: AbortSignal.timeout(CRITICAL_POST_TIMEOUT_MS),
+      });
+      if (!res.ok) throw new Error(`desktop home decision failed: ${res.status}`);
+      const { decision } = (await res.json()) as { decision?: unknown };
+      if (decision === 'hold' || decision === 'retry' || decision === 'discard') return decision;
+      throw new Error(`unknown desktop home decision: ${String(decision)}`);
+    },
+    async reportDesktopHomeRejected(jobId, detail) {
+      const res = await fetch(`${base}/api/runners/jobs/${jobId}/desktop-home-rejected`, {
+        method: 'POST',
+        headers: auth,
+        body: JSON.stringify({ detail }),
+        signal: AbortSignal.timeout(CRITICAL_POST_TIMEOUT_MS),
+      });
+      // 410: the computer moved past this run; nothing to block.
+      if (!res.ok && res.status !== 410) {
+        throw new Error(`desktop home rejection report failed: ${res.status}`);
+      }
     },
     async reportError(jobId, detail) {
       await fetch(`${base}/api/runners/jobs/${jobId}/error`, {
@@ -1146,8 +1211,8 @@ export async function runAgentMain(): Promise<void> {
   // runners should prefer FINALIZE_RUNNER_FLEET_TOKEN_FILE so the token never
   // enters the env block in the first place.
   scrubAgentProcessEnvSecrets();
-  // Only DinD agents can host a PR environment (see runJob below).
-  const capabilities = native ? [] : [ENVIRONMENT_CAPABILITY];
+  // Only DinD agents can host a PR environment or a desktop (see runJob below).
+  const capabilities = native ? [] : [ENVIRONMENT_CAPABILITY, DESKTOP_CAPABILITY];
   const { token } = await registerAgent(hubUrl, fleetToken, orgScope, runnerClass, capabilities);
   const transport = httpTransport(hubUrl, token);
   // A native (macOS) runner runs steps directly on the host; a default runner
@@ -1163,11 +1228,24 @@ export async function runAgentMain(): Promise<void> {
   const materialize = (spec: RunnerJobWireSpec, dest: string) =>
     materializeWorktree({ ref: spec.worktreeRef!, store, destPath: dest, rev: spec.headSha });
   const environmentDocker = native ? null : realEnvironmentDockerOps();
+  const desktopDocker = native ? null : realDesktopAgentDocker();
 
   console.log(`[runner-agent] registered; polling ${hubUrl} (scope=${orgScope})`);
   await runAgentClaimLoop({
     transport,
     runJob: (job) => {
+      // A desktop holds this agent until the Hub stops it.
+      if (job.spec.kind === 'desktop') {
+        if (!desktopDocker) throw new Error('desktop jobs need a DinD (non-native) runner');
+        return runAgentDesktop({
+          jobId: job.jobId,
+          spec: job.spec,
+          transport,
+          docker: desktopDocker,
+          protection,
+          publishHost: process.env.FINALIZE_ENV_PUBLISH_HOST?.trim() || undefined,
+        });
+      }
       // A PR environment holds this agent until the Hub stops it.
       if (job.spec.kind === 'environment') {
         if (!environmentDocker) {

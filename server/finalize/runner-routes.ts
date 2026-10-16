@@ -40,7 +40,24 @@ import {
   type AgentTokenPayload,
 } from './runner-auth.js';
 import { MACOS_RUNNER_CLASS } from './runner-images.js';
-import { ENVIRONMENT_CAPABILITY, parseAgentCapabilities } from './runner-fleet-constants.js';
+import {
+  DESKTOP_CAPABILITY,
+  ENVIRONMENT_CAPABILITY,
+  parseAgentCapabilities,
+} from './runner-fleet-constants.js';
+import { readDesktopHomeForJob, saveDesktopHomeForJob } from '../desktop/fleet-desktop-host.js';
+import {
+  desktopHomeDecisionForJob,
+  recordDesktopHomeBlocked,
+} from '../desktop/desktop-containers-store.js';
+import type { DesktopHomeStore } from '../desktop/desktop-home-store.js';
+import { getDesktopHomeSpools, getDesktopHomeStore } from '../desktop/desktop-runtime-setup.js';
+import type { HomeSpools } from '../desktop/desktop-home-spool.js';
+import { createReadStream, createWriteStream } from 'fs';
+import { stat } from 'fs/promises';
+import path from 'path';
+import { Transform } from 'stream';
+import { pipeline } from 'stream/promises';
 import { spotReclaimDetail, spotRequeueOnNoticeEnabled } from './spot-interruption.js';
 
 interface RunnerReq extends Request {
@@ -69,6 +86,21 @@ export interface RunnerRoutesOptions {
    * — invoked inside a try/catch so it can never fail the finish handshake.
    */
   onJobResources?: (event: JobResourcesEvent) => void;
+  /** Where fleet desktops keep their home snapshots. */
+  desktopHomeStore?: () => Promise<DesktopHomeStore>;
+  /** Scratch space for home transfers. */
+  desktopHomeSpools?: () => HomeSpools;
+  /** Largest desktop home snapshot an agent may upload. */
+  maxDesktopHomeBytes?: number;
+}
+
+/** Default cap on one desktop home snapshot (gzip tarball). */
+export const DEFAULT_MAX_DESKTOP_HOME_BYTES = 4 * 1024 * 1024 * 1024;
+
+/** AGENT_HUB_DESKTOP_HOME_MAX_BYTES, else the default. */
+export function resolveMaxDesktopHomeBytes(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(env.AGENT_HUB_DESKTOP_HOME_MAX_BYTES?.trim());
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_MAX_DESKTOP_HOME_BYTES;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -107,6 +139,9 @@ export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Rout
   // never mid-step. Was 120s, which reaped live agents during long e2e steps /
   // slow DinD startup, dropping depth to 0 and letting the scaler kill them.
   const leaseMs = opts.leaseMs ?? 300_000;
+  const desktopHomeStore = opts.desktopHomeStore ?? getDesktopHomeStore;
+  const homeSpools = opts.desktopHomeSpools ?? getDesktopHomeSpools;
+  const maxDesktopHomeBytes = opts.maxDesktopHomeBytes ?? resolveMaxDesktopHomeBytes();
 
   function requireAgent(req: RunnerReq, res: Response, next: NextFunction): void {
     const payload = verifyAgentToken(bearerToken(req.headers.authorization));
@@ -239,6 +274,7 @@ export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Rout
         orgId,
         runnerClass: agent.runnerClass ?? 'default',
         canRunEnvironments: agent.capabilities?.includes(ENVIRONMENT_CAPABILITY) ?? false,
+        canRunDesktops: agent.capabilities?.includes(DESKTOP_CAPABILITY) ?? false,
         leaseMs,
         now: Date.now(),
       });
@@ -338,6 +374,10 @@ export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Rout
     (req: RunnerReq, res: Response) => {
       const jobId = req.params.jobId as string;
       if (!authorizeJob(req.agent!, jobId, res)) return;
+      // Contact, even when the answer is 410: a stopped desktop's runner keeps
+      // heartbeating while it removes the container and saves the home, and
+      // the time since its last contact is evidence for a Spot reclaim.
+      touchAgent(req.agent!.agentId);
       const now = Date.now();
       const live = heartbeatRunnerJob({ jobId, agentId: req.agent!.agentId, leaseMs, now });
       const spotReported =
@@ -418,13 +458,13 @@ export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Rout
     const jobId = req.params.jobId as string;
     if (!authorizeJob(req.agent!, jobId, res)) return;
     getJobChannel(jobId)?.onFinish();
-    // An environment is only torn down after the Hub ends its row. One that
-    // finishes while still live went down on its own: record it as lost so
-    // the Hub requeues it instead of routing to a dead upstream.
+    // An environment (or desktop) is only torn down after the Hub ends its
+    // row. One that finishes while still live went down on its own: record it
+    // as lost so the Hub requeues it instead of routing to a dead upstream.
     getOrgsDb()
       .prepare(
         `UPDATE runner_jobs SET state='lost', detail='environment runner exited', ended_at=?
-          WHERE id=? AND kind='environment' AND state IN ('claimed','running')`,
+          WHERE id=? AND kind IN ('environment','desktop') AND state IN ('claimed','running')`,
       )
       .run(Date.now(), jobId);
     // Per-job resource summary (best-effort — never fail the finish handshake).
@@ -532,6 +572,169 @@ export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Rout
         return;
       }
       res.status(400).json({ error: "status must be 'ready', 'failed' or 'lost'" });
+    },
+  );
+
+  // Desktop home snapshots (fleet desktops). The agent downloads the last
+  // snapshot before it boots the desktop and uploads a fresh one after the Hub
+  // stops it, so the row is usually already cancelled by the PUT. Only the
+  // claiming agent of a `desktop` row may read or write its home.
+  function isDesktopJob(jobId: string, res: Response): boolean {
+    const row = getOrgsDb().prepare('SELECT kind FROM runner_jobs WHERE id=?').get(jobId) as
+      | { kind: string | null }
+      | undefined;
+    if (row?.kind !== 'desktop') {
+      res.status(404).json({ error: 'not a desktop job' });
+      return false;
+    }
+    return true;
+  }
+
+  router.get(
+    '/api/runners/jobs/:jobId/desktop-home',
+    requireAgent,
+    async (req: RunnerReq, res: Response) => {
+      const jobId = req.params.jobId as string;
+      if (!authorizeJob(req.agent!, jobId, res) || !isDesktopJob(jobId, res)) return;
+      touchAgent(req.agent!.agentId);
+      // Express 4 doesn't catch a rejected async handler, so a spool that
+      // can't be set up (full or unreadable disk) answers here instead.
+      let spool: Awaited<ReturnType<HomeSpools['open']>>;
+      try {
+        spool = await homeSpools().open();
+      } catch (err) {
+        res
+          .status(500)
+          .json({ error: `home transfer spool unavailable: ${(err as Error).message}` });
+        return;
+      }
+      const dir = spool.dir;
+      try {
+        const file = path.join(dir, 'home.tar.gz');
+        const found = await readDesktopHomeForJob(jobId, await desktopHomeStore(), file);
+        if (found === 'none') {
+          res.status(404).json({ error: 'no home snapshot' });
+          return;
+        }
+        if (found === 'missing') {
+          // The agent must not boot a fresh home over a snapshot it can't see.
+          res.status(409).json({ error: 'the saved home snapshot is missing from the store' });
+          return;
+        }
+        const { size } = await stat(file);
+        res.status(200).set({ 'content-type': 'application/gzip', 'content-length': String(size) });
+        await pipeline(createReadStream(file), res);
+      } catch (err) {
+        if (!res.headersSent) {
+          res.status(500).json({ error: `home download failed: ${(err as Error).message}` });
+        } else {
+          res.destroy();
+        }
+      } finally {
+        await spool.close();
+      }
+    },
+  );
+
+  router.put(
+    '/api/runners/jobs/:jobId/desktop-home',
+    requireAgent,
+    async (req: RunnerReq, res: Response) => {
+      const jobId = req.params.jobId as string;
+      if (!authorizeJob(req.agent!, jobId, res) || !isDesktopJob(jobId, res)) return;
+      touchAgent(req.agent!.agentId);
+      const declared = Number(req.headers['content-length']);
+      if (Number.isFinite(declared) && declared > maxDesktopHomeBytes) {
+        res.status(413).json({ error: `home snapshot exceeds ${maxDesktopHomeBytes} bytes` });
+        return;
+      }
+      // Express 4 doesn't catch a rejected async handler, so a spool that
+      // can't be set up (full or unreadable disk) answers here instead.
+      let spool: Awaited<ReturnType<HomeSpools['open']>>;
+      try {
+        spool = await homeSpools().open();
+      } catch (err) {
+        res
+          .status(500)
+          .json({ error: `home transfer spool unavailable: ${(err as Error).message}` });
+        return;
+      }
+      const dir = spool.dir;
+      try {
+        const file = path.join(dir, 'home.tar.gz');
+        let seen = 0;
+        const cap = new Transform({
+          transform(chunk: Buffer, _enc, cb) {
+            seen += chunk.length;
+            if (seen > maxDesktopHomeBytes) cb(new Error('home snapshot too large'));
+            else cb(null, chunk);
+          },
+        });
+        try {
+          await pipeline(req, cap, createWriteStream(file));
+        } catch (err) {
+          const tooBig = seen > maxDesktopHomeBytes;
+          res
+            .status(tooBig ? 413 : 400)
+            .json({ error: tooBig ? 'home snapshot too large' : (err as Error).message });
+          return;
+        }
+        if (seen === 0) {
+          res.status(400).json({ error: 'empty home snapshot' });
+          return;
+        }
+        const saved = await saveDesktopHomeForJob(jobId, await desktopHomeStore(), file);
+        if (!saved) {
+          res
+            .status(410)
+            .json({ error: 'the desktop moved past this run, or was deleted; upload discarded' });
+          return;
+        }
+        res.status(204).end();
+      } catch (err) {
+        res.status(500).json({ error: `home upload failed: ${(err as Error).message}` });
+      } finally {
+        await spool.close();
+      }
+    },
+  );
+
+  // The Hub refused this run's home for good (413): the agent keeps it on its
+  // box and reports where, before finishing. The computer is then blocked
+  // from starting on an older home until an operator resolves it.
+  router.post(
+    '/api/runners/jobs/:jobId/desktop-home-rejected',
+    requireAgent,
+    (req: RunnerReq, res: Response) => {
+      const jobId = req.params.jobId as string;
+      if (!authorizeJob(req.agent!, jobId, res) || !isDesktopJob(jobId, res)) return;
+      touchAgent(req.agent!.agentId);
+      const raw = (req.body as { detail?: unknown } | undefined)?.detail;
+      const detail = typeof raw === 'string' && raw.trim() ? raw.slice(0, 2000) : null;
+      if (!detail) {
+        res.status(400).json({ error: 'detail (string) required' });
+        return;
+      }
+      if (
+        !recordDesktopHomeBlocked({ jobId, detail: `${detail} (runner ${req.agent!.agentId})` })
+      ) {
+        res.status(410).json({ error: 'the desktop moved past this run, or was deleted' });
+        return;
+      }
+      res.status(204).end();
+    },
+  );
+
+  // A runner parked on a refused home asks what to do with it: `hold`,
+  // `retry` (upload again) or `discard` (remove the volume, then finish).
+  router.get(
+    '/api/runners/jobs/:jobId/desktop-home-decision',
+    requireAgent,
+    (req: RunnerReq, res: Response) => {
+      const jobId = req.params.jobId as string;
+      if (!authorizeJob(req.agent!, jobId, res) || !isDesktopJob(jobId, res)) return;
+      touchAgent(req.agent!.agentId);
+      res.json({ decision: desktopHomeDecisionForJob(jobId) });
     },
   );
 

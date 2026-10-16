@@ -13,6 +13,7 @@ import { execFile } from 'child_process';
 import os from 'os';
 import path from 'path';
 import { promisify } from 'util';
+import { sleepUnlessAborted } from './abortable-sleep.js';
 import { buildExecJobStepArgv } from './runner-exec-args.js';
 import { startJobContainer, stopJobContainer } from './job-container.js';
 import {
@@ -288,11 +289,7 @@ async function deliverReady(
         } — retrying in ${delay}ms`,
       );
     }
-    await Promise.race([
-      new Promise((r) => setTimeout(r, delay)),
-      dead,
-      new Promise((r) => stopSignal.addEventListener('abort', r, { once: true })),
-    ]);
+    await Promise.race([sleepUnlessAborted(delay, stopSignal), dead]);
     delay = Math.min(delay * 2, 30_000);
   }
 }

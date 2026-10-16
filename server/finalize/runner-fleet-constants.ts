@@ -52,7 +52,13 @@ export function resolveFleetNativePlatforms(
  */
 export const ENVIRONMENT_CAPABILITY = 'environment';
 
-const KNOWN_AGENT_CAPABILITIES: readonly string[] = [ENVIRONMENT_CAPABILITY];
+/**
+ * Capability for agent desktop jobs (the agent runs the desktop image and
+ * snapshots its home). Same gating rule as environments.
+ */
+export const DESKTOP_CAPABILITY = 'desktop';
+
+const KNOWN_AGENT_CAPABILITIES: readonly string[] = [ENVIRONMENT_CAPABILITY, DESKTOP_CAPABILITY];
 
 /** Keep only known capability names from an untrusted register body. */
 export function parseAgentCapabilities(raw: unknown): string[] {
