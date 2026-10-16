@@ -7,6 +7,7 @@ const panes = {
   today: <span>today-body</span>,
   org: <span>org-body</span>,
   todos: <span>todos-body</span>,
+  reminders: <span>reminders-body</span>,
   calendar: <span>calendar-body</span>,
   mail: <span>mail-body</span>,
   chat: <span>chat-body</span>,
@@ -38,6 +39,7 @@ describe('HubPage', () => {
         today={<div>today-body</div>}
         org={<div>org-body</div>}
         todos={<div>todos-body</div>}
+        reminders={<div>reminders-body</div>}
         calendar={<div>calendar-body</div>}
         mail={<div>mail-body</div>}
         chat={<div>chat-body</div>}

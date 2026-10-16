@@ -26,6 +26,7 @@ import { TODO_SOURCE_TYPES } from './source-provenance.js';
 import { ORG_TODOS_SCHEMA } from './org-todos-schema.js';
 import { PROJECT_MEMBERS_SCHEMA } from './project-members-schema.js';
 import { NOTIFICATIONS_SCHEMA } from './notifications-schema.js';
+import { REMINDERS_SCHEMA } from './reminders-schema.js';
 
 const HOME = process.env.HOME || '/home/' + (process.env.USER || 'user');
 
@@ -253,6 +254,8 @@ export function initOrgsDb(): void {
   orgsDb.exec(PROJECT_MEMBERS_SCHEMA);
   // Per-user notification inbox (bell feed). See notifications-store.ts.
   orgsDb.exec(NOTIFICATIONS_SCHEMA);
+  // Per-user reminders that fire into the inbox. See reminders-store.ts.
+  orgsDb.exec(REMINDERS_SCHEMA);
 
   // Additive migration for installs that created user_todos before the
   // priority / do_date-window / polymorphic-link columns existed (spec

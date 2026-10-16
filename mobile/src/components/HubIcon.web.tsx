@@ -2,6 +2,7 @@ import React from 'react';
 import {
   Activity,
   ArrowUpRight,
+  BellRing,
   BookOpen,
   Bot,
   CalendarDays,
@@ -58,6 +59,7 @@ const HUB_LUCIDE_ICONS: Record<string, any> = {
   Activity,
   ArrowUpRight,
   BarChart3: ChartColumn,
+  BellRing,
   BookOpen,
   Bot,
   CalendarDays,

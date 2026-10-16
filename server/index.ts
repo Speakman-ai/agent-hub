@@ -302,6 +302,7 @@ import createReplayPlaylistRoutes from './routes/replay-playlists.js';
 import createRumSessionsRoutes from './routes/rum-sessions.js';
 import createAuthRoutes from './routes/auth.js';
 import createMeTodosRoutes from './routes/me-todos.js';
+import createMeRemindersRoutes from './routes/me-reminders.js';
 import createNotificationsRoutes from './routes/notifications.js';
 import createOrgTodosRoutes from './routes/org-todos.js';
 import createHubChatRoutes from './routes/hub-chat.js';
@@ -448,6 +449,13 @@ import { initLogsDb } from './logs/logs-db.js';
 import { startLogWriteQueue, flushLogWriteQueue } from './logs/log-write-queue.js';
 import { runLogRetentionReaper, LOG_RETENTION_REAPER_CRON } from './logs/log-retention-reaper.js';
 import { runNotificationsPrune, NOTIFICATIONS_PRUNE_CRON } from './notifications-store.js';
+import {
+  REMINDERS_TICK_CRON,
+  broadcastReminderUpdate,
+  runRemindersTick,
+} from './reminders-scheduler.js';
+import { pruneDismissedReminders } from './reminders-store.js';
+import { runReminderCalendarMaintenance } from './reminders-calendar.js';
 import { initInfraDb } from './infra/infra-db.js';
 import { startInfraWriteQueue, flushInfraWriteQueue } from './infra/infra-write-queue.js';
 import { runInfraInventorySync, INFRA_INVENTORY_SYNC_CRON } from './infra/inventory-sync.js';
@@ -2116,9 +2124,38 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
 
   // Notification inbox retention: read rows after 30 days, unread after 90
   // (spec STORAGE). Pure SQLite against orgs.db; runs on every Hub.
-  cron.schedule(NOTIFICATIONS_PRUNE_CRON, () => void runNotificationsPrune(), {
-    name: 'notifications-prune',
-  });
+  cron.schedule(
+    NOTIFICATIONS_PRUNE_CRON,
+    () => {
+      void runNotificationsPrune();
+      try {
+        // Open Reminders panes drop the pruned rows too.
+        for (const pruned of pruneDismissedReminders()) {
+          broadcastReminderUpdate(broadcast, 'deleted', pruned);
+        }
+      } catch (err) {
+        console.warn('[reminders] prune failed:', (err as Error).message);
+      }
+    },
+    { name: 'notifications-prune' },
+  );
+
+  // Personal reminders: fire due ones into the notification inbox. The claim is
+  // an atomic UPDATE, so overlapping ticks or Hubs never notify twice.
+  // The same tick retries queued calendar-event deletions and failed event
+  // updates whose backoff has elapsed.
+  cron.schedule(
+    REMINDERS_TICK_CRON,
+    () => {
+      void runRemindersTick(broadcast);
+      void runReminderCalendarMaintenance(
+        { googleOAuth: routeDeps.config.googleOAuth },
+        new Date(),
+        broadcast,
+      );
+    },
+    { name: 'reminders-tick' },
+  );
 
   // AWS resource inventory sync (decision INFRA-SCOPE) — hourly describe-API
   // sweep that seeds `infra_resources` for every enabled scope row. Deliberately
@@ -2575,6 +2612,7 @@ app.use(
   }),
 );
 app.use(createMeTodosRoutes(routeDeps));
+app.use(createMeRemindersRoutes(routeDeps));
 app.use(createNotificationsRoutes(routeDeps));
 app.use(createOrgTodosRoutes(routeDeps));
 app.use(createHubChatRoutes(routeDeps));

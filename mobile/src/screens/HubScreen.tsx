@@ -11,6 +11,7 @@ import BrandLogo from '../components/BrandLogo';
 import DashboardHomeScreen from './DashboardHomeScreen';
 import DashboardScreen from './DashboardScreen';
 import TodosScreen from './TodosScreen';
+import RemindersScreen from './RemindersScreen';
 import CalendarScreen from './CalendarScreen';
 import GmailScreen from './GmailScreen';
 import SupportOverviewScreen from './SupportOverviewScreen';
@@ -38,6 +39,7 @@ const TABS: { id: HubTab; label: string; icon: string }[] = [
   { id: 'today', label: 'Dashboard', icon: 'LayoutGrid' },
   { id: 'org', label: 'Org', icon: 'BarChart3' },
   { id: 'todos', label: 'Todos', icon: 'ListTodo' },
+  { id: 'reminders', label: 'Reminders', icon: 'BellRing' },
   { id: 'calendar', label: 'Calendar', icon: 'CalendarDays' },
   { id: 'mail', label: 'Mail', icon: 'Mail' },
   { id: 'chat', label: 'Chat', icon: 'MessageSquare' },
@@ -98,6 +100,8 @@ function HubBody({
       return <DashboardScreen />;
     case 'todos':
       return <TodosScreen navigation={navigation} />;
+    case 'reminders':
+      return <RemindersScreen navigation={navigation} />;
     case 'calendar':
       return <CalendarScreen navigation={navigation} />;
     case 'mail':
@@ -123,7 +127,7 @@ function HubBody({
 
 /**
  * Hub — mobile peer of the web Hub page. One drawer entry; assistant +
- * Dashboard / Org / Todos / Calendar / Mail / Chat / Support live as tabs
+ * Dashboard / Org / Todos / Reminders / Calendar / Mail / Chat / Support live as tabs
  * here.
  */
 export default function HubScreen({ navigation, route }: any) {

@@ -1,6 +1,7 @@
 import { useCallback, useState, type ReactNode } from 'react';
 import {
   BarChart3,
+  BellRing,
   Bot,
   Briefcase,
   CalendarDays,
@@ -27,6 +28,7 @@ const PANE_META: Record<
   today: { label: 'Dashboard', icon: Briefcase, testId: 'hub-pane-today' },
   org: { label: 'Org', icon: BarChart3, testId: 'hub-pane-org' },
   todos: { label: 'Todos', icon: ListTodo, testId: 'hub-pane-todos' },
+  reminders: { label: 'Reminders', icon: BellRing, testId: 'hub-pane-reminders' },
   calendar: { label: 'Calendar', icon: CalendarDays, testId: 'hub-pane-calendar' },
   mail: { label: 'Mail', icon: Mail, testId: 'hub-pane-mail' },
   chat: { label: 'Chat', icon: MessagesSquare, testId: 'hub-pane-chat' },
@@ -41,6 +43,7 @@ export interface HubPageProps {
   today: ReactNode;
   org: ReactNode;
   todos: ReactNode;
+  reminders: ReactNode;
   calendar: ReactNode;
   mail: ReactNode;
   chat: ReactNode;
@@ -81,7 +84,10 @@ function writeAssistantCollapsed(collapsed: boolean): void {
 
 function workspaceBody(
   active: HubWorkspacePane,
-  panes: Pick<HubPageProps, 'today' | 'org' | 'todos' | 'calendar' | 'mail' | 'chat' | 'support'>,
+  panes: Pick<
+    HubPageProps,
+    'today' | 'org' | 'todos' | 'reminders' | 'calendar' | 'mail' | 'chat' | 'support'
+  >,
 ): ReactNode {
   switch (active) {
     case 'today':
@@ -90,6 +96,8 @@ function workspaceBody(
       return panes.org;
     case 'todos':
       return panes.todos;
+    case 'reminders':
+      return panes.reminders;
     case 'calendar':
       return panes.calendar;
     case 'mail':
@@ -115,6 +123,7 @@ export default function HubPage({
   today,
   org,
   todos,
+  reminders,
   calendar,
   mail,
   chat,
@@ -137,6 +146,7 @@ export default function HubPage({
     today,
     org,
     todos,
+    reminders,
     calendar,
     mail,
     chat,

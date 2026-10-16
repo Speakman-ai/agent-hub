@@ -59,3 +59,17 @@ describe('google-scopes write gates', () => {
     expect(hasSheetsWriteScope([SHEETS_READONLY_SCOPE])).toBe(false);
   });
 });
+
+describe('hasCalendarPrimaryWriteScope', () => {
+  it('accepts only scopes that can write the primary calendar', async () => {
+    const { hasCalendarPrimaryWriteScope } = await import('./google-scopes.js');
+    const g = 'https://www.googleapis.com/auth/';
+    expect(hasCalendarPrimaryWriteScope([`${g}calendar`])).toBe(true);
+    expect(hasCalendarPrimaryWriteScope([`${g}calendar.events`])).toBe(true);
+    expect(hasCalendarPrimaryWriteScope([`${g}calendar.events.owned`])).toBe(true);
+    expect(hasCalendarPrimaryWriteScope([`${g}calendar.readonly`])).toBe(false);
+    expect(hasCalendarPrimaryWriteScope([`${g}calendar.events.readonly`])).toBe(false);
+    expect(hasCalendarPrimaryWriteScope([`${g}calendar.app.created`])).toBe(false);
+    expect(hasCalendarPrimaryWriteScope([])).toBe(false);
+  });
+});

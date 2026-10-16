@@ -13,6 +13,7 @@ describe('notification category catalog', () => {
   it('groups categories into the spec sections in order', () => {
     expect(NOTIFICATION_SECTIONS.map((s) => s.label)).toEqual([
       'Sessions',
+      'Reminders',
       'Code',
       'Board',
       'Support',
@@ -30,6 +31,7 @@ describe('notification category catalog', () => {
         'session_completed',
         'routine_run',
       ],
+      reminders: ['reminder'],
       code: ['ready_to_push', 'pushed', 'finalize_failed', 'review_assigned_to_you', 'pr_merged'],
       board: ['card_assigned_to_you', 'escalation'],
       support: ['support_ticket_created'],
@@ -51,6 +53,7 @@ describe('notification category catalog', () => {
       'awaiting_feedback',
       'browser_sign_in',
       'approval_requested',
+      'reminder',
       'review_assigned_to_you',
       'dm',
       'mention',

@@ -243,6 +243,16 @@ export function AppProvider({ children }: any) {
   // bump a timestamp so an effect keyed on it re-runs. Shape:
   //   { action: 'created'|'updated'|'deleted'|'reordered'|'promoted', bump }
   const [lastUserTodoEvent, setLastUserTodoEvent] = useState<any>(null);
+  // `reminder_update` WS events (owner-only on the server) go to subscribers
+  // one by one. A "last event" state would drop all but the last of several
+  // events delivered in one render batch (e.g. two reminders firing at once).
+  const reminderListenersRef = useRef(new Set<(event: any) => void>());
+  const subscribeReminderUpdates = useCallback((listener: (event: any) => void) => {
+    reminderListenersRef.current.add(listener);
+    return () => {
+      reminderListenersRef.current.delete(listener);
+    };
+  }, []);
   // Last `google_chat_draft_update` WS event (owner-only on the server):
   // { draft, bump }. Drives the session's agent-reply approval panel.
   const [lastGoogleChatDraftEvent, setLastGoogleChatDraftEvent] = useState<any>(null);
@@ -936,6 +946,15 @@ export function AppProvider({ children }: any) {
           // silently refetch (create/update/delete/reorder/promote).
           setLastUserTodoEvent({ action: data.action ?? null, bump: Date.now() });
           break;
+        case 'reminder_update':
+          for (const listener of reminderListenersRef.current) {
+            listener({
+              action: data.action ?? null,
+              reminderId: data.reminderId ?? null,
+              reminder: data.reminder ?? null,
+            });
+          }
+          break;
         case 'org_todo_update':
           // Shared org todo changed. The server fans this to every member of
           // the org, so surface it and let OrgTodosSection (scoped to its org)
@@ -1360,7 +1379,8 @@ export function AppProvider({ children }: any) {
         case 'infra':
         case 'hubChat':
         case 'deployments':
-        case 'crons': {
+        case 'crons':
+        case 'reminders': {
           // Navigator-driven kinds share one param mapper (screen + params,
           // including the `pulls` PR number and the `infra` alert id).
           const nav = notificationRouteToNavigation(route);
@@ -2802,6 +2822,7 @@ export function AppProvider({ children }: any) {
     lastInfraHealthEvent,
     // Cross-project personal todos (live refetch signal)
     lastUserTodoEvent,
+    subscribeReminderUpdates,
     lastGoogleChatDraftEvent,
     // Shared org todos (live refetch signal)
     lastOrgTodoEvent,

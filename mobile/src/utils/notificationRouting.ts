@@ -9,7 +9,8 @@
  * @typedef {{ kind: 'hubChat', channelId: string }} HubChatRoute
  * @typedef {{ kind: 'deployments', projectId: string }} DeploymentsRoute
  * @typedef {{ kind: 'crons', projectId: string }} CronsRoute
- * @typedef {ChatRoute | KanbanRoute | SupportRoute | PullsRoute | InfraRoute | HubChatRoute | DeploymentsRoute} Route
+ * @typedef {{ kind: 'reminders' }} RemindersRoute
+ * @typedef {ChatRoute | KanbanRoute | SupportRoute | PullsRoute | InfraRoute | HubChatRoute | DeploymentsRoute | CronsRoute | RemindersRoute} Route
  */
 import type { InboxNotification } from '@shared/utils/notificationInbox';
 /**
@@ -131,6 +132,8 @@ export function routeNotificationTap(data: any, ctx: any = {}) {
       if (!channelId) return null;
       return { kind: 'hubChat', channelId };
     }
+    case 'reminder':
+      return { kind: 'reminders' as const };
     case 'deploy_outcome': {
       const projectId = typeof data.projectId === 'string' ? data.projectId : null;
       if (!projectId) return null;
@@ -247,6 +250,7 @@ export function routeFromWebLink(link: unknown) {
         ? { kind: 'infra' as const, projectId, alertId: linkSegment(params.get('alert')) }
         : null;
     case 'hub': {
+      if (segs[1] === 'reminders') return { kind: 'reminders' as const };
       const channelId = segs[1] === 'chat' ? linkSegment(params.get('channel')) : null;
       return channelId ? { kind: 'hubChat' as const, channelId } : null;
     }
@@ -326,6 +330,8 @@ export function notificationRouteToNavigation(route: any) {
       return { screen: 'Deployments', params: { projectId: route.projectId } };
     case 'crons':
       return { screen: 'ProjectCrons', params: { projectId: route.projectId } };
+    case 'reminders':
+      return { screen: 'Hub', params: { tab: 'reminders' } };
     default:
       return null;
   }

@@ -131,10 +131,8 @@ PROJECT_ID=agent-hub scripts/log-tool-error.sh \
   --summary 'ENOENT: tsx not found in PATH'
 ```
 
-The reference also lists common failure modes (auth `401`/`403`, missing
-`PROJECT_ID`, column-name typos, wiki `409`, rejected
-`<agenthub:close-card>` payloads, plan-mode blocks, `429` rate limits,
-WebSocket mid-stream drops) with the recovery step that usually unsticks them.
+The reference also lists common failure modes (auth `401`/`403`, missing `PROJECT_ID`, column-name typos, wiki `409`, rejected
+`<agenthub:close-card>` payloads, plan-mode blocks, `429` rate limits, WebSocket mid-stream drops) with the recovery step that usually unsticks them.
 
 ## Self-reporting checklist
 
@@ -165,10 +163,11 @@ scripts/artifacts.sh get <artifactId> ./out.pdf      # download bytes back to a 
 scripts/artifacts.sh delete <artifactId>             # remove one
 ```
 
-Everything is scoped to `$AGENT_HUB_SESSION_ID`. Executables / native binaries
-and files over 100 MB are rejected. Storage is S3 when the Hub is configured
-with an artifacts bucket, otherwise a local directory — either way you use the
-same script.
+Everything is scoped to `$AGENT_HUB_SESSION_ID`. Executables / native binaries and files over 100 MB are rejected. Storage is S3 when the Hub has an artifacts bucket, otherwise a local directory; the script is the same.
+
+## Reminders
+
+To remind the session owner later, run `scripts/reminders.sh add "<title>" --in 2h` (or `--at <iso8601>`). It fires into their inbox and lands on their Google Calendar when connected. Details: **[references/reminders.md](references/reminders.md)**.
 
 ## Background shells — run work that outlives the turn
 

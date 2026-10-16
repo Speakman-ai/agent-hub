@@ -498,3 +498,31 @@ describe('routeNotificationTap — approval requested', () => {
     expect(routeNotificationTap({ event: 'approval_requested' })).toBeNull();
   });
 });
+
+describe('reminders', () => {
+  it('opens the Hub Reminders tab from a push, a bell row, and a web link', () => {
+    const route = routeNotificationTap({ event: 'reminder', reminderId: 'r1', sessionId: 's1' });
+    expect(route).toEqual({ kind: 'reminders' });
+    expect(notificationRouteToNavigation(route)).toEqual({
+      screen: 'Hub',
+      params: { tab: 'reminders' },
+    });
+    expect(
+      routeInboxNotification({
+        id: 'n1',
+        userId: 'u',
+        orgId: null,
+        projectId: null,
+        category: 'reminder',
+        title: 'Reminder: x',
+        body: '',
+        route: null,
+        data: { reminderId: 'r1' },
+        sourceKey: 'reminder:r1:t',
+        createdAt: '2026-10-16T00:00:00Z',
+        readAt: null,
+      }),
+    ).toEqual({ kind: 'reminders' });
+    expect(routeFromWebLink('#/hub/reminders')).toEqual({ kind: 'reminders' });
+  });
+});

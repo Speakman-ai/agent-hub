@@ -16,6 +16,8 @@
 // Calendar (sensitive)
 export const CALENDAR_EVENTS_SCOPE = 'https://www.googleapis.com/auth/calendar.events';
 export const CALENDAR_FULL_SCOPE = 'https://www.googleapis.com/auth/calendar';
+/** Events on calendars the user owns (primary included). Write-capable. */
+export const CALENDAR_EVENTS_OWNED_SCOPE = 'https://www.googleapis.com/auth/calendar.events.owned';
 
 // Gmail (sensitive Tier 2: readonly is narrowest read; modify/full also read)
 export const GMAIL_READONLY_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
@@ -31,6 +33,21 @@ export const SHEETS_READONLY_SCOPE = 'https://www.googleapis.com/auth/spreadshee
 
 export function hasCalendarReadScope(scopes: string[]): boolean {
   return scopes.includes(CALENDAR_EVENTS_SCOPE) || scopes.includes(CALENDAR_FULL_SCOPE);
+}
+
+/**
+ * Can we create, patch and delete events on the user's primary calendar?
+ * Per the events.insert authorization list: `calendar`, `calendar.events`, or
+ * `calendar.events.owned`. `calendar.app.created` is also listed but only
+ * covers secondary calendars the app created, so it can't write `primary`.
+ * Read-only scopes (`calendar.readonly`, `calendar.events.readonly`) never do.
+ */
+export function hasCalendarPrimaryWriteScope(scopes: string[]): boolean {
+  return (
+    scopes.includes(CALENDAR_FULL_SCOPE) ||
+    scopes.includes(CALENDAR_EVENTS_SCOPE) ||
+    scopes.includes(CALENDAR_EVENTS_OWNED_SCOPE)
+  );
 }
 
 export function hasGmailReadScope(scopes: string[]): boolean {

@@ -24,6 +24,7 @@ const {
   updateRotatedAccessToken,
   getActiveAccessToken,
 } = await import('./google-connections-store.js');
+const { createReminder, beginCalendarInsert, getReminder } = await import('./reminders-store.js');
 
 function freshDb() {
   TMP_DIR = mkdtempSync(path.join(tmpdir(), 'google-conn-store-test-'));
@@ -366,3 +367,32 @@ describe('getActiveAccessToken — transparent refresh', () => {
 // A token refreshed with expires_in=3600 must land well beyond the 5-minute
 // safety window. 4 minutes is a comfortable lower bound for the assertion.
 const REFRESH_SAFETY_NEAR = 4 * 60 * 1000;
+
+describe('google-connections-store — reminder calendar recovery', () => {
+  beforeEach(() => {
+    freshDb();
+  });
+
+  it('makes backed-off reminder calendar work due again when Google is reconnected', () => {
+    const userId = createUser({ username: 'reconnect', passwordHash: 'x' }).id;
+    const r = createReminder({ userId, title: 't', remindAt: '2030-01-01T00:00:00.000Z' });
+    const farFuture = new Date('2030-01-01T00:00:00.000Z');
+    beginCalendarInsert(userId, r.id, 'primary', 'ahrabc123', farFuture);
+    const before = Date.now();
+    upsertGoogleConnection({
+      userId,
+      googleSub: 'sub',
+      googleEmail: 'a@example.com',
+      accessToken: 'tok',
+      tokenExpiresAt: null,
+      refreshToken: 'refresh',
+      grantedScopes: SCOPES,
+    });
+    const row = getOrgsDb()
+      .prepare('SELECT calendar_retry_at FROM reminders WHERE id = ?')
+      .get(r.id) as { calendar_retry_at: string };
+    expect(Date.parse(row.calendar_retry_at)).toBeGreaterThanOrEqual(before - 1000);
+    expect(Date.parse(row.calendar_retry_at)).toBeLessThan(farFuture.getTime());
+    expect(getReminder(userId, r.id)?.calendar.status).toBe('pending');
+  });
+});

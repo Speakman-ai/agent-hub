@@ -12404,6 +12404,7 @@ components:
             approval_requested: *a3
             session_completed: *a3
             routine_run: *a3
+            reminder: *a3
             ready_to_push: *a3
             pushed: *a3
             finalize_failed: *a3
@@ -12441,6 +12442,7 @@ components:
                 type: string
                 enum:
                   - sessions
+                  - reminders
                   - code
                   - board
                   - support
@@ -12458,6 +12460,7 @@ components:
                     - approval_requested
                     - session_completed
                     - routine_run
+                    - reminder
                     - ready_to_push
                     - pushed
                     - finalize_failed
@@ -12487,6 +12490,7 @@ components:
                   - approval_requested
                   - session_completed
                   - routine_run
+                  - reminder
                   - ready_to_push
                   - pushed
                   - finalize_failed
@@ -12503,6 +12507,7 @@ components:
                 type: string
                 enum:
                   - sessions
+                  - reminders
                   - code
                   - board
                   - support
@@ -12550,6 +12555,114 @@ components:
         - sections
         - categories
       description: The caller per-category, per-channel notification matrix. Every catalog category is present; unset ones carry catalog defaults.
+    MeRemindersErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope for reminder routes.
+    Reminder:
+      type: object
+      properties:
+        id:
+          type: string
+        userId:
+          type: string
+        title:
+          type: string
+        notes:
+          type: string
+        remindAt:
+          type: string
+          description: ISO-8601 UTC time the reminder fires.
+        status:
+          type: string
+          enum:
+            - pending
+            - fired
+            - dismissed
+          description: "`pending` until due, `fired` once notified, `dismissed` when cleared."
+        createdBy:
+          type: string
+          enum:
+            - user
+            - agent
+        sessionId:
+          type: string
+          nullable: true
+          description: Session that set it, if any.
+        agentId:
+          type: string
+          nullable: true
+        projectId:
+          type: string
+          nullable: true
+        calendar:
+          type: object
+          properties:
+            status:
+              type: string
+              enum:
+                - none
+                - pending
+                - synced
+                - updating
+                - skipped
+                - failed
+                - removing
+                - cancelled
+              description: "`pending` while the event is being created (or the insert is queued for retry), `synced` when mirrored to Google Calendar, `updating` while an edit is being pushed to the event, `skipped` when the calendar was unavailable, `none` when not requested, `failed` when the Google write errored (retried), `removing` when it was dismissed before firing and its event is queued for removal but Google has not confirmed it yet (`error` holds the last failed attempt), `cancelled` once Google confirmed the removal."
+            calendarId:
+              type: string
+              nullable: true
+            eventId:
+              type: string
+              nullable: true
+            eventUrl:
+              type: string
+              nullable: true
+            error:
+              type: string
+              nullable: true
+          required:
+            - status
+            - calendarId
+            - eventId
+            - eventUrl
+            - error
+        firedAt:
+          type: string
+          nullable: true
+        dismissedAt:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+        revision:
+          type: integer
+          description: Increases on every write to the reminder. Clients keep the higher revision when a list response and a live `reminder_update` disagree.
+      required:
+        - id
+        - userId
+        - title
+        - notes
+        - remindAt
+        - status
+        - createdBy
+        - sessionId
+        - agentId
+        - projectId
+        - calendar
+        - firedAt
+        - dismissedAt
+        - createdAt
+        - updatedAt
+        - revision
+      description: A personal reminder that fires into the notification inbox.
     MemoryErrorResponse:
       type: object
       properties:
@@ -44275,6 +44388,239 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/NotificationPreferencesErrorResponse"
+  /api/me/reminders:
+    get:
+      tags:
+        - Personal Reminders
+      summary: List the calling user's reminders, soonest first
+      parameters:
+        - schema:
+            type: string
+            description: Comma-separated statuses to include (pending, fired, dismissed). Defaults to pending,fired.
+          required: false
+          description: Comma-separated statuses to include (pending, fired, dismissed). Defaults to pending,fired.
+          name: status
+          in: query
+        - schema:
+            type: string
+            description: Only reminders set by this session.
+          required: false
+          description: Only reminders set by this session.
+          name: sessionId
+          in: query
+      responses:
+        "200":
+          description: The caller's reminders.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  reminders:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Reminder"
+                required:
+                  - reminders
+        "400":
+          description: Invalid status filter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeRemindersErrorResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeRemindersErrorResponse"
+    post:
+      tags:
+        - Personal Reminders
+      summary: Create a reminder (and mirror it to Google Calendar when available)
+      description: Agents call this from a session to remind the session owner. The reminder fires into the notification inbox (category `reminder`) at `remindAt`.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                notes:
+                  type: string
+                  maxLength: 4000
+                remindAt:
+                  type: string
+                  description: When to fire, as an ISO-8601 date-time with an offset or Z.
+                  example: 2026-10-17T09:00:00-07:00
+                inMinutes:
+                  type: integer
+                  minimum: 1
+                  maximum: 527040
+                  description: "Alternative to remindAt: fire this many minutes from now."
+                calendar:
+                  type: string
+                  enum:
+                    - auto
+                    - none
+                  description: "`auto` (default) also puts the reminder on the owner's Google Calendar when it is connected; `none` keeps it in Agent Hub only."
+                sessionId:
+                  type: string
+                  description: Link to a session the caller owns. Agent sessions are linked automatically from their spawn credentials or the X-Agent-Hub-Session-Id header.
+              required:
+                - title
+              additionalProperties: false
+      responses:
+        "201":
+          description: Created reminder, including the calendar mirror outcome.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  reminder:
+                    $ref: "#/components/schemas/Reminder"
+                required:
+                  - reminder
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeRemindersErrorResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeRemindersErrorResponse"
+        "410":
+          description: The reminder was deleted by another request before its calendar event finished saving. Nothing was created; any event is queued for removal.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeRemindersErrorResponse"
+  /api/me/reminders/{id}:
+    patch:
+      tags:
+        - Personal Reminders
+      summary: Edit, snooze, or dismiss a reminder
+      parameters:
+        - schema:
+            type: string
+            description: Reminder id.
+          required: true
+          description: Reminder id.
+          name: id
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                notes:
+                  type: string
+                  maxLength: 4000
+                remindAt:
+                  type: string
+                  description: When to fire, as an ISO-8601 date-time with an offset or Z.
+                  example: 2026-10-17T09:00:00-07:00
+                snoozeMinutes:
+                  type: integer
+                  minimum: 1
+                  maximum: 527040
+                  description: Re-arm the reminder this many minutes from now.
+                status:
+                  type: string
+                  enum:
+                    - pending
+                    - fired
+                    - dismissed
+              additionalProperties: false
+      responses:
+        "200":
+          description: Updated reminder.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  reminder:
+                    $ref: "#/components/schemas/Reminder"
+                required:
+                  - reminder
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeRemindersErrorResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeRemindersErrorResponse"
+        "404":
+          description: Reminder not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeRemindersErrorResponse"
+    delete:
+      tags:
+        - Personal Reminders
+      summary: Delete a reminder and its calendar event
+      parameters:
+        - schema:
+            type: string
+            description: Reminder id.
+          required: true
+          description: Reminder id.
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  calendarCleanup:
+                    type: string
+                    enum:
+                      - none
+                      - done
+                      - pending
+                    description: "`done` when the mirrored calendar event was removed, `pending` when removal failed and is queued for retry, `none` when there was no event."
+                required:
+                  - ok
+                  - calendarCleanup
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeRemindersErrorResponse"
+        "404":
+          description: Reminder not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeRemindersErrorResponse"
   /api/memory/reconcile:
     post:
       tags:

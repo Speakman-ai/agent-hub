@@ -31,6 +31,14 @@ describe('notificationTarget', () => {
     ).toEqual({ kind: 'session', sessionId: 's2', agentId: null });
   });
 
+  it('opens the Reminders pane for reminders, even ones set from a session', () => {
+    expect(
+      notificationTarget(
+        row({ category: 'reminder', data: { reminderId: 'r1', sessionId: 's1', agentId: 'a1' } }),
+      ),
+    ).toEqual({ kind: 'route', route: { view: 'hub', hubPane: 'reminders' } });
+  });
+
   it('opens the card on the board for card assignments', () => {
     expect(
       notificationTarget(

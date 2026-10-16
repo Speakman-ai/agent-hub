@@ -26,6 +26,7 @@ import {
   GoogleInvalidGrantError,
   type GoogleOAuthCredentials,
 } from './google-oauth.js';
+import { wakeReminderCalendarWork } from './reminders-store.js';
 
 export interface GoogleConnectionRow {
   userId: string;
@@ -132,6 +133,13 @@ export function upsertGoogleConnection(args: {
     JSON.stringify(args.grantedScopes),
     connectedAt,
   );
+  // Calendar work for reminders that failed while Google was unreachable or
+  // disconnected becomes due again right away.
+  try {
+    wakeReminderCalendarWork(args.userId);
+  } catch (err) {
+    console.warn('[google-connections] reminder calendar wake failed:', (err as Error).message);
+  }
 }
 
 /**

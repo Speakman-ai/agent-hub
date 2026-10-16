@@ -1,3 +1,9 @@
+import type {
+  CreateReminderBody,
+  ReminderStatus,
+  ReminderWire,
+  UpdateReminderBody,
+} from '@shared/utils/reminders';
 import type { UploadedAttachment } from '@shared/types/uploads';
 import type { ChatDigestSaveRequest } from '@shared/utils/chatDigest';
 import type { RoutineDraftWire } from '@shared/utils/routineFromRecording';
@@ -1223,6 +1229,22 @@ export const api = {
   getGithubAuthStartUrl: (returnTo: string): Promise<{ authorizeUrl: string }> =>
     fetchJSON(`/auth/github/start?returnTo=${encodeURIComponent(returnTo)}`),
   disconnectGithub: () => fetchJSON('/auth/github', { method: 'DELETE' }),
+  // Personal reminders. Scoped to the caller; writes broadcast `reminder_update`.
+  listReminders: (status?: ReminderStatus[] | 'all') =>
+    fetchJSON(
+      `/me/reminders${status ? `?status=${status === 'all' ? 'all' : status.join(',')}` : ''}`,
+    ) as Promise<{ reminders: ReminderWire[] }>,
+  createReminder: (data: CreateReminderBody) =>
+    fetchJSON('/me/reminders', { method: 'POST', body: JSON.stringify(data) }) as Promise<{
+      reminder: ReminderWire;
+    }>,
+  updateReminder: (id: string, data: UpdateReminderBody) =>
+    fetchJSON(`/me/reminders/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }) as Promise<{ reminder: ReminderWire }>,
+  deleteReminder: (id: string) =>
+    fetchJSON(`/me/reminders/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   // Cross-project personal todos (spec TODO-MODEL). Scoped server-side to the
   // authenticated user; every write broadcasts `user_todo_update` to the owner.
   listTodos: (status?: 'open' | 'done') =>

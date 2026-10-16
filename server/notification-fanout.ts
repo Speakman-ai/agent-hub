@@ -47,6 +47,7 @@ import {
   type PushDispatchDeps,
 } from './push.js';
 import { HUB_CHAT_MESSAGE_EVENT, mentionedUserIds } from './hub-chat-events.js';
+import { REMINDER_DUE_EVENT } from './reminders-events.js';
 import { pushCategoryIdFor } from '../shared/utils/approvals.js';
 import { isLocalBundledServer } from './auth.js';
 import { getActiveOrgId } from './orgs.js';
@@ -109,7 +110,13 @@ export type RecipientSpec =
   | { kind: 'users'; userIds: string[] }
   | { kind: 'project' }
   /** Hub Chat members who would be notified (`getChatPushUserIds`). */
-  | { kind: 'chat' };
+  | { kind: 'chat' }
+  /**
+   * A user's own personal item (a reminder). Authorized by ownership, not by
+   * project visibility: the event carries nothing beyond what the user wrote
+   * or asked an agent to write for them.
+   */
+  | { kind: 'self'; userId: string };
 
 export interface NotificationIntent {
   category: NotificationCategoryId;
@@ -163,7 +170,7 @@ function str(v: unknown): string | undefined {
   return typeof v === 'string' && v ? v : undefined;
 }
 
-function defaultGetPrefs(userId: string, category: NotificationCategoryId): StoredPrefs {
+export function defaultGetPrefs(userId: string, category: NotificationCategoryId): StoredPrefs {
   const row = getUserNotificationPrefs(userId).find((p) => p.category === category);
   if (row) return row;
   return {
@@ -433,6 +440,34 @@ export function mapBroadcastToNotification(data: BroadcastData): NotificationInt
       };
     }
 
+    case REMINDER_DUE_EVENT: {
+      const reminder = (data.reminder ?? {}) as Record<string, unknown>;
+      const id = str(reminder.id);
+      const owner = str(reminder.userId) ?? str(data.ownerUserId);
+      if (!id || !owner) return null;
+      const title = str(reminder.title) ?? 'Reminder';
+      const notes = str(reminder.notes);
+      const remindAt = str(reminder.remindAt);
+      return {
+        category: 'reminder',
+        pushEvent: null,
+        deviceScope: 'recipients',
+        title: `Reminder: ${title.length > 120 ? `${title.slice(0, 117)}...` : title}`,
+        body: notes ? (notes.length > 200 ? `${notes.slice(0, 197)}...` : notes) : 'Due now',
+        data: {
+          reminderId: id,
+          sessionId: str(reminder.sessionId),
+          agentId: str(reminder.agentId),
+          projectId: str(reminder.projectId),
+          type: 'reminder',
+        },
+        projectId: str(reminder.projectId) ?? null,
+        // remindAt is part of the key so a snoozed reminder notifies again.
+        sourceKey: `reminder:${id}:${remindAt ?? ''}`,
+        recipients: { kind: 'self', userId: owner },
+      };
+    }
+
     case 'finalize_run_completed': {
       const legacy = fromLegacyPush(data);
       if (legacy) return legacy;
@@ -566,6 +601,7 @@ export function resolveRecipientUserIds(
   if (intent.recipients.kind === 'chat') {
     return [...new Set(d.getChatPushUserIds({ ...intent.data, ...data }))];
   }
+  if (intent.recipients.kind === 'self') return [intent.recipients.userId];
   if (!projectId) return [];
   const viewers = listProjectUserIds(projectId);
   let addressed: string[];
@@ -636,7 +672,7 @@ export async function handleBroadcastForNotifications(
   let projectId = intent.projectId;
   let userIds: string[];
   try {
-    if (!projectId && intent.recipients.kind !== 'chat') {
+    if (!projectId && intent.recipients.kind !== 'chat' && intent.recipients.kind !== 'self') {
       projectId = d.resolveProjectId({ type: data.type, ...intent.data });
     }
     userIds = resolveRecipientUserIds(data, intent, projectId, d, listProjectUserIds);

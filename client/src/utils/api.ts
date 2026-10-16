@@ -16,6 +16,12 @@ import type { BrowserDomainPolicy, BrowserProfileWire } from '@shared/utils/brow
 import type { ApprovalDecision, ApprovalRuleWire, ApprovalWire } from '@shared/utils/approvals';
 import type { InfraFleetWire } from '@shared/utils/infraFleet';
 import type { InboxNotification } from './notificationTarget';
+import type {
+  CreateReminderBody,
+  ReminderStatus,
+  ReminderWire,
+  UpdateReminderBody,
+} from '@shared/utils/reminders';
 import type { QuotaHeadroomResponse } from '@shared/utils/quotaHeadroom';
 import type { SessionContextUsage } from '@shared/utils/contextUsage';
 
@@ -980,6 +986,23 @@ export const api = {
     return fetchJSON<{ authorizeUrl: string }>(`/auth/google/start${qs ? `?${qs}` : ''}`);
   },
   disconnectGoogle: () => fetchJSON('/auth/google/connect', { method: 'DELETE' }),
+  // Personal reminders. Scoped to the caller; writes broadcast `reminder_update`.
+  listReminders: (status?: ReminderStatus[] | 'all') => {
+    const qs = status ? `?status=${status === 'all' ? 'all' : status.join(',')}` : '';
+    return fetchJSON<{ reminders: ReminderWire[] }>(`/me/reminders${qs}`);
+  },
+  createReminder: (data: CreateReminderBody) =>
+    fetchJSON<{ reminder: ReminderWire }>('/me/reminders', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateReminder: (id: string, data: UpdateReminderBody) =>
+    fetchJSON<{ reminder: ReminderWire }>(`/me/reminders/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  deleteReminder: (id: string) =>
+    fetchJSON<{ ok: true }>(`/me/reminders/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   // Cross-project personal todos (spec TODO-MODEL). Scoped server-side to the
   // authenticated user; every write broadcasts `user_todo_update` to the owner.
   listTodos: (status?: 'open' | 'done') => {

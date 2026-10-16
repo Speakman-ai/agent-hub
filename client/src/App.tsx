@@ -102,6 +102,7 @@ import ChatPane from './components/ChatPane';
 import { HubChatRefOpenContext, type HubChatRefOpenHandler } from './components/HubChatRefs';
 import { useGoogleChatPush, useGoogleChatPushBootstrap } from './utils/googleChatPush';
 import TodosPage from './components/TodosPage';
+import RemindersPage from './components/RemindersPage';
 import PersonalDashboard from './components/PersonalDashboard';
 import HubPage from './components/HubPage';
 import HubModelPicker, { defaultHubModelForEngine } from './components/HubModelPicker';
@@ -3336,6 +3337,10 @@ export default function App({ initialView }: any = {}) {
         // the WS connection directly.
         case 'user_todo_update':
           window.dispatchEvent(new CustomEvent('user_todo_update', { detail: data }));
+          break;
+        // Personal reminders changed (owner-only on the server).
+        case 'reminder_update':
+          window.dispatchEvent(new CustomEvent('reminder_update', { detail: data }));
           break;
         // Agent-written Google Chat reply draft changed. Owner-only on the
         // server; bridged so the session panel and the Chat pane both update.
@@ -7271,6 +7276,14 @@ export default function App({ initialView }: any = {}) {
                     <TodosPage
                       orgId={getActiveOrgApiId()}
                       onSessionStarted={handleOpenCreatedSession}
+                    />
+                  }
+                  reminders={
+                    <RemindersPage
+                      onOpenSession={({ sessionId, agentId }) => {
+                        if (agentId) focusAgentSession(agentId, sessionId);
+                      }}
+                      onOpenAccountSettings={() => setCurrentView('settings:account')}
                     />
                   }
                   calendar={

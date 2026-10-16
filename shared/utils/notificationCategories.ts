@@ -66,6 +66,18 @@ export const NOTIFICATION_SECTIONS = [
     ],
   },
   {
+    id: 'reminders',
+    label: 'Reminders',
+    categories: [
+      {
+        id: 'reminder',
+        label: 'Reminders',
+        description: 'A reminder you or an agent set is due',
+        defaults: LOUD,
+      },
+    ],
+  },
+  {
     id: 'code',
     label: 'Code',
     categories: [

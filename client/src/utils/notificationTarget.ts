@@ -84,6 +84,8 @@ export function notificationTarget(n: InboxNotification): NotificationTarget | n
         },
       };
     }
+    case 'reminder':
+      return { kind: 'route', route: { view: 'hub', hubPane: 'reminders' } };
     case 'infra_alert':
       return projectId ? { kind: 'route', route: { view: `infra:${projectId}` } } : null;
     case 'deploy_outcome':
