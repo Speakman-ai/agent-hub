@@ -48,6 +48,7 @@ import { formatHubChatRefToken } from '@shared/utils/hubChatRefTokens';
 import { isHubSystemProject } from '@shared/utils/hub';
 import { useIsFocused } from '@react-navigation/native';
 import { api } from '../utils/api';
+import { shouldFollowTail } from '../utils/followTail';
 import {
   createChannelSync,
   type ChannelSync,
@@ -1098,13 +1099,6 @@ function ChannelView({
       ) : null}
     </KeyboardAvoidingView>
   );
-}
-
-/** Within this many points of the bottom, the list keeps following new messages. */
-const FOLLOW_TAIL_SLOP = 80;
-
-export function shouldFollowTail(offsetY: number, viewHeight: number, contentHeight: number) {
-  return contentHeight - (offsetY + viewHeight) <= FOLLOW_TAIL_SLOP;
 }
 
 function timeLabel(iso: string): string {

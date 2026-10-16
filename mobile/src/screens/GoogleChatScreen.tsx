@@ -14,6 +14,7 @@ import {
   View,
 } from 'react-native';
 import { api } from '../utils/api';
+import { shouldFollowTail } from '../utils/followTail';
 import { useHubChatSnapshot } from '../hooks/useHubChat';
 import {
   applyNewest,
@@ -82,6 +83,10 @@ function AccountGoogleChatPane() {
   const spacesGen = useRef(0);
   const viewGen = useRef(0);
   const openSpaceId = useRef<string | null>(null);
+  const listRef = useRef<FlatList<ChatHistory['messages'][number]> | null>(null);
+  // Opening a conversation lands on its newest message and keeps following
+  // until the reader scrolls up.
+  const stickToBottomRef = useRef(true);
   useEffect(
     () => () => {
       alive.current = false;
@@ -209,6 +214,7 @@ function AccountGoogleChatPane() {
     const view = viewGen.current;
     const seq = ++olderSeq.current;
     const current = () => alive.current && view === viewGen.current && seq === olderSeq.current;
+    stickToBottomRef.current = false;
     setError('');
     setLoadingMore(true);
     try {
@@ -235,6 +241,7 @@ function AccountGoogleChatPane() {
 
   const resetView = () => {
     viewGen.current++;
+    stickToBottomRef.current = true;
     setHistory(EMPTY_HISTORY);
     setSelfName(null);
     setDraft('');
@@ -314,6 +321,7 @@ function AccountGoogleChatPane() {
     try {
       await api.sendGoogleChatMessage(target.id, { text: text.trim() });
       if (!stillOpen()) return true;
+      stickToBottomRef.current = true;
       await syncNewest(target, 'refresh');
       return true;
     } catch (err: any) {
@@ -372,9 +380,24 @@ function AccountGoogleChatPane() {
           <ActivityIndicator color={colors.sky400} style={styles.spinner} />
         ) : (
           <FlatList
+            ref={listRef}
             data={messages}
             keyExtractor={(item, index) => item.name || item.id || String(index)}
             contentContainerStyle={styles.listPad}
+            // Prepending an older page keeps the reader's place.
+            maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
+            scrollEventThrottle={100}
+            onScroll={(e) => {
+              const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+              stickToBottomRef.current = shouldFollowTail(
+                contentOffset.y,
+                layoutMeasurement.height,
+                contentSize.height,
+              );
+            }}
+            onContentSizeChange={() => {
+              if (stickToBottomRef.current) listRef.current?.scrollToEnd({ animated: false });
+            }}
             refreshing={refreshing}
             onRefresh={() => void refreshMessages(space, true)}
             ListHeaderComponent={

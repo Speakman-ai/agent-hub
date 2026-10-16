@@ -33,7 +33,8 @@ vi.mock('../components/HubIcon', () => ({
   default: ({ name }: any) => <span data-name={name} />,
 }));
 
-import { ChannelRow, MessageRow, shouldFollowTail } from './HubChatScreen';
+import { ChannelRow, MessageRow } from './HubChatScreen';
+import { shouldFollowTail } from '../utils/followTail';
 import { HubChatRefChip } from '../components/HubChatRefs';
 
 function channel(over: Partial<HubChatChannel> = {}): HubChatChannel {

@@ -105,6 +105,7 @@ import {
   type ChannelFieldGroup,
 } from '../utils/hubChat';
 import { formatHubChatRefToken } from '@shared/utils/hubChatRefTokens';
+import { useStickToBottom } from '../hooks/useStickToBottom';
 
 const PAGE = 50;
 const TOOL_BUTTON =
@@ -349,7 +350,6 @@ export default function HubChatPage({
 
   // The session store updates synchronously, so it is read directly.
   const currentSelectedId = () => getHubChatSession().selectedId;
-  const listEndRef = useRef<HTMLDivElement | null>(null);
 
   const usernames = useMemo(
     () => new Map(orgMembers.map((m) => [m.userId, m.username])),
@@ -731,6 +731,7 @@ export default function HubChatPage({
   const loadOlder = async () => {
     const v = viewRef.current;
     if (!v || v.loadingOlder || !v.messages.length) return;
+    releaseTail();
     const { channelId, generation } = v;
     updateView(generation, (cur) => ({ ...cur, loadingOlder: true }));
     try {
@@ -894,9 +895,8 @@ export default function HubChatPage({
 
   const messageCount = view?.messages.length ?? 0;
   const lastMessageId = view?.messages[messageCount - 1]?.id;
-  useEffect(() => {
-    listEndRef.current?.scrollIntoView?.({ block: 'end' });
-  }, [lastMessageId, selectedId]);
+  const stick = useStickToBottom(selectedId, lastMessageId);
+  const releaseTail = stick.release;
 
   const send = async () => {
     const channelId = selectedId;
@@ -910,6 +910,7 @@ export default function HubChatPage({
     );
     setPendingSend(channelId, true);
     setSendError(channelId, null);
+    stick.follow();
     // The opening this was sent from; if the channel was reopened since, the
     // new opening's load or the live echo shows the post instead.
     const sentFrom = viewRef.current?.channelId === channelId ? viewRef.current.generation : -1;
@@ -1108,6 +1109,7 @@ export default function HubChatPage({
   };
 
   const finishSeek = async (token: number, generation: number, messageId: string, seq: number) => {
+    releaseTail();
     const done = await loadBackTo(token, generation, seq);
     if (done === null || !linkLive(token, generation)) return;
     if (!done) {
@@ -1223,10 +1225,11 @@ export default function HubChatPage({
       typeof document === 'undefined'
         ? null
         : document.querySelector(`[data-message-id="${CSS.escape(highlightId)}"]`);
+    releaseTail();
     el?.scrollIntoView?.({ block: 'center' });
     const timer = setTimeout(() => setHighlightId(null), 4000);
     return () => clearTimeout(timer);
-  }, [highlightId]);
+  }, [highlightId, releaseTail]);
 
   const pickedIds: ReadonlySet<string> =
     picked && picked.channelId === selectedId ? picked.ids : new Set<string>();
@@ -1549,7 +1552,7 @@ export default function HubChatPage({
               </div>
             )}
 
-            <div className="min-h-0 flex-1 overflow-y-auto p-4">
+            <div ref={stick.scrollRef} className="min-h-0 flex-1 overflow-y-auto p-4">
               {seekPending && view && seekPending.generation === view.generation && (
                 <div
                   data-testid="hub-chat-seek-pending"
@@ -1946,7 +1949,6 @@ export default function HubChatPage({
                       );
                     })}
                   </ul>
-                  <div ref={listEndRef} />
                 </>
               )}
             </div>

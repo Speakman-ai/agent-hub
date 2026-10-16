@@ -116,6 +116,7 @@ import {
 } from '../utils/googleChatUnread';
 import { getAuthRecord } from '../utils/auth';
 import { unreadSpacesStore } from '../utils/googleChatUnreadSpaces';
+import { useStickToBottom } from '../hooks/useStickToBottom';
 import { chatMuteStore, isSpaceQuiet, useChatMutes } from '../utils/googleChatMutes';
 
 type GoogleStatus = NonNullable<GoogleStatusLike>;
@@ -374,7 +375,6 @@ export default function GoogleChatPage({
   // a captured message keeps showing "Added" when the user switches back.
   const [todoCaptures, setTodoCaptures] = useState<Record<string, TodoCapture>>({});
   const todoCapturingRef = useRef<Set<string>>(new Set());
-  const bottomRef = useRef<HTMLDivElement | null>(null);
   // The caller's Chat user, so their own messages render on the right.
   const [selfUserName, setSelfUserName] = useState<string | null>(null);
   // Google read position per open space, read once when the space is opened so
@@ -1265,9 +1265,7 @@ export default function GoogleChatPage({
   // Follow the newest message, not the list length: prepending an older page
   // must not yank the view to the bottom.
   const newestName = messages.length ? messages[messages.length - 1].name : null;
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView?.({ block: 'end' });
-  }, [newestName, selectedId]);
+  const stick = useStickToBottom(selectedId, newestName);
 
   const startOAuth = async (scopes: string[]) => {
     setOauthBusy(true);
@@ -1336,6 +1334,7 @@ export default function GoogleChatPage({
     if (sendingRef.current.has(spaceId)) return;
     const attachments = readyAttachmentRefs(submitted.attachments);
     sendingRef.current.add(spaceId);
+    stick.follow();
     // Clear on submit so anything typed while the request is pending is a new
     // message, not text the completion handler would wipe.
     const clearedRev = submitted.rev + 1;
@@ -1805,7 +1804,7 @@ export default function GoogleChatPage({
               </div>
             )}
 
-            <div className="min-h-0 flex-1 overflow-y-auto p-4">
+            <div ref={stick.scrollRef} className="min-h-0 flex-1 overflow-y-auto p-4">
               {linkError && (
                 <div className="mb-3 flex items-center gap-2 text-xs text-amber-300">
                   <AlertCircle size={14} className="flex-shrink-0" />
@@ -1836,7 +1835,11 @@ export default function GoogleChatPage({
                     <div className="mb-3 flex flex-col items-center gap-1">
                       <button
                         type="button"
-                        onClick={() => selectedId && loadOlder(selectedId)}
+                        onClick={() => {
+                          if (!selectedId) return;
+                          stick.release();
+                          loadOlder(selectedId);
+                        }}
                         disabled={view.loadingOlder}
                         className="inline-flex items-center gap-2 rounded border border-gray-700 px-3 py-1 text-xs text-gray-300 hover:bg-gray-800 disabled:opacity-50"
                       >
@@ -2301,7 +2304,6 @@ export default function GoogleChatPage({
                   )}
                 </div>
               )}
-              <div ref={bottomRef} />
             </div>
 
             {selectedSpace && !canSend && (

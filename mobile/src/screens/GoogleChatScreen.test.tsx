@@ -289,6 +289,50 @@ describe('GoogleChatPane', () => {
     expect(messageList(renderer).props.ListHeaderComponent).toBeNull();
   });
 
+  it('opens a conversation at its newest message and stops following once scrolled up', async () => {
+    getGoogleStatus.mockResolvedValue({ connected: true, grantedScopes: READ });
+    listGoogleChatSpaces.mockResolvedValue({
+      spaces: [{ id: 'A', displayName: 'First', spaceType: 'SPACE' }],
+    });
+    listGoogleChatMessages
+      .mockResolvedValueOnce({
+        messages: [msg('2', 'newer', '2026-01-02T00:00:00Z')],
+        nextPageToken: 'msgs-2',
+      })
+      .mockResolvedValueOnce({ messages: [msg('1', 'older', '2026-01-01T00:00:00Z')] });
+    const scrollToEnd = vi.fn();
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(React.createElement(GoogleChatPane), {
+        createNodeMock: () => ({ scrollToEnd }),
+      });
+    });
+    mounted.push(renderer);
+    await flush();
+    await openSpaceAt(renderer, 0);
+    await flush();
+
+    act(() => messageList(renderer).props.onContentSizeChange(320, 2000));
+    expect(scrollToEnd).toHaveBeenCalledWith({ animated: false });
+
+    scrollToEnd.mockClear();
+    act(() =>
+      messageList(renderer).props.onScroll({
+        nativeEvent: {
+          contentOffset: { y: 0 },
+          contentSize: { height: 2000 },
+          layoutMeasurement: { height: 600 },
+        },
+      }),
+    );
+    await act(async () => {
+      messageList(renderer).props.ListHeaderComponent.props.onPress();
+    });
+    await flush();
+    act(() => messageList(renderer).props.onContentSizeChange(320, 2400));
+    expect(scrollToEnd).not.toHaveBeenCalled();
+  });
+
   it('shows the composer after sending is enabled from inside a conversation', async () => {
     const readOnly = READ.filter((s) => !s.endsWith('chat.messages.create'));
     getGoogleStatus.mockResolvedValueOnce({ connected: true, grantedScopes: readOnly });
