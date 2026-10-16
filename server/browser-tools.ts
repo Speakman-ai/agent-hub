@@ -53,6 +53,7 @@ import {
   type BrowserLoginResolution,
 } from './browser-login-handoff.js';
 import { describeBrowserBlock, type BrowserDomainGate } from './browser-domain-policy.js';
+import { readMainFrameOriginViaCdp } from './browser-page-origin.js';
 
 // Types
 
@@ -465,6 +466,25 @@ export function currentPageUrlOf(host: unknown): string | null {
 }
 
 type PageWithMainSession = HubPage & { mainSession?: CdpSessionLike };
+
+/**
+ * The active page's effective origin (see {@link readMainFrameOriginViaCdp}),
+ * or null when it cannot be read. Only a Playwright-owned CDP session is
+ * used, so detaching it afterwards never drops a session someone else holds.
+ */
+export async function readActivePageOrigin(host: unknown): Promise<string | null> {
+  const pw = playwrightContextOf(host);
+  if (!pw?.newCDPSession) return null;
+  let cdp: CdpSessionLike | null = null;
+  try {
+    cdp = await pw.newCDPSession(getActivePage(host));
+    return await readMainFrameOriginViaCdp(cdp);
+  } catch {
+    return null;
+  } finally {
+    await cdp?.detach?.().catch(() => {});
+  }
+}
 
 async function resolveCdpSession(host: unknown, page: HubPage): Promise<CdpSessionLike | null> {
   const pw = playwrightContextOf(host);
@@ -1464,9 +1484,20 @@ export async function runBrowserReActStep(
   // and the human must be able to use the pane meanwhile.
   if (domainGate && (op === 'navigate' || op === 'click' || op === 'type')) {
     const gateUrl = op === 'navigate' ? (input.url ?? null) : currentPageUrlOf(host);
+    // A URL like about:blank or data: does not say whose document it is.
+    const pageOrigin =
+      op !== 'navigate' && gateUrl && !/^https?:/i.test(gateUrl.trim())
+        ? await readActivePageOrigin(host)
+        : undefined;
     let gate: Awaited<ReturnType<BrowserDomainGate>>;
     try {
-      gate = await domainGate({ op, url: gateUrl, target: input.target, text: input.text });
+      gate = await domainGate({
+        op,
+        url: gateUrl,
+        target: input.target,
+        text: input.text,
+        pageOrigin,
+      });
     } catch (err) {
       // Fail closed: an op the policy could not clear does not run.
       console.warn(`[browser-policy] gate failed, refusing ${op}: ${String(err)}`);

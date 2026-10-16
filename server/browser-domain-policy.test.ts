@@ -204,13 +204,83 @@ describe('createBrowserDomainGate', () => {
     expect(events).toEqual([]);
   });
 
-  it('does not ask for navigate on an ask site, and ignores pages with no host', async () => {
+  it('does not ask for navigate on an ask site, or to navigate to about:blank', async () => {
     policy.setBrowserDomainPolicy(profileId, 'shop.com', 'ask');
     expect(await gate()({ op: 'navigate', url: 'https://shop.com/' })).toMatchObject({
       proceed: true,
     });
-    expect(await gate()({ op: 'click', url: 'about:blank' })).toMatchObject({ proceed: true });
+    expect(await gate()({ op: 'navigate', url: 'about:blank' })).toMatchObject({ proceed: true });
     expect(events).toEqual([]);
+  });
+
+  it('applies the creator site policy to an about:blank page that inherited its origin', async () => {
+    policy.setBrowserDomainPolicy(profileId, 'bank.com', 'block');
+    const r = await gate()({
+      op: 'click',
+      url: 'about:blank',
+      target: '#pay',
+      pageOrigin: 'https://www.bank.com',
+    });
+    expect(r).toMatchObject({ proceed: false, hostDetail: 'blocked_domain' });
+    if (!r.proceed) expect(r.markdown).toContain('about:blank belongs to www.bank.com');
+    expect(events).toEqual([]);
+  });
+
+  it('asks on an inherited ask site and remembers the rule for that site', async () => {
+    policy.setBrowserDomainPolicy(profileId, 'shop.com', 'ask');
+    const pending = gate()({
+      op: 'type',
+      url: 'about:blank',
+      pageOrigin: 'https://shop.com',
+      text: 'x',
+    });
+    const id = raisedApprovalId();
+    expect(rules.getApprovalRequest(id)).toMatchObject({
+      domain: 'shop.com',
+      target: 'about:blank',
+    });
+    ap.answerApprovalRequest(id, 'always_allow', alice);
+    expect(await pending).toMatchObject({ proceed: true, host: 'shop.com' });
+    expect(rules.findApprovalRule({ profileId, domain: 'shop.com', action: 'type' })).toMatchObject(
+      {
+        effect: 'allow',
+      },
+    );
+  });
+
+  it('asks on an opaque or unreadable origin when the profile restricts some site', async () => {
+    policy.setBrowserDomainPolicy(profileId, 'shop.com', 'ask');
+    for (const [url, pageOrigin] of [
+      ['data:text/html,<button>x</button>', 'null'],
+      ['about:blank', null],
+      ['blob:null/1234', undefined],
+    ] as const) {
+      events = [];
+      const pending = gate()({ op: 'click', url, target: '#go', pageOrigin });
+      const id = raisedApprovalId();
+      const row = rules.getApprovalRequest(id)!;
+      expect(row.domain).toBeNull();
+      expect(ap.serializeApproval(row).canRemember).toBe(false);
+      ap.answerApprovalRequest(id, 'deny', alice);
+      const r = await pending;
+      expect(r).toMatchObject({ proceed: false, hostDetail: 'approval_deny' });
+    }
+  });
+
+  it('lets an unidentified page through when the op is allowed on every site', async () => {
+    policy.setBrowserDomainPolicy(profileId, 'safe.com', 'allow');
+    expect(await gate()({ op: 'click', url: 'about:blank', pageOrigin: null })).toMatchObject({
+      proceed: true,
+    });
+    rule('bank.com', 'type', 'require');
+    expect(await gate()({ op: 'click', url: 'about:blank', pageOrigin: null })).toMatchObject({
+      proceed: true,
+    });
+    expect(events).toEqual([]);
+    const pending = gate()({ op: 'type', url: 'about:blank', pageOrigin: null, text: 'x' });
+    const id = raisedApprovalId();
+    ap.answerApprovalRequest(id, 'allow_once', alice);
+    expect(await pending).toMatchObject({ proceed: true, host: null });
   });
 
   it('raises an approval on an ask site and proceeds on allow once', async () => {

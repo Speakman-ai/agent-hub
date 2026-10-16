@@ -272,6 +272,17 @@ export function findApprovalRule(key: {
   return allow ? toRule(allow) : null;
 }
 
+/** Whether any `require` rule on this profile covers `action` (on any domain). */
+export function hasRequireApprovalRule(profileId: string, action: string): boolean {
+  return !!getOrgsDb()
+    .prepare(
+      `SELECT 1 FROM approval_rules
+        WHERE profile_id = ? AND effect = 'require' AND (action = ? OR action = ?)
+        LIMIT 1`,
+    )
+    .get(profileId, action, ANY_APPROVAL_ACTION);
+}
+
 export function saveApprovalRule(input: {
   profileId: string;
   userId: string;

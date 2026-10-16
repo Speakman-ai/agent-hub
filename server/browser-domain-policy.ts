@@ -13,7 +13,13 @@
  */
 import { normalizeBrowserLoginDomain } from './browser-login-handoff.js';
 import { getBrowserProfile } from './browser-profiles-store.js';
-import { findApprovalRule, hostWithinDomain, type ApprovalRule } from './approvals-store.js';
+import {
+  findApprovalRule,
+  hasRequireApprovalRule,
+  hostWithinDomain,
+  type ApprovalRule,
+} from './approvals-store.js';
+import { hostOfSerializedOrigin } from './browser-page-origin.js';
 import {
   requestHostApproval,
   type ApprovalContext,
@@ -155,6 +161,12 @@ export interface BrowserGateRequest {
   url: string | null;
   target?: string;
   text?: string;
+  /**
+   * click / type on a page whose URL names no site (about:blank, data:,
+   * blob:): the main frame's effective origin as the browser reports it,
+   * `"null"` when opaque, null or absent when it could not be read.
+   */
+  pageOrigin?: string | null;
 }
 
 export type BrowserGateResult =
@@ -212,6 +224,23 @@ function refusal(
 }
 
 /**
+ * True when some site would not be plainly allowed for `action`: the profile
+ * has an ask or block policy, or a require rule covering the action. A page
+ * whose site cannot be named only needs a human when this holds.
+ */
+function profileRestrictsAction(profileId: string, action: string): boolean {
+  return (
+    listBrowserDomainPolicies(profileId).some((e) => e.policy !== 'allow') ||
+    hasRequireApprovalRule(profileId, action)
+  );
+}
+
+/** Pages whose URL carries no site, so the site must come from the document's origin. */
+function urlNamesNoSite(url: string): boolean {
+  return !/^https?:/i.test(url.trim());
+}
+
+/**
  * Build the gate for one chat turn. Returns undefined when the session has
  * no owner or project: there is no profile, so there is no policy to apply.
  */
@@ -239,8 +268,20 @@ export function createBrowserDomainGate(
   };
 
   const gate = async (req: BrowserGateRequest): Promise<BrowserGateResult> => {
-    const host = req.url ? normalizeBrowserLoginDomain(req.url) : null;
-    if (!host) return { proceed: true, host: null };
+    const gated = isGatedBrowserOp(req.op);
+    const urlHost = req.url ? normalizeBrowserLoginDomain(req.url) : null;
+    // about:blank popups and srcdoc frames inherit their creator's origin;
+    // data: documents are opaque. Act on them as the creator's site, or ask.
+    const fromOrigin =
+      !urlHost && gated && req.url && urlNamesNoSite(req.url)
+        ? normalizeBrowserLoginDomain(hostOfSerializedOrigin(req.pageOrigin) ?? '')
+        : null;
+    const host = urlHost ?? fromOrigin;
+    if (!host) {
+      if (gated && req.url && urlNamesNoSite(req.url)) return unknownOriginGate(req);
+      return { proceed: true, host: null };
+    }
+    const viaOrigin = fromOrigin ? ` (the page ${req.url} belongs to ${host})` : '';
     let profileId: string | null;
     let verdict: BrowserGateDecision;
     try {
@@ -260,13 +301,12 @@ export function createBrowserDomainGate(
       );
     }
 
-    const gated = isGatedBrowserOp(req.op);
     if (verdict.decision === 'block') {
       return refusal(
         req.op,
         host,
         [
-          `${host} is ${describeBrowserBlock(verdict.policyDomain)}. Do not open it, act on it, or reach it another way. Tell the human in chat what you could not do.`,
+          `${host}${viaOrigin} is ${describeBrowserBlock(verdict.policyDomain)}. Do not open it, act on it, or reach it another way. Tell the human in chat what you could not do.`,
         ],
         'blocked_domain',
         `Blocked: ${host}`,
@@ -293,14 +333,14 @@ export function createBrowserDomainGate(
         action: req.op,
         target: req.url!,
         domain: host,
-        details: `${describeOp(req)}. ${why}`,
+        details: `${describeOp(req)}${viaOrigin}. ${why}`,
       },
       ctx,
       deps,
     );
     if (approval.status === 'allowed') {
       // The wait can be long: the human may have blocked the site meanwhile.
-      const nowBlockedBy = blockedBy(req.url!);
+      const nowBlockedBy = blockedBy(`https://${host}/`);
       if (nowBlockedBy) {
         return refusal(
           req.op,
@@ -334,5 +374,78 @@ export function createBrowserDomainGate(
       `Not approved: ${req.op} on ${host}`,
     );
   };
+  /**
+   * click / type on a document whose site the host cannot name. If the
+   * profile would allow the op everywhere, nothing is lost by proceeding;
+   * otherwise the page might belong to an ask or block site, so ask. The
+   * approval carries no domain, so it can never be saved as a rule.
+   */
+  const unknownOriginGate = async (req: BrowserGateRequest): Promise<BrowserGateResult> => {
+    const page = req.url!.slice(0, 200);
+    const where = `a page with no site the host can identify (${page})`;
+    let profileId: string | null;
+    try {
+      profileId = getBrowserProfile(key)?.id ?? null;
+      if (!profileId || !profileRestrictsAction(profileId, req.op)) {
+        return { proceed: true, host: null };
+      }
+    } catch (err) {
+      console.warn(`[browser-policy] policy lookup failed, refusing ${req.op}: ${String(err)}`);
+      return refusal(
+        req.op,
+        where,
+        [
+          `\`${req.op}\` on ${where} was not performed: ${describeBrowserBlock(BROWSER_POLICY_UNAVAILABLE)}. Do not retry it or reach the site another way. Tell the human in chat what you could not do.`,
+        ],
+        'policy_unavailable',
+        'Policy unavailable',
+      );
+    }
+    if (deps.isCancelled?.()) {
+      return refusal(
+        req.op,
+        where,
+        [`The user stopped this turn before \`${req.op}\` on ${where} could be approved.`],
+        'cancelled_before_request',
+        'Stopped',
+      );
+    }
+    const why =
+      'Its origin is inherited from the site that opened it, or opaque, and could not be resolved, so the browser profile policy cannot be checked.';
+    const approval = await requestHostApproval(
+      {
+        profileId,
+        action: req.op,
+        target: req.url!,
+        domain: null,
+        details: `${describeOp(req)} on ${where}. ${why}`,
+      },
+      ctx,
+      deps,
+    );
+    if (approval.status === 'allowed') {
+      return {
+        proceed: true,
+        host: null,
+        notice: `Host approval: the human allowed \`${req.op}\` on ${where} (${approval.resolution}).`,
+      };
+    }
+    const outcome =
+      approval.resolution === 'deny'
+        ? 'the human denied it'
+        : approval.resolution === 'timeout'
+          ? 'nobody answered within 24 hours, so it was denied'
+          : 'the request ended before anyone answered';
+    return refusal(
+      req.op,
+      where,
+      [
+        `\`${req.op}\` on ${where} needs the human's approval (${why}) and ${outcome}. It was not performed. Do not retry it or find another way to do it. Tell the human in chat what you did not do.`,
+      ],
+      `approval_${approval.resolution ?? 'unknown'}`,
+      `Not approved: ${req.op} on an unidentified page`,
+    );
+  };
+
   return Object.assign(gate, { blockedBy });
 }

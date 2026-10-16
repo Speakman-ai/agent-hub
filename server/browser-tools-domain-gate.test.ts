@@ -89,6 +89,50 @@ describe('runBrowserReActStep domain gate', () => {
     expect(click).toHaveBeenCalled();
   });
 
+  it('hands the gate the effective origin of a page whose URL names no site', async () => {
+    const detach = vi.fn(async () => {});
+    const send = vi.fn(async (method: string) => {
+      if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'F1' } } };
+      if (method === 'Page.createIsolatedWorld') return { executionContextId: 7 };
+      return { result: { value: 'https://www.bank.com' } };
+    });
+    const context = {
+      newCDPSession: vi.fn(async () => ({ send, on: vi.fn(), off: vi.fn(), detach })),
+    };
+    const { click } = register('g-origin', { current: 'about:blank' }, context);
+    const gate = vi.fn<BrowserDomainGate>(async () => ({
+      proceed: false,
+      markdown: 'refused',
+      hostDetail: 'blocked_domain',
+      summary: 'Blocked',
+      halt: 'halt',
+    }));
+    const r = await runBrowserReActStep('g-origin', CLICK, {}, undefined, {}, gate);
+    expect(gate).toHaveBeenCalledWith(
+      expect.objectContaining({ url: 'about:blank', pageOrigin: 'https://www.bank.com' }),
+    );
+    expect(send).toHaveBeenCalledWith(
+      'Runtime.evaluate',
+      expect.objectContaining({ expression: 'self.origin', contextId: 7 }),
+    );
+    expect(detach).toHaveBeenCalled();
+    expect(click).not.toHaveBeenCalled();
+    expect(r.hostDetail).toBe('blocked_domain');
+  });
+
+  it('reports an unreadable origin as null and skips the probe on http(s) pages', async () => {
+    register('g-noorigin', { current: 'data:text/html,x' });
+    const gate = vi.fn<BrowserDomainGate>(async () => ({ proceed: true, host: null }));
+    await runBrowserReActStep('g-noorigin', CLICK, {}, undefined, {}, gate);
+    expect(gate).toHaveBeenLastCalledWith(expect.objectContaining({ pageOrigin: null }));
+
+    const newCDPSession = vi.fn();
+    register('g-http', { current: 'https://shop.com/' }, { newCDPSession });
+    await runBrowserReActStep('g-http', CLICK, {}, undefined, {}, gate);
+    expect(newCDPSession).not.toHaveBeenCalled();
+    expect(gate).toHaveBeenLastCalledWith(expect.objectContaining({ pageOrigin: undefined }));
+  });
+
   it('does not run a refused op and asks the batch to halt', async () => {
     const { click } = register('g-block', { current: 'https://shop.com/' });
     const gate: BrowserDomainGate = async () => ({
