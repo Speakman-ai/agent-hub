@@ -281,6 +281,8 @@ export default function ChatScreen({
               agents={agents}
               sessionHandoffs={sessionHandoffs}
               onOpenSession={handleOpenHandoffSession}
+              hosted={activeProject?.gitHost === 'agenthub'}
+              onOpenPrDetail={openNativePrDetail}
             />
             {msg.role === 'assistant' && (
               <SessionTail

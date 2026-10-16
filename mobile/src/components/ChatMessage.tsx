@@ -31,6 +31,7 @@ import { resolveAgentDisplayName } from '../utils/agentDisplayName';
 import { parseRawReviewVerdictContent } from '../utils/reviewVerdictContent';
 import HandoffCard from './HandoffCard';
 import WikiConsultedChip from './WikiConsultedChip';
+import { renderTimelineSystemMessage } from './FinalizeTimelineBlocks';
 // Built once — overrides the Markdown library's default text/code rules so
 // every leaf <Text> is `selectable`, enabling browser-like drag-select copy
 // inside assistant bubbles.
@@ -300,8 +301,12 @@ function SystemShipRequestedMessage({ message }: any) {
   const meta = parseShipRequestedMetadata(message.metadata);
   if (!meta) {
     return (
-      <View style={prStyles.fallbackContainer}>
-        <Text style={prStyles.fallbackText}>{message.content || 'System event'}</Text>
+      <View style={prStyles.fallbackContainer} testID="system-message-fallback">
+        <View style={prStyles.fallbackBody}>
+          <Markdown style={markdownStyles as any} rules={selectableMarkdownRules}>
+            {message.content || 'System event'}
+          </Markdown>
+        </View>
       </View>
     );
   }
@@ -355,8 +360,12 @@ function SystemPrCreatedMessage({ message }: any) {
     // never crash the timeline on unexpected payloads. Mirrors the web
     // client's fallback in client/src/components/ChatMessage.jsx.
     return (
-      <View style={prStyles.fallbackContainer}>
-        <Text style={prStyles.fallbackText}>{message.content || 'System event'}</Text>
+      <View style={prStyles.fallbackContainer} testID="system-message-fallback">
+        <View style={prStyles.fallbackBody}>
+          <Markdown style={markdownStyles as any} rules={selectableMarkdownRules}>
+            {message.content || 'System event'}
+          </Markdown>
+        </View>
       </View>
     );
   }
@@ -467,10 +476,8 @@ const prStyles = StyleSheet.create({
     marginBottom: 12,
     paddingHorizontal: 12,
   },
-  fallbackText: {
-    fontSize: 11,
-    fontStyle: 'italic',
-    color: colors.gray500,
+  fallbackBody: {
+    width: '95%',
   },
 });
 function ChatMessage({
@@ -485,6 +492,9 @@ function ChatMessage({
   agents,
   sessionHandoffs,
   onOpenSession,
+  /** True when the project's repo is Agent Hub-hosted (gitHost 'agenthub'). */
+  hosted = false,
+  onOpenPrDetail,
 }: any) {
   const isSystem = message.role === 'system';
   const { isUser, isQueued, showInFlightActions } = getUserMessageFlags(
@@ -531,6 +541,8 @@ function ChatMessage({
     notifyCopied(ok);
   }, [copyPayload, copyEnabled]);
   if (isSystem) {
+    const timelineBlock = renderTimelineSystemMessage(message, { hosted, onOpenPrDetail });
+    if (timelineBlock !== undefined) return timelineBlock;
     if (parseShipRequestedMetadata(message.metadata)) {
       return <SystemShipRequestedMessage message={message} />;
     }
