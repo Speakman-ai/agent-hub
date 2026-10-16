@@ -413,6 +413,9 @@ export interface BrowserProfileDomainsWire {
   domains: Array<{ domain: string; cookieCount: number; hasSiteStorage: boolean }>;
 }
 
+/** Client wait for a synchronous "Run now" digest generation. */
+export const DIGEST_RUN_TIMEOUT_MS = 300_000;
+
 async function fetchJSON<T = any>(url: string, options: FetchJsonOptions = {}): Promise<T> {
   const base = getApiBase();
   const authHeaders = getAuthHeaders();
@@ -1346,7 +1349,9 @@ export const api = {
     runDigest: (channelId: string, digestId: string) =>
       fetchJSON(
         `/chat/channels/${encodeURIComponent(channelId)}/digests/${encodeURIComponent(digestId)}/run`,
-        { method: 'POST' },
+        // The server answers only after the digest is generated: a 90s cap per
+        // engine attempt, and failover can try more than one engine.
+        { method: 'POST', timeout: DIGEST_RUN_TIMEOUT_MS },
       ),
     searchRefs: (trigger: '@' | '#', q: string) =>
       fetchJSON(`/chat/refs/search?${new URLSearchParams({ trigger, q }).toString()}`),
