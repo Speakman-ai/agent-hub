@@ -185,7 +185,7 @@ describe('runBrowserReActStep request_login', () => {
     expect(r.hostExit).toBe(2);
     expect(r.hostDetail).toBe('cancelled');
     expect(r.markdown).toContain('cancelled sign-in to github.com');
-    expect(r.markdown).toMatch(/never ask for the password/);
+    expect(r.markdown).toMatch(/agenthub:credential-request card, not in plain chat/);
   });
 
   it('times out and resumes the turn', async () => {

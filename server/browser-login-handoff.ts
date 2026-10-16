@@ -3,8 +3,9 @@
  * until the human signs in through the Agent browser pane and clicks Done
  * (or Cancel), the wait times out, or the user stops the turn.
  *
- * Agents never see passwords, 2FA codes or payment details; the human types
- * them straight into the live Chromium. State is in memory on purpose: a
+ * This is the path for users who prefer to sign in themselves (or for a
+ * CAPTCHA); agents may also sign in with credentials the user supplies.
+ * State is in memory on purpose: a
  * pending request is only meaningful while the turn awaiting it is alive, and
  * a Hub restart kills that turn anyway.
  */

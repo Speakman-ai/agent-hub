@@ -1275,7 +1275,7 @@ async function runRequestLoginStep(
     case 'cancelled':
       return {
         markdown: body(
-          `The human cancelled sign-in to ${domain}. Do not request it again unless they ask. Tell them in chat what you could not finish without signing in, and never ask for the password, 2FA code or payment details in chat.`,
+          `The human cancelled sign-in to ${domain}. Do not request it again unless they ask. Tell them in chat what you could not finish without signing in. If they want you to sign in yourself, collect the login with an agenthub:credential-request card, not in plain chat.`,
         ),
         hostExit: 2,
         hostDetail: 'cancelled',

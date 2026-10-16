@@ -158,9 +158,19 @@ describe('buildEnrichedPrompt — first message gating', () => {
     // the JSON shape.
     expect(prompt).toContain('"tool":"browser"');
     expect(prompt).toContain('"op":"navigate"');
-    // Sign-ins go through the human, never through chat.
+    // The human can still take a sign-in via request_login.
     expect(prompt).toContain('"op":"request_login"');
-    expect(prompt).toMatch(/Never ask for passwords, codes or card details in chat/);
+  });
+
+  it("lets the agent sign in with the user's own credentials instead of forbidding it", () => {
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), {
+      isFirstMessage: true,
+    });
+    expect(prompt).toMatch(/Sign-ins are yours to do with the user's credentials/);
+    expect(prompt).toMatch(/fetch a 2FA code/);
+    expect(prompt).not.toMatch(/never type them yourself/);
+    expect(prompt).not.toMatch(/not even with a credential-request card/);
+    expect(prompt).not.toMatch(/Sign-ins, 2FA, CAPTCHAs and payments are the human's job/);
   });
 
   it('omits the "Browser Automation Available" callout when browser tools are disabled for the agent', () => {

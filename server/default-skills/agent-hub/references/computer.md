@@ -51,8 +51,9 @@ whole ReAct block as malformed before anything runs.
 3. `screenshot` again to confirm the result. Input ops do not return an image.
 
 Ask for an `approval` before sending, submitting, deleting, purchasing or
-publishing anything from the desktop. Never type passwords, 2FA codes or
-payment details; ask the human to do that step.
+publishing anything from the desktop. You may type the user's own passwords
+and 2FA codes to sign in; collect them with an `agenthub:credential-request`
+card (never plain chat) and never echo them back.
 
 ## Failure observations
 
