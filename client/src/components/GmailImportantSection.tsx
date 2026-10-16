@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import { AlertCircle, Loader2, RefreshCw, Sparkles, Star } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { AlertCircle, Loader2, RefreshCw, Sparkles, Star, X } from 'lucide-react';
 import { api } from '../utils/api';
 import {
   GMAIL_IMPORTANCE_AUTO_SCAN_OPTIONS,
@@ -37,6 +37,8 @@ export default function GmailImportantSection({
   // always books the next fetch (fast while scanning, slow while idle), so
   // automated scans and transient failures never leave the pane stale.
   const syncRef = useRef<GmailImportanceSync | null>(null);
+  // Threads being dismissed, hidden right away so the click feels instant.
+  const [dismissing, setDismissing] = useState<ReadonlySet<string>>(new Set());
   const loadFailedRef = useRef(false);
 
   useEffect(() => {
@@ -67,7 +69,11 @@ export default function GmailImportantSection({
   // what renders rather than pushed on fetch success. No state yet, a failed
   // load, the feature off, or the section unmounting all mean nothing is
   // shown here, so nothing may be hidden from the regular list either.
-  const displayedPins = state?.settings.enabled ? state.threads : NO_PINS;
+  const displayedPins = useMemo(
+    () =>
+      state?.settings.enabled ? state.threads.filter((t) => !dismissing.has(t.threadId)) : NO_PINS,
+    [state, dismissing],
+  );
   useEffect(() => {
     onPinnedChangeRef.current?.(displayedPins);
   }, [displayedPins]);
@@ -75,6 +81,24 @@ export default function GmailImportantSection({
 
   const accept = (next: GmailImportanceState) => syncRef.current?.accept(next);
   const refresh = () => syncRef.current?.refresh();
+
+  const dismiss = async (threadId: string) => {
+    setError(null);
+    setDismissing((prev) => new Set(prev).add(threadId));
+    try {
+      accept(await api.dismissGmailImportantThread(threadId));
+    } catch (err: any) {
+      // 404: a scan already dropped the verdict, so it is gone either way.
+      if (err.status === 404) await refresh();
+      else setError(err.message || 'Failed to remove thread');
+    } finally {
+      setDismissing((prev) => {
+        const next = new Set(prev);
+        next.delete(threadId);
+        return next;
+      });
+    }
+  };
 
   const scan = async (windowDays?: GmailImportanceWindowDays) => {
     setError(null);
@@ -141,7 +165,8 @@ export default function GmailImportantSection({
       </section>
     ) : null;
   }
-  const { settings, running, threads } = state;
+  const { settings, running } = state;
+  const threads = displayedPins;
 
   return (
     <section
@@ -243,11 +268,14 @@ export default function GmailImportantSection({
           {threads.length > 0 ? (
             <ul className="border-t border-gray-800">
               {threads.map((t) => (
-                <li key={t.threadId} className="border-b border-gray-800 last:border-b-0">
+                <li
+                  key={t.threadId}
+                  className="group relative border-b border-gray-800 last:border-b-0"
+                >
                   <button
                     type="button"
                     onClick={() => onOpenThread(t.threadId)}
-                    className="flex w-full items-start gap-3 px-4 py-3 text-left hover:bg-gray-800/50"
+                    className="flex w-full items-start gap-3 py-3 pl-4 pr-10 text-left hover:bg-gray-800/50"
                   >
                     <Star size={15} className="mt-0.5 flex-shrink-0 text-amber-300" />
                     <div className="min-w-0 flex-1">
@@ -266,6 +294,15 @@ export default function GmailImportantSection({
                       </p>
                       {t.reason && <p className="mt-0.5 text-xs text-amber-200/80">{t.reason}</p>}
                     </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => dismiss(t.threadId)}
+                    aria-label={`Remove ${t.subject || 'thread'} from important`}
+                    title="Remove from important"
+                    className="absolute right-2 top-2.5 rounded p-1 text-gray-500 hover:bg-gray-700 hover:text-gray-200"
+                  >
+                    <X size={14} />
                   </button>
                 </li>
               ))}

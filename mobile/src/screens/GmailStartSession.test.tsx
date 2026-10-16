@@ -34,6 +34,7 @@ vi.mock('react-native', () => {
     View: 'View',
   };
 });
+vi.mock('../components/AppIcon', () => ({ default: 'AppIcon' }));
 vi.mock('react-native-safe-area-context', () => ({ SafeAreaView: 'SafeAreaView' }));
 
 const setActiveAgentId = vi.fn();

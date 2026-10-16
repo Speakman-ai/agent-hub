@@ -11,6 +11,7 @@ import { getGoogleConnectionStatus } from '../google-connections-store.js';
 import { GMAIL_READONLY_SCOPE, hasGmailReadScope } from '../google-scopes.js';
 import {
   GMAIL_IMPORTANCE_AUTO_SCAN,
+  dismissGmailImportanceThread,
   getGmailImportanceSettings,
   listImportantGmailThreads,
   updateGmailImportanceSettings,
@@ -155,6 +156,26 @@ registerPath({
   },
 });
 
+export const DismissGmailImportanceThreadParams = z.object({
+  threadId: z.string().min(1).max(200).openapi({ description: 'Gmail thread id.' }),
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/google/gmail/importance/threads/{threadId}/dismiss',
+  tags: ['Google Gmail'],
+  summary: 'Remove a thread from the important list',
+  description:
+    'Hides the thread from the important list. It returns only if a newer message arrives and a later scan rates it important again.',
+  request: { params: DismissGmailImportanceThreadParams },
+  responses: {
+    200: stateResponse('Updated settings and important threads.'),
+    400: errorResponse('Invalid thread id.'),
+    401: errorResponse('Authentication required.'),
+    404: errorResponse('No importance verdict exists for this thread.'),
+  },
+});
+
 function bad(res: Response, status: number, error: string, code: string, extra = {}): void {
   res.status(status).json({ error, code, ...extra });
 }
@@ -226,6 +247,22 @@ export default function createGmailImportanceRoutes(
     updateGmailImportanceSettings(uid, parsed.data);
     res.json(stateFor(uid, now()));
   });
+
+  router.post(
+    '/api/google/gmail/importance/threads/:threadId/dismiss',
+    (req: Request, res: Response) => {
+      const parsed = DismissGmailImportanceThreadParams.safeParse(req.params);
+      if (!parsed.success) {
+        return bad(res, 400, 'Invalid thread id', 'invalid_request');
+      }
+      const uid = requireUser(req, res);
+      if (!uid) return;
+      if (!dismissGmailImportanceThread(uid, parsed.data.threadId)) {
+        return bad(res, 404, 'Thread not found', 'not_found');
+      }
+      res.json(stateFor(uid, now()));
+    },
+  );
 
   router.post('/api/google/gmail/importance/scan', (req: Request, res: Response) => {
     const parsed = StartGmailImportanceScanBody.safeParse(req.body ?? {});

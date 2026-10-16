@@ -6,6 +6,7 @@ vi.mock('../utils/api', () => ({
     getGmailImportance: vi.fn(),
     updateGmailImportanceSettings: vi.fn(),
     startGmailImportanceScan: vi.fn(),
+    dismissGmailImportantThread: vi.fn(),
   },
 }));
 
@@ -62,6 +63,32 @@ describe('GmailImportantSection', () => {
       expect(mockApi.startGmailImportanceScan).toHaveBeenCalledWith({ windowDays: 7 }),
     );
     expect(await screen.findByText('Scanning your inbox…')).toBeInTheDocument();
+  });
+
+  it('removes a pinned thread and hands it back to the regular list', async () => {
+    const pin = {
+      threadId: 't9',
+      historyId: '1',
+      important: true,
+      score: 80,
+      reason: 'Contract deadline',
+      subject: 'Renewal',
+      from: 'Dana <dana@example.com>',
+      snippet: null,
+      lastMessageAt: '2026-10-12T10:00:00.000Z',
+      scannedAt: '2026-10-12T11:00:00.000Z',
+    };
+    const on = { enabled: true, lastScanStatus: 'ok', lastScanAt: '2026-10-12T11:00:00.000Z' };
+    mockApi.getGmailImportance.mockResolvedValue(state(on, { threads: [pin] }));
+    mockApi.dismissGmailImportantThread.mockResolvedValue(state(on, { threads: [] }));
+    const onPinnedChange = vi.fn();
+
+    render(<GmailImportantSection onOpenThread={vi.fn()} onPinnedChange={onPinnedChange} />);
+    fireEvent.click(await screen.findByRole('button', { name: /Remove Renewal from important/i }));
+
+    expect(mockApi.dismissGmailImportantThread).toHaveBeenCalledWith('t9');
+    await waitFor(() => expect(screen.queryByText('Renewal')).not.toBeInTheDocument());
+    expect(onPinnedChange).toHaveBeenLastCalledWith([]);
   });
 
   it('changes the window and auto-scan cadence, and opens a pinned thread', async () => {

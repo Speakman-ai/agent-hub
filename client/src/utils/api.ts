@@ -1212,6 +1212,10 @@ export const api = {
     fetchJSON('/google/gmail/importance/settings', { method: 'PUT', body: JSON.stringify(data) }),
   startGmailImportanceScan: (data: { windowDays?: 1 | 7 | 30 } = {}) =>
     fetchJSON('/google/gmail/importance/scan', { method: 'POST', body: JSON.stringify(data) }),
+  dismissGmailImportantThread: (threadId: string) =>
+    fetchJSON(`/google/gmail/importance/threads/${encodeURIComponent(threadId)}/dismiss`, {
+      method: 'POST',
+    }),
   // Project chat triggers: route project events into chat channels.
   chatTriggers: {
     list: (projectId: string) =>

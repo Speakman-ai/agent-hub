@@ -1,6 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Switch, Text, TouchableOpacity, View } from 'react-native';
 import { api } from '../utils/api';
+import AppIcon from './AppIcon';
 import { colors } from '../theme/colors';
 import {
   GMAIL_IMPORTANCE_AUTO_SCAN_OPTIONS,
@@ -38,6 +39,8 @@ export default function GmailImportantSection({
   // always books the next fetch (fast while scanning, slow while idle), so
   // automated scans and transient failures never leave the pane stale.
   const syncRef = useRef<GmailImportanceSync | null>(null);
+  // Threads being dismissed, hidden right away so the tap feels instant.
+  const [dismissing, setDismissing] = useState<ReadonlySet<string>>(new Set());
   const loadFailedRef = useRef(false);
 
   useEffect(() => {
@@ -68,7 +71,11 @@ export default function GmailImportantSection({
   // what renders rather than pushed on fetch success. No state yet, a failed
   // load, the feature off, or the section unmounting all mean nothing is
   // shown here, so nothing may be hidden from the regular list either.
-  const displayedPins = state?.settings.enabled ? state.threads : NO_PINS;
+  const displayedPins = useMemo(
+    () =>
+      state?.settings.enabled ? state.threads.filter((t) => !dismissing.has(t.threadId)) : NO_PINS,
+    [state, dismissing],
+  );
   useEffect(() => {
     onPinnedChangeRef.current?.(displayedPins);
   }, [displayedPins]);
@@ -76,6 +83,24 @@ export default function GmailImportantSection({
 
   const accept = (next: GmailImportanceState) => syncRef.current?.accept(next);
   const refresh = () => syncRef.current?.refresh();
+
+  const dismiss = async (threadId: string) => {
+    setError(null);
+    setDismissing((prev) => new Set(prev).add(threadId));
+    try {
+      accept(await api.dismissGmailImportantThread(threadId));
+    } catch (err: any) {
+      // 404: a scan already dropped the verdict, so it is gone either way.
+      if (err.status === 404) await refresh();
+      else setError(err.message || 'Failed to remove thread');
+    } finally {
+      setDismissing((prev) => {
+        const next = new Set(prev);
+        next.delete(threadId);
+        return next;
+      });
+    }
+  };
 
   const scan = async (windowDays?: GmailImportanceWindowDays) => {
     setError(null);
@@ -132,7 +157,8 @@ export default function GmailImportantSection({
       </View>
     ) : null;
   }
-  const { settings, running, threads } = state;
+  const { settings, running } = state;
+  const threads = displayedPins;
 
   return (
     <View style={styles.card} testID="gmail-important-section">
@@ -217,20 +243,31 @@ export default function GmailImportantSection({
             <Text style={styles.failover}>{settings.lastScanFailover}.</Text>
           ) : null}
           {threads.map((t) => (
-            <TouchableOpacity
-              key={t.threadId}
-              onPress={() => onOpenThread(t.threadId)}
-              style={styles.thread}
-              testID={`gmail-important-thread-${t.threadId}`}
-            >
-              <Text style={styles.sender} numberOfLines={1}>
-                {senderName(t.from)}
-              </Text>
-              <Text style={styles.subject} numberOfLines={1}>
-                {t.subject || '(no subject)'}
-              </Text>
-              {t.reason ? <Text style={styles.reason}>{t.reason}</Text> : null}
-            </TouchableOpacity>
+            <View key={t.threadId} style={styles.thread}>
+              <TouchableOpacity
+                onPress={() => onOpenThread(t.threadId)}
+                style={styles.threadBody}
+                testID={`gmail-important-thread-${t.threadId}`}
+              >
+                <Text style={styles.sender} numberOfLines={1}>
+                  {senderName(t.from)}
+                </Text>
+                <Text style={styles.subject} numberOfLines={1}>
+                  {t.subject || '(no subject)'}
+                </Text>
+                {t.reason ? <Text style={styles.reason}>{t.reason}</Text> : null}
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => dismiss(t.threadId)}
+                accessibilityRole="button"
+                accessibilityLabel={`Remove ${t.subject || 'thread'} from important`}
+                hitSlop={8}
+                style={styles.dismiss}
+                testID={`gmail-important-dismiss-${t.threadId}`}
+              >
+                <AppIcon name="close" size={16} color={colors.gray400} />
+              </TouchableOpacity>
+            </View>
           ))}
           {!threads.length && settings.lastScanAt && !running ? (
             <Text style={styles.muted}>
@@ -285,10 +322,15 @@ const styles = StyleSheet.create({
   errorText: { color: colors.red400, fontSize: 12 },
   failover: { color: colors.amber400, fontSize: 12 },
   thread: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
     borderTopWidth: 1,
     borderTopColor: colors.gray800,
     paddingTop: 8,
   },
+  threadBody: { flex: 1, minWidth: 0 },
+  dismiss: { padding: 2 },
   sender: { color: colors.gray200, fontSize: 13, fontWeight: '700' },
   subject: { color: colors.gray300, fontSize: 13 },
   reason: { color: colors.amber400, fontSize: 12, marginTop: 2 },

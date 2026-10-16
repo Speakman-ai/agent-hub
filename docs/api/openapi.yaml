@@ -33596,6 +33596,47 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/GmailImportanceErrorResponse"
+  /api/google/gmail/importance/threads/{threadId}/dismiss:
+    post:
+      tags:
+        - Google Gmail
+      summary: Remove a thread from the important list
+      description: Hides the thread from the important list. It returns only if a newer message arrives and a later scan rates it important again.
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+            description: Gmail thread id.
+          required: true
+          description: Gmail thread id.
+          name: threadId
+          in: path
+      responses:
+        "200":
+          description: Updated settings and important threads.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GmailImportanceState"
+        "400":
+          description: Invalid thread id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GmailImportanceErrorResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GmailImportanceErrorResponse"
+        "404":
+          description: No importance verdict exists for this thread.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GmailImportanceErrorResponse"
   /api/google/calendar/events:
     get:
       tags:

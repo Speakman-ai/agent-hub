@@ -127,6 +127,51 @@ describe('Gmail importance routes', () => {
     ]);
   });
 
+  it('dismisses a pinned thread until a newer message arrives', async () => {
+    const at = new Date(NOW - 86_400_000).toISOString();
+    const verdict = {
+      threadId: 'pin',
+      historyId: 'h1',
+      important: true,
+      score: 70,
+      reason: 'Needs reply',
+      subject: 'Contract',
+      from: 'legal@example.com',
+      snippet: null,
+      lastMessageAt: at,
+    };
+    store.upsertGmailImportanceVerdicts(userId, [verdict]);
+
+    const res = await request(makeApp(userId)).post(
+      '/api/google/gmail/importance/threads/pin/dismiss',
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.threads).toEqual([]);
+
+    // A rescan with no new mail (only a label/history change) keeps it hidden.
+    store.upsertGmailImportanceVerdicts(userId, [{ ...verdict, historyId: 'h2' }]);
+    const same = await request(makeApp(userId)).get('/api/google/gmail/importance');
+    expect(same.body.threads).toEqual([]);
+
+    // A newer message brings it back.
+    store.upsertGmailImportanceVerdicts(userId, [
+      { ...verdict, historyId: 'h3', lastMessageAt: new Date(NOW - 3600_000).toISOString() },
+    ]);
+    const back = await request(makeApp(userId)).get('/api/google/gmail/importance');
+    expect(back.body.threads.map((t: { threadId: string }) => t.threadId)).toEqual(['pin']);
+  });
+
+  it('404s dismissing an unknown thread and 401s without a user', async () => {
+    const missing = await request(makeApp(userId)).post(
+      '/api/google/gmail/importance/threads/nope/dismiss',
+    );
+    expect(missing.status).toBe(404);
+    const anon = await request(makeApp(null)).post(
+      '/api/google/gmail/importance/threads/nope/dismiss',
+    );
+    expect(anon.status).toBe(401);
+  });
+
   it('rejects windows other than 1, 7, or 30 days and unknown cadences', async () => {
     const app = makeApp(userId);
     expect(

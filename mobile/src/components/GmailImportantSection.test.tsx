@@ -14,11 +14,13 @@ vi.mock('react-native', () => ({
   StyleSheet: { create: (styles: unknown) => styles },
 }));
 vi.mock('../theme/colors', () => ({ colors: {} }));
+vi.mock('./AppIcon', () => ({ default: 'AppIcon' }));
 vi.mock('../utils/api', () => ({
   api: {
     getGmailImportance: vi.fn(),
     updateGmailImportanceSettings: vi.fn(),
     startGmailImportanceScan: vi.fn(),
+    dismissGmailImportantThread: vi.fn(),
   },
 }));
 
@@ -58,6 +60,7 @@ describe('mobile GmailImportantSection', () => {
     vi.mocked(api.getGmailImportance).mockReset();
     vi.mocked(api.updateGmailImportanceSettings).mockReset();
     vi.mocked(api.startGmailImportanceScan).mockReset();
+    vi.mocked(api.dismissGmailImportantThread).mockReset();
   });
 
   it('turning the toggle on saves the setting and starts a first scan', async () => {
@@ -252,6 +255,39 @@ describe('mobile GmailImportantSection', () => {
       'Failed to fetch',
     );
     expect(onPinnedChange.mock.calls.every(([pins]) => pins.length === 0)).toBe(true);
+    renderer.unmount();
+  });
+
+  it('removes a pinned thread and hands it back to the regular list', async () => {
+    const pin = {
+      threadId: 't9',
+      historyId: '1',
+      important: true,
+      score: 80,
+      reason: 'Contract deadline',
+      subject: 'Renewal',
+      from: 'Dana <dana@example.com>',
+      snippet: null,
+      lastMessageAt: '2026-10-12T10:00:00.000Z',
+      scannedAt: '2026-10-12T11:00:00.000Z',
+    };
+    const on = { enabled: true, lastScanStatus: 'ok', lastScanAt: '2026-10-12T11:00:00.000Z' };
+    vi.mocked(api.getGmailImportance).mockResolvedValue(state(on, { threads: [pin] }));
+    vi.mocked(api.dismissGmailImportantThread).mockResolvedValue(state(on, { threads: [] }));
+    const onPinnedChange = vi.fn();
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        <GmailImportantSection onOpenThread={vi.fn()} onPinnedChange={onPinnedChange} />,
+      );
+    });
+    expect(onPinnedChange).toHaveBeenLastCalledWith([pin]);
+    await act(async () => {
+      renderer.root.findByProps({ testID: 'gmail-important-dismiss-t9' }).props.onPress();
+    });
+    expect(api.dismissGmailImportantThread).toHaveBeenCalledWith('t9');
+    expect(renderer.root.findAllByProps({ testID: 'gmail-important-thread-t9' })).toHaveLength(0);
+    expect(onPinnedChange).toHaveBeenLastCalledWith([]);
     renderer.unmount();
   });
 

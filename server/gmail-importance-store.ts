@@ -308,6 +308,7 @@ export function listImportantGmailThreads(
     .prepare(
       `SELECT * FROM gmail_importance_threads
         WHERE user_id = ? AND important = 1 AND last_message_at >= ?
+          AND (dismissed_at_message IS NULL OR last_message_at > dismissed_at_message)
         ORDER BY score DESC, last_message_at DESC
         LIMIT ?`,
     )
@@ -379,4 +380,21 @@ export function deleteGmailImportanceVerdicts(
     for (const id of threadIds) changes += stmt.run(userId, id).changes;
   })();
   return changes;
+}
+
+/**
+ * Remove a thread from the user's important list. It stays out until a message
+ * newer than the one it was dismissed at arrives. Returns false when the user
+ * has no verdict for the thread.
+ */
+export function dismissGmailImportanceThread(userId: string, threadId: string): boolean {
+  return (
+    getOrgsDb()
+      .prepare(
+        `UPDATE gmail_importance_threads
+            SET dismissed_at_message = COALESCE(last_message_at, ${NOW})
+          WHERE user_id = ? AND thread_id = ?`,
+      )
+      .run(userId, threadId).changes > 0
+  );
 }

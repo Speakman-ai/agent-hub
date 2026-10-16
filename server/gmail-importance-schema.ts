@@ -42,6 +42,10 @@ export const GMAIL_IMPORTANCE_SCHEMA = `
     -- re-checks the least recently confirmed pins first, so every pin is
     -- revisited even when there are more than one scan can check.
     checked_at      TEXT,
+    -- The user removed this pin. Holds the thread's last_message_at at that
+    -- moment, so the thread stays out of the list until a newer message
+    -- arrives. Rescans rewrite the verdict but never this column.
+    dismissed_at_message TEXT,
     PRIMARY KEY (user_id, thread_id)
   );
   CREATE INDEX IF NOT EXISTS idx_gmail_importance_threads_user_important

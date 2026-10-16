@@ -234,6 +234,11 @@ export function initOrgsDb(): void {
   orgsDb.exec(GOOGLE_CHAT_DRAFTS_SCHEMA);
   // AI importance scan settings + cached per-thread verdicts for the Gmail pane.
   orgsDb.exec(GMAIL_IMPORTANCE_SCHEMA);
+  try {
+    orgsDb.prepare('SELECT dismissed_at_message FROM gmail_importance_threads LIMIT 1').get();
+  } catch {
+    orgsDb.exec('ALTER TABLE gmail_importance_threads ADD COLUMN dismissed_at_message TEXT');
+  }
   orgsDb.exec(AUTH_CREDENTIAL_AUDIT_SCHEMA);
   // Cross-project personal todos, keyed by user_id. Global (non-project)
   // capture primitive — see user-todos-store.ts / user-todos-schema.ts.
