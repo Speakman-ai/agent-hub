@@ -64,6 +64,7 @@ import { useAccountScoped, useHubChatBadge, useHubChatSnapshot } from '../hooks/
 import { useApp } from '../context/AppContext';
 import { HubChatComposer, HubChatMessageBody } from '../components/HubChatRefs';
 import HubIcon from '../components/HubIcon';
+import WindowKeyboardAvoidingView from '../components/WindowKeyboardAvoidingView';
 import HubChatTriggerCard from '../components/HubChatTriggerCard';
 import HubChatDigestSection from '../components/HubChatDigestSection';
 import HubChatSearch from '../components/HubChatSearch';
@@ -841,11 +842,7 @@ function ChannelView({
   }, [highlightId]);
 
   return (
-    <KeyboardAvoidingView
-      style={styles.flex}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 100 : 0}
-    >
+    <WindowKeyboardAvoidingView style={styles.flex}>
       <View style={styles.channelHeader}>
         <TouchableOpacity
           onPress={onBack}
@@ -1095,7 +1092,7 @@ function ChannelView({
           onClose={() => setSettingsOpen(false)}
         />
       ) : null}
-    </KeyboardAvoidingView>
+    </WindowKeyboardAvoidingView>
   );
 }
 

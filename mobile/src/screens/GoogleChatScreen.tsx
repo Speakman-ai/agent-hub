@@ -4,9 +4,7 @@ import {
   Alert,
   AppState,
   FlatList,
-  KeyboardAvoidingView,
   Linking,
-  Platform,
   StyleSheet,
   Text,
   TextInput,
@@ -24,6 +22,7 @@ import {
   type ChatHistory,
 } from '../utils/googleChatHistory';
 import { colors } from '../theme/colors';
+import WindowKeyboardAvoidingView from '../components/WindowKeyboardAvoidingView';
 import {
   CHAT_SURFACE_SCOPES,
   hasChatReadScope,
@@ -358,11 +357,7 @@ function AccountGoogleChatPane() {
 
   if (space) {
     return (
-      <KeyboardAvoidingView
-        style={styles.root}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        testID="google-chat-thread"
-      >
+      <WindowKeyboardAvoidingView style={styles.root} testID="google-chat-thread">
         <View style={styles.threadHeader}>
           <TouchableOpacity
             onPress={closeSpace}
@@ -478,7 +473,7 @@ function AccountGoogleChatPane() {
             <Text style={styles.enableText}>Enable sending</Text>
           </TouchableOpacity>
         )}
-      </KeyboardAvoidingView>
+      </WindowKeyboardAvoidingView>
     );
   }
 

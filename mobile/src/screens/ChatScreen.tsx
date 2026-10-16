@@ -1,14 +1,5 @@
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
-import {
-  View,
-  Text,
-  FlatList,
-  StyleSheet,
-  KeyboardAvoidingView,
-  Platform,
-  TouchableOpacity,
-  Alert,
-} from 'react-native';
+import { View, Text, FlatList, StyleSheet, TouchableOpacity, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { useApp } from '../context/AppContext';
@@ -60,6 +51,7 @@ import { resolveLiveStreamIdentity } from '@shared/utils/activeTaskSnapshot';
 import { HUB_ASSISTANT_AGENT_ID } from '@shared/utils/hub';
 import { needsAutopilotSetup } from '@shared/utils/sessionAutopilot';
 import AutopilotSetupPrompt from '../components/AutopilotSetupPrompt';
+import WindowKeyboardAvoidingView from '../components/WindowKeyboardAvoidingView';
 export default function ChatScreen({
   embedded = false,
   composePrefix = '',
@@ -642,11 +634,7 @@ export default function ChatScreen({
         </View>
       ) : null}
 
-      <KeyboardAvoidingView
-        style={styles.flex}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={0}
-      >
+      <WindowKeyboardAvoidingView style={styles.flex}>
         <PreviewChatLayout
           fullscreen={previewFullscreen}
           preview={
@@ -759,7 +747,7 @@ export default function ChatScreen({
             ) : null}
           </>
         </PreviewChatLayout>
-      </KeyboardAvoidingView>
+      </WindowKeyboardAvoidingView>
 
       {/* Agent Switcher Modal */}
       <AgentSwitcher
