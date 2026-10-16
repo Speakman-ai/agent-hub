@@ -384,10 +384,18 @@ describe('the day a schedule is converted', () => {
 });
 
 describe('migrateHubChatDigestsScopeCheck', () => {
-  /** The digests table as it shipped before my_work. */
-  const PRE_MY_WORK = HUB_CHAT_SCHEMA.match(
+  const CURRENT = HUB_CHAT_SCHEMA.match(
     /CREATE TABLE IF NOT EXISTS hub_chat_digests \([\s\S]*?\n {2}\);/,
-  )![0].replace("'channel','project','my_work'", "'channel','project'");
+  )![0];
+  /** The digests table before agent digests: no agent columns or statuses. */
+  const PRE_AGENT = CURRENT.replace(
+    "'channel','project','my_work','agent'",
+    "'channel','project','my_work'",
+  )
+    .replace("'posted','skipped','started','error'", "'posted','skipped','error'")
+    .replace(/\n\s*--[^\n]*\n\s*--[^\n]*\n\s*agent_id\s+TEXT,\n\s*skills[^\n]*/, '');
+  /** The digests table as it shipped before my_work. */
+  const PRE_MY_WORK = PRE_AGENT.replace("'channel','project','my_work'", "'channel','project'");
 
   function oldDb(): Database.Database {
     const conn = new Database(':memory:');
@@ -432,5 +440,32 @@ describe('migrateHubChatDigestsScopeCheck', () => {
          VALUES ('d3', 'c1', '0 8 * * *', 'bogus', 'u1', '2026-10-14T00:00:00.000Z')`,
       ),
     ).toThrow(/CHECK/);
+  });
+
+  it('upgrades a table from before agent digests and keeps its rows', () => {
+    const conn = new Database(':memory:');
+    conn.exec(`CREATE TABLE hub_chat_channels (id TEXT PRIMARY KEY)`);
+    conn.exec(PRE_AGENT);
+    expect(PRE_AGENT).not.toContain('agent_id');
+    conn.exec(`INSERT INTO hub_chat_channels (id) VALUES ('c1')`);
+    insertMyWork(conn);
+
+    migrateHubChatDigestsScopeCheck(conn);
+    migrateHubChatDigestsScopeCheck(conn);
+
+    conn.exec(
+      `INSERT INTO hub_chat_digests
+         (id, channel_id, cron, scope, project_ids, prompt, agent_id, skills, owner_user_id,
+          window_start, last_status)
+       VALUES ('d3', 'c1', '0 9 * * *', 'agent', '["web"]', 'Check the logs', 'web-dev',
+               '["support-logs"]', 'u1', '2026-10-14T00:00:00.000Z', 'started')`,
+    );
+    const rows = conn
+      .prepare('SELECT id, scope, agent_id, skills FROM hub_chat_digests ORDER BY id')
+      .all();
+    expect(rows).toEqual([
+      { id: 'd2', scope: 'my_work', agent_id: null, skills: '[]' },
+      { id: 'd3', scope: 'agent', agent_id: 'web-dev', skills: '["support-logs"]' },
+    ]);
   });
 });

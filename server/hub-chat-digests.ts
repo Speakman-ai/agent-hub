@@ -7,6 +7,11 @@
  * owner's engine credentials, and posts it into the channel as a system
  * message whose body carries ref chips.
  *
+ * An `agent` digest instead runs its prompt as a fresh session of a chosen
+ * project agent (with chosen skills preloaded), owned by the digest owner;
+ * the agent's final reply is relayed into the channel by the mention relay in
+ * `hub-chat-agent-channels.ts`.
+ *
  * Runs on the daily-summary minute ticker (`daily-summary-schedule.ts`). An
  * empty window posts nothing but still advances the cursor; a failed run keeps
  * the cursor so the next run covers the same window.
@@ -34,9 +39,11 @@ import { appendMessage, getChannel, getMember } from './hub-chat-store.js';
 import { broadcastHubChatMessage } from './hub-chat-broadcast.js';
 import { HUB_CHAT_MESSAGE_EVENT } from './hub-chat-events.js';
 import { getUserById } from './users-store.js';
+import { runDigestAgentTurn } from './hub-chat-agent-channels.js';
 import {
   advanceChannelDigestWindow,
   digestProjectIds,
+  digestSkills,
   getChannelDigest,
   listEnabledChannelDigests,
   recordChannelDigestFailure,
@@ -508,11 +515,14 @@ export interface ChannelDigestRunDeps {
   ) => Promise<OneShotFailoverOutcome>;
   /** Whether the owner can still see the project. Fails closed. */
   ownerCanViewProject?: (userId: string, orgId: string, projectId: string) => boolean;
+  /** Starts an agent digest's session; overridable for tests. */
+  runAgentTurn?: typeof runDigestAgentTurn;
   log?: (msg: string) => void;
 }
 
 export type ChannelDigestRunResult =
   | { status: 'posted'; messageId: string }
+  | { status: 'started'; sessionId: string; skippedSkills: string[] }
   | { status: 'skipped'; reason: 'empty_window' }
   | { status: 'cancelled'; reason: string }
   | { status: 'error'; error: string };
@@ -535,21 +545,98 @@ export function isSameDigestConfig(
     current.scope === started.scope &&
     current.project_ids === started.project_ids &&
     current.prompt === started.prompt &&
+    current.agent_id === started.agent_id &&
+    current.skills === started.skills &&
     current.owner_user_id === started.owner_user_id &&
     current.updated_at === started.updated_at &&
     current.window_start === started.window_start
   );
 }
 
-function defaultOwnerCanViewProject(userId: string, orgId: string, projectId: string): boolean {
+function defaultOwnerCanViewProject(
+  userId: string,
+  orgId: string,
+  projectId: string,
+  lookup: (projectId: string) => Project | null = findProject,
+): boolean {
   try {
     if (isLocalBundledServer()) return true;
-    const project = findProject(projectId);
+    const project = lookup(projectId);
     if (!project) return false;
     return canViewProject(project, buildRefViewer(userId, orgId, false).visibility);
   } catch {
     return false;
   }
+}
+
+/**
+ * The turn an agent digest sends: the owner's prompt is the whole task, with
+ * a short footer saying where the reply goes and what span "since the last
+ * run" means.
+ */
+export function buildAgentDigestPrompt(input: {
+  prompt: string;
+  digestName: string;
+  channelName: string;
+  window: DigestWindow;
+  timeZone: string;
+}): string {
+  return [
+    input.prompt.trim(),
+    '',
+    '---',
+    `This is a scheduled run of the digest "${input.digestName}" in the Agent Hub chat channel #${input.channelName || 'channel'}.`,
+    `The previous run covered up to ${input.window.start}; it is now ${input.window.end} (UTC). The reader's timezone is ${input.timeZone}.`,
+    'Your final reply of this turn is posted into the channel, so put the result in the reply itself.',
+  ].join('\n');
+}
+
+/**
+ * Starts an agent digest's session. The cursor moves on dispatch: the run's
+ * outcome is the session's reply, posted into the channel when it ends.
+ */
+function startAgentDigest(
+  row: ChannelDigestRow,
+  channel: HubChatChannelRow,
+  window: DigestWindow,
+  deps: ChannelDigestRunDeps,
+  fail: (error: string) => ChannelDigestRunResult,
+): ChannelDigestRunResult {
+  const lookup = deps.findProject ?? findProject;
+  const projectId = digestProjectIds(row)[0];
+  const project = projectId ? lookup(projectId) : null;
+  const canView =
+    deps.ownerCanViewProject ??
+    ((userId: string, orgId: string, id: string) =>
+      defaultOwnerCanViewProject(userId, orgId, id, lookup));
+  if (!project || !canView(row.owner_user_id, channel.org_id, project.id)) {
+    return fail('The digest owner can no longer view its project');
+  }
+  if (!row.agent_id) return fail('The digest has no agent');
+  if (!row.prompt?.trim()) return fail('The digest has no prompt');
+  if (!isSameDigestConfig(row, getChannelDigest(row.id))) {
+    return { status: 'cancelled', reason: 'Digest was removed, disabled or changed' };
+  }
+  const timeZone = isValidTimeZone(row.time_zone) ? row.time_zone : 'UTC';
+  const started = (deps.runAgentTurn ?? runDigestAgentTurn)({
+    channel,
+    project,
+    agentId: row.agent_id,
+    ownerUserId: row.owner_user_id,
+    prompt: buildAgentDigestPrompt({
+      prompt: row.prompt,
+      digestName: row.name,
+      channelName: channel.name,
+      window,
+      timeZone,
+    }),
+    skills: digestSkills(row),
+    sessionName: `Digest: ${row.name || 'Agent digest'}`,
+  });
+  // The session is already running, so a moved cursor only means another
+  // run closed this window first; the result stands either way.
+  advanceChannelDigestWindow(row.id, window.start, { status: 'started', windowEnd: window.end });
+  return { status: 'started', sessionId: started.sessionId, skippedSkills: started.skippedSkills };
 }
 
 async function generateDigestMarkdown(
@@ -624,6 +711,7 @@ export async function runChannelDigest(
     if (!getMember(channel.id, row.owner_user_id)) {
       return fail('The digest owner is no longer a member of this channel');
     }
+    if (row.scope === 'agent') return startAgentDigest(row, channel, window, deps, fail);
     const lookupProject = deps.findProject ?? findProject;
     const canView = deps.ownerCanViewProject ?? defaultOwnerCanViewProject;
     const projects: Project[] = [];

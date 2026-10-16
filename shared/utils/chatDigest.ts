@@ -4,8 +4,12 @@
  */
 import humanCron from './humanCron.js';
 
-/** `my_work` is only allowed on the owner's own Summaries channel. */
-export type ChatDigestScope = 'channel' | 'project' | 'my_work';
+/**
+ * `agent` runs the digest's prompt as a session of a project agent and posts
+ * its reply. The other scopes are built-in summaries; `my_work` is only
+ * allowed on the owner's own Summaries channel.
+ */
+export type ChatDigestScope = 'channel' | 'project' | 'my_work' | 'agent';
 
 export interface ChatDigest {
   id: string;
@@ -16,12 +20,16 @@ export interface ChatDigest {
   timeZone: string;
   scope: ChatDigestScope;
   projectIds: string[];
-  /** Custom summary instructions, or null for the default. */
+  /** The agent's task (`agent`), or custom summary instructions / null for the default. */
   prompt: string | null;
+  /** Agent scope: the project agent that runs the prompt. */
+  agentId: string | null;
+  /** Agent scope: skill ids preloaded into the session. */
+  skills: string[];
   ownerUserId: string;
   windowStart: string;
   lastRunAt: string | null;
-  lastStatus: 'posted' | 'skipped' | 'error' | null;
+  lastStatus: 'posted' | 'skipped' | 'started' | 'error' | null;
   lastError: string | null;
   lastMessageId: string | null;
   createdAt: string;
@@ -82,8 +90,12 @@ export interface ChatDigestSaveRequest {
   timeZone: string;
   scope: ChatDigestScope;
   projectIds?: string[];
+  /** Required for `agent`. */
+  agentId?: string | null;
+  /** Agent scope: skills preloaded into the session. */
+  skills?: string[];
   /**
-   * Custom summary instructions; null or blank restores the default. Omitted
+   * The agent's task (required for `agent`), or custom summary instructions; null or blank restores the default. Omitted
    * on a replace (PUT), the saved prompt is kept.
    */
   prompt?: string | null;
@@ -118,25 +130,135 @@ export function chatDigestStatusText(
   }
   if (!digest.lastRunAt || !digest.lastStatus) return `${paused}Not run yet.`;
   const outcome =
-    digest.lastStatus === 'posted' ? 'posted a digest' : 'nothing new, skipped posting';
+    digest.lastStatus === 'posted'
+      ? 'posted a digest'
+      : digest.lastStatus === 'started'
+        ? 'started the agent'
+        : 'nothing new, skipped posting';
   return `${paused}Last run ${formatTime(digest.lastRunAt)}: ${outcome}.`;
 }
 
-/**
- * Whether a channel's digest editor may offer the `my_work` scope: only the
- * viewer's own Summaries channel, matching the server's `my_work_not_allowed`
- * check.
- */
-export function canUseMyWorkDigestScope(
-  channel: { kind: string; createdByUserId: string | null },
-  viewerUserId: string | null,
-): boolean {
-  return channel.kind === 'summary' && !!viewerUserId && channel.createdByUserId === viewerUserId;
+/** What a built-in (non-agent) digest summarizes, for its editor. */
+export function builtInDigestDescription(scope: ChatDigestScope): string | null {
+  switch (scope) {
+    case 'channel':
+      return 'Built-in summary of messages in this channel since the last run.';
+    case 'project':
+      return "Built-in summary of the selected projects' cards, PRs and tickets.";
+    case 'my_work':
+      return 'Built-in summary of your sessions, assigned cards and todos.';
+    default:
+      return null;
+  }
 }
 
-/** Whether a draft has the projects its scope needs to be saved. */
-export function digestScopeReady(scope: ChatDigestScope, projectIds: readonly string[]): boolean {
-  return scope !== 'project' || projectIds.length > 0;
+/** Roles that cannot run a digest session (matches the server's background-session rule). */
+const DIGEST_INELIGIBLE_ROLES = new Set(['reviewer', 'docs', 'hub-assistant', 'skill-builder']);
+
+/** A project's agents that can run an agent digest. */
+export function chatDigestAgents<T extends { id: string; role?: unknown }>(
+  agents: readonly T[] | null | undefined,
+): T[] {
+  return (agents ?? []).filter(
+    (a) =>
+      !!a &&
+      !DIGEST_INELIGIBLE_ROLES.has(
+        String(a.role ?? '')
+          .trim()
+          .toLowerCase(),
+      ),
+  );
 }
 
-export const MY_WORK_DIGEST_SCOPE_LABEL = 'My work (daily summary)';
+/** Text shown for a "Run now" result. */
+export function chatDigestRunResultText(result: {
+  status?: string;
+  reason?: string;
+  error?: string;
+  skippedSkills?: string[];
+}): string {
+  switch (result.status) {
+    case 'posted':
+      return 'Posted a digest.';
+    case 'started': {
+      const skipped = result.skippedSkills?.length
+        ? ` Skills not loaded: ${result.skippedSkills.join(', ')}.`
+        : '';
+      return `Started the agent. Its reply will be posted here when it finishes.${skipped}`;
+    }
+    case 'skipped':
+      return 'Nothing new, skipped posting.';
+    case 'cancelled':
+      return `Run cancelled: ${result.reason || 'digest changed'}`;
+    default:
+      return `Run failed: ${result.error || 'unknown error'}`;
+  }
+}
+
+/** Editor state for one digest, shared by web and mobile. */
+export interface ChatDigestDraft {
+  name: string;
+  enabled: boolean;
+  cron: string;
+  timeZone: string;
+  /** The saved scope; a built-in digest keeps it until an agent is picked. */
+  scope: ChatDigestScope;
+  /** A built-in project digest keeps its projects untouched. */
+  builtInProjectIds: string[];
+  projectId: string;
+  agentId: string;
+  skills: string[];
+  prompt: string;
+}
+
+export function chatDigestDraftFrom(
+  digest: ChatDigest | null,
+  defaultProjectId: string | null,
+): ChatDigestDraft {
+  const isAgent = !digest || digest.scope === 'agent';
+  return {
+    name: digest?.name ?? '',
+    enabled: digest?.enabled ?? true,
+    cron: digest?.cron ?? DEFAULT_CHAT_DIGEST_CRON,
+    timeZone: digest?.timeZone ?? deviceTimeZone(),
+    scope: digest?.scope ?? 'agent',
+    builtInProjectIds: digest && !isAgent ? [...digest.projectIds] : [],
+    projectId: isAgent ? (digest?.projectIds[0] ?? defaultProjectId ?? '') : '',
+    agentId: digest?.agentId ?? '',
+    skills: digest?.skills ? [...digest.skills] : [],
+    prompt: digest?.prompt ?? '',
+  };
+}
+
+/** A built-in digest no agent was picked for yet; it saves under its own scope. */
+export function chatDigestDraftIsBuiltIn(draft: ChatDigestDraft): boolean {
+  return draft.scope !== 'agent' && !(draft.projectId && draft.agentId);
+}
+
+/** Whether the editor may save: an agent digest needs a project, an agent and a prompt. */
+export function chatDigestDraftReady(draft: ChatDigestDraft): boolean {
+  if (!draft.cron.trim() || !draft.timeZone.trim()) return false;
+  if (draft.prompt.length > MAX_CHAT_DIGEST_PROMPT_CHARS) return false;
+  if (chatDigestDraftIsBuiltIn(draft)) return true;
+  return !!draft.projectId && !!draft.agentId && draft.prompt.trim().length > 0;
+}
+
+export function chatDigestSaveBody(draft: ChatDigestDraft): ChatDigestSaveRequest {
+  const common = {
+    name: draft.name.trim() || undefined,
+    enabled: draft.enabled,
+    cron: draft.cron.trim(),
+    timeZone: draft.timeZone.trim(),
+    prompt: draft.prompt.trim() || null,
+  };
+  if (chatDigestDraftIsBuiltIn(draft)) {
+    return { ...common, scope: draft.scope, projectIds: draft.builtInProjectIds };
+  }
+  return {
+    ...common,
+    scope: 'agent',
+    projectIds: draft.projectId ? [draft.projectId] : [],
+    agentId: draft.agentId || null,
+    skills: draft.skills,
+  };
+}

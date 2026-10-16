@@ -850,7 +850,10 @@ registerPath({
   },
 });
 
-export const DigestScopeSchema = z.enum(['channel', 'project', 'my_work']);
+export const DigestScopeSchema = z.enum(['channel', 'project', 'my_work', 'agent']);
+
+/** Mirrors `MAX_BACKGROUND_SESSION_SKILLS` in `background-agent-session.ts`. */
+const MAX_DIGEST_SKILLS = 20;
 
 /** Mirrors `MAX_DIGESTS_PER_CHANNEL` in `hub-chat-digests-store.ts`. */
 const MAX_DIGESTS_PER_CHANNEL = 10;
@@ -870,26 +873,36 @@ export const ChannelDigestComponent = registerComponent(
       timeZone: z.string().openapi({ description: 'IANA timezone the cron is read in.' }),
       scope: DigestScopeSchema.openapi({
         description:
-          "`channel` summarizes this channel's messages since the last run; `project` summarizes a project's activity; `my_work` summarizes the owner's own sessions, assigned cards and todos, and is only allowed on the owner's own Summaries channel.",
+          "`agent` runs `prompt` as a fresh session of `agentId` in the one project in `projectIds`, with `skills` preloaded, and posts the agent's final reply into the channel. `channel` summarizes this channel's messages since the last run; `project` summarizes a project's activity; `my_work` summarizes the owner's own sessions, assigned cards and todos, and is only allowed on the owner's own Summaries channel.",
       }),
       projectIds: z.array(z.string()).openapi({
         description:
-          'Projects a `project` digest summarizes (1 to 10); empty for `channel`. Projects the owner can no longer view are left out of a run with a note.',
+          'Projects a `project` digest summarizes (1 to 10); the single project an `agent` digest runs in; empty for `channel`. Projects the owner can no longer view are left out of a run with a note.',
       }),
       prompt: z.string().nullable().openapi({
-        description: 'Custom instructions for the summary, or null for the default.',
+        description:
+          'The task an `agent` digest runs; for the other scopes, custom summary instructions or null for the default.',
+      }),
+      agentId: z.string().nullable().openapi({
+        description: 'Project agent an `agent` digest runs as; null for the other scopes.',
+      }),
+      skills: z.array(z.string()).openapi({
+        description: "Skill ids preloaded into an `agent` digest's session.",
       }),
       ownerUserId: z.string().openapi({
         description: 'User whose engine credentials and access the digest runs on (last editor).',
       }),
       windowStart: z.string().openapi({
         description:
-          'Start of the span the next run summarizes. Moves only when a run posts or skips, so a failed span is retried.',
+          'Start of the span the next run summarizes. Moves only when a run posts, skips or starts an agent session, so a failed span is retried.',
       }),
       lastRunAt: z.string().nullable().openapi({
         description: 'End of the last window that was posted or skipped as empty.',
       }),
-      lastStatus: z.enum(['posted', 'skipped', 'error']).nullable(),
+      lastStatus: z.enum(['posted', 'skipped', 'started', 'error']).nullable().openapi({
+        description:
+          "`started`: an agent digest's session was dispatched; its reply is posted when the turn ends.",
+      }),
       lastError: z.string().nullable(),
       lastMessageId: z.string().nullable(),
       createdAt: z.string(),
@@ -915,11 +928,19 @@ export const SaveDigestRequestSchema = z
       .max(MAX_CHAT_DIGEST_PROJECTS)
       .optional()
       .openapi({
-        description: `Required (1 to ${MAX_CHAT_DIGEST_PROJECTS} projects) when \`scope\` is \`project\`; ignored otherwise. The caller must be able to view every one.`,
+        description: `Required (1 to ${MAX_CHAT_DIGEST_PROJECTS} projects) when \`scope\` is \`project\`, exactly one when \`agent\`; ignored otherwise. The caller must be able to view every one.`,
       }),
+    agentId: z.string().trim().min(1).max(200).nullable().optional().openapi({
+      description:
+        'Required when `scope` is `agent`: a project agent that can host a session (not a reviewer, docs or Hub agent).',
+    }),
+    skills: z.array(z.string().trim().min(1).max(200)).max(MAX_DIGEST_SKILLS).optional().openapi({
+      description:
+        "Skill ids preloaded into an `agent` digest's session; ignored for other scopes. Omitted on PUT keeps the saved list.",
+    }),
     prompt: z.string().trim().max(MAX_CHAT_DIGEST_PROMPT_CHARS).nullable().optional().openapi({
       description:
-        'Custom instructions that replace the default instruction paragraph. The window, the facts and the framing around them stay fixed. Null or blank restores the default; omitted on PUT keeps the saved prompt.',
+        'For `agent`, the task the agent runs (required). For the other scopes, custom instructions that replace the default instruction paragraph; the window, the facts and the framing around them stay fixed. Null or blank restores the default; omitted on PUT keeps the saved prompt.',
     }),
   })
   .strict();
@@ -1009,7 +1030,7 @@ for (const prefix of DIGEST_ROUTE_PREFIXES) {
     tags: [TAG],
     summary: 'Run a scheduled digest now',
     description:
-      "Members only. Runs on the digest owner's credentials over the window since the last run, exactly as a scheduled run would: an empty window posts nothing.",
+      "Members only. Runs on the digest owner's credentials over the window since the last run, exactly as a scheduled run would: an empty window posts nothing. An `agent` digest returns `started` once its session is dispatched; the reply is posted when the turn ends.",
     request: { params: digestParams },
     responses: {
       200: {
@@ -1017,8 +1038,12 @@ for (const prefix of DIGEST_ROUTE_PREFIXES) {
         content: jsonContent(
           z.object({
             result: z.object({
-              status: z.enum(['posted', 'skipped', 'cancelled', 'error']),
+              status: z.enum(['posted', 'skipped', 'started', 'cancelled', 'error']),
               messageId: z.string().optional(),
+              sessionId: z.string().optional().openapi({
+                description: 'The session an `agent` digest started.',
+              }),
+              skippedSkills: z.array(z.string()).optional(),
               reason: z.string().optional(),
               error: z.string().optional(),
             }),

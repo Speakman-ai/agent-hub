@@ -561,6 +561,61 @@ export function runMentionPost(args: {
   }
 }
 
+/**
+ * Runs a scheduled agent digest: a fresh session of `agentId` owned by the
+ * digest owner, with `skills` preloaded, whose final reply is posted into the
+ * channel like a mention reply. Each run gets its own session so one run's
+ * context never leaks into the next. Throws when the session cannot be
+ * created; a first turn that fails later is closed with a channel notice.
+ */
+export function runDigestAgentTurn(args: {
+  channel: HubChatChannelRow;
+  project: Project;
+  agentId: string;
+  ownerUserId: string;
+  prompt: string;
+  skills: string[];
+  sessionName: string;
+}): { sessionId: string; skippedSkills: string[] } {
+  if (!deps) throw new AgentChannelError('no_hook', 'Agent digests are not initialised');
+  const { channel, project, agentId } = args;
+  const turnId = randomUUID();
+  insertAgentTurn(turnId, channel.id, null, { agentId, projectId: project.id });
+  const dispatch = deps.dispatch ?? dispatchBackgroundAgentSession;
+  let result: ReturnType<typeof dispatchBackgroundAgentSession>;
+  try {
+    result = dispatch(
+      project,
+      {
+        id: randomUUID(),
+        name: args.sessionName,
+        prompt: args.prompt,
+        ownerUserId: args.ownerUserId,
+        sessionAgentId: agentId,
+        skills: args.skills,
+        runAsSession: true,
+      },
+      {
+        sessionName: args.sessionName,
+        userMessageId: turnId,
+        onKickoffError: (msg) => turnFailed(channel.id, turnId, msg),
+      },
+    );
+  } catch (err) {
+    deleteAgentTurn(turnId);
+    if (err instanceof BackgroundSessionDispatchError) {
+      throw new AgentChannelError(err.code, err.message);
+    }
+    throw err;
+  }
+  commit(() => {
+    // The turn may already have started (recording the session) or failed.
+    const turn = getAgentTurn(turnId);
+    if (turn) updateAgentTurn(turnId, result.sessionId, turn.started === 1);
+  });
+  return { sessionId: result.sessionId, skippedSkills: result.skippedSkills };
+}
+
 /** Closes a turn that could not run, with a notice in its channel. */
 function turnFailed(channelId: string, turnId: string, err: unknown): void {
   const msg = err instanceof Error ? err.message : String(err);

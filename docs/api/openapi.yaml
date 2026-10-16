@@ -8192,22 +8192,32 @@ components:
             - channel
             - project
             - my_work
-          description: "`channel` summarizes this channel's messages since the last run; `project` summarizes a project's activity; `my_work` summarizes the owner's own sessions, assigned cards and todos, and is only allowed on the owner's own Summaries channel."
+            - agent
+          description: "`agent` runs `prompt` as a fresh session of `agentId` in the one project in `projectIds`, with `skills` preloaded, and posts the agent's final reply into the channel. `channel` summarizes this channel's messages since the last run; `project` summarizes a project's activity; `my_work` summarizes the owner's own sessions, assigned cards and todos, and is only allowed on the owner's own Summaries channel."
         projectIds:
           type: array
           items:
             type: string
-          description: Projects a `project` digest summarizes (1 to 10); empty for `channel`. Projects the owner can no longer view are left out of a run with a note.
+          description: Projects a `project` digest summarizes (1 to 10); the single project an `agent` digest runs in; empty for `channel`. Projects the owner can no longer view are left out of a run with a note.
         prompt:
           type: string
           nullable: true
-          description: Custom instructions for the summary, or null for the default.
+          description: The task an `agent` digest runs; for the other scopes, custom summary instructions or null for the default.
+        agentId:
+          type: string
+          nullable: true
+          description: Project agent an `agent` digest runs as; null for the other scopes.
+        skills:
+          type: array
+          items:
+            type: string
+          description: Skill ids preloaded into an `agent` digest's session.
         ownerUserId:
           type: string
           description: User whose engine credentials and access the digest runs on (last editor).
         windowStart:
           type: string
-          description: Start of the span the next run summarizes. Moves only when a run posts or skips, so a failed span is retried.
+          description: Start of the span the next run summarizes. Moves only when a run posts, skips or starts an agent session, so a failed span is retried.
         lastRunAt:
           type: string
           nullable: true
@@ -8218,8 +8228,10 @@ components:
           enum:
             - posted
             - skipped
+            - started
             - error
             - null
+          description: "`started`: an agent digest's session was dispatched; its reply is posted when the turn ends."
         lastError:
           type: string
           nullable: true
@@ -8240,6 +8252,8 @@ components:
         - scope
         - projectIds
         - prompt
+        - agentId
+        - skills
         - ownerUserId
         - windowStart
         - lastRunAt
@@ -38306,6 +38320,7 @@ paths:
                     - channel
                     - project
                     - my_work
+                    - agent
                 projectIds:
                   type: array
                   items:
@@ -38313,12 +38328,26 @@ paths:
                     minLength: 1
                     maxLength: 200
                   maxItems: 10
-                  description: Required (1 to 10 projects) when `scope` is `project`; ignored otherwise. The caller must be able to view every one.
+                  description: Required (1 to 10 projects) when `scope` is `project`, exactly one when `agent`; ignored otherwise. The caller must be able to view every one.
+                agentId:
+                  type: string
+                  nullable: true
+                  minLength: 1
+                  maxLength: 200
+                  description: "Required when `scope` is `agent`: a project agent that can host a session (not a reviewer, docs or Hub agent)."
+                skills:
+                  type: array
+                  items:
+                    type: string
+                    minLength: 1
+                    maxLength: 200
+                  maxItems: 20
+                  description: Skill ids preloaded into an `agent` digest's session; ignored for other scopes. Omitted on PUT keeps the saved list.
                 prompt:
                   type: string
                   nullable: true
                   maxLength: 4000
-                  description: Custom instructions that replace the default instruction paragraph. The window, the facts and the framing around them stay fixed. Null or blank restores the default; omitted on PUT keeps the saved prompt.
+                  description: For `agent`, the task the agent runs (required). For the other scopes, custom instructions that replace the default instruction paragraph; the window, the facts and the framing around them stay fixed. Null or blank restores the default; omitted on PUT keeps the saved prompt.
               required:
                 - cron
                 - timeZone
@@ -38414,6 +38443,7 @@ paths:
                     - channel
                     - project
                     - my_work
+                    - agent
                 projectIds:
                   type: array
                   items:
@@ -38421,12 +38451,26 @@ paths:
                     minLength: 1
                     maxLength: 200
                   maxItems: 10
-                  description: Required (1 to 10 projects) when `scope` is `project`; ignored otherwise. The caller must be able to view every one.
+                  description: Required (1 to 10 projects) when `scope` is `project`, exactly one when `agent`; ignored otherwise. The caller must be able to view every one.
+                agentId:
+                  type: string
+                  nullable: true
+                  minLength: 1
+                  maxLength: 200
+                  description: "Required when `scope` is `agent`: a project agent that can host a session (not a reviewer, docs or Hub agent)."
+                skills:
+                  type: array
+                  items:
+                    type: string
+                    minLength: 1
+                    maxLength: 200
+                  maxItems: 20
+                  description: Skill ids preloaded into an `agent` digest's session; ignored for other scopes. Omitted on PUT keeps the saved list.
                 prompt:
                   type: string
                   nullable: true
                   maxLength: 4000
-                  description: Custom instructions that replace the default instruction paragraph. The window, the facts and the framing around them stay fixed. Null or blank restores the default; omitted on PUT keeps the saved prompt.
+                  description: For `agent`, the task the agent runs (required). For the other scopes, custom instructions that replace the default instruction paragraph; the window, the facts and the framing around them stay fixed. Null or blank restores the default; omitted on PUT keeps the saved prompt.
               required:
                 - cron
                 - timeZone
@@ -38535,7 +38579,7 @@ paths:
       tags:
         - Hub Chat
       summary: Run a scheduled digest now
-      description: "Members only. Runs on the digest owner's credentials over the window since the last run, exactly as a scheduled run would: an empty window posts nothing."
+      description: "Members only. Runs on the digest owner's credentials over the window since the last run, exactly as a scheduled run would: an empty window posts nothing. An `agent` digest returns `started` once its session is dispatched; the reply is posted when the turn ends."
       parameters:
         - schema:
             type: string
@@ -38566,10 +38610,18 @@ paths:
                         enum:
                           - posted
                           - skipped
+                          - started
                           - cancelled
                           - error
                       messageId:
                         type: string
+                      sessionId:
+                        type: string
+                        description: The session an `agent` digest started.
+                      skippedSkills:
+                        type: array
+                        items:
+                          type: string
                       reason:
                         type: string
                       error:
@@ -38693,6 +38745,7 @@ paths:
                     - channel
                     - project
                     - my_work
+                    - agent
                 projectIds:
                   type: array
                   items:
@@ -38700,12 +38753,26 @@ paths:
                     minLength: 1
                     maxLength: 200
                   maxItems: 10
-                  description: Required (1 to 10 projects) when `scope` is `project`; ignored otherwise. The caller must be able to view every one.
+                  description: Required (1 to 10 projects) when `scope` is `project`, exactly one when `agent`; ignored otherwise. The caller must be able to view every one.
+                agentId:
+                  type: string
+                  nullable: true
+                  minLength: 1
+                  maxLength: 200
+                  description: "Required when `scope` is `agent`: a project agent that can host a session (not a reviewer, docs or Hub agent)."
+                skills:
+                  type: array
+                  items:
+                    type: string
+                    minLength: 1
+                    maxLength: 200
+                  maxItems: 20
+                  description: Skill ids preloaded into an `agent` digest's session; ignored for other scopes. Omitted on PUT keeps the saved list.
                 prompt:
                   type: string
                   nullable: true
                   maxLength: 4000
-                  description: Custom instructions that replace the default instruction paragraph. The window, the facts and the framing around them stay fixed. Null or blank restores the default; omitted on PUT keeps the saved prompt.
+                  description: For `agent`, the task the agent runs (required). For the other scopes, custom instructions that replace the default instruction paragraph; the window, the facts and the framing around them stay fixed. Null or blank restores the default; omitted on PUT keeps the saved prompt.
               required:
                 - cron
                 - timeZone
@@ -38801,6 +38868,7 @@ paths:
                     - channel
                     - project
                     - my_work
+                    - agent
                 projectIds:
                   type: array
                   items:
@@ -38808,12 +38876,26 @@ paths:
                     minLength: 1
                     maxLength: 200
                   maxItems: 10
-                  description: Required (1 to 10 projects) when `scope` is `project`; ignored otherwise. The caller must be able to view every one.
+                  description: Required (1 to 10 projects) when `scope` is `project`, exactly one when `agent`; ignored otherwise. The caller must be able to view every one.
+                agentId:
+                  type: string
+                  nullable: true
+                  minLength: 1
+                  maxLength: 200
+                  description: "Required when `scope` is `agent`: a project agent that can host a session (not a reviewer, docs or Hub agent)."
+                skills:
+                  type: array
+                  items:
+                    type: string
+                    minLength: 1
+                    maxLength: 200
+                  maxItems: 20
+                  description: Skill ids preloaded into an `agent` digest's session; ignored for other scopes. Omitted on PUT keeps the saved list.
                 prompt:
                   type: string
                   nullable: true
                   maxLength: 4000
-                  description: Custom instructions that replace the default instruction paragraph. The window, the facts and the framing around them stay fixed. Null or blank restores the default; omitted on PUT keeps the saved prompt.
+                  description: For `agent`, the task the agent runs (required). For the other scopes, custom instructions that replace the default instruction paragraph; the window, the facts and the framing around them stay fixed. Null or blank restores the default; omitted on PUT keeps the saved prompt.
               required:
                 - cron
                 - timeZone
@@ -38922,7 +39004,7 @@ paths:
       tags:
         - Hub Chat
       summary: Run a scheduled digest now
-      description: "Members only. Runs on the digest owner's credentials over the window since the last run, exactly as a scheduled run would: an empty window posts nothing."
+      description: "Members only. Runs on the digest owner's credentials over the window since the last run, exactly as a scheduled run would: an empty window posts nothing. An `agent` digest returns `started` once its session is dispatched; the reply is posted when the turn ends."
       parameters:
         - schema:
             type: string
@@ -38953,10 +39035,18 @@ paths:
                         enum:
                           - posted
                           - skipped
+                          - started
                           - cancelled
                           - error
                       messageId:
                         type: string
+                      sessionId:
+                        type: string
+                        description: The session an `agent` digest started.
+                      skippedSkills:
+                        type: array
+                        items:
+                          type: string
                       reason:
                         type: string
                       error:

@@ -115,6 +115,7 @@ import {
   createChannelDigest,
   deleteChannelDigest,
   digestProjectIds,
+  digestSkills,
   getChannelDigest,
   listChannelDigests,
   updateChannelDigest,
@@ -123,6 +124,7 @@ import {
   type ChannelDigestRow,
 } from '../hub-chat-digests-store.js';
 import { runChannelDigestNow } from '../hub-chat-digests.js';
+import { pickBackgroundSessionAgent } from '../background-agent-session.js';
 import { defaultDigestName } from '../hub-chat-schema.js';
 import { searchHubChatMessages } from '../hub-chat-search.js';
 import { isValidCron } from '../cron-match.js';
@@ -261,6 +263,8 @@ function shapeDigest(row: ChannelDigestRow) {
     scope: row.scope,
     projectIds: digestProjectIds(row),
     prompt: row.prompt,
+    agentId: row.agent_id,
+    skills: digestSkills(row),
     ownerUserId: row.owner_user_id,
     windowStart: row.window_start,
     lastRunAt: row.last_run_at,
@@ -1177,10 +1181,14 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
       return null;
     }
     const projectIds: string[] = [];
-    if (body.scope === 'project') {
+    if (body.scope === 'project' || body.scope === 'agent') {
       const ids = body.projectIds ?? [];
       if (ids.length === 0) {
-        bad(res, 400, 'Pick a project for a project digest', 'project_required');
+        bad(res, 400, 'Pick a project for the digest', 'project_required');
+        return null;
+      }
+      if (body.scope === 'agent' && new Set(ids).size > 1) {
+        bad(res, 400, 'An agent digest runs in exactly one project', 'one_project_required');
         return null;
       }
       for (const id of ids) {
@@ -1198,6 +1206,28 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
         if (!projectIds.includes(project.id)) projectIds.push(project.id);
       }
     }
+    const prompt =
+      body.prompt === undefined ? (existing?.prompt ?? null) : body.prompt?.trim() || null;
+    let agentId: string | null = null;
+    let skills: string[] = [];
+    if (body.scope === 'agent') {
+      const project = deps.findProject?.(projectIds[0]!) ?? null;
+      const agent =
+        project && body.agentId ? pickBackgroundSessionAgent(project, body.agentId) : null;
+      if (!agent) {
+        bad(res, 400, 'Pick an agent from the project to run the digest', 'agent_required');
+        return null;
+      }
+      if (!prompt) {
+        bad(res, 400, 'Write the prompt the agent should run', 'prompt_required');
+        return null;
+      }
+      agentId = agent.id;
+      skills =
+        body.skills === undefined && existing?.scope === 'agent'
+          ? digestSkills(existing)
+          : [...new Set(body.skills ?? [])];
+    }
     return {
       name: body.name?.trim() || defaultDigestName(body.scope),
       enabled: body.enabled,
@@ -1205,7 +1235,9 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
       timeZone: body.timeZone.trim(),
       scope: body.scope,
       projectIds,
-      prompt: body.prompt === undefined ? (existing?.prompt ?? null) : body.prompt?.trim() || null,
+      prompt,
+      agentId,
+      skills,
       ownerUserId: caller.userId,
     };
   };

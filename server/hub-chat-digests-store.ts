@@ -7,8 +7,13 @@ import { randomUUID } from 'crypto';
 import { getDb } from './db.js';
 import { MAX_CHAT_DIGESTS_PER_CHANNEL } from '../shared/utils/chatDigest.js';
 
-export type ChannelDigestScope = 'channel' | 'project' | 'my_work';
-export type ChannelDigestStatus = 'posted' | 'skipped' | 'error';
+/**
+ * `agent` runs the digest's prompt as a session of a project agent and posts
+ * its reply; the others summarize collected facts with a one-shot model.
+ */
+export type ChannelDigestScope = 'channel' | 'project' | 'my_work' | 'agent';
+/** `started`: an agent digest dispatched its session; the reply posts when it ends. */
+export type ChannelDigestStatus = 'posted' | 'skipped' | 'started' | 'error';
 
 export interface ChannelDigestRow {
   id: string;
@@ -21,6 +26,10 @@ export interface ChannelDigestRow {
   /** JSON array of project ids; read with `digestProjectIds`. */
   project_ids: string;
   prompt: string | null;
+  /** Agent scope: the project agent that runs the prompt. */
+  agent_id: string | null;
+  /** JSON array of skill ids; read with `digestSkills`. */
+  skills: string;
   owner_user_id: string;
   /** Start of the span the next run summarizes. */
   window_start: string;
@@ -44,6 +53,16 @@ export const MAX_DIGESTS_PER_CHANNEL = MAX_CHAT_DIGESTS_PER_CHANNEL;
 export function digestProjectIds(row: Pick<ChannelDigestRow, 'project_ids'>): string[] {
   try {
     const parsed: unknown = JSON.parse(row.project_ids);
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+/** The skills an agent digest preloads; a malformed column reads as none. */
+export function digestSkills(row: Pick<ChannelDigestRow, 'skills'>): string[] {
+  try {
+    const parsed: unknown = JSON.parse(row.skills);
     return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [];
   } catch {
     return [];
@@ -83,6 +102,8 @@ export interface ChannelDigestInput {
   scope: ChannelDigestScope;
   projectIds: string[];
   prompt: string | null;
+  agentId?: string | null;
+  skills?: string[];
   ownerUserId: string;
   now?: Date;
 }
@@ -111,8 +132,8 @@ export function createChannelDigest(
       db.prepare(
         `INSERT INTO hub_chat_digests
            (id, channel_id, name, enabled, cron, time_zone, scope, project_ids, prompt,
-            owner_user_id, window_start)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            agent_id, skills, owner_user_id, window_start)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         id,
         channelId,
@@ -123,6 +144,8 @@ export function createChannelDigest(
         input.scope,
         JSON.stringify(input.projectIds),
         input.prompt,
+        input.agentId ?? null,
+        JSON.stringify(input.skills ?? []),
         input.ownerUserId,
         initialWindowStart(input.now),
       );
@@ -152,6 +175,8 @@ export function updateChannelDigest(
          scope = ?,
          project_ids = ?,
          prompt = ?,
+         agent_id = ?,
+         skills = ?,
          owner_user_id = ?,
          updated_at = ${NOW}
        WHERE id = ?`,
@@ -166,6 +191,8 @@ export function updateChannelDigest(
       input.scope,
       JSON.stringify(input.projectIds),
       input.prompt,
+      input.agentId ?? null,
+      JSON.stringify(input.skills ?? []),
       input.ownerUserId,
       digestId,
     );
@@ -185,7 +212,11 @@ export function deleteChannelDigest(digestId: string): boolean {
 export function advanceChannelDigestWindow(
   digestId: string,
   fromStart: string,
-  result: { status: 'posted' | 'skipped'; windowEnd: string; messageId?: string | null },
+  result: {
+    status: 'posted' | 'skipped' | 'started';
+    windowEnd: string;
+    messageId?: string | null;
+  },
 ): boolean {
   const r = getDb()
     .prepare(

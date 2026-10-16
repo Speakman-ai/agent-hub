@@ -53,6 +53,8 @@ function row(extra: Partial<Row> = {}): Row {
     scope: 'channel',
     project_ids: '[]',
     prompt: null,
+    agent_id: null,
+    skills: '[]',
     owner_user_id: 'u1',
     window_start: '2026-10-13T09:00:00.000Z',
     last_run_at: null,
@@ -883,5 +885,80 @@ describe('selectDueChannelDigests with several expressions', () => {
   it('never runs a schedule with an invalid expression', () => {
     const r = row({ cron: '5 8 * * * | nope' });
     expect(digests.selectDueChannelDigests(new Date('2026-10-15T08:05:10Z'), [r])).toHaveLength(0);
+  });
+});
+
+describe('agent digests', () => {
+  const PROMPT =
+    'Go through the server logs in the last 24 hours and show me any that are of concern.';
+
+  function agentDigest(
+    extra: Partial<import('./hub-chat-digests-store.js').ChannelDigestInput> = {},
+  ) {
+    return channelWithDigest({
+      name: 'Log Summary',
+      scope: 'agent',
+      projectIds: ['web'],
+      agentId: 'web-dev',
+      skills: ['support-logs'],
+      prompt: PROMPT,
+      ...extra,
+    });
+  }
+
+  it('runs the saved prompt as an agent session instead of summarizing activity', async () => {
+    const { channel, digest } = agentDigest();
+    const { deps, runFailover } = runDeps();
+    const runAgentTurn = vi.fn().mockReturnValue({ sessionId: 's-1', skippedSkills: [] });
+    const now = new Date('2026-10-16T14:00:00.000Z');
+
+    // An empty window: a summary digest would skip, an agent digest still runs.
+    const result = await digests.runChannelDigest(digest, now, { ...deps, runAgentTurn });
+
+    expect(result).toEqual({ status: 'started', sessionId: 's-1', skippedSkills: [] });
+    expect(runFailover).not.toHaveBeenCalled();
+    expect(runAgentTurn).toHaveBeenCalledTimes(1);
+    const call = runAgentTurn.mock.calls[0]![0];
+    expect(call.channel.id).toBe(channel.id);
+    expect(call.project.id).toBe('web');
+    expect(call.agentId).toBe('web-dev');
+    expect(call.ownerUserId).toBe(alice);
+    expect(call.skills).toEqual(['support-logs']);
+    expect(call.sessionName).toBe('Digest: Log Summary');
+    expect(call.prompt.startsWith(PROMPT)).toBe(true);
+    expect(call.prompt).toContain(digest.window_start);
+
+    const after = digestStore.getChannelDigest(digest.id)!;
+    expect(after.last_status).toBe('started');
+    expect(after.window_start).toBe(now.toISOString());
+  });
+
+  it('fails without dispatching when the owner can no longer view the project', async () => {
+    const { digest } = agentDigest();
+    const { deps } = runDeps();
+    const runAgentTurn = vi.fn();
+    const result = await digests.runChannelDigest(digest, new Date(), {
+      ...deps,
+      runAgentTurn,
+      ownerCanViewProject: () => false,
+    });
+    expect(result.status).toBe('error');
+    expect(runAgentTurn).not.toHaveBeenCalled();
+  });
+
+  it('keeps the cursor when the session cannot be started', async () => {
+    const { digest } = agentDigest();
+    const { deps } = runDeps();
+    const runAgentTurn = vi.fn(() => {
+      throw new Error('Agent "web-dev" cannot host a background session');
+    });
+    const result = await digests.runChannelDigest(digest, new Date(), { ...deps, runAgentTurn });
+    expect(result).toEqual({
+      status: 'error',
+      error: 'Agent "web-dev" cannot host a background session',
+    });
+    const after = digestStore.getChannelDigest(digest.id)!;
+    expect(after.window_start).toBe(digest.window_start);
+    expect(after.last_status).toBe('error');
   });
 });

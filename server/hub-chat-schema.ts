@@ -147,13 +147,17 @@ export const HUB_CHAT_SCHEMA = `
     enabled         INTEGER NOT NULL DEFAULT 1,
     cron            TEXT NOT NULL,
     time_zone       TEXT NOT NULL DEFAULT 'UTC',
-    scope           TEXT NOT NULL CHECK(scope IN ('channel','project','my_work')),
+    scope           TEXT NOT NULL CHECK(scope IN ('channel','project','my_work','agent')),
     project_ids     TEXT NOT NULL DEFAULT '[]',
     prompt          TEXT,
+    -- agent scope: the project agent that runs the prompt, and the skills
+    -- (JSON array of ids) preloaded into its session.
+    agent_id        TEXT,
+    skills          TEXT NOT NULL DEFAULT '[]',
     owner_user_id   TEXT NOT NULL,
     window_start    TEXT NOT NULL,
     last_run_at     TEXT,
-    last_status     TEXT CHECK(last_status IS NULL OR last_status IN ('posted','skipped','error')),
+    last_status     TEXT CHECK(last_status IS NULL OR last_status IN ('posted','skipped','started','error')),
     last_error      TEXT,
     last_message_id TEXT,
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
@@ -233,20 +237,21 @@ const LEGACY_DIGESTS_TABLE = 'hub_chat_channel_digests';
 /** Default name for a digest saved without one. */
 export function defaultDigestName(scope: string): string {
   if (scope === 'my_work') return 'Daily summary';
+  if (scope === 'agent') return 'Agent digest';
   return scope === 'project' ? 'Project digest' : 'Channel digest';
 }
 
 /**
- * Rebuilds `hub_chat_digests` when its scope CHECK predates `my_work`.
- * SQLite cannot alter a CHECK, so the rows move into a fresh table with the
- * current definition. Idempotent: a table that already allows `my_work` is
- * left alone.
+ * Rebuilds `hub_chat_digests` when its CHECKs predate the `agent` scope (and
+ * its `started` status and columns). SQLite cannot alter a CHECK, so the rows
+ * move into a fresh table with the current definition; columns the old table
+ * lacks take their defaults. Idempotent: a current table is left alone.
  */
 export function migrateHubChatDigestsScopeCheck(conn: Database.Database): void {
   const table = conn
     .prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'hub_chat_digests'`)
     .get() as { sql: string } | undefined;
-  if (!table || table.sql.includes("'my_work'")) return;
+  if (!table || table.sql.includes("'agent'")) return;
   const create = HUB_CHAT_SCHEMA.match(
     /CREATE TABLE IF NOT EXISTS hub_chat_digests \(([\s\S]*?)\n {2}\);/,
   );

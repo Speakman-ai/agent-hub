@@ -11,19 +11,19 @@ import {
 import { isHubSystemProject } from '@shared/utils/hub';
 import {
   CHAT_DIGEST_PRESETS,
-  DEFAULT_CHAT_DIGEST_CRON,
-  DEFAULT_CHAT_DIGEST_INSTRUCTIONS,
-  MAX_CHAT_DIGEST_PROJECTS,
   MAX_CHAT_DIGEST_PROMPT_CHARS,
   MAX_CHAT_DIGESTS_PER_CHANNEL,
-  MY_WORK_DIGEST_SCOPE_LABEL,
+  builtInDigestDescription,
+  chatDigestAgents,
+  chatDigestDraftFrom as draftFrom,
+  chatDigestDraftIsBuiltIn,
+  chatDigestDraftReady,
+  chatDigestRunResultText,
+  chatDigestSaveBody,
   chatDigestStatusText,
-  digestScopeReady,
   describeDigestSchedule,
-  deviceTimeZone,
   type ChatDigest,
-  type ChatDigestSaveRequest,
-  type ChatDigestScope,
+  type ChatDigestDraft as Draft,
 } from '@shared/utils/chatDigest';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
@@ -31,47 +31,19 @@ import { colors } from '../theme/colors';
 /** Which digest the editor is open on: a saved id, a new one, or none. */
 type Editing = string | 'new' | null;
 
-interface Draft {
+interface DigestProject {
+  id: string;
   name: string;
-  enabled: boolean;
-  cron: string;
-  timeZone: string;
-  scope: ChatDigestScope;
-  projectIds: string[];
-  prompt: string;
+  agents: { id: string; name: string; allowedSkills: string[] | null }[];
 }
 
-interface RunResult {
-  status: 'posted' | 'skipped' | 'cancelled' | 'error';
-  reason?: string;
-  error?: string;
-}
-
-function draftFrom(
-  digest: ChatDigest | null,
-  defaultProjectId: string | null,
-  defaultScope: ChatDigestScope = 'channel',
-): Draft {
-  return {
-    name: digest?.name ?? '',
-    enabled: digest?.enabled ?? true,
-    cron: digest?.cron ?? DEFAULT_CHAT_DIGEST_CRON,
-    timeZone: digest?.timeZone ?? deviceTimeZone(),
-    scope: digest?.scope ?? defaultScope,
-    projectIds: digest ? digest.projectIds : defaultProjectId ? [defaultProjectId] : [],
-    prompt: digest?.prompt ?? '',
-  };
+interface SkillOption {
+  id: string;
+  description?: string;
 }
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err ?? 'Request failed');
-}
-
-function runNotice(result: RunResult): string {
-  if (result.status === 'posted') return 'Digest posted.';
-  if (result.status === 'skipped') return 'Nothing new since the last digest, nothing posted.';
-  if (result.status === 'cancelled') return `Run cancelled: ${result.reason || 'unknown reason'}`;
-  return `Run failed: ${result.error || 'unknown error'}`;
 }
 
 function Chip({
@@ -104,25 +76,22 @@ function Chip({
 }
 
 /**
- * Channel settings: the channel's scheduled AI digests. Mirrors the web
- * section: a list of digest cards, each opening an editor with scope,
- * projects, schedule and custom instructions.
+ * Channel settings: the channel's scheduled digests. Mirrors the web section:
+ * each digest runs its prompt as a session of the chosen project agent, with
+ * the chosen skills, and posts the agent's reply in the channel.
  */
 export default function HubChatDigestSection({
   channelId,
   channelProjectId,
-  allowMyWork = false,
 }: {
   channelId: string;
   channelProjectId: string | null;
-  /** Offer the `my_work` scope; only true on the viewer's own Summaries channel. */
-  allowMyWork?: boolean;
 }) {
-  const defaultScope: ChatDigestScope = allowMyWork ? 'my_work' : 'channel';
   const [digests, setDigests] = useState<ChatDigest[] | undefined>(undefined);
   const [editing, setEditing] = useState<Editing>(null);
-  const [draft, setDraft] = useState<Draft>(() => draftFrom(null, channelProjectId, defaultScope));
-  const [projects, setProjects] = useState<{ id: string; name: string }[] | null>(null);
+  const [draft, setDraft] = useState<Draft>(() => draftFrom(null, channelProjectId));
+  const [projects, setProjects] = useState<DigestProject[] | null>(null);
+  const [skillOptions, setSkillOptions] = useState<SkillOption[] | 'error' | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -146,7 +115,7 @@ export default function HubChatDigestSection({
     };
   }, [channelId]);
 
-  const needsProjects = editing !== null && draft.scope === 'project';
+  const needsProjects = editing !== null;
   useEffect(() => {
     if (!needsProjects || projects) return;
     let live = true;
@@ -154,11 +123,19 @@ export default function HubChatDigestSection({
       .getProjects()
       .then((p: unknown) => {
         if (!live) return;
-        const list = (Array.isArray(p) ? p : [])
-          .filter((x: any) => x && !isHubSystemProject(x))
-          .map((x: any) => ({ id: String(x.id), name: String(x.name || x.id) }));
-        setProjects(list);
-        setDraft((d) => (d.projectIds.length || !list[0] ? d : { ...d, projectIds: [list[0].id] }));
+        setProjects(
+          (Array.isArray(p) ? p : [])
+            .filter((x: any) => x && !isHubSystemProject(x))
+            .map((x: any) => ({
+              id: String(x.id),
+              name: String(x.name || x.id),
+              agents: chatDigestAgents(Array.isArray(x.agents) ? x.agents : []).map((a: any) => ({
+                id: String(a.id),
+                name: String(a.name || a.id),
+                allowedSkills: Array.isArray(a.allowedSkills) ? a.allowedSkills : null,
+              })),
+            })),
+        );
       })
       .catch((err: unknown) => {
         if (live) setError(errorText(err));
@@ -167,6 +144,24 @@ export default function HubChatDigestSection({
       live = false;
     };
   }, [needsProjects, projects]);
+
+  const skillsAgentId = editing !== null ? draft.agentId : '';
+  useEffect(() => {
+    setSkillOptions(null);
+    if (!skillsAgentId) return;
+    let live = true;
+    api
+      .getSkills(skillsAgentId)
+      .then((list: unknown) => {
+        if (live) setSkillOptions(Array.isArray(list) ? (list as SkillOption[]) : []);
+      })
+      .catch(() => {
+        if (live) setSkillOptions('error');
+      });
+    return () => {
+      live = false;
+    };
+  }, [skillsAgentId]);
 
   const run = async (fn: () => Promise<void>) => {
     setBusy(true);
@@ -190,31 +185,25 @@ export default function HubChatDigestSection({
     setNotice(null);
     setEditing(next);
     const digest = next && next !== 'new' ? (digests.find((d) => d.id === next) ?? null) : null;
-    setDraft(draftFrom(digest, channelProjectId, defaultScope));
+    setDraft(draftFrom(digest, channelProjectId));
   };
   const replace = (digest: ChatDigest) =>
     setDigests((list) => (list ?? []).map((d) => (d.id === digest.id ? digest : d)));
 
-  const toggleProject = (id: string) =>
-    setDraft((d) => {
-      if (d.projectIds.includes(id)) {
-        return { ...d, projectIds: d.projectIds.filter((p) => p !== id) };
-      }
-      if (d.projectIds.length >= MAX_CHAT_DIGEST_PROJECTS) return d;
-      return { ...d, projectIds: [...d.projectIds, id] };
-    });
+  const project = projects?.find((p) => p.id === draft.projectId) ?? null;
+  const agent = project?.agents.find((a) => a.id === draft.agentId) ?? null;
+  const skills = Array.isArray(skillOptions)
+    ? skillOptions.filter((sk) => !agent?.allowedSkills || agent.allowedSkills.includes(sk.id))
+    : [];
+  const toggleSkill = (id: string) =>
+    setDraft((d) => ({
+      ...d,
+      skills: d.skills.includes(id) ? d.skills.filter((x) => x !== id) : [...d.skills, id],
+    }));
 
   const save = () =>
     run(async () => {
-      const body: ChatDigestSaveRequest = {
-        name: draft.name.trim() || undefined,
-        enabled: draft.enabled,
-        cron: draft.cron.trim(),
-        timeZone: draft.timeZone.trim(),
-        scope: draft.scope,
-        projectIds: draft.scope === 'project' ? draft.projectIds : [],
-        prompt: draft.prompt.trim() || null,
-      };
+      const body = chatDigestSaveBody(draft);
       if (editing === 'new') {
         const res = await api.hubChat.createDigest(channelId, body);
         setDigests((list) => [...(list ?? []), res.digest]);
@@ -232,20 +221,16 @@ export default function HubChatDigestSection({
     });
   const runNow = (id: string) =>
     run(async () => {
-      const res: { result: RunResult; digest: ChatDigest | null } = await api.hubChat.runDigest(
-        channelId,
-        id,
-      );
+      const res = await api.hubChat.runDigest(channelId, id);
       if (res.digest) replace(res.digest);
-      setNotice(runNotice(res.result));
+      setNotice(chatDigestRunResultText(res.result ?? {}));
     });
 
   const atLimit = digests.length >= MAX_CHAT_DIGESTS_PER_CHANNEL;
-  const canSave =
-    !busy &&
-    draft.cron.trim().length > 0 &&
-    draft.timeZone.trim().length > 0 &&
-    digestScopeReady(draft.scope, draft.projectIds);
+  const canSave = !busy && chatDigestDraftReady(draft);
+  const builtInText = chatDigestDraftIsBuiltIn(draft)
+    ? builtInDigestDescription(draft.scope)
+    : null;
 
   const renderEditor = (digest: ChatDigest | null) => (
     <View style={styles.editor} testID="hub-chat-digest-editor">
@@ -254,7 +239,7 @@ export default function HubChatDigestSection({
         testID="hub-chat-digest-name"
         value={draft.name}
         onChangeText={(name) => setDraft((d) => ({ ...d, name }))}
-        placeholder="Defaults from what it summarizes"
+        placeholder="Agent digest"
         placeholderTextColor={colors.gray500}
         maxLength={80}
         style={styles.input}
@@ -269,56 +254,65 @@ export default function HubChatDigestSection({
           accessibilityLabel="Digest enabled"
         />
       </View>
-      <Text style={styles.label}>Summarize</Text>
-      <View style={styles.chipRow}>
-        <Chip
-          label="This channel"
-          testID="hub-chat-digest-scope-channel"
-          active={draft.scope === 'channel'}
-          onPress={() => setDraft((d) => ({ ...d, scope: 'channel' }))}
-        />
-        <Chip
-          label="Project activity"
-          testID="hub-chat-digest-scope-project"
-          active={draft.scope === 'project'}
-          onPress={() => setDraft((d) => ({ ...d, scope: 'project' }))}
-        />
-        {(allowMyWork || digest?.scope === 'my_work') && (
-          <Chip
-            label={MY_WORK_DIGEST_SCOPE_LABEL}
-            testID="hub-chat-digest-scope-my_work"
-            active={draft.scope === 'my_work'}
-            onPress={() => setDraft((d) => ({ ...d, scope: 'my_work' }))}
-          />
-        )}
-      </View>
-      {draft.scope === 'my_work' && (
-        <Text style={styles.muted}>
-          Your sessions, assigned cards and todos since the last summary. Only you can see this
-          channel.
+      {builtInText && (
+        <Text style={styles.muted} testID="hub-chat-digest-builtin">
+          {builtInText} Pick a project and agent to run your own prompt instead.
         </Text>
       )}
-      {draft.scope === 'project' && (
+      <Text style={styles.label}>Project</Text>
+      <View style={styles.chipRow}>
+        {!projects && <ActivityIndicator color={colors.gray400} />}
+        {projects?.map((p) => (
+          <Chip
+            key={p.id}
+            testID={`hub-chat-digest-project-${p.id}`}
+            label={p.name}
+            active={draft.projectId === p.id}
+            onPress={() => setDraft((d) => ({ ...d, projectId: p.id, agentId: '', skills: [] }))}
+          />
+        ))}
+      </View>
+      {project && (
         <>
-          <Text style={styles.muted}>
-            Projects ({draft.projectIds.length}/{MAX_CHAT_DIGEST_PROJECTS})
-          </Text>
+          <Text style={styles.label}>Agent</Text>
           <View style={styles.chipRow}>
-            {!projects && <ActivityIndicator color={colors.gray400} />}
-            {projects?.map((p) => {
-              const selected = draft.projectIds.includes(p.id);
-              return (
+            {project.agents.length === 0 && (
+              <Text style={styles.muted}>No agent can run digests in this project.</Text>
+            )}
+            {project.agents.map((a) => (
+              <Chip
+                key={a.id}
+                testID={`hub-chat-digest-agent-${a.id}`}
+                label={a.name}
+                active={draft.agentId === a.id}
+                onPress={() => setDraft((d) => ({ ...d, agentId: a.id, skills: [] }))}
+              />
+            ))}
+          </View>
+        </>
+      )}
+      {!!draft.agentId && (
+        <>
+          <Text style={styles.label}>Skills ({draft.skills.length} selected)</Text>
+          <View style={styles.chipRow}>
+            {skillOptions === 'error' ? (
+              <Text style={styles.error}>Couldn't load skills.</Text>
+            ) : !skillOptions ? (
+              <ActivityIndicator color={colors.gray400} />
+            ) : skills.length === 0 ? (
+              <Text style={styles.muted}>No skills available.</Text>
+            ) : (
+              skills.map((sk) => (
                 <Chip
-                  key={p.id}
+                  key={sk.id}
                   multi
-                  testID={`hub-chat-digest-project-${p.id}`}
-                  label={p.name}
-                  active={selected}
-                  disabled={!selected && draft.projectIds.length >= MAX_CHAT_DIGEST_PROJECTS}
-                  onPress={() => toggleProject(p.id)}
+                  testID={`hub-chat-digest-skill-${sk.id}`}
+                  label={sk.id}
+                  active={draft.skills.includes(sk.id)}
+                  onPress={() => toggleSkill(sk.id)}
                 />
-              );
-            })}
+              ))
+            )}
           </View>
         </>
       )}
@@ -363,21 +357,21 @@ export default function HubChatDigestSection({
         </View>
       </View>
       <Text style={styles.muted}>{describeDigestSchedule(draft.cron, draft.timeZone.trim())}</Text>
-      <Text style={styles.label}>Instructions</Text>
+      <Text style={styles.label}>Prompt</Text>
       <TextInput
         testID="hub-chat-digest-prompt"
         value={draft.prompt}
         onChangeText={(prompt) => setDraft((d) => ({ ...d, prompt }))}
-        placeholder={DEFAULT_CHAT_DIGEST_INSTRUCTIONS}
+        placeholder="What should the agent do? Its final reply is posted in this channel."
         placeholderTextColor={colors.gray500}
         maxLength={MAX_CHAT_DIGEST_PROMPT_CHARS}
         multiline
         textAlignVertical="top"
         style={[styles.input, styles.prompt]}
-        accessibilityLabel="Digest instructions"
+        accessibilityLabel="Digest prompt"
       />
       <Text style={styles.muted}>
-        Leave blank for the default. {draft.prompt.length}/{MAX_CHAT_DIGEST_PROMPT_CHARS}
+        {draft.prompt.length}/{MAX_CHAT_DIGEST_PROMPT_CHARS}
       </Text>
       {digest && (
         <Text style={styles.muted} testID="hub-chat-digest-status">
@@ -430,7 +424,7 @@ export default function HubChatDigestSection({
     <View style={styles.root} testID="hub-chat-digest">
       <Text style={styles.sectionLabel}>Scheduled digests</Text>
       <Text style={styles.muted}>
-        AI summaries posted here on a schedule. Nothing is posted when nothing happened.
+        An agent runs your prompt on a schedule and posts its reply here.
       </Text>
       {digests.length === 0 && editing !== 'new' && (
         <Text style={styles.muted} testID="hub-chat-digest-empty">

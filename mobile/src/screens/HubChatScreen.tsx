@@ -66,7 +66,6 @@ import { HubChatComposer, HubChatMessageBody } from '../components/HubChatRefs';
 import HubIcon from '../components/HubIcon';
 import HubChatTriggerCard from '../components/HubChatTriggerCard';
 import HubChatDigestSection from '../components/HubChatDigestSection';
-import { canUseMyWorkDigestScope } from '@shared/utils/chatDigest';
 import HubChatSearch from '../components/HubChatSearch';
 import type { HubChatSearchResult } from '@shared/utils/hubChatSearch';
 import { readChatTriggerCard } from '@shared/utils/chatTriggers';
@@ -1093,7 +1092,6 @@ function ChannelView({
         <ChannelSettingsDialog
           visible={settingsOpen}
           channel={channel}
-          viewerUserId={snapshot.viewerUserId}
           onClose={() => setSettingsOpen(false)}
         />
       ) : null}
@@ -1680,12 +1678,10 @@ const NOTIFY_OPTIONS: { level: HubChatNotifyLevel; label: string }[] = [
 function ChannelSettingsDialog({
   visible,
   channel,
-  viewerUserId,
   onClose,
 }: {
   visible: boolean;
   channel: HubChatChannel;
-  viewerUserId: string | null;
   onClose: () => void;
 }) {
   const muted = isChannelMuted(channel);
@@ -1739,11 +1735,7 @@ function ChannelSettingsDialog({
           ))
         )}
         {visible && channel.membership && !channel.archivedAt && (
-          <HubChatDigestSection
-            channelId={channel.id}
-            channelProjectId={channel.projectId}
-            allowMyWork={canUseMyWorkDigestScope(channel, viewerUserId)}
-          />
+          <HubChatDigestSection channelId={channel.id} channelProjectId={channel.projectId} />
         )}
       </ScrollView>
     </DialogShell>

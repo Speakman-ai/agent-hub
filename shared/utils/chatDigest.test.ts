@@ -1,10 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import {
-  canUseMyWorkDigestScope,
+  chatDigestAgents,
+  chatDigestDraftFrom,
+  chatDigestDraftReady,
+  chatDigestSaveBody,
   chatDigestStatusText,
   describeDigestSchedule,
-  digestScopeReady,
   splitDigestCron,
+  type ChatDigest,
 } from './chatDigest.js';
 
 const fmt = (iso: string) => iso.slice(0, 16);
@@ -58,20 +61,72 @@ describe('splitDigestCron', () => {
   });
 });
 
-describe('canUseMyWorkDigestScope', () => {
-  it("allows only the viewer's own Summaries channel", () => {
-    expect(canUseMyWorkDigestScope({ kind: 'summary', createdByUserId: 'u1' }, 'u1')).toBe(true);
-    expect(canUseMyWorkDigestScope({ kind: 'summary', createdByUserId: 'u2' }, 'u1')).toBe(false);
-    expect(canUseMyWorkDigestScope({ kind: 'channel', createdByUserId: 'u1' }, 'u1')).toBe(false);
-    expect(canUseMyWorkDigestScope({ kind: 'summary', createdByUserId: null }, null)).toBe(false);
+describe('chatDigestAgents', () => {
+  it('leaves out roles that cannot host a session', () => {
+    const agents = [
+      { id: 'dev' },
+      { id: 'rev', role: 'reviewer' },
+      { id: 'docs', role: ' Docs ' },
+      { id: 'ops', role: 'ops' },
+    ];
+    expect(chatDigestAgents(agents).map((a) => a.id)).toEqual(['dev', 'ops']);
+    expect(chatDigestAgents(undefined)).toEqual([]);
   });
 });
 
-describe('digestScopeReady', () => {
-  it('needs projects only for the project scope', () => {
-    expect(digestScopeReady('project', [])).toBe(false);
-    expect(digestScopeReady('project', ['web'])).toBe(true);
-    expect(digestScopeReady('channel', [])).toBe(true);
-    expect(digestScopeReady('my_work', [])).toBe(true);
+describe('agent digest drafts', () => {
+  const saved: ChatDigest = {
+    id: 'd1',
+    channelId: 'c1',
+    name: 'Daily',
+    enabled: true,
+    cron: '0 9 * * *',
+    timeZone: 'UTC',
+    scope: 'project',
+    projectIds: ['web', 'api'],
+    prompt: null,
+    agentId: null,
+    skills: [],
+    ownerUserId: 'u1',
+    windowStart: 'x',
+    lastRunAt: null,
+    lastStatus: null,
+    lastError: null,
+    lastMessageId: null,
+    createdAt: 'x',
+    updatedAt: 'x',
+  };
+
+  it('a new draft is an agent digest that needs a project, agent and prompt', () => {
+    const draft = chatDigestDraftFrom(null, 'web');
+    expect(draft.scope).toBe('agent');
+    expect(draft.projectId).toBe('web');
+    expect(chatDigestDraftReady(draft)).toBe(false);
+    const filled = { ...draft, agentId: 'web-dev', prompt: 'Check the logs', skills: ['logs'] };
+    expect(chatDigestDraftReady(filled)).toBe(true);
+    expect(chatDigestSaveBody(filled)).toMatchObject({
+      scope: 'agent',
+      projectIds: ['web'],
+      agentId: 'web-dev',
+      skills: ['logs'],
+      prompt: 'Check the logs',
+    });
+    expect(chatDigestDraftReady({ ...filled, prompt: '   ' })).toBe(false);
+  });
+
+  it('a built-in digest saves under its own scope until an agent is picked', () => {
+    const draft = chatDigestDraftFrom(saved, 'web');
+    expect(draft.projectId).toBe('');
+    expect(chatDigestDraftReady(draft)).toBe(true);
+    expect(chatDigestSaveBody(draft)).toMatchObject({
+      scope: 'project',
+      projectIds: ['web', 'api'],
+    });
+    const converted = { ...draft, projectId: 'web', agentId: 'web-dev', prompt: 'Do it' };
+    expect(chatDigestSaveBody(converted)).toMatchObject({
+      scope: 'agent',
+      projectIds: ['web'],
+      agentId: 'web-dev',
+    });
   });
 });
