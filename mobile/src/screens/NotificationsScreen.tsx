@@ -18,6 +18,7 @@ import { colors } from '../theme/colors';
 import { relativeTime } from '../utils/time';
 import { notificationInboxStore, useNotificationInbox } from '../utils/notificationInboxInstance';
 import { approvalIdFromNotification } from '@shared/utils/approvals';
+import { notificationProjectName } from '@shared/utils/notificationProject';
 import { usePendingApprovals } from '../hooks/usePendingApprovals';
 import ApprovalActions from '../components/ApprovalActions';
 
@@ -30,7 +31,7 @@ import ApprovalActions from '../components/ApprovalActions';
 export default function NotificationsScreen() {
   const navigation = useNavigation<any>();
   const { openSidebar } = useContext(SidebarContext);
-  const { openInboxNotification } = useApp();
+  const { openInboxNotification, projects } = useApp();
   const inbox = useNotificationInbox();
   // Approval rows still waiting for an answer get action buttons.
   const approvals = usePendingApprovals({ enabled: inbox.active });
@@ -63,6 +64,7 @@ export default function NotificationsScreen() {
     const unread = !n.readAt;
     const approvalId = approvalIdFromNotification(n);
     const approval = approvalId ? pendingById.get(approvalId) : undefined;
+    const projectName = notificationProjectName(n, projects);
     const rowView = (
       <TouchableOpacity
         onPress={() => onRowPress(n)}
@@ -75,6 +77,15 @@ export default function NotificationsScreen() {
           <Text style={[styles.rowTitle, unread ? styles.rowTitleUnread : null]} numberOfLines={1}>
             {n.title}
           </Text>
+          {projectName ? (
+            <Text
+              style={styles.rowProject}
+              numberOfLines={1}
+              testID={`notification-project-${n.id}`}
+            >
+              {projectName}
+            </Text>
+          ) : null}
           <Text style={styles.rowTime}>{relativeTime(n.createdAt)}</Text>
         </View>
         {n.body ? (
@@ -230,6 +241,7 @@ const styles = StyleSheet.create({
   rowHeader: { flexDirection: 'row', alignItems: 'baseline', gap: 8 },
   rowTitle: { flex: 1, color: colors.gray300, fontSize: 14 },
   rowTitleUnread: { color: colors.gray100, fontWeight: '600' },
+  rowProject: { flexShrink: 1, maxWidth: '40%', color: colors.gray400, fontSize: 11 },
   rowTime: { color: colors.gray500, fontSize: 11 },
   rowBody: { marginTop: 2, color: colors.gray400, fontSize: 12 },
   empty: { color: colors.gray500, fontSize: 14, textAlign: 'center', paddingVertical: 32 },

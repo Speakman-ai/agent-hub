@@ -38,6 +38,7 @@ import {
   reconcilePendingApprovals,
   type ApprovalWire,
 } from '@shared/utils/approvals';
+import { notificationProjectName, type ProjectNameSource } from '@shared/utils/notificationProject';
 import ApprovalActions, { APPROVAL_WS_EVENT } from './ApprovalActions';
 
 /** App re-dispatches `notification_created` / `notification_read` WS frames on this event. */
@@ -56,6 +57,8 @@ interface NotificationBellProps {
   /** Rail bells open to the right of the button instead of below it. */
   placement?: 'below' | 'right';
   testIdPrefix?: string;
+  /** Resolves each row's project id to the name shown on the row. */
+  projects?: readonly ProjectNameSource[];
 }
 
 /** Run an API call, turning a synchronous throw into a rejection so it can't crash a render. */
@@ -76,6 +79,7 @@ export default function NotificationBell({
   onOpenSettings,
   placement = 'below',
   testIdPrefix = 'notification-bell',
+  projects,
 }: NotificationBellProps) {
   const [open, setOpen] = useState(false);
   const [facts, setFactsState] = useState<InboxFacts>(EMPTY_INBOX);
@@ -445,6 +449,7 @@ export default function NotificationBell({
                   const unread = !n.readAt;
                   const approvalId = approvalIdFromNotification(n);
                   const approval = approvalId ? pendingApprovals.get(approvalId) : undefined;
+                  const projectName = notificationProjectName(n, projects);
                   return (
                     <li key={n.id}>
                       <button
@@ -464,6 +469,15 @@ export default function NotificationBell({
                           >
                             {n.title}
                           </span>
+                          {projectName && (
+                            <span
+                              className="flex-shrink min-w-0 max-w-[40%] truncate text-[11px] text-gray-400"
+                              title={projectName}
+                              data-testid="notification-row-project"
+                            >
+                              {projectName}
+                            </span>
+                          )}
                           <time
                             className="flex-shrink-0 text-[11px] text-gray-500"
                             dateTime={n.createdAt}

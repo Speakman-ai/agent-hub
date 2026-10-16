@@ -45,7 +45,10 @@ vi.mock('@react-navigation/native', () => ({
 }));
 vi.mock('../components/AppIcon', () => ({ default: nativeHost('AppIcon') }));
 vi.mock('../context/AppContext', () => ({
-  useApp: () => ({ openInboxNotification: testState.openInboxNotification }),
+  useApp: () => ({
+    openInboxNotification: testState.openInboxNotification,
+    projects: [{ id: 'p1', name: 'Project One' }],
+  }),
 }));
 vi.mock('../utils/api', () => ({ api: testState.api }));
 
@@ -140,6 +143,8 @@ describe('mobile notification inbox', () => {
       'notification-row-a',
       'notification-row-b',
     ]);
+    const label = r.root.findByProps({ testID: 'notification-project-a' });
+    expect(label.props.children).toBe('Project One');
 
     await TestRenderer.act(async () => {
       r.root.findByProps({ testID: 'notification-row-a' }).props.onPress();

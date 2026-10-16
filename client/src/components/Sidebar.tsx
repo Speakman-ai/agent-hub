@@ -621,6 +621,7 @@ export default function Sidebar({
             </span>
             {onOpenNotificationTarget && onOpenNotificationSettings && (
               <NotificationBell
+                projects={projects}
                 onOpenTarget={onOpenNotificationTarget}
                 onOpenSettings={onOpenNotificationSettings}
               />

@@ -94,6 +94,24 @@ describe('NotificationBell', () => {
     });
   });
 
+  it('shows the project name on each row', async () => {
+    (api.listNotifications as any).mockResolvedValue({
+      items: [n('a'), n('b', { projectId: null, data: {} })],
+      nextCursor: null,
+    });
+    render(
+      <NotificationBell
+        onOpenTarget={vi.fn()}
+        onOpenSettings={vi.fn()}
+        projects={[{ id: 'acme', name: 'Acme Web' }]}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('notification-bell'));
+    const rows = await screen.findAllByTestId('notification-row');
+    expect(within(rows[0]).getByTestId('notification-row-project')).toHaveTextContent('Acme Web');
+    expect(within(rows[1]).queryByTestId('notification-row-project')).toBeNull();
+  });
+
   it('loads the next page from the cursor', async () => {
     (api.listNotifications as any)
       .mockResolvedValueOnce({ items: [n('a')], nextCursor: 'cur-1' })

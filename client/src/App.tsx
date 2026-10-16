@@ -6658,6 +6658,7 @@ export default function App({ initialView }: any = {}) {
             <NotificationBell
               placement="right"
               testIdPrefix="rail-notification-bell"
+              projects={projects}
               onOpenTarget={openNotificationTarget}
               onOpenSettings={openNotificationSettings}
             />
