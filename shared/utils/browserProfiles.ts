@@ -2,6 +2,9 @@
  * Pure helpers for the Settings → Browser Profiles pane, shared by web and
  * mobile so both group and label profiles the same way.
  */
+import { formatPolicyDomain, parseDesktopAppInput } from './desktopAppPolicy';
+
+export { formatPolicyDomain };
 
 export type BrowserDomainPolicy = 'allow' | 'ask' | 'block';
 
@@ -22,12 +25,15 @@ export const BROWSER_DOMAIN_POLICY_OPTIONS: ReadonlyArray<{
 
 /**
  * Reduce what the user typed (`https://Shop.com/cart`, `shop.com`) to a bare
- * hostname, or null when it is not one. Mirrors the server's check so the
- * form can refuse input before a round trip.
+ * hostname, or null when it is not one. `desktop:chromium` names a desktop
+ * app and `desktop` all of them (see desktopAppPolicy.ts). Mirrors the
+ * server's check so the form can refuse input before a round trip.
  */
 export function normalizePolicyDomainInput(raw: string): string | null {
   const trimmed = raw.trim();
   if (!trimmed) return null;
+  const desktop = parseDesktopAppInput(trimmed);
+  if (desktop) return desktop;
   let host: string;
   try {
     host = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`)

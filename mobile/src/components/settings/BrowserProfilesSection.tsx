@@ -11,6 +11,7 @@ import {
 import {
   BROWSER_DOMAIN_POLICY_OPTIONS,
   formatLastUsed,
+  formatPolicyDomain,
   normalizePolicyDomainInput,
   type BrowserDomainPolicy,
   type BrowserProfileWire,
@@ -209,7 +210,7 @@ function SitePolicies({ profile, busy, onSet, onRemove }: SitePoliciesProps) {
   async function add() {
     const domain = normalizePolicyDomainInput(draftDomain);
     if (!domain) {
-      setDraftError('Enter a site such as example.com');
+      setDraftError('Enter a site such as example.com, or desktop:chromium for a desktop app');
       return;
     }
     setDraftError(null);
@@ -221,12 +222,15 @@ function SitePolicies({ profile, busy, onSet, onRemove }: SitePoliciesProps) {
       <Text style={styles.policiesTitle}>Site policies</Text>
       <Text style={styles.small}>
         Ask first makes clicks and typing wait for your approval; Block stops the agent opening or
-        acting on the site. A policy covers subdomains. Sites not listed are allowed.
+        acting on the site. A policy covers subdomains. Sites not listed are allowed. Use
+        desktop:app-name (for example desktop:chromium, desktop:shell for commands, or desktop for
+        every app) to gate the agent's desktop. While any policy is set, commands ask until
+        desktop:shell is Allow.
       </Text>
       {policies.map(({ domain, policy }) => (
         <View key={domain} style={styles.policyRow}>
           <Text style={styles.policyDomain} numberOfLines={1}>
-            {domain}
+            {formatPolicyDomain(domain)}
           </Text>
           <PolicyPicker
             value={policy}

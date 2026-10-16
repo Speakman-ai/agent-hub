@@ -67,6 +67,7 @@ function makeConfig(): AppConfig {
     cardDoneOnPush: true,
     slackWebhookUrl: null,
     desktopRuntime: 'auto',
+    desktopExecApprovalPatterns: null,
     browserMaxConcurrentContexts: 3,
     browserIdleTimeoutMs: 300_000,
     browserAllowDownloads: false,

@@ -6,6 +6,7 @@ import {
   type ApprovalRuleWire,
 } from '@shared/utils/approvals';
 import { api, type BrowserProfileWire } from '../utils/api';
+import { formatPolicyDomain } from '@shared/utils/desktopAppPolicy';
 
 /** Settings → Approvals: the rules "Always allow" saved, with delete. */
 export default function ApprovalRulesSection() {
@@ -39,7 +40,7 @@ export default function ApprovalRulesSection() {
   async function remove(rule: ApprovalRuleWire) {
     if (
       !window.confirm(
-        `Stop always allowing "${rule.action}" on ${rule.domain}? The agent will ask you again next time.`,
+        `Stop always allowing "${rule.action}" on ${formatPolicyDomain(rule.domain)}? The agent will ask you again next time.`,
       )
     ) {
       return;
@@ -105,7 +106,8 @@ export default function ApprovalRulesSection() {
               >
                 <div className="min-w-0">
                   <div className="truncate text-sm text-gray-200">
-                    {rule.action} <span className="text-gray-500">on</span> {rule.domain}
+                    {rule.action} <span className="text-gray-500">on</span>{' '}
+                    {formatPolicyDomain(rule.domain)}
                   </div>
                   <div className="text-xs text-gray-500">{ruleEffectLabel(rule.effect)}</div>
                 </div>
@@ -113,7 +115,7 @@ export default function ApprovalRulesSection() {
                   type="button"
                   onClick={() => void remove(rule)}
                   disabled={busy !== null}
-                  aria-label={`Delete rule ${rule.action} on ${rule.domain}`}
+                  aria-label={`Delete rule ${rule.action} on ${formatPolicyDomain(rule.domain)}`}
                   className="inline-flex items-center gap-1 rounded-md border border-red-900 px-2 py-1 text-xs text-red-300 hover:bg-red-950/50 disabled:opacity-50"
                 >
                   {busy === rule.id ? (

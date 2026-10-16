@@ -427,17 +427,19 @@ async function waitForAnswer(
 }
 
 export interface HostApprovalInput {
-  profileId: string;
-  /** Browser op being gated, e.g. `click`. */
+  /** Null when the owner has no browser profile yet (nothing to key a rule on). */
+  profileId: string | null;
+  /** Browser or computer op being gated, e.g. `click`. */
   action: string;
-  /** Page URL the op would act on. */
+  /** Page URL or desktop target the op would act on. */
   target: string;
-  domain: string;
+  /** Null makes the request unrememberable: Always allow saves no rule. */
+  domain: string | null;
   details: string;
 }
 
 /**
- * Raise an approval on the agent's behalf: the domain policy gate found a
+ * Raise an approval on the agent's behalf: a domain policy gate found a
  * mutating op that needs a human's yes. Same lifecycle as an agent-declared
  * request (notification, 24h timeout, Stop). Resolves with the settled row.
  */

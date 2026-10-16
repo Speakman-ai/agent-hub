@@ -4,6 +4,7 @@ import {
   BROWSER_DOMAIN_POLICY_OPTIONS,
   formatLastUsed,
   groupBrowserProfilesByAgent,
+  formatPolicyDomain,
   normalizePolicyDomainInput,
   type BrowserDomainPolicy,
 } from '@shared/utils/browserProfiles';
@@ -245,7 +246,7 @@ function SitePolicies({ profile, busy, onSet, onRemove }: SitePoliciesProps) {
     e.preventDefault();
     const domain = normalizePolicyDomainInput(draftDomain);
     if (!domain) {
-      setDraftError('Enter a site such as example.com');
+      setDraftError('Enter a site such as example.com, or desktop:chromium for a desktop app');
       return;
     }
     setDraftError(null);
@@ -257,7 +258,10 @@ function SitePolicies({ profile, busy, onSet, onRemove }: SitePoliciesProps) {
       <div className="text-xs font-medium text-gray-300">Site policies</div>
       <p className="text-xs text-gray-500">
         Ask first makes clicks and typing wait for your approval; Block stops the agent opening or
-        acting on the site. A policy covers subdomains. Sites not listed are allowed.
+        acting on the site. A policy covers subdomains. Sites not listed are allowed. Use
+        desktop:app-name (for example desktop:chromium, desktop:shell for commands, or desktop for
+        every app) to gate the agent&apos;s desktop. While any policy is set, commands ask until
+        desktop:shell is Allow.
       </p>
       {policies.length > 0 && (
         <ul className="space-y-1">
@@ -265,7 +269,9 @@ function SitePolicies({ profile, busy, onSet, onRemove }: SitePoliciesProps) {
             const rowBusy = busy === `${profile.id}:policy:${domain}`;
             return (
               <li key={domain} className="flex items-center gap-2 text-xs text-gray-300">
-                <span className="min-w-0 flex-1 truncate">{domain}</span>
+                <span className="min-w-0 flex-1 truncate" title={domain}>
+                  {formatPolicyDomain(domain)}
+                </span>
                 <select
                   value={policy}
                   onChange={(e) => onSet(domain, e.target.value as BrowserDomainPolicy)}

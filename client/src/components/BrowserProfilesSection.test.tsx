@@ -148,7 +148,11 @@ describe('BrowserProfilesSection', () => {
         target: { value: 'localhost' },
       });
       fireEvent.click(screen.getByText('Add'));
-      expect(await screen.findByText('Enter a site such as example.com')).toBeTruthy();
+      expect(
+        await screen.findByText(
+          'Enter a site such as example.com, or desktop:chromium for a desktop app',
+        ),
+      ).toBeTruthy();
       expect(mocked.setBrowserDomainPolicy).not.toHaveBeenCalled();
     });
 

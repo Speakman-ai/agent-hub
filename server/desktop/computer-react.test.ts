@@ -22,6 +22,7 @@ import {
   parseComputerReactAction,
   pngDimensions,
   runComputerReActStep,
+  splitGatedSteps,
   type ComputerReactContext,
 } from './computer-react.js';
 import type { DesktopOp } from './control-daemon.js';
@@ -295,5 +296,21 @@ describe('runComputerReActStep against a fake control daemon', () => {
     });
     expect(r.hostExit).toBe(1);
     expect(r.markdown).toContain('not registered');
+  });
+});
+
+describe('splitGatedSteps', () => {
+  it('splits key sequences into chords and typed text after each newline', () => {
+    expect(splitGatedSteps({ op: 'key', combo: 'alt+Tab  Return' })).toEqual([
+      { op: 'key', combo: 'alt+Tab' },
+      { op: 'key', combo: 'Return' },
+    ]);
+    expect(splitGatedSteps({ op: 'type', text: 'a\nb\n' })).toEqual([
+      { op: 'type', text: 'a\n' },
+      { op: 'type', text: 'b\n' },
+    ]);
+    expect(splitGatedSteps({ op: 'key', combo: 'ctrl+l' })).toBeNull();
+    expect(splitGatedSteps({ op: 'type', text: 'hello' })).toBeNull();
+    expect(splitGatedSteps({ op: 'click', x: 1, y: 1, button: 'left' })).toBeNull();
   });
 });

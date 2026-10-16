@@ -27,6 +27,7 @@ import { resolveGoogleChatEventsConfig } from './google-chat-events-config.js';
 import { normalizeSmtpConfig } from './smtp-config.js';
 import { coerceSessionEnvAdapterMode } from './session-env/sysbox-capability.js';
 import { coerceDesktopRuntimeMode } from './desktop/desktop-runtime.js';
+import { coerceExecApprovalPatterns } from './desktop/computer-exec-patterns.js';
 import { CODEX_DEFAULT_MODEL } from './codex-model-capability.js';
 import { MUSE_DEFAULT_MODEL, MUSE_MODELS, applyMuseSpawnEnv } from './muse-cli.js';
 import { sanitizeSpawnPythonEnv } from './spawn-python-env.js';
@@ -625,6 +626,13 @@ const config: AppConfig = {
   // server/desktop/desktop-runtime-selection.ts.
   desktopRuntime: coerceDesktopRuntimeMode(
     resolve('AGENT_HUB_DESKTOP_RUNTIME', 'desktopRuntime', 'auto'),
+  ),
+
+  // Regexes for computer-tool exec commands that always need the human's
+  // approval. Unset uses DEFAULT_DESKTOP_EXEC_APPROVAL_PATTERNS; a list
+  // replaces it (an empty list turns the deny list off).
+  desktopExecApprovalPatterns: coerceExecApprovalPatterns(
+    resolve('AGENT_HUB_DESKTOP_EXEC_APPROVAL_PATTERNS', 'desktopExecApprovalPatterns', null),
   ),
 
   // Card → Done on push. Default false: a successful GitHub push parks the

@@ -9,6 +9,7 @@ import {
   withoutApproval,
   type ApprovalWire,
 } from '@shared/utils/approvals';
+import { formatPolicyDomain } from '@shared/utils/desktopAppPolicy';
 import { api } from '../utils/api';
 import ApprovalActions, { APPROVAL_WS_EVENT } from './ApprovalActions';
 
@@ -88,7 +89,9 @@ export default function SessionApprovalBanner({ sessionId }: { sessionId: string
                   {formatApprovalExpiry(a.expiresAt)}
                 </span>
               </div>
-              {a.domain && <p className="text-xs text-amber-200/80">on {a.domain}</p>}
+              {a.domain && (
+                <p className="text-xs text-amber-200/80">on {formatPolicyDomain(a.domain)}</p>
+              )}
               {a.details && (
                 <p className="whitespace-pre-wrap break-words text-xs text-amber-100/80">
                   {a.details}

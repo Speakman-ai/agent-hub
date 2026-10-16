@@ -58,15 +58,38 @@ if [[ "$TARGET" == "container" ]]; then
   FLAGS="--no-sandbox ${FLAGS}"
 fi
 
+# Loopback DevTools endpoint: the host's computer-op approval gate reads the
+# visible tab's URL from /json/list so site policies apply on the desktop too
+# (DESKTOP_CHROMIUM_CDP_PORT in desktop-runtime.ts). Chrome 136+ ignores the
+# port on the default profile directory, so the profile lives in its own dir.
+# Cookies stay readable after the one-time copy because --password-store=basic
+# does not tie the encryption key to the directory.
+CDP_PORT=9222
+if [[ "$BROWSER" == "chromium" ]]; then
+  OLD_PROFILE='$HOME/.config/chromium'
+else
+  OLD_PROFILE='$HOME/.config/google-chrome'
+fi
+PROFILE_SETUP="AGENT_HUB_CHROMIUM_PROFILE=\"\$HOME/.config/agent-hub-chromium\"
+if [ ! -d \"\$AGENT_HUB_CHROMIUM_PROFILE\" ] && [ -d \"${OLD_PROFILE}\" ]; then
+  cp -a \"${OLD_PROFILE}\" \"\$AGENT_HUB_CHROMIUM_PROFILE\" 2>/dev/null || true
+  rm -f \"\$AGENT_HUB_CHROMIUM_PROFILE\"/Singleton* 2>/dev/null || true
+fi"
+PROFILE_FLAGS="--user-data-dir=\$AGENT_HUB_CHROMIUM_PROFILE --remote-debugging-port=${CDP_PORT}"
+
 if [[ "$BROWSER" == "chromium" ]]; then
   # Debian's launcher sources every file in /etc/chromium.d.
-  printf 'export CHROMIUM_FLAGS="$CHROMIUM_FLAGS %s"\n' "$FLAGS" > /etc/chromium.d/agent-hub
+  {
+    printf '%s\n' "$PROFILE_SETUP"
+    printf 'export CHROMIUM_FLAGS="$CHROMIUM_FLAGS %s %s"\n' "$FLAGS" "$PROFILE_FLAGS"
+  } > /etc/chromium.d/agent-hub
 else
   # --class keeps the X window class `chromium`, so window lookups by class
   # behave the same on both backends.
   cat > /usr/local/bin/chromium <<EOF
 #!/bin/sh
-exec google-chrome --class=chromium ${FLAGS} "\$@"
+${PROFILE_SETUP}
+exec google-chrome --class=chromium ${FLAGS} ${PROFILE_FLAGS} "\$@"
 EOF
   chmod 0755 /usr/local/bin/chromium
 fi
@@ -74,7 +97,7 @@ fi
 mkdir -p /tmp/.X11-unix
 chmod 1777 /tmp/.X11-unix
 
-for bin in Xvfb openbox xdotool scrot xdpyinfo x11vnc chromium; do
+for bin in Xvfb openbox xdotool scrot xdpyinfo x11vnc chromium node; do
   command -v "$bin" >/dev/null || { echo "install-desktop: $bin missing after install" >&2; exit 1; }
 done
 echo "install-desktop: desktop layer installed for $TARGET (browser: $BROWSER)"

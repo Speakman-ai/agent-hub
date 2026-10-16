@@ -1,6 +1,7 @@
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { describeApproval, formatApprovalExpiry } from '@shared/utils/approvals';
+import { formatPolicyDomain } from '@shared/utils/desktopAppPolicy';
 import { usePendingApprovals } from '../hooks/usePendingApprovals';
 import { colors } from '../theme/colors';
 import ApprovalActions from './ApprovalActions';
@@ -22,7 +23,7 @@ export default function SessionApprovalCard({ sessionId }: { sessionId: string |
             Approval needed: <Text style={styles.what}>{describeApproval(a)}</Text>
           </Text>
           <Text style={styles.meta}>
-            {a.domain ? `on ${a.domain} · ` : ''}
+            {a.domain ? `on ${formatPolicyDomain(a.domain)} · ` : ''}
             {formatApprovalExpiry(a.expiresAt)}
           </Text>
           {a.details ? <Text style={styles.details}>{a.details}</Text> : null}

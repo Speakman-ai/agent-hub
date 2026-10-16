@@ -135,6 +135,10 @@ r="$(op '{"op":"exec","command":"for i in $(seq 1 60); do xdotool search --onlyv
 expect_ok "$r" 'r.exitCode === 0' || fail "chromium window never appeared: $r"
 pass "chromium window is up"
 
+r="$(op '{"op":"exec","command":"for i in $(seq 1 20); do curl -fsS --max-time 2 http://127.0.0.1:9222/json/list | grep -q about:blank && exit 0; sleep 0.5; done; exit 1","timeoutMs":20000}')"
+expect_ok "$r" 'r.exitCode === 0' || fail "chromium DevTools tab list (approval gate site lookup) unavailable: $r"
+pass "chromium lists its tabs on the loopback DevTools port"
+
 r="$(op '{"op":"click","x":640,"y":400}')"
 expect_ok "$r" || fail "click: $r"
 r="$(op '{"op":"cursor_position"}')"

@@ -6,6 +6,7 @@ import {
   type ApprovalRuleWire,
 } from '@shared/utils/approvals';
 import type { BrowserProfileWire } from '@shared/utils/browserProfiles';
+import { formatPolicyDomain } from '@shared/utils/desktopAppPolicy';
 import { api } from '../../utils/api';
 import { colors } from '../../theme/colors';
 
@@ -61,7 +62,7 @@ export default function ApprovalRulesSection() {
   function confirmRemove(rule: ApprovalRuleWire) {
     Alert.alert(
       'Delete rule?',
-      `Stop always allowing "${rule.action}" on ${rule.domain}? The agent will ask you again next time.`,
+      `Stop always allowing "${rule.action}" on ${formatPolicyDomain(rule.domain)}? The agent will ask you again next time.`,
       [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Delete', style: 'destructive', onPress: () => void remove(rule) },
@@ -106,14 +107,16 @@ export default function ApprovalRulesSection() {
           {group.rules.map((rule) => (
             <View key={rule.id} style={styles.rule} testID={`approval-rule-${rule.id}`}>
               <View style={{ flex: 1 }}>
-                <Text style={styles.ruleText}>{`${rule.action} on ${rule.domain}`}</Text>
+                <Text
+                  style={styles.ruleText}
+                >{`${rule.action} on ${formatPolicyDomain(rule.domain)}`}</Text>
                 <Text style={styles.small}>{ruleEffectLabel(rule.effect)}</Text>
               </View>
               <TouchableOpacity
                 style={[styles.deleteBtn, busy !== null && styles.disabled]}
                 onPress={() => confirmRemove(rule)}
                 disabled={busy !== null}
-                accessibilityLabel={`Delete rule ${rule.action} on ${rule.domain}`}
+                accessibilityLabel={`Delete rule ${rule.action} on ${formatPolicyDomain(rule.domain)}`}
                 testID={`approval-rule-delete-${rule.id}`}
               >
                 {busy === rule.id ? (

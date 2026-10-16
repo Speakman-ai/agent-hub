@@ -4107,6 +4107,14 @@ export interface AppConfig {
    */
   desktopRuntime: 'auto' | 'container' | 'firecracker';
   /**
+   * Regexes (case-insensitive) for computer-tool `exec` commands that always
+   * need the session owner's approval. Null uses the built-in defaults; an
+   * array replaces them. Configure via `desktopExecApprovalPatterns` in
+   * config.json or env `AGENT_HUB_DESKTOP_EXEC_APPROVAL_PATTERNS` (JSON array
+   * or newline-separated).
+   */
+  desktopExecApprovalPatterns: string[] | null;
+  /**
    * When false (the default), a successful push to GitHub parks the linked
    * kanban card in **Review**; only the PR-merge moves it to **Done**. This is
    * the merge-gated §15 Finalize flow (push → Review, merge → Done) and encodes

@@ -353,6 +353,7 @@ import {
   runComputerReActStep,
 } from './desktop/computer-react.js';
 import { getActiveDesktopRuntime } from './desktop/desktop-runtime-setup.js';
+import { createComputerApprovalGate } from './desktop/computer-approval-gate.js';
 import {
   buildBrowserActivityEndedEvent,
   buildBrowserActivityEndedThrowEvent,
@@ -6193,7 +6194,21 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                     agentId: agent.id,
                     projectId: project?.id ?? null,
                   },
-                  { resolveRuntime: getActiveDesktopRuntime },
+                  {
+                    resolveRuntime: getActiveDesktopRuntime,
+                    gate: createComputerApprovalGate(
+                      {
+                        sessionId,
+                        ownerUserId: session!.owner_user_id ?? null,
+                        agentId: agent.id,
+                        agentName: agent.name,
+                        projectId: project?.id ?? null,
+                        sessionName: session!.name ?? null,
+                      },
+                      { broadcast, isCancelled: () => isReactChainCancelRequested(sessionId) },
+                      { execApprovalPatterns: config.desktopExecApprovalPatterns },
+                    ),
+                  },
                 );
                 assistantContextToAppend = assistantContextToAppend
                   ? `${assistantContextToAppend}\n\n${c.markdown}`
@@ -6201,6 +6216,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                 reactObservations.push(
                   `- computer(${action.op}) host step finished (exit ${c.hostExit}).`,
                 );
+                if (c.haltRemaining) haltRemainingActions = c.haltRemaining;
                 hostExit = c.hostExit;
                 hostDetail = c.hostDetail;
                 continue;

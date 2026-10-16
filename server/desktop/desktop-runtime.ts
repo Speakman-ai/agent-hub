@@ -30,6 +30,12 @@ export const DESKTOP_DISPLAY = ':99';
 /** VNC port of the desktop display inside the computer. */
 export const DESKTOP_VNC_PORT = 5900;
 
+/**
+ * Loopback DevTools port of the desktop Chromium (set by install-desktop.sh).
+ * The computer-op approval gate reads the visible tab's URL from it.
+ */
+export const DESKTOP_CHROMIUM_CDP_PORT = 9222;
+
 /** Identity of one persistent computer. */
 export interface DesktopComputerKey {
   userId: string;

@@ -10,7 +10,12 @@ import { readFileSync, existsSync } from 'fs';
 import { spawnSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { DESKTOP_DISPLAY, DESKTOP_SCREEN, DESKTOP_VNC_PORT } from './desktop-runtime.js';
+import {
+  DESKTOP_CHROMIUM_CDP_PORT,
+  DESKTOP_DISPLAY,
+  DESKTOP_SCREEN,
+  DESKTOP_VNC_PORT,
+} from './desktop-runtime.js';
 import { DESKTOP_GUEST_BOOT_ARG } from './firecracker-desktop-runtime.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -55,6 +60,16 @@ describe('install-desktop.sh', () => {
 
   it('is valid bash', () => {
     expect(spawnSync('bash', ['-n', installer]).status).toBe(0);
+  });
+
+  it('opens the DevTools port the approval gate reads, on a non-default profile dir', () => {
+    const src = read(installer);
+    expect(src).toContain(`CDP_PORT=${DESKTOP_CHROMIUM_CDP_PORT}`);
+    expect(src).toContain('--remote-debugging-port=${CDP_PORT}');
+    // Chrome 136+ ignores the port on the default user data dir.
+    expect(src).toContain('--user-data-dir=');
+    // The gate reads frame origins with a Node script inside the desktop.
+    expect(src).toMatch(/for bin in [^\n]*\bnode\b/);
   });
 });
 
