@@ -26,7 +26,9 @@
 #
 # `mobile-production` is intentionally separate and contains no GitHub step. It
 # sends a native iOS build to EAS Build and asks EAS Submit to deliver it to
-# TestFlight (not a public App Store release). Android is not built yet: Google
+# TestFlight (not a public App Store release). Each run bumps the app version
+# (`expo.version`) one patch past the highest version EAS has built, via
+# `mobile/scripts/next-app-version.mjs`; EAS auto-increments the build number. Android is not built yet: Google
 # Play submission needs a Google Service Account key, which EAS cannot set up in
 # --non-interactive mode. Set `EXPO_TOKEN` as a project secret before using it;
 # Apple submission credentials must also be configured for the EAS project.
@@ -60,10 +62,17 @@ environments:
             exit 1
           }
           cd mobile
+          builds_dir="$(mktemp -d)"
           npm ci --include=dev
           eas_bin="$(env -u EXPO_TOKEN npx --yes --package=eas-cli@18.4.0 -- sh -c 'command -v eas')"
           test -x "$eas_bin" || {
             echo "Unable to resolve eas-cli@18.4.0." >&2
             exit 1
           }
+          # EAS auto-increments only the build number. Give every build a higher
+          # user-facing version too: one patch above anything EAS has built,
+          # read across every page of the build history.
+          EXPO_TOKEN="$expo_token" bash scripts/eas-ios-build-history.sh "$eas_bin" "$builds_dir"
+          app_version="$(node scripts/next-app-version.mjs "$builds_dir"/page-*.json)"
+          echo "Building iOS app version $app_version"
           EXPO_TOKEN="$expo_token" "$eas_bin" build --platform ios --profile production --auto-submit --non-interactive

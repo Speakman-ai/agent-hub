@@ -1,7 +1,7 @@
 /**
  * Deploy-config parser validation tests (no IO).
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 import {
@@ -299,7 +299,9 @@ describe("this repo's .agent-hub/deploy.yaml", () => {
     expect(mobile.steps[0].run).toContain('EXPO_TOKEN="$expo_token" "$eas_bin" build');
     const tokenUnsetAt = mobile.steps[0].run.indexOf('unset EXPO_TOKEN');
     const dependencyInstallAt = mobile.steps[0].run.indexOf('npm ci --include=dev');
-    const easRunAt = mobile.steps[0].run.indexOf('EXPO_TOKEN="$expo_token" "$eas_bin" build');
+    // The first hand-off of the token (to the build-history script, which only
+    // calls eas) must come after npm ci.
+    const easRunAt = mobile.steps[0].run.indexOf('EXPO_TOKEN="$expo_token"');
     expect(tokenUnsetAt).toBeLessThan(dependencyInstallAt);
     expect(dependencyInstallAt).toBeLessThan(easRunAt);
     expect(mobile.steps[0].run.slice(tokenUnsetAt, easRunAt)).not.toMatch(/\bEXPO_TOKEN=/);
@@ -311,6 +313,28 @@ describe("this repo's .agent-hub/deploy.yaml", () => {
     expect(mobile.steps[0].run).toContain('--auto-submit');
     expect(mobile.steps[0].run).toContain('--non-interactive');
     expect(mobile.steps[0].run).not.toMatch(/\b(?:gh|github)\b/i);
+  });
+
+  it('bumps the user-facing app version before every EAS build', () => {
+    // EAS autoIncrement only bumps the build number, so without this every
+    // TestFlight build ships as the same app.json version.
+    const run = resolveDeployEnvironment(parseDeployConfig(raw), 'mobile-production').steps[0]
+      .run as string;
+    // The full paginated history is read (see mobile/scripts/eas-ios-build-history.test.mjs).
+    const historyAt = run.indexOf(
+      'EXPO_TOKEN="$expo_token" bash scripts/eas-ios-build-history.sh "$eas_bin" "$builds_dir"',
+    );
+    const bumpAt = run.indexOf('node scripts/next-app-version.mjs "$builds_dir"/page-*.json');
+    const buildAt = run.indexOf('"$eas_bin" build --platform ios');
+    expect(historyAt).toBeGreaterThan(-1);
+    expect(bumpAt).toBeGreaterThan(historyAt);
+    expect(buildAt).toBeGreaterThan(bumpAt);
+    expect(run).not.toContain('build:list');
+    for (const script of ['next-app-version.mjs', 'eas-ios-build-history.sh']) {
+      expect(
+        existsSync(fileURLToPath(new URL(`../../mobile/scripts/${script}`, import.meta.url))),
+      ).toBe(true);
+    }
   });
 
   it('pins the App Store Connect app id so non-interactive submit can run', () => {

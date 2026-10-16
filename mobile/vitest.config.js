@@ -27,6 +27,7 @@ export default defineConfig({
       'src/components/**/*.test.tsx',
       'src/screens/**/*.test.ts',
       'src/screens/**/*.test.tsx',
+      'scripts/**/*.test.mjs',
     ],
   },
 });
