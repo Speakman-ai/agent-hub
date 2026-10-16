@@ -98,6 +98,16 @@ export interface JobRunnerOptions {
    * run. Anything that fails the check runs normally.
    */
   carryOver?: { fromRunId: string; instances: ReadonlySet<string> };
+  /**
+   * Called as soon as one job instance settles red (after its retries), while
+   * the rest of the phase may still be running. `infra_error` and cancelled
+   * instances are not reported: neither is something a code change fixes.
+   */
+  onInstanceFailed?: (info: {
+    jobId: string;
+    matrixKey: string;
+    status: 'failure' | 'timeout';
+  }) => void;
 }
 
 interface PlannedStep {
@@ -1184,6 +1194,27 @@ export async function runJobPhase(
 
     if (outcome.result.status !== 'success' && instance.failFast) {
       failFastCancelledJobs.add(instance.jobId);
+    }
+
+    const failedStatus = outcome.result.status;
+    if (
+      opts.onInstanceFailed &&
+      !opts.signal?.aborted &&
+      (failedStatus === 'failure' || failedStatus === 'timeout')
+    ) {
+      try {
+        opts.onInstanceFailed({
+          jobId: instance.jobId,
+          matrixKey: instance.matrixKey,
+          status: failedStatus,
+        });
+      } catch (err) {
+        console.warn(
+          `[finalize-job-runner] onInstanceFailed threw run=${opts.runId} job=${instance.jobId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
     }
 
     return outcome;

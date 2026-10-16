@@ -758,6 +758,80 @@ jobs:
     expect(jobIds).toEqual(['backend', 'frontend']);
   });
 
+  it('reports a red job through onInstanceFailed while sibling jobs are still running', async () => {
+    const CONFIG = `
+version: 2
+on: [finalize]
+jobs:
+  backend:
+    runs-on: host
+    steps:
+      - run: backend-test
+  frontend:
+    runs-on: host
+    steps:
+      - run: frontend-test
+`;
+    const events: string[] = [];
+    let releaseFrontend: () => void = () => {};
+    const frontendGate = new Promise<void>((resolve) => {
+      releaseFrontend = resolve;
+      setTimeout(resolve, 2000); // never hang the suite if the callback is missing
+    });
+    const spawnStep: SpawnStepFn = ({ step }) => {
+      const stdout = new Readable({ read() {} });
+      const stderr = new Readable({ read() {} });
+      const child: SpawnedStep = {
+        stdout,
+        stderr,
+        on(event: 'close' | 'exit' | 'error', listener: (arg: never) => void) {
+          if (event === 'close') {
+            const close = (code: number) => {
+              stdout.push(null);
+              stderr.push(null);
+              (listener as (c: number | null) => void)(code);
+            };
+            if (step.run.includes('backend')) queueMicrotask(() => close(1));
+            else
+              void frontendGate.then(() => {
+                events.push('frontend:closed');
+                close(0);
+              });
+          }
+          return child;
+        },
+        kill: vi.fn(() => true),
+      };
+      return child;
+    };
+
+    const parsed = parseCiConfig(CONFIG);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.config.version !== 2) return;
+
+    const prev = process.env.FINALIZE_MAX_PARALLEL_JOBS;
+    process.env.FINALIZE_MAX_PARALLEL_JOBS = '2';
+    try {
+      const result = await runJobPhase(makeDeps(vi.fn(spawnStep)), {
+        runId: 'early-fail-run',
+        config: parsed.config,
+        worktreePath: '/tmp/wt',
+        sessionId: 'sess',
+        branch: 'main',
+        headSha: 'abc',
+        onInstanceFailed: ({ jobId, status }) => {
+          events.push(`failed:${jobId}:${status}`);
+          releaseFrontend();
+        },
+      });
+      expect(result.status).toBe('failure');
+    } finally {
+      if (prev === undefined) delete process.env.FINALIZE_MAX_PARALLEL_JOBS;
+      else process.env.FINALIZE_MAX_PARALLEL_JOBS = prev;
+    }
+    expect(events).toEqual(['failed:backend:failure', 'frontend:closed']);
+  });
+
   it('a failing shard does NOT write the run-level terminal while siblings run (regression: #1122)', async () => {
     // THE BUG: with parallel matrix shards, the FIRST shard to fail used to call
     // `failFinalizeRun('failed', 'step_failed', runId)` from inside its own

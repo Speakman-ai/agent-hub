@@ -18,6 +18,7 @@ let rerunCiRun: typeof import('./push-ci.js').rerunCiRun;
 let isFeatureIntegrationBranch: typeof import('./push-ci.js').isFeatureIntegrationBranch;
 let __clearPushCiQueues: typeof import('./push-ci.js').__clearPushCiQueues;
 let setChecksPassedHook: typeof import('./push-ci.js').setChecksPassedHook;
+let setPrChecksFailedHook: typeof import('./push-ci.js').setPrChecksFailedHook;
 let createHostedRepo: typeof import('./repo-store.js').createHostedRepo;
 let gitHostRepoPath: typeof import('./repo-store.js').gitHostRepoPath;
 let configDataDir: string;
@@ -33,6 +34,7 @@ beforeAll(async () => {
     isFeatureIntegrationBranch,
     __clearPushCiQueues,
     setChecksPassedHook,
+    setPrChecksFailedHook,
   } = await import('./push-ci.js'));
   ({ createHostedRepo, gitHostRepoPath } = await import('./repo-store.js'));
   configDataDir = (await import('../config.js')).default.dataDir;
@@ -939,5 +941,69 @@ describe('push concurrency (per-branch groups)', () => {
       expect(started[started.length - 1]).toBe(c);
       expect(runRowFor(project, c)?.status).toBe('succeeded');
     }
+  });
+});
+
+describe('PR checks-failed hook (auto-resolve trigger)', () => {
+  it('fires on the first failed PR CI job, before the rest of the run settles', async () => {
+    const { project, headSha } = await seedHostedProject({ defaultBranch: 'trunk' });
+    const calls: Array<{ branch: string; headSha: string; reason: string }> = [];
+    let firedBeforePhaseEnded = false;
+    setPrChecksFailedHook((a) => {
+      calls.push({ branch: a.branch, headSha: a.headSha, reason: a.reason });
+    });
+    try {
+      await maybeRunPrCi(
+        project,
+        { number: 9, head_branch: 'trunk', base_branch: 'trunk' },
+        {
+          stmts,
+          broadcast: () => {},
+          runJobPhase: vi.fn(async (_d: unknown, opts: Record<string, unknown>) => {
+            const onFailed = opts.onInstanceFailed as (i: {
+              jobId: string;
+              matrixKey: string;
+              status: 'failure';
+            }) => void;
+            onFailed({ jobId: 'unit', matrixKey: 'shard-1', status: 'failure' });
+            firedBeforePhaseEnded = calls.length === 1;
+            return { status: 'failure' as const, stepResults: [], activeSecondsBilled: 1 };
+          }) as never,
+          mergeSecrets: () => {},
+        },
+      );
+    } finally {
+      setPrChecksFailedHook(null);
+    }
+    expect(firedBeforePhaseEnded).toBe(true);
+    expect(calls[0]).toEqual({ branch: 'trunk', headSha, reason: 'job unit (shard-1) failed' });
+    // The run-level failure fires again; the consumer dedupes per head.
+    expect(calls.map((c) => c.reason)).toContain('checks_failed');
+  });
+
+  it('does not fire for default-branch push CI', async () => {
+    const { project } = await seedHostedProject();
+    let fired = false;
+    setPrChecksFailedHook(() => {
+      fired = true;
+    });
+    try {
+      await maybeRunPushCi(project, ['refs/heads/main'], {
+        stmts,
+        broadcast: () => {},
+        runJobPhase: vi.fn(async (_d: unknown, opts: Record<string, unknown>) => {
+          (opts.onInstanceFailed as (i: unknown) => void)({
+            jobId: 'unit',
+            matrixKey: '',
+            status: 'failure',
+          });
+          return { status: 'failure' as const, stepResults: [], activeSecondsBilled: 1 };
+        }) as never,
+        mergeSecrets: () => {},
+      });
+    } finally {
+      setPrChecksFailedHook(null);
+    }
+    expect(fired).toBe(false);
   });
 });

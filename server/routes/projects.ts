@@ -2766,6 +2766,40 @@ This workspace has no git repo and no PR automation — your job is planning, or
         (project as Record<string, unknown>).deleteBranchOnMerge = rawDel;
       }
     }
+    if (Object.prototype.hasOwnProperty.call(req.body as object, 'autoResolvePr')) {
+      const rawAr = (req.body as Record<string, unknown>).autoResolvePr;
+      if (rawAr === null) {
+        delete (project as Record<string, unknown>).autoResolvePr;
+      } else if (typeof rawAr !== 'object' || Array.isArray(rawAr)) {
+        return res.status(400).json({ error: 'autoResolvePr must be an object or null' });
+      } else {
+        const ar = rawAr as Record<string, unknown>;
+        const next: { enabled?: boolean; agentId?: string | null } = {
+          ...(project.autoResolvePr ?? {}),
+        };
+        if ('enabled' in ar) {
+          if (typeof ar.enabled !== 'boolean') {
+            return res.status(400).json({ error: 'autoResolvePr.enabled must be a boolean' });
+          }
+          next.enabled = ar.enabled;
+        }
+        if ('agentId' in ar) {
+          if (ar.agentId === null || ar.agentId === '') {
+            next.agentId = null;
+          } else if (
+            typeof ar.agentId !== 'string' ||
+            !(project.agents ?? []).some((a) => a.id === ar.agentId)
+          ) {
+            return res
+              .status(400)
+              .json({ error: 'autoResolvePr.agentId must be an agent on this project' });
+          } else {
+            next.agentId = ar.agentId;
+          }
+        }
+        (project as Record<string, unknown>).autoResolvePr = next;
+      }
+    }
     if (Object.prototype.hasOwnProperty.call(req.body as object, 'branchProtection')) {
       const rawBp = (req.body as Record<string, unknown>).branchProtection;
       if (rawBp === null) {

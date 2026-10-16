@@ -35,6 +35,7 @@ import {
   maybeRunPrCi,
   handleHostedRepoPush,
   setChecksPassedHook,
+  setPrChecksFailedHook,
 } from './git-host/push-ci.js';
 import { maybeRunPushSecurityScan } from './security-audit/on-push.js';
 import { startScheduledSecurityScanner } from './security-audit/scheduled-scan.js';
@@ -58,6 +59,14 @@ import { revParse } from './native-pr/git-read.js';
 import { tryAutoMergeArmedNativePr } from './native-pr/auto-merge-armed.js';
 import { startScheduledAutoMergeTicker } from './native-pr/scheduled-auto-merge.js';
 import { maybeRunPrAutoReview } from './native-pr/auto-review.js';
+import { prActorLabel } from './native-pr/author-user.js';
+import {
+  autoResolveOnBaseMoved,
+  autoResolveOnChecksFailed,
+  autoResolveOnHeadChanged,
+  maybeAutoResolvePr,
+  type AutoResolveDeps,
+} from './native-pr/auto-resolve.js';
 import {
   initProjects,
   migrateAhwDirectories,
@@ -927,7 +936,10 @@ app.use(
           // A push to an open PR's head rebuilds its environment at the new
           // sha. The head and open state are read inside the per-PR queue.
           syncNativePrEnvironment(project, open.number);
+          void autoResolveOnHeadChanged(project, open, autoResolveDeps());
         }
+        // The pushed branch may be the base of open PRs that now conflict.
+        void autoResolveOnBaseMoved(project, branch, autoResolveDeps());
         if (open) {
           void maybeRunPrAutoReview(
             project,
@@ -1212,6 +1224,15 @@ function syncNativePrEnvironment(project: Project, number: number): void {
     });
 }
 
+// Lazy: routeDeps (handleChat) and nativePr are defined after the hooks that use this.
+const autoResolveDeps = (): AutoResolveDeps => ({
+  stmts: stmts!,
+  config,
+  broadcast,
+  handleChat: routeDeps.handleChat,
+  nativePr,
+});
+
 const nativePr = createNativePrService({
   stmts: stmts!,
   broadcast,
@@ -1243,6 +1264,7 @@ const nativePr = createNativePrService({
     // on — nudge an off-cadence sweep so the gate fires promptly (the minute
     // sweep is the backstop).
     requestReleaseGateSweep('base-branch-moved');
+    void autoResolveOnBaseMoved(project, baseBranch, autoResolveDeps());
     await notifyMirrorPush(project, [`refs/heads/${baseBranch}`], { broadcast });
   },
   // "Update branch" merged the base into a PR head via `update-ref`, so no
@@ -1251,6 +1273,7 @@ const nativePr = createNativePrService({
   afterHeadBranchMoved: async ({ project, row }) => {
     void maybeRunPrCi(project, row, { stmts: stmts!, broadcast });
     syncNativePrEnvironment(project, row.number);
+    void autoResolveOnHeadChanged(project, row, autoResolveDeps());
     await notifyMirrorPush(project, [`refs/heads/${row.head_branch}`], { broadcast });
   },
   // PR head changed (created or reused with a new sha): if Finalize
@@ -1272,6 +1295,17 @@ const nativePr = createNativePrService({
         cancelReviewSession: handleCancel,
       },
       { trigger: meta.reason === 'created' ? 'pr_create' : 'head_update' },
+    );
+    void autoResolveOnHeadChanged(project, row, autoResolveDeps());
+  },
+  // A changes-requested verdict is one of the three auto-resolve signals.
+  onPrReviewSubmitted: ({ project, row, state, body, reviewer }) => {
+    if (state !== 'changes_requested') return;
+    void maybeAutoResolvePr(
+      project,
+      row.number,
+      { kind: 'review', reviewer: prActorLabel(reviewer) ?? reviewer, body },
+      autoResolveDeps(),
     );
   },
   // PR environments are torn down on merge/close and re-queued on reopen.
@@ -2815,6 +2849,13 @@ setChecksPassedHook(({ project, branch }) => {
       }`,
     );
   });
+});
+
+// First failed PR CI job → auto-resolve (when the project opted in). Fires
+// mid-run on purpose: the resolve session fixes everything, so waiting for
+// the remaining jobs only delays it.
+setPrChecksFailedHook(({ project, branch, headSha, reason }) => {
+  void autoResolveOnChecksFailed(project, { branch, headSha, reason }, autoResolveDeps());
 });
 
 function handleCancel(sessionId: string): void {

@@ -3618,6 +3618,14 @@ export interface Project {
    * branches accumulate fast; set false to keep merged branches.
    */
   deleteBranchOnMerge?: boolean | null;
+  /**
+   * Auto-resolve for native PRs: when an open PR conflicts with its base, a
+   * PR CI job fails, or a review requests changes, start a `[Resolve PR #N]`
+   * session on the first bad signal and let its Finalize push back to the PR.
+   * `agentId` picks the agent (default: the project's first dev agent). See
+   * `server/native-pr/auto-resolve.ts`.
+   */
+  autoResolvePr?: { enabled?: boolean; agentId?: string | null };
   githubWorkflow?: GithubWorkflowSettings;
   /**
    * Shell commands run in the session worktree cwd after an initial `git add`

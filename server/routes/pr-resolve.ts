@@ -26,7 +26,7 @@
  */
 import { v4 as uuidv4 } from 'uuid';
 import { Router, Request, Response } from 'express';
-import type { RouteDeps, SessionRow } from '../types.js';
+import type { Agent, Project, RouteDeps, SessionRow } from '../types.js';
 import { resolveAgentSpawnEngineAndModel } from '../effective-model.js';
 import { fetchPrDetail } from '../pr-detail-fetch.js';
 import { parseRepoFullName, resolveUserToken } from './pr-list.js';
@@ -221,8 +221,93 @@ export function buildResolvePrompt(
   return sections.join('\n\n---\n\n');
 }
 
+export interface PrResolveDetail {
+  pr: PrRecord;
+  reviews: ReviewRecord[];
+  checks: CheckRecord[];
+  comments: CommentRecord[];
+}
+
+type SpawnDeps = Pick<RouteDeps, 'config' | 'stmts' | 'handleChat' | 'broadcast'>;
+
+/**
+ * Spawn a `[Resolve PR #N]` background session for a PR snapshot. Shared by
+ * the Resolve PR button and the auto-resolve dispatcher
+ * (`server/native-pr/auto-resolve.ts`) so both hand the agent the same
+ * prompt, pin the same head branch, and finalize at the same automation level.
+ */
+export function spawnPrResolveSession(
+  deps: SpawnDeps,
+  args: {
+    project: Project;
+    prNumber: number;
+    agentId: string;
+    agent: Agent;
+    ownerUserId: string | null;
+    native: boolean;
+    repoFullName: string;
+    detail: PrResolveDetail;
+    /** Prepended above the PR context, e.g. why auto-resolve fired. */
+    preamble?: string;
+  },
+): { sessionId: string; triggered: AutofixKind[]; session: SessionRow } {
+  const { config, stmts, handleChat, broadcast } = deps;
+  const { project, prNumber: num, agentId, detail, native } = args;
+  const { pr, reviews, checks, comments } = detail;
+  const detected = detectKinds(pr, reviews, checks);
+
+  // Always bring the PR's full context into a fresh session, never bail out
+  // as "nothing to do". The agent resolves whatever it finds (merge
+  // conflicts, failing tests/CI, review or comment feedback), then the
+  // session-end pipeline runs the review/test phase and pushes to the PR
+  // branch. With no specific failing signal in the snapshot, include every
+  // autofix guardrail so the agent has guidance for whatever it finds locally.
+  const promptKinds = detected.length > 0 ? detected : [...AUTOFIX_KINDS];
+
+  const body = buildResolvePrompt(pr, reviews, checks, comments, args.repoFullName, promptKinds, {
+    native,
+    headBranch: typeof pr.head === 'string' ? pr.head : null,
+  });
+  const prompt = args.preamble ? `${args.preamble}\n\n${body}` : body;
+
+  const taskId = uuidv4();
+  const sessionId = uuidv4();
+
+  const { engine, model } = resolveAgentSpawnEngineAndModel(config, args.agent, args.ownerUserId);
+  const title = typeof pr.title === 'string' ? pr.title : '';
+  const sessionName = `[Resolve PR #${num}] ${title}`.slice(0, 100);
+
+  const wt = defaultSessionUseWorktreeFlag(project);
+  stmts.createSession.run(sessionId, agentId, sessionName, engine, model, wt, 0, 1);
+  setSessionOwner(sessionId, args.ownerUserId);
+  // Pin the PR's head branch onto the session so `ensureSessionWorkspace`
+  // provisions the worktree directly on it: the agent's commits append to
+  // the existing PR and the session-end push updates that PR instead of
+  // opening a new one. Only meaningful for worktree-backed sessions.
+  const headBranch = typeof pr.head === 'string' ? pr.head.trim() : '';
+  if (wt === 1 && headBranch) {
+    stmts.setSessionResolvePrHeadBranch.run(headBranch, sessionId);
+  }
+  // Resolve PR sessions exist to drive a PR to merge-ready, so start at the
+  // "Build and Push" finalize level: the session-end pipeline reviews, tests,
+  // and pushes without a human re-toggling it each time.
+  stmts.updateSessionFinalizeAutomation.run('push', sessionId);
+  stmts.insertBackgroundTask.run(taskId, sessionId, agentId, prompt);
+
+  handleChat(null, {
+    type: 'chat',
+    agentId,
+    sessionId,
+    content: prompt,
+  });
+
+  const session = stmts.getSession.get(sessionId) as SessionRow;
+  broadcastSessionCreated(broadcast, agentId, session, stmts);
+  return { sessionId, triggered: detected, session };
+}
+
 export default function createPrResolveRoutes(deps: RouteDeps): Router {
-  const { config, findProject, findAgent, stmts, handleChat, broadcast } = deps;
+  const { config, findProject, findAgent } = deps;
   const router = Router();
 
   router.post(
@@ -275,66 +360,17 @@ export default function createPrResolveRoutes(deps: RouteDeps): Router {
         return res.status(502).json({ error: `Failed to fetch PR: ${msg.split('\n')[0]}` });
       }
 
-      const { pr, reviews, checks, comments } = detail;
-      const detected = detectKinds(pr, reviews, checks);
-
-      // The Resolve PR button always brings the PR's full context into a fresh
-      // session — it never bails out as "nothing to do". The agent reads the
-      // context, resolves whatever it finds (merge conflicts, failing
-      // tests/CI, and any review or comment feedback), then the session-end
-      // pipeline runs the review/test phase and auto-pushes to the PR branch.
-      //
-      // When the snapshot shows no specific failing signal we still spawn, but
-      // include the full set of autofix guardrails so the agent has guidance
-      // for whatever it discovers locally.
-      const promptKinds = detected.length > 0 ? detected : [...AUTOFIX_KINDS];
-
-      const repoFullName = native
-        ? `${project.id} (Agent Hub-hosted)`
-        : `${repo!.owner}/${repo!.repo}`;
-      const prompt = buildResolvePrompt(pr, reviews, checks, comments, repoFullName, promptKinds, {
-        native,
-        headBranch: typeof pr.head === 'string' ? pr.head : null,
-      });
-
-      const taskId = uuidv4();
-      const sessionId = uuidv4();
-
-      const resolverUid = resolveOwnerUserId(req as AuthenticatedRequest);
-      const { engine, model } = resolveAgentSpawnEngineAndModel(config, found.agent, resolverUid);
-      const title = typeof pr.title === 'string' ? pr.title : '';
-      const sessionName = `[Resolve PR #${num}] ${title}`.slice(0, 100);
-
-      const wt = defaultSessionUseWorktreeFlag(project);
-      stmts.createSession.run(sessionId, agentId, sessionName, engine, model, wt, 0, 1);
-      setSessionOwner(sessionId, resolveOwnerUserId(req as AuthenticatedRequest));
-      // Pin the PR's head branch onto the session so `ensureSessionWorkspace`
-      // provisions the worktree directly on it: the agent's commits append to
-      // the existing PR and the session-end push updates that PR instead of
-      // opening a new one — instead of relying on the prompt's `gh pr checkout`.
-      // Only meaningful for worktree-backed sessions; harmless otherwise.
-      const headBranch = typeof pr.head === 'string' ? pr.head.trim() : '';
-      if (wt === 1 && headBranch) {
-        stmts.setSessionResolvePrHeadBranch.run(headBranch, sessionId);
-      }
-      // Resolve PR sessions exist to drive a PR to merge-ready: the agent fixes
-      // conflicts/CI/review, then the work should run through review + tests and
-      // be pushed back to the PR automatically. Start at the "Build and Push"
-      // finalize level so the session-end pipeline reviews, tests, and pushes
-      // without a human re-toggling it each time.
-      stmts.updateSessionFinalizeAutomation.run('push', sessionId);
-      stmts.insertBackgroundTask.run(taskId, sessionId, agentId, prompt);
-
-      handleChat(null, {
-        type: 'chat',
+      const { sessionId, triggered, session } = spawnPrResolveSession(deps, {
+        project,
+        prNumber: num,
         agentId,
-        sessionId,
-        content: prompt,
+        agent: found.agent,
+        ownerUserId: resolveOwnerUserId(req as AuthenticatedRequest),
+        native,
+        repoFullName: native ? `${project.id} (Agent Hub-hosted)` : `${repo!.owner}/${repo!.repo}`,
+        detail,
       });
-
-      const session = stmts.getSession.get(sessionId) as SessionRow;
-      broadcastSessionCreated(broadcast, agentId, session, stmts);
-      return res.status(201).json({ sessionId, triggered: detected, session });
+      return res.status(201).json({ sessionId, triggered, session });
     },
   );
 

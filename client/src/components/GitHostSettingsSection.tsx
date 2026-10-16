@@ -334,6 +334,96 @@ const PROTECTION_OPTIONS = [
   },
 ];
 
+/** Agents eligible to work auto-resolve sessions: everyone but the Reviewer. */
+export function autoResolveAgentOptions(project: any): Array<{ id: string; name: string }> {
+  return (project?.agents || [])
+    .filter((a: any) => a && a.id && a.role !== 'reviewer')
+    .map((a: any) => ({ id: a.id, name: a.name || a.id }));
+}
+
+function AutoResolveSetting({ project, showToast, onProjectsChange }: any) {
+  const [enabled, setEnabled] = useState(project.autoResolvePr?.enabled === true);
+  const [agentId, setAgentId] = useState<string>(project.autoResolvePr?.agentId || '');
+  const [saving, setSaving] = useState(false);
+  const agents = autoResolveAgentOptions(project);
+
+  const save = async (
+    patch: { enabled?: boolean; agentId?: string | null },
+    revert: () => void,
+  ) => {
+    setSaving(true);
+    try {
+      await api.updateProject(project.id, { autoResolvePr: patch });
+      if (onProjectsChange) onProjectsChange();
+    } catch (err: any) {
+      revert();
+      if (showToast) showToast(`Failed to save: ${err.message}`, 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggle = () => {
+    const next = !enabled;
+    setEnabled(next);
+    save({ enabled: next }, () => setEnabled(!next));
+  };
+
+  const changeAgent = (value: string) => {
+    const prev = agentId;
+    setAgentId(value);
+    save({ agentId: value || null }, () => setAgentId(prev));
+  };
+
+  return (
+    <div className="space-y-1.5 pt-1" data-testid={`auto-resolve-pr-${project.id}`}>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex-1 min-w-0">
+          <span className="text-sm text-gray-200">Auto-resolve pull requests</span>
+          <p className="text-xs text-gray-500">
+            When an open PR hits a merge conflict, a failing CI job, or a changes-requested review,
+            start a Resolve PR session right away. It fixes all three and Finalize pushes the result
+            back to the PR. It doesn&apos;t wait for the remaining checks.
+          </p>
+        </div>
+        <button
+          onClick={toggle}
+          disabled={saving}
+          data-testid={`auto-resolve-pr-toggle-${project.id}`}
+          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 disabled:opacity-50 ${
+            enabled ? 'bg-emerald-600' : 'bg-gray-600'
+          }`}
+        >
+          <span
+            className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+              enabled ? 'translate-x-4' : 'translate-x-0.5'
+            }`}
+          />
+        </button>
+      </div>
+      {enabled && (
+        <label className="flex items-center gap-2 text-xs text-gray-400">
+          Agent
+          <select
+            value={agentId}
+            onChange={(e) => changeAgent(e.target.value)}
+            disabled={saving}
+            data-testid={`auto-resolve-pr-agent-${project.id}`}
+            className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-xs text-gray-200"
+          >
+            <option value="">Default (first dev agent)</option>
+            {agents.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+    </div>
+  );
+}
+
 export default function GitHostSettingsSection({ project, showToast, onProjectsChange }: any) {
   const [status, setStatus] = useState<any>(null);
   const [busy, setBusy] = useState(false);
@@ -559,6 +649,14 @@ export default function GitHostSettingsSection({ project, showToast, onProjectsC
             />
           </button>
         </div>
+      )}
+
+      {status.enabled && (
+        <AutoResolveSetting
+          project={project}
+          showToast={showToast}
+          onProjectsChange={onProjectsChange}
+        />
       )}
 
       {status.enabled && (

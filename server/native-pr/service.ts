@@ -127,6 +127,17 @@ export interface NativePrServiceDeps {
    * a teardown failure never rolls back the merge that already landed in git.
    */
   afterPrMerged?: (args: { project: Project; row: PullRequestRow }) => void;
+  /**
+   * Fired after a review verdict lands on an open PR. Fire-and-forget; the
+   * auto-resolve dispatcher reacts to `changes_requested`.
+   */
+  onPrReviewSubmitted?: (args: {
+    project: Project;
+    row: PullRequestRow;
+    state: 'approved' | 'changes_requested' | 'commented';
+    body: string;
+    reviewer: string;
+  }) => void;
   /** Fired after an open PR is closed without merging. Tears down the PR environment. */
   afterPrClosed?: (args: { project: Project; row: PullRequestRow }) => void;
   /** Fired after a closed PR is reopened. Re-queues the PR environment. */
@@ -1424,6 +1435,15 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
         action: 'reviewed',
         reviewState: state,
       });
+      try {
+        deps.onPrReviewSubmitted?.({ project, row, state, body, reviewer });
+      } catch (err: unknown) {
+        console.warn(
+          `[native-pr] onPrReviewSubmitted hook threw for ${project.id}#${number}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
       return {
         review: {
           id,

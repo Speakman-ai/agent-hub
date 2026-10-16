@@ -97,6 +97,44 @@ export function setChecksPassedHook(fn: ChecksPassedHook | null): void {
 }
 
 /**
+ * Fired as soon as PR-level CI (`pr_push`) for a branch goes red: the first
+ * failed job, without waiting for the rest of the run, and again when the run
+ * itself fails (a broken ci.yaml has no jobs to report). Consumers dedupe.
+ */
+export type PrChecksFailedHook = (args: {
+  project: Project;
+  branch: string;
+  headSha: string;
+  reason: string;
+}) => void;
+
+let prChecksFailedHook: PrChecksFailedHook | null = null;
+
+/** Register (or clear with `null`) the PR checks-failed hook. Wired once at boot. */
+export function setPrChecksFailedHook(fn: PrChecksFailedHook | null): void {
+  prChecksFailedHook = fn;
+}
+
+function firePrChecksFailed(
+  project: Project,
+  trigger: 'git_push' | 'pr_push',
+  branch: string,
+  headSha: string,
+  reason: string,
+): void {
+  if (trigger !== 'pr_push') return;
+  try {
+    prChecksFailedHook?.({ project, branch, headSha, reason });
+  } catch (err: unknown) {
+    console.warn(
+      `[push-ci] prChecksFailedHook threw for ${project.id} ${branch}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+}
+
+/**
  * One concurrency group per (project, branch). `generation` counts pushes so
  * a queued item can tell it was superseded; `latestSha` is the head the
  * newest push resolved to (queued or running); `active` is the running
@@ -596,6 +634,7 @@ async function runCiForSha(
       status: 'failed',
       failure_reason: reason,
     });
+    if (reason !== 'infra_error') firePrChecksFailed(project, trigger, branch, headSha, reason);
   };
 
   try {
@@ -641,6 +680,14 @@ async function runCiForSha(
         env,
         projectId: project.id,
         ...(signal ? { signal } : {}),
+        onInstanceFailed: ({ jobId, matrixKey }) =>
+          firePrChecksFailed(
+            project,
+            trigger,
+            branch,
+            headSha,
+            `job ${jobId}${matrixKey ? ` (${matrixKey})` : ''} failed`,
+          ),
       },
     );
 
