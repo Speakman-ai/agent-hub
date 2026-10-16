@@ -2361,6 +2361,13 @@ function initDb(dataDir: string): void {
     /* already exists */
   }
 
+  // NULL inherits the agent's computerToolEnabled default (itself off).
+  try {
+    db.exec('ALTER TABLE sessions ADD COLUMN computer_tool_enabled INTEGER');
+  } catch (_e) {
+    /* already exists */
+  }
+
   // Session mode — the "what is this session for" picker dimension (chat |
   // design). Legacy rows default to 'chat'. See server/session-mode.ts and the
   // architecture spec design-mode-fold-into-session-mode-picker.
@@ -5125,6 +5132,9 @@ function initDb(dataDir: string): void {
     ),
     updateSessionReactLoop: db.prepare(
       "UPDATE sessions SET react_loop_enabled = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    updateSessionComputerTool: db.prepare(
+      "UPDATE sessions SET computer_tool_enabled = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     // Live SideBar child for a parent session (at most one by contract).
     getLiveSidebarSession: db.prepare(

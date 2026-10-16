@@ -114,6 +114,8 @@ components:
           type: boolean
         browserToolsEnabled:
           type: boolean
+        computerToolEnabled:
+          type: boolean
         browserViewportWidth:
           type: integer
         browserViewportHeight:
@@ -2513,6 +2515,10 @@ components:
         react_loop_enabled:
           type: integer
           nullable: true
+        computer_tool_enabled:
+          type: integer
+          nullable: true
+          description: "Per-session `computer` tool switch: 1 on, 0 off, null inherits the agent `computerToolEnabled` default (off when unset). Set via `PUT /api/sessions/{sessionId}/computer-tool`."
         session_mode:
           type: string
           nullable: true
@@ -18166,6 +18172,9 @@ paths:
                             - "1"
                 browserToolsEnabled:
                   type: boolean
+                computerToolEnabled:
+                  type: boolean
+                  description: Default for the host `computer` ReAct tool (drive the agent's persistent Linux desktop) in sessions that have not set their own switch via `PUT /api/sessions/{sessionId}/computer-tool`. Off unless explicitly true.
                 browserViewportWidth:
                   type: number
                   nullable: true
@@ -18279,6 +18288,9 @@ paths:
                   description: Accept autonomously-dispatched kanban tickets. Sending a value that contradicts a locked role (dev/lead → must be true; docs/reviewer → must be false) is rejected with 400; a matching value is a no-op.
                 browserToolsEnabled:
                   type: boolean
+                computerToolEnabled:
+                  type: boolean
+                  description: Default for the host `computer` ReAct tool (drive the agent's persistent Linux desktop) in sessions that have not set their own switch via `PUT /api/sessions/{sessionId}/computer-tool`. Off unless explicitly true.
                 browserViewportWidth:
                   type: number
                   nullable: true
@@ -26440,6 +26452,50 @@ paths:
               properties:
                 enabled:
                   type: boolean
+              required:
+                - enabled
+      responses:
+        "200":
+          description: Updated session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/computer-tool:
+    put:
+      tags:
+        - Sessions
+      summary: Turn the computer tool on or off for one session
+      description: "Overrides the agent `computerToolEnabled` default for this session only, so sessions with the same agent can differ. `enabled: null` clears the override."
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+                  nullable: true
               required:
                 - enabled
       responses:

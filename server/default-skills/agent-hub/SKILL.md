@@ -40,8 +40,8 @@ auth, error self-reporting, and a map to four domain sub-skills.
 > **API contract reference.** Every endpoint's request/response shape is
 > published at <https://speakman-ai.github.io/agent-hub/> (auto-generated
 > from the Zod registry, with `x-internal: true` operations stripped, kept
-> fresh by the CI freshness gate). Treat the script wrappers as the *how*
-> and that page as the *what* — `WebFetch` it (or its deep-link anchors
+> fresh by the CI freshness gate). Treat the script wrappers as the _how_
+> and that page as the _what_ — `WebFetch` it (or its deep-link anchors
 > like `#tag/Board`, `#tag/Agents`, `#tag/Sessions`) when you need a shape
 > a wrapper doesn't cover. Wrappers stay primary; OpenAPI is the fallback
 > for shape lookup.
@@ -51,12 +51,12 @@ auth, error self-reporting, and a map to four domain sub-skills.
 Load the sub-skill that matches the work you're doing. They each carry
 their own `references/<domain>.md` and trigger only on domain vocabulary.
 
-| Skill | Domain |
-| --- | --- |
-| `agent-hub-kanban` | Cards, columns, comments, epics, blockers, Done-state contract |
-| `agent-hub-wiki` | FTS5 search, pages, categories, slug conventions |
-| `agent-hub-sessions` | Messages, ask mode, starting sessions, posting to chat (`chat.sh`), `<agenthub:close-card>` |
-| `agent-hub-heartbeats-crons` | Project crons and run logs |
+| Skill                        | Domain                                                                                      |
+| ---------------------------- | ------------------------------------------------------------------------------------------- |
+| `agent-hub-kanban`           | Cards, columns, comments, epics, blockers, Done-state contract                              |
+| `agent-hub-wiki`             | FTS5 search, pages, categories, slug conventions                                            |
+| `agent-hub-sessions`         | Messages, ask mode, starting sessions, posting to chat (`chat.sh`), `<agenthub:close-card>` |
+| `agent-hub-heartbeats-crons` | Project crons and run logs                                                                  |
 
 To load one mid-turn, end your turn with:
 
@@ -70,14 +70,14 @@ To load one mid-turn, end your turn with:
 
 All scripts read these env vars:
 
-| Variable | Default | Notes |
-| --- | --- | --- |
-| `AGENT_HUB_URL` | Loopback `http://127.0.0.1:<port>` | Server-injected REST base. Defaults to loopback; for remote workers set `AGENT_HUB_PUBLIC_URL` / `publicUrl` or `AGENT_HUB_AGENT_URL` / `agentHubUrl` in config. |
-| `AGENT_HUB_API_KEY` | (injected by the server) | Sent as `x-api-key`; treated as Owner for all orgs. |
-| `PROJECT_ID` | (required) | Slug from the system prompt, e.g. `agent-hub`. |
-| `AGENT_HUB_SESSION_ID` | (injected) | Your session id. Pass when creating cards to auto-link. |
-| `AGENT_HUB_SKILLS_DIR` | (injected) | Absolute path to the bundled `agent-hub` skill. Its `scripts/` dir is also prepended to `PATH`, so wrappers run by bare name. |
-| `AGENT_HUB_CODEX_DANGER_BYPASS` | `true` (server default) | Server-only: when true (`1`/`true`/`on`, or unset), interactive Codex spawns use `--dangerously-bypass-approvals-and-sandbox` outside Ask Mode instead of `--full-auto` (needed when Linux bubblewrap cannot create user namespaces). Set `false`/`0`/`off` to opt into Codex's sandbox. Same as `codexDangerBypass` in host `config.json` or `PATCH /api/config`. Applies to chat, conference rooms, and Design Studio when the engine is Codex. |
+| Variable                        | Default                            | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AGENT_HUB_URL`                 | Loopback `http://127.0.0.1:<port>` | Server-injected REST base. Defaults to loopback; for remote workers set `AGENT_HUB_PUBLIC_URL` / `publicUrl` or `AGENT_HUB_AGENT_URL` / `agentHubUrl` in config.                                                                                                                                                                                                                                                                                  |
+| `AGENT_HUB_API_KEY`             | (injected by the server)           | Sent as `x-api-key`; treated as Owner for all orgs.                                                                                                                                                                                                                                                                                                                                                                                               |
+| `PROJECT_ID`                    | (required)                         | Slug from the system prompt, e.g. `agent-hub`.                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `AGENT_HUB_SESSION_ID`          | (injected)                         | Your session id. Pass when creating cards to auto-link.                                                                                                                                                                                                                                                                                                                                                                                           |
+| `AGENT_HUB_SKILLS_DIR`          | (injected)                         | Absolute path to the bundled `agent-hub` skill. Its `scripts/` dir is also prepended to `PATH`, so wrappers run by bare name.                                                                                                                                                                                                                                                                                                                     |
+| `AGENT_HUB_CODEX_DANGER_BYPASS` | `true` (server default)            | Server-only: when true (`1`/`true`/`on`, or unset), interactive Codex spawns use `--dangerously-bypass-approvals-and-sandbox` outside Ask Mode instead of `--full-auto` (needed when Linux bubblewrap cannot create user namespaces). Set `false`/`0`/`off` to opt into Codex's sandbox. Same as `codexDangerBypass` in host `config.json` or `PATCH /api/config`. Applies to chat, conference rooms, and Design Studio when the engine is Codex. |
 
 Identify yourself / the project:
 
@@ -111,6 +111,8 @@ default model, workspace `cwd`, and context-file paths. Endpoints under
 `session_id`, not via the agent-session API. Spawn
 identity (`owner_user_id`), workspace resolution, and the reviewer-lock
 contract live in the reference.
+Sessions with the computer tool on drive a persistent 1280x800 Linux desktop via
+`{"tool":"computer","op":"screenshot"}`: **[references/computer.md](references/computer.md)**.
 
 ## Errors — self-reporting & common failure modes
 
@@ -195,22 +197,22 @@ Statuses: `running`, `exited` (code 0), `failed` (non-zero or crashed), `stopped
 
 Concrete recipes live under **[examples/](examples/)**:
 
-| Recipe | When to use |
-| --- | --- |
+| Recipe                                                                     | When to use                                             |
+| -------------------------------------------------------------------------- | ------------------------------------------------------- |
 | [create-ticket-from-bug-report](examples/create-ticket-from-bug-report.md) | User drops a bug report and wants a kanban card created |
-| [post-heartbeat-summary](examples/post-heartbeat-summary.md) | End a scheduled cron run with a structured summary |
-| [search-and-link-wiki-page](examples/search-and-link-wiki-page.md) | FTS-search the wiki and link the page in a card comment |
-| [move-card-through-workflow](examples/move-card-through-workflow.md) | Walk a card To Do → In Progress (merge writes Done) |
+| [post-heartbeat-summary](examples/post-heartbeat-summary.md)               | End a scheduled cron run with a structured summary      |
+| [search-and-link-wiki-page](examples/search-and-link-wiki-page.md)         | FTS-search the wiki and link the page in a card comment |
+| [move-card-through-workflow](examples/move-card-through-workflow.md)       | Walk a card To Do → In Progress (merge writes Done)     |
 
 ## Architecture quick reference
 
-| Component | Stack | Location |
-| --- | --- | --- |
-| Server | Express.js + SQLite (WAL) + WebSocket | `server/` |
-| Web Client | React + Vite + Tailwind | `client/` |
-| Mobile | React Native + Expo | `mobile/` |
-| Desktop | Electron wrapper (`electron/main.js`) | `electron/` |
-| Deployment | Self-hosted Node.js behind a TLS proxy | operator |
+| Component  | Stack                                  | Location    |
+| ---------- | -------------------------------------- | ----------- |
+| Server     | Express.js + SQLite (WAL) + WebSocket  | `server/`   |
+| Web Client | React + Vite + Tailwind                | `client/`   |
+| Mobile     | React Native + Expo                    | `mobile/`   |
+| Desktop    | Electron wrapper (`electron/main.js`)  | `electron/` |
+| Deployment | Self-hosted Node.js behind a TLS proxy | operator    |
 
 **Persistence:** SQLite stores sessions, messages, wiki, kanban, schedules,
 artifacts, credentials, and integration state. **Real-time:** WebSocket shares

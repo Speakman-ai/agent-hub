@@ -12,6 +12,7 @@ import {
   CreateSessionRequestSchema,
   PatchSessionRequestSchema,
   ToggleEnabledRequestSchema,
+  SessionComputerToolRequestSchema,
   PutSessionEngineRequestSchema,
   PutSessionModelRequestSchema,
   PutSessionReasoningEffortRequestSchema,
@@ -2770,6 +2771,17 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
     if (!session) return res.status(404).json({ error: 'Session not found' });
     stmts.updateSessionReactLoop.run(enabled ? 1 : 0, req.params.sessionId);
+    const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
+    res.json(enrichSessionForClient(updated, stmts));
+  });
+
+  router.put('/api/sessions/:sessionId/computer-tool', (req: Request, res: Response) => {
+    const parsed = parseBody(SessionComputerToolRequestSchema, req, res);
+    if (!parsed) return;
+    const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    const value = parsed.enabled === null ? null : parsed.enabled ? 1 : 0;
+    stmts.updateSessionComputerTool.run(value, req.params.sessionId);
     const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
     res.json(enrichSessionForClient(updated, stmts));
   });

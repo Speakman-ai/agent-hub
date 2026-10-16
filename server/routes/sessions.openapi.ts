@@ -67,6 +67,10 @@ export const SessionComponent = registerComponent(
       use_worktree: z.number().int(),
       ask_mode: z.number().int(),
       react_loop_enabled: z.number().int().nullable().optional(),
+      computer_tool_enabled: z.number().int().nullable().optional().openapi({
+        description:
+          'Per-session `computer` tool switch: 1 on, 0 off, null inherits the agent `computerToolEnabled` default (off when unset). Set via `PUT /api/sessions/{sessionId}/computer-tool`.',
+      }),
       session_mode: SessionModeSchema.nullable().optional().openapi({
         description:
           'Session mode picker dimension: `chat` (default), `isolated` (opt-in Firecracker VM; same ship surface as chat), `autopilot` (named-branch implement/push/preview-verify loop; never auto-merges), `design`, `scoping`, `skill-builder`, or `consult`. NULL/absent on legacy rows → treated as `chat`. Set via `PATCH /api/sessions/{sessionId}` or `PUT .../mode`.',
@@ -314,6 +318,11 @@ export const SessionErrorResponseComponent = registerComponent(
  */
 export const ToggleEnabledRequestSchema = z.object({
   enabled: z.boolean({ error: 'enabled must be a boolean' }),
+});
+
+/** PUT /api/sessions/:sessionId/computer-tool. `null` returns to the agent default. */
+export const SessionComputerToolRequestSchema = z.object({
+  enabled: z.boolean({ error: 'enabled must be a boolean or null' }).nullable(),
 });
 
 export const CreateSessionRequestSchema = z.object({
@@ -1352,6 +1361,25 @@ registerPath({
   request: {
     params: sessionIdParams,
     body: { content: jsonContent(ToggleEnabledRequestSchema) },
+  },
+  responses: {
+    200: { description: 'Updated session.', content: jsonContent(SessionComponent) },
+    400: errorResponse('Validation failed.'),
+    404: errorResponse('Session not found.'),
+  },
+});
+
+// PUT /api/sessions/:sessionId/computer-tool
+registerPath({
+  method: 'put',
+  path: '/api/sessions/{sessionId}/computer-tool',
+  tags: ['Sessions'],
+  summary: 'Turn the computer tool on or off for one session',
+  description:
+    'Overrides the agent `computerToolEnabled` default for this session only, so sessions with the same agent can differ. `enabled: null` clears the override.',
+  request: {
+    params: sessionIdParams,
+    body: { content: jsonContent(SessionComputerToolRequestSchema) },
   },
   responses: {
     200: { description: 'Updated session.', content: jsonContent(SessionComponent) },

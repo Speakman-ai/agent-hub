@@ -29,7 +29,12 @@ import {
 } from './container-desktop-runtime.js';
 import { resolveDesktopHomeStore, type DesktopHomeStore } from './desktop-home-store.js';
 import { hasDesktopContainers, hasTrackedDesktopHomeObjects } from './desktop-containers-store.js';
-import { registerDesktopRuntime, unregisterDesktopRuntime } from './desktop-runtime-registry.js';
+import {
+  getDesktopRuntime,
+  registerDesktopRuntime,
+  unregisterDesktopRuntime,
+} from './desktop-runtime-registry.js';
+import type { DesktopRuntime } from './desktop-runtime.js';
 
 let homeStore: Promise<DesktopHomeStore> | null = null;
 let runtime: ContainerDesktopRuntime | null = null;
@@ -104,6 +109,29 @@ export function getContainerDesktopRuntime(
   });
   registerDesktopRuntime(runtime);
   return runtime;
+}
+
+/**
+ * The runtime the `computer` tool drives on this host, per the selection
+ * rules. Throws DesktopRuntimeUnavailableError when the selected backend is
+ * not usable (an explicit firecracker that is not registered).
+ */
+export function getActiveDesktopRuntime(): DesktopRuntime {
+  const selection = selectDesktopRuntime({
+    configured: config.desktopRuntime,
+    firecrackerRegistered: isFirecrackerBackendRegistered(),
+    finalizeRunnerBackend: process.env.FINALIZE_RUNNER_BACKEND,
+  });
+  if (selection.kind === 'firecracker') {
+    const fc = getDesktopRuntime('firecracker');
+    if (!fc) {
+      throw new DesktopRuntimeUnavailableError(
+        'The Firecracker desktop backend is selected but did not start on this host.',
+      );
+    }
+    return fc;
+  }
+  return getContainerDesktopRuntime(selection.containerPlacement ?? undefined);
 }
 
 function placementForThisHost(): DesktopContainerPlacement {

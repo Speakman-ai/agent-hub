@@ -126,6 +126,8 @@ export default function TopBar({
   onModelChange,
   sessionReasoningEffort,
   onReasoningEffortChange,
+  computerToolOn = false,
+  onComputerToolChange,
   modelConfig,
   messages,
   activeSessionId,
@@ -442,6 +444,29 @@ export default function TopBar({
           </div>
         )}
 
+        {/* Per-session computer tool switch (off unless this session or the agent turns it on) */}
+        {agent && onComputerToolChange && (
+          <button
+            type="button"
+            data-testid="session-computer-tool-toggle"
+            aria-pressed={computerToolOn}
+            onClick={() => onComputerToolChange(!computerToolOn)}
+            title={
+              computerToolOn
+                ? 'Computer tool is on for this session: the agent can drive its Linux desktop'
+                : 'Computer tool is off for this session'
+            }
+            className={`hidden sm:flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border transition-colors ${
+              computerToolOn
+                ? 'bg-emerald-900/40 border-emerald-700 text-emerald-300 hover:bg-emerald-900/60'
+                : 'bg-gray-800 border-gray-700 text-gray-400 hover:bg-gray-700'
+            }`}
+          >
+            <span className="text-gray-500">Computer</span>
+            <span>{computerToolOn ? 'On' : 'Off'}</span>
+          </button>
+        )}
+
         {/* Mobile: combined engine+model button */}
         {agent && (
           <div className="sm:hidden relative">
@@ -516,6 +541,24 @@ export default function TopBar({
                       {m.id === sessionModel && <span className="text-emerald-400 text-xs">✓</span>}
                     </button>
                   ))}
+                  {onComputerToolChange && (
+                    <>
+                      <div className="border-t border-gray-700 my-1" />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onComputerToolChange(!computerToolOn);
+                          setMobileMenuOpen(false);
+                        }}
+                        className="w-full text-left px-3 py-2.5 text-sm hover:bg-gray-700 transition-colors flex items-center justify-between min-h-[44px] text-gray-300"
+                      >
+                        <span>Computer tool</span>
+                        <span className={computerToolOn ? 'text-emerald-400' : 'text-gray-500'}>
+                          {computerToolOn ? 'On' : 'Off'}
+                        </span>
+                      </button>
+                    </>
+                  )}
                   {isCodex && onReasoningEffortChange && (
                     <>
                       <div className="border-t border-gray-700 my-1" />

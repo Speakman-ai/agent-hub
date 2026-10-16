@@ -1,4 +1,5 @@
-import type { Agent, Project } from './types.js';
+import type { Agent, Project, SessionRow } from './types.js';
+import { resolveComputerToolEnabled } from '../shared/utils/computerTool.js';
 import { DEFAULT_TIMEOUT_MS, DEFAULT_VIEWPORT } from './browser.js';
 import type { BrowserSessionOptions } from './browser.js';
 
@@ -17,6 +18,18 @@ export function effectiveBrowserToolsEnabled(
     return project.browserToolsDefaultEnabled;
   }
   return true;
+}
+
+/**
+ * Whether the `computer` tool is on for a session. The session's own switch
+ * wins; NULL/absent falls back to the agent default, which is off unless the
+ * agent sets `computerToolEnabled: true`.
+ */
+export function effectiveComputerToolEnabled(
+  agent: Pick<Agent, 'computerToolEnabled'>,
+  session?: Pick<SessionRow, 'computer_tool_enabled'> | null,
+): boolean {
+  return resolveComputerToolEnabled(agent.computerToolEnabled, session?.computer_tool_enabled);
 }
 
 function clampInt(n: number, min: number, max: number): number {

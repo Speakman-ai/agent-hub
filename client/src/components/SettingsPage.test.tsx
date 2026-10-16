@@ -281,6 +281,50 @@ describe('SettingsPage — tab labels', () => {
   });
 });
 
+describe('AgentConfigSection — computer tool toggle', () => {
+  it('is off by default and saves computerToolEnabled when switched on', async () => {
+    vi.mocked(api.getModelConfig).mockResolvedValue({
+      engineValidModels: { 'claude-code': [] },
+      engineDefaultModels: {},
+    } as any);
+    vi.mocked(api.updateAgent).mockResolvedValue({
+      id: 'agent-x',
+      computerToolEnabled: true,
+    } as any);
+    const agents = [
+      {
+        id: 'agent-x',
+        name: 'Desk Agent',
+        role: 'member',
+        engine: 'claude-code',
+        color: '#22c55e',
+        active: true,
+        projectId: 'p1',
+      },
+    ];
+    const { findByText, findByTestId, getByText } = render(
+      <AgentConfigSection
+        projects={[{ id: 'p1', name: 'Acme', cwd: '/tmp', agents: [] }]}
+        agents={agents}
+        projectId="p1"
+        onAgentsChange={() => {}}
+      />,
+    );
+    fireEvent.click(await findByText('Desk Agent'));
+    const toggle = await findByTestId('agent-computer-tool-toggle');
+    expect(toggle.textContent).toBe('OFF');
+    fireEvent.click(toggle);
+    expect(toggle.textContent).toBe('ON');
+    fireEvent.click(getByText('Save'));
+    await waitFor(() =>
+      expect(api.updateAgent).toHaveBeenCalledWith(
+        'agent-x',
+        expect.objectContaining({ computerToolEnabled: true }),
+      ),
+    );
+  });
+});
+
 /**
  * Role-gated visibility of the host-wide "Gemini API Key" tab.
  *

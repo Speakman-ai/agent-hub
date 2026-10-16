@@ -91,6 +91,24 @@ describe('Schema validation — POST /api/agents', () => {
 });
 
 describe('Schema validation — PATCH /api/agents/:agentId', () => {
+  it('toggles computerToolEnabled and rejects non-booleans', async () => {
+    const agent = (await createAgent({ projectId })) as {
+      id: string;
+      computerToolEnabled?: boolean;
+    };
+    expect(agent.computerToolEnabled).toBeUndefined();
+    const on = await request
+      .patch(`/api/agents/${agent.id}`)
+      .send({ computerToolEnabled: true })
+      .expect(200);
+    expect((on.body as { computerToolEnabled?: boolean }).computerToolEnabled).toBe(true);
+    const bad = await request
+      .patch(`/api/agents/${agent.id}`)
+      .send({ computerToolEnabled: 'yes' })
+      .expect(400);
+    expect((bad.body as { error: string }).error).toMatch(/computerToolEnabled must be a boolean/i);
+  });
+
   it('rejects non-boolean browserToolsEnabled (400)', async () => {
     const agent = (await createAgent({ projectId })) as { id: string };
     const res = await request

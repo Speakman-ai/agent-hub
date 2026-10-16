@@ -87,6 +87,7 @@ import NewProjectAdaptiveFlow from './components/NewProjectAdaptiveFlow';
 import SetupWizard from './components/SetupWizard';
 import { createUseAiSignInGuide } from '@shared/hooks/useAiSignInGuide';
 import { promoteQueuedMessage } from '@shared/utils/promoteQueuedMessage';
+import { resolveComputerToolEnabled } from '@shared/utils/computerTool';
 import KanbanBoard from './components/KanbanBoard';
 import EpicView from './components/EpicView';
 import KanbanCardTemplatesView from './components/KanbanCardTemplatesView';
@@ -5312,6 +5313,20 @@ export default function App({ initialView }: any = {}) {
     }
   };
 
+  const handleComputerToolChange = async (enabled: boolean) => {
+    if (!activeSessionId) return;
+    try {
+      const updated = await api.setSessionComputerTool(activeSessionId, enabled);
+      setSessions((prev: any) =>
+        prev.map((s: any) =>
+          s.id === updated.id ? { ...s, computer_tool_enabled: updated.computer_tool_enabled } : s,
+        ),
+      );
+    } catch (err: any) {
+      showToast(err?.message || 'Could not change the computer tool', 'error', 5000);
+    }
+  };
+
   const handleReasoningEffortChange = async (effort: any) => {
     setSessionReasoningEffort(effort);
     if (activeSessionId) {
@@ -6808,6 +6823,11 @@ export default function App({ initialView }: any = {}) {
                     onModelChange={handleModelChange}
                     sessionReasoningEffort={sessionReasoningEffort}
                     onReasoningEffortChange={handleReasoningEffortChange}
+                    computerToolOn={resolveComputerToolEnabled(
+                      chatAgent?.computerToolEnabled,
+                      activeSession?.computer_tool_enabled,
+                    )}
+                    onComputerToolChange={handleComputerToolChange}
                     modelConfig={modelConfig}
                     messages={messages}
                     activeSessionId={activeSessionId}

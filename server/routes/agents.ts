@@ -435,6 +435,9 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     if (parsed.browserToolsEnabled !== undefined) {
       agent.browserToolsEnabled = parsed.browserToolsEnabled;
     }
+    if (parsed.computerToolEnabled !== undefined) {
+      agent.computerToolEnabled = parsed.computerToolEnabled;
+    }
     // "Dev" flag (accepts autonomous tickets). The `allowed` loop above may
     // have just changed `role`, so `isAutonomyLocked(agent)` now reflects the
     // POST-PATCH role. Contradictions were already rejected with a 400; here
@@ -558,6 +561,9 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     }
     if (browserToolsEnabled !== undefined) {
       agent.browserToolsEnabled = browserToolsEnabled;
+    }
+    if (parsed.computerToolEnabled !== undefined) {
+      agent.computerToolEnabled = parsed.computerToolEnabled;
     }
     if (Array.isArray(parsed.allowedSkills)) {
       agent.allowedSkills = parsed.allowedSkills;

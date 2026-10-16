@@ -1,12 +1,29 @@
 import { describe, it, expect } from 'vitest';
 import {
   effectiveBrowserToolsEnabled,
+  effectiveComputerToolEnabled,
   resolveBrowserSessionOptions,
 } from './browser-agent-settings.js';
 import type { Agent, Project } from './types.js';
 import { DEFAULT_TIMEOUT_MS, DEFAULT_VIEWPORT } from './browser.js';
 
 describe('browser-agent-settings', () => {
+  it('effectiveComputerToolEnabled is off unless the agent opts in', () => {
+    expect(effectiveComputerToolEnabled({} as Agent)).toBe(false);
+    expect(effectiveComputerToolEnabled({ computerToolEnabled: false } as Agent)).toBe(false);
+    expect(effectiveComputerToolEnabled({ computerToolEnabled: true } as Agent)).toBe(true);
+  });
+
+  it('effectiveComputerToolEnabled lets each session override the agent default', () => {
+    const off = {} as Agent;
+    const on = { computerToolEnabled: true } as Agent;
+    expect(effectiveComputerToolEnabled(off, { computer_tool_enabled: 1 })).toBe(true);
+    expect(effectiveComputerToolEnabled(on, { computer_tool_enabled: 0 })).toBe(false);
+    expect(effectiveComputerToolEnabled(on, { computer_tool_enabled: null })).toBe(true);
+    expect(effectiveComputerToolEnabled(off, { computer_tool_enabled: null })).toBe(false);
+    expect(effectiveComputerToolEnabled(off, null)).toBe(false);
+  });
+
   it('effectiveBrowserToolsEnabled prefers explicit agent flag', () => {
     const proj = { browserToolsDefaultEnabled: false } as Pick<
       Project,

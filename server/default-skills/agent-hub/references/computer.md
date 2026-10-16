@@ -1,0 +1,65 @@
+# The `computer` tool — your persistent Linux desktop
+
+The `computer` tool is switched on per session: the **Computer** switch in
+the chat top bar (web) or the engine/model sheet (mobile), stored as
+`sessions.computer_tool_enabled` and set with
+`PUT /api/sessions/{sessionId}/computer-tool` (`{"enabled": true | false | null}`).
+A session that never set it uses the agent's default (Settings → Agents,
+`computerToolEnabled`), which is off. With it on, the agent drives a Linux desktop the
+Hub runs for it. The host executes the ops, so every engine (Claude Code,
+Cursor, Codex, Gemini, Grok) uses the same `<agenthub:react>` shape:
+
+```
+<agenthub:react>{"actions":[{"tool":"computer","op":"screenshot"}]}</agenthub:react>
+```
+
+(Emit the block as a naked tag in a real reply, never inside a code fence.)
+
+## The desktop
+
+- One computer per (session owner, agent, project), shared by all of that
+  user's sessions with the agent. Files, downloads and app logins in the home
+  directory survive between sessions.
+- Debian + Xvfb + openbox + Chromium, screen fixed at **1280x800**, origin
+  top-left. Coordinates are screenshot pixels.
+- Boots on first use (can take a minute), stops after 30 idle minutes, and
+  resumes on the next op. It runs in a container or a Firecracker microVM;
+  the ops behave the same on both.
+
+## Ops
+
+| op                       | operands                                                                                                      | result                                                                                                                   |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `screenshot`             | none                                                                                                          | PNG saved on the Hub; observation gives the absolute path and width x height. Read the path with your file-reading tool. |
+| `click` / `double_click` | `x`, `y`, optional `button` (`left`, `middle`, `right`)                                                       |                                                                                                                          |
+| `type`                   | `text` (max 10000 chars)                                                                                      | Types into the focused window.                                                                                           |
+| `key`                    | `combo`, xdotool key names: `ctrl+l`, `Return`, `ctrl+shift+t`; space-separate a sequence (`ctrl+a Delete`)   |                                                                                                                          |
+| `scroll`                 | `x`, `y`, `direction` (`up`, `down`, `left`, `right`), optional `amount` 1-50 (default 3)                     |                                                                                                                          |
+| `drag`                   | `x`, `y` (start), `toX`, `toY` (end)                                                                          | Left-button drag.                                                                                                        |
+| `wait`                   | `ms` (0-30000, default 1000)                                                                                  | Host-side pause; does not boot the desktop.                                                                              |
+| `cursor_position`        | none                                                                                                          | Current pointer coordinates.                                                                                             |
+| `exec`                   | `command` (run by `bash -lc` as the desktop user), optional `timeoutMs` (max 600000), optional absolute `cwd` | Exit code plus stdout/stderr (each clipped to the last 8000 chars).                                                      |
+
+Aliases accepted: `key` for `combo`, `timeout_ms` for `timeoutMs`. Invalid
+operands (off-screen coordinates, unknown key names, unknown ops) reject the
+whole ReAct block as malformed before anything runs.
+
+## Working pattern
+
+1. `screenshot`, then read the image.
+2. Act (`click`, `type`, `key`, ...) using coordinates from that image.
+3. `screenshot` again to confirm the result. Input ops do not return an image.
+
+Ask for an `approval` before sending, submitting, deleting, purchasing or
+publishing anything from the desktop. Never type passwords, 2FA codes or
+payment details; ask the human to do that step.
+
+## Failure observations
+
+- **Computer tool disabled**: the tool is off for this session. Ask the user
+  to switch it on for the session; do not retry.
+- **No owning user or project**: the session has no owner, so there is no
+  computer to use.
+- **The desktop op failed: ...**: the runtime is unavailable on this host
+  (for example `desktopRuntime: firecracker` without KVM), the desktop could
+  not start, or the op itself failed. The message says which.

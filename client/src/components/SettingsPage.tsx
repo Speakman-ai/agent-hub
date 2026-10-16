@@ -4494,6 +4494,40 @@ export function AgentConfigSection({
 
                   <div className="border-t border-gray-700 pt-3">
                     {(() => {
+                      const computerOn = edit.computerToolEnabled === true;
+                      return (
+                        <>
+                          <div className="flex items-center gap-2 mb-1 flex-wrap">
+                            <label className="text-xs text-gray-400 font-medium">
+                              Computer tool (session default)
+                            </label>
+                            <button
+                              type="button"
+                              data-testid="agent-computer-tool-toggle"
+                              aria-pressed={computerOn}
+                              onClick={() => setEdit(agent.id, 'computerToolEnabled', !computerOn)}
+                              className={`text-xs px-2.5 py-1 rounded-md transition-colors ${
+                                computerOn
+                                  ? 'bg-emerald-800/50 text-emerald-400 hover:bg-emerald-800'
+                                  : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+                              }`}
+                            >
+                              {computerOn ? 'ON' : 'OFF'}
+                            </button>
+                          </div>
+                          <p className="text-xs text-gray-500">
+                            Default for this agent&apos;s sessions: when ON, sessions can drive its
+                            own Linux desktop (screenshots, mouse, keyboard and shell commands)
+                            through the computer tool. Each session can still switch it on or off
+                            from the chat top bar. Off by default.
+                          </p>
+                        </>
+                      );
+                    })()}
+                  </div>
+
+                  <div className="border-t border-gray-700 pt-3">
+                    {(() => {
                       const skillList = agentSkills[agent.id];
                       const skillsLoaded = Array.isArray(skillList);
                       const skillsLoadError = !!agentSkillsError[agent.id];

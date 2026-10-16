@@ -320,3 +320,24 @@ describe('<TopBar /> accent color', () => {
     expect((dot as any).style.backgroundColor).toBe('rgb(16, 185, 129)');
   });
 });
+
+describe('<TopBar /> computer tool switch', () => {
+  it('shows the session state and asks to flip it', () => {
+    const onComputerToolChange = vi.fn();
+    const { rerender, props } = renderTopBar({ computerToolOn: false, onComputerToolChange });
+    const toggle = screen.getByTestId('session-computer-tool-toggle');
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    expect(toggle.textContent).toContain('Off');
+    fireEvent.click(toggle);
+    expect(onComputerToolChange).toHaveBeenCalledWith(true);
+
+    rerender(<TopBar {...props} computerToolOn onComputerToolChange={onComputerToolChange} />);
+    fireEvent.click(screen.getByTestId('session-computer-tool-toggle'));
+    expect(onComputerToolChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it('is hidden when no handler is wired', () => {
+    renderTopBar();
+    expect(screen.queryByTestId('session-computer-tool-toggle')).toBeNull();
+  });
+});

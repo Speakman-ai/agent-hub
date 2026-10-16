@@ -262,6 +262,12 @@ export const api = {
     }),
   // Codex reasoning ("thinking") level: 'high' (default) or 'pro' (→ xhigh).
   // Returns the updated session row so callers can hydrate `reasoning_effort`.
+  // Per-session computer tool switch; `null` returns to the agent default.
+  setSessionComputerTool: (sessionId: string, enabled: boolean | null) =>
+    fetchJSON(`/sessions/${sessionId}/computer-tool`, {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    }),
   setSessionReasoningEffort: (sessionId: any, effort: any) =>
     fetchJSON(`/sessions/${sessionId}/reasoning-effort`, {
       method: 'PUT',

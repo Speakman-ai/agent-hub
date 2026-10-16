@@ -340,9 +340,19 @@ import {
 } from './terminal/terminal-react.js';
 import {
   effectiveBrowserToolsEnabled,
+  effectiveComputerToolEnabled,
   resolveBrowserSessionOptions,
   withBrowserProfile,
 } from './browser-agent-settings.js';
+import type { DesktopOp } from './desktop/control-daemon.js';
+import {
+  COMPUTER_TOOL_DISABLED_MARKDOWN,
+  COMPUTER_TOOL_PROMPT_LINE,
+  COMPUTER_TOOL_REMINDER,
+  parseComputerReactAction,
+  runComputerReActStep,
+} from './desktop/computer-react.js';
+import { getActiveDesktopRuntime } from './desktop/desktop-runtime-setup.js';
 import {
   buildBrowserActivityEndedEvent,
   buildBrowserActivityEndedThrowEvent,
@@ -401,6 +411,8 @@ interface BuildEnrichedPromptOptions {
   useWorktree?: boolean;
   isFirstMessage?: boolean;
   sessionId?: string;
+  /** `sessions.computer_tool_enabled`; NULL/absent inherits the agent default. */
+  sessionComputerToolEnabled?: number | null;
   /** Outer PAV — `sessions.orchestration_phase` / `orchestration_meta`. */
   orchestrationPhase?: string | null;
   orchestrationMetaJson?: string | null;
@@ -739,10 +751,13 @@ type ReActTool =
   | 'terminal'
   | 'google'
   | 'design'
-  | 'approval';
+  | 'approval'
+  | 'computer';
 
 interface ReActAction {
   tool: ReActTool;
+  /** computer — validated desktop op; see server/desktop/computer-react.ts */
+  computer?: DesktopOp;
   query?: string;
   name?: string;
   /** browser — see server/browser-tools.ts; preview — see server/preview/preview-react.ts */
@@ -1091,6 +1106,9 @@ ${skillsList.join('\n')}`;
   }
 
   const previewEnabledForPrompt = isDevServerConfigured(project.prEnv?.devServer);
+  const computerToolOn = effectiveComputerToolEnabled(agent as Agent, {
+    computer_tool_enabled: options.sessionComputerToolEnabled ?? null,
+  });
   if (isFirstMessage) {
     const reactExampleJson = browserToolsOn
       ? '{"actions":[{"tool":"wiki","query":"..."},{"tool":"skill","name":"kanban"},{"tool":"web","query":"..."},{"tool":"browser","op":"navigate","url":"https://example.com"}]}'
@@ -1102,6 +1120,7 @@ ${skillsList.join('\n')}`;
     const previewToolLines = previewEnabledForPrompt
       ? `\n- \`preview\` — observe, start, and drive **this session's dev preview** (field: \`op\` + operands). Lifecycle: \`start\` (optional \`route\`, \`reason\`) boots the same stack as the toolbar **Start preview** (first boot can take several minutes — poll \`state\`/\`logs\` until ready). Observe: \`state\`, \`logs\` (optional \`tail\`, default 200). Drive (host Chromium pinned to the preview origin — available on every engine, including when the generic \`browser\` tool is off): \`screenshot\`, \`navigate\` (\`route\` — a path like \`/settings\`, never a full URL), \`click\` / \`type\` (\`target\`; \`type\` also needs \`text\`), \`scroll\`, \`wait\`, \`read_page\`, \`extract\`, \`close\`. \`screenshot\` returns a saved image path plus visible page text. You cannot stop the preview — ask the human to use **Stop preview**.`
       : '';
+    const computerToolLines = computerToolOn ? `\n${COMPUTER_TOOL_PROMPT_LINE}` : '';
     const terminalToolLines = `\n- \`terminal\` — co-observe and take a turn on **this session's shared terminal** the human opened (field: \`op\`). \`state\` — is a shell running, is it at an idle prompt. \`read\` — the current terminal screen + scrollback. \`inject\` (\`command\`) — run ONE command line at an idle prompt through the shared single-writer queue; it lands only when the shell is output-quiet and no human keystrokes are in flight (turn-taking), otherwise it's deferred with a retryable reason. The command is one line (no embedded newlines; the trailing newline is added for you). You cannot open or kill the shell — if none is running, ask the human to open the **Terminal** tab. This is for deliberate co-observation, not your primary command path — use your normal Bash tool for scripted work.`;
 
     prompt += `\n\n## ReAct Loop
@@ -1116,7 +1135,7 @@ Supported tools:
 - \`web\` — live web search via DuckDuckGo (field: \`query\`). Keyless; no server configuration required.
 - \`approval\` — ask the human before an irreversible action: \`{"tool":"approval","op":"request","action":"send","target":"https://mail.example.com","details":"Reply to Ana confirming the Friday booking"}\`. **Required before you send, submit, delete, purchase or publish anything** (fields: \`action\` verb, \`target\` URL or thing affected, optional \`details\`, optional \`domain\`). The turn pauses until the human answers Allow once, Always allow or Deny (24h, then denied); the observation tells you which. Never act on a denied, timed-out or cancelled request, and never answer an approval yourself through the API.
 - \`design\` — render HTML/CSS/JS (a chart, graph, mockup, diagram, or small self-contained app) inline: \`{"tool":"design","op":"render","html":"<the document — full page or a body fragment>","title":"optional"}\`. The host renders it in a headless browser and streams the image straight into the chat, and saves it as a viewable artifact. **You always have this ability on every engine and every session** — when a user says "show me a chart of this" / "mock up a page" / "draw a diagram", emit a \`design\` render (a chart library from a public CDN works). No design mode required.
-${browserToolLines}${previewToolLines}${terminalToolLines}
+${browserToolLines}${previewToolLines}${computerToolLines}${terminalToolLines}
 The host executes actions, appends a compact observation + loaded context, and may auto-continue the same turn within budget caps.`;
   } else {
     // Follow-up turns drop the full section to save tokens, but the capability
@@ -1133,6 +1152,7 @@ The host executes actions, appends a compact observation + loaded context, and m
     const toolNames = ['`wiki`', '`skill`', '`web`', '`design`', '`approval`'];
     if (browserToolsOn) toolNames.push('`browser`');
     if (previewEnabledForPrompt) toolNames.push('`preview`');
+    if (computerToolOn) toolNames.push('`computer`');
     toolNames.push('`terminal`');
     const exampleAction = browserToolsOn
       ? '{"tool":"browser","op":"navigate","url":"https://example.com"}'
@@ -1149,7 +1169,7 @@ The host executes actions, appends a compact observation + loaded context, and m
       : `\n\`terminal\` acts on a shell the human has already opened (the **Terminal** tab) — you cannot open one yourself, and you'll get a "not running" observation when none is up.`;
     const designReminder = `\n\`design\` renders HTML/CSS/JS inline — \`{"tool":"design","op":"render","html":"…"}\` — whenever the user asks for a chart/graph/mockup/diagram. Always available, no design mode needed.\n\`approval\` — \`{"tool":"approval","op":"request","action":"send","target":"…","details":"…"}\` is required before any send, submit, delete, purchase or publish; the turn pauses for the human's answer. Never act on a denial.`;
     prompt += `\n\n## ReAct Loop (host tools)
-Still available mid-answer: emit a naked \`<agenthub:react>{"actions":[${exampleAction}]}</agenthub:react>\` block (valid JSON, never inside a code fence). Tools: ${toolNames.join(', ')}.${browserReminder}${humanStartedLine}${designReminder}`;
+Still available mid-answer: emit a naked \`<agenthub:react>{"actions":[${exampleAction}]}</agenthub:react>\` block (valid JSON, never inside a code fence). Tools: ${toolNames.join(', ')}.${browserReminder}${computerToolOn ? COMPUTER_TOOL_REMINDER : ''}${humanStartedLine}${designReminder}`;
   }
 
   {
@@ -1928,6 +1948,12 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
       });
       continue;
     }
+    if (a.tool === 'computer') {
+      const parsedComputer = parseComputerReactAction(a);
+      if (!parsedComputer.ok) return { error: 'malformed', detail: parsedComputer.detail };
+      actions.push({ tool: 'computer', op: parsedComputer.op.op, computer: parsedComputer.op });
+      continue;
+    }
     if (a.tool === 'google') {
       const surface = typeof a.surface === 'string' ? a.surface.trim().toLowerCase() : '';
       if (!isGoogleReactSurface(surface)) {
@@ -1957,7 +1983,7 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
     return {
       error: 'malformed',
       detail:
-        'Unsupported action.tool; expected "wiki", "skill", "web", "browser", "preview", "terminal", "google", "design", or "approval"',
+        'Unsupported action.tool; expected "wiki", "skill", "web", "browser", "preview", "terminal", "google", "design", "approval", or "computer"',
     };
   }
   return { actions };
@@ -3217,6 +3243,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           // token-saving first-message-only gate.
           isFirstMessage: isFirstMessage || !engineResumesAcrossTurns(engine),
           sessionId,
+          sessionComputerToolEnabled: session!.computer_tool_enabled ?? null,
           orchestrationPhase: session!.orchestration_phase ?? null,
           orchestrationMetaJson: session!.orchestration_meta ?? null,
           branchPrUrl: resolvedBranchPrUrl,
@@ -6005,6 +6032,18 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             // to this session's preview, which every engine must be able to
             // verify. Only the public-web `browser` tool is gated.
           }
+          if (!effectiveComputerToolEnabled(agent, session)) {
+            const removed = boundedActions.filter((a) => a.tool === 'computer').length;
+            if (removed > 0) {
+              boundedActions = boundedActions.filter((a) => a.tool !== 'computer');
+              reactObservations.push(
+                `- ${removed} computer action(s) skipped: the computer tool is off for this session (agent "${agent.id}").`,
+              );
+              assistantContextToAppend = assistantContextToAppend
+                ? `${assistantContextToAppend}\n\n${COMPUTER_TOOL_DISABLED_MARKDOWN}`
+                : COMPUTER_TOOL_DISABLED_MARKDOWN;
+            }
+          }
           // Set when an action must stop the rest of the batch: an approval
           // that was not granted guards whatever the model queued after it.
           let haltRemainingActions: string | null = null;
@@ -6142,6 +6181,28 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                 }
                 hostExit = ap.hostExit;
                 hostDetail = ap.hostDetail;
+                continue;
+              }
+
+              if (action.tool === 'computer' && action.computer) {
+                const c = await runComputerReActStep(
+                  action.computer,
+                  {
+                    sessionId,
+                    ownerUserId: session!.owner_user_id ?? null,
+                    agentId: agent.id,
+                    projectId: project?.id ?? null,
+                  },
+                  { resolveRuntime: getActiveDesktopRuntime },
+                );
+                assistantContextToAppend = assistantContextToAppend
+                  ? `${assistantContextToAppend}\n\n${c.markdown}`
+                  : c.markdown;
+                reactObservations.push(
+                  `- computer(${action.op}) host step finished (exit ${c.hostExit}).`,
+                );
+                hostExit = c.hostExit;
+                hostDetail = c.hostDetail;
                 continue;
               }
 

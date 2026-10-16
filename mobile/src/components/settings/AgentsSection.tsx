@@ -86,6 +86,26 @@ function DevToggle({ value, onChange, locked = false, lockedOn = false, fallback
     </>
   );
 }
+function ComputerToolToggle({ value, onChange }: any) {
+  const on = value === true;
+  return (
+    <>
+      <Text style={styles.fieldLabel}>Computer tool (session default)</Text>
+      <TouchableOpacity
+        testID="agent-computer-tool-toggle"
+        style={[styles.chip, on && styles.chipActive]}
+        onPress={() => onChange(!on)}
+      >
+        <Text style={[styles.chipText, on && styles.chipTextActive]}>{on ? 'ON' : 'OFF'}</Text>
+      </TouchableOpacity>
+      <Text style={styles.helpText}>
+        Default for this agent&apos;s sessions: when ON, sessions can drive its own Linux desktop
+        (screenshots, mouse, keyboard and shell commands). Each session can still switch it on or
+        off from the chat header. Off by default.
+      </Text>
+    </>
+  );
+}
 function EnginePicker({ modelConfig, engine, onEngine, label = 'Engine' }: any) {
   const engines = settingsEngineChoices(modelConfig);
   if (engines.length === 0) return null;
@@ -328,6 +348,7 @@ export default function AgentsSection({ projectId: filterProjectId, hideBulk = f
       // value the user didn't set. The toggle's display falls back to
       // effective eligibility via DevToggle's `fallbackOn`.
       isDev: agent.isDev,
+      computerToolEnabled: agent.computerToolEnabled === true,
     });
   };
   const saveModelOverride = async (agentId: any, model: any) => {
@@ -699,6 +720,12 @@ export default function AgentsSection({ projectId: filterProjectId, hideBulk = f
                         locked={isAutonomyLocked(agent)}
                         lockedOn={isAutonomyLockedOn(agent)}
                         fallbackOn={agentAcceptsAutonomousTickets(agent)}
+                      />
+                      <ComputerToolToggle
+                        value={editForm.computerToolEnabled}
+                        onChange={(computerToolEnabled: boolean) =>
+                          setEditForm({ ...editForm, computerToolEnabled })
+                        }
                       />
                       <View style={styles.actionRow}>
                         <TouchableOpacity

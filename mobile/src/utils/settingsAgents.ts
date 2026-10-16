@@ -100,6 +100,13 @@ export function buildUpdateAgentPayload(original: any, edit: any) {
       payload.isDev = edit.isDev;
     }
   }
+  // Computer tool: opt-in, so a stored `undefined` reads as off.
+  if (
+    edit.computerToolEnabled !== undefined &&
+    edit.computerToolEnabled !== (original.computerToolEnabled === true)
+  ) {
+    payload.computerToolEnabled = edit.computerToolEnabled === true;
+  }
   return payload;
 }
 // Per-agent "Dev" flag (autonomous-ticket eligibility)

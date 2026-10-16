@@ -2583,6 +2583,12 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
+  /** Per-session computer tool switch; `null` returns to the agent default. */
+  setSessionComputerTool: (sessionId: string, enabled: boolean | null) =>
+    fetchJSON(`/sessions/${sessionId}/computer-tool`, {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    }),
   /** Codex reasoning ("thinking") level: 'high' (default) or 'pro' (→ xhigh). */
   setSessionReasoningEffort: (sessionId: any, effort: any) =>
     fetchJSON(`/sessions/${sessionId}/reasoning-effort`, {

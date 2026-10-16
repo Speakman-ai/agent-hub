@@ -15,6 +15,7 @@ import { engineOptionsFromConfig, modelsForEngine } from '../utils/engineOptions
  *  - engine / model          — current session values
  *  - onSelectEngine(engineId) — async; persists engine (+ default model)
  *  - onSelectModel(modelId)   — async; persists model
+ *  - computerToolOn / onToggleComputerTool(enabled) — per-session computer tool switch
  */
 const REASONING_OPTIONS = [
   { id: 'high', label: 'High', desc: 'Default reasoning effort' },
@@ -30,6 +31,8 @@ export default function SessionEngineModelSheet({
   onSelectEngine,
   onSelectModel,
   onSelectReasoningEffort,
+  computerToolOn = false,
+  onToggleComputerTool,
 }: any) {
   const engineOptions = engineOptionsFromConfig(modelConfig);
   const engineModels = modelsForEngine(engine, modelConfig);
@@ -85,6 +88,29 @@ export default function SessionEngineModelSheet({
               {m.id === model && <Text style={styles.check}>✓</Text>}
             </TouchableOpacity>
           ))}
+
+          {onToggleComputerTool && (
+            <>
+              <View style={styles.divider} />
+              <Text style={styles.sectionLabel}>COMPUTER TOOL</Text>
+              <TouchableOpacity
+                testID="session-computer-tool-toggle"
+                style={styles.item}
+                accessibilityRole="switch"
+                accessibilityState={{ checked: computerToolOn }}
+                accessibilityLabel="Computer tool for this session"
+                onPress={() => run('Computer tool', onToggleComputerTool, !computerToolOn)}
+              >
+                <View style={styles.reasoningText}>
+                  <Text style={[styles.itemLabel, computerToolOn && styles.itemLabelActive]}>
+                    {computerToolOn ? 'On' : 'Off'}
+                  </Text>
+                  <Text style={styles.itemDesc}>Let the agent drive its Linux desktop</Text>
+                </View>
+                {computerToolOn && <Text style={styles.check}>✓</Text>}
+              </TouchableOpacity>
+            </>
+          )}
 
           {/* Reasoning section — Codex only */}
           {isCodex && onSelectReasoningEffort && (

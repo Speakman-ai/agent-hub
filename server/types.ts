@@ -59,6 +59,11 @@ export interface SessionRow {
   ask_mode: number;
   react_loop_enabled?: number;
   /**
+   * Per-session `computer` tool switch: 1 on, 0 off, NULL inherits the
+   * agent's `computerToolEnabled` (off when unset).
+   */
+  computer_tool_enabled?: number | null;
+  /**
    * Session mode — the user-selectable "what is this session for" dimension
    * ('chat' | 'design'). NULL/absent on legacy rows → treated as 'chat'. See
    * `server/session-mode.ts`. A 'design' session loads the design skill and
@@ -2223,6 +2228,7 @@ export interface Stmts {
   updateSessionGitWorktreeDetected: Stmt;
   updateSessionAskMode: Stmt;
   updateSessionReactLoop: Stmt;
+  updateSessionComputerTool: Stmt;
   updateSessionMode: Stmt;
   getLiveSidebarSession: Stmt;
   getLiveSidebarSessions: Stmt;
@@ -3148,6 +3154,12 @@ export interface Agent {
    * `browserToolsDefaultEnabled` applies (then global default on).
    */
   browserToolsEnabled?: boolean;
+  /**
+   * Default for the host `computer` ReAct tool (the agent's persistent Linux
+   * desktop) in sessions that have not set `computer_tool_enabled`
+   * themselves. Off when omitted.
+   */
+  computerToolEnabled?: boolean;
   /** Optional Chromium viewport width — falls back to project then server default. */
   browserViewportWidth?: number;
   /** Optional Chromium viewport height — falls back to project then server default. */

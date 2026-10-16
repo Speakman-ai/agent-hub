@@ -54,6 +54,7 @@ export const AgentComponent = registerComponent(
       }),
       active: z.boolean().optional(),
       browserToolsEnabled: z.boolean().optional(),
+      computerToolEnabled: z.boolean().optional(),
       browserViewportWidth: z.number().int().optional(),
       browserViewportHeight: z.number().int().optional(),
       browserPageLoadTimeoutMs: z.number().int().optional(),
@@ -154,6 +155,14 @@ const BrowserToolsEnabled = z
   .boolean({ error: 'browserToolsEnabled must be a boolean' })
   .optional();
 
+const ComputerToolEnabled = z
+  .boolean({ error: 'computerToolEnabled must be a boolean' })
+  .optional()
+  .openapi({
+    description:
+      "Default for the host `computer` ReAct tool (drive the agent's persistent Linux desktop) in sessions that have not set their own switch via `PUT /api/sessions/{sessionId}/computer-tool`. Off unless explicitly true.",
+  });
+
 /**
  * Per-agent skill allowlist. `undefined` (key omitted) => preserve; `null` =>
  * clear the restriction (agent sees every skill); an array => restrict the
@@ -197,6 +206,7 @@ export const CreateAgentRequestSchema = z.object({
   }),
   heartbeat: HeartbeatConfigSchema,
   browserToolsEnabled: BrowserToolsEnabled,
+  computerToolEnabled: ComputerToolEnabled,
   browserViewportWidth: BrowserDim(320, 3840),
   browserViewportHeight: BrowserDim(240, 2160),
   browserPageLoadTimeoutMs: BrowserPageLoadTimeoutMs,
@@ -225,6 +235,7 @@ export const UpdateAgentRequestSchema = z.object({
       'Accept autonomously-dispatched kanban tickets. Sending a value that contradicts a locked role (dev/lead → must be true; docs/reviewer → must be false) is rejected with 400; a matching value is a no-op.',
   }),
   browserToolsEnabled: BrowserToolsEnabled,
+  computerToolEnabled: ComputerToolEnabled,
   browserViewportWidth: BrowserDim(320, 3840),
   browserViewportHeight: BrowserDim(240, 2160),
   browserPageLoadTimeoutMs: BrowserPageLoadTimeoutMs,

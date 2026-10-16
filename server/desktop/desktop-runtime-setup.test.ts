@@ -16,12 +16,13 @@ vi.mock('./desktop-containers-store.js', async (orig) => ({
 const {
   __resetDesktopRuntimeForTests,
   createDesktopContainerHost,
+  getActiveDesktopRuntime,
   getContainerDesktopRuntime,
   registerContainerDesktopRuntimeOnBoot,
   resolveDesktopMaxRunning,
 } = await import('./desktop-runtime-setup.js');
 const { DesktopRuntimeUnavailableError } = await import('./desktop-runtime-selection.js');
-const { getDesktopRuntime, resetDesktopRuntimesForTests } =
+const { getDesktopRuntime, registerDesktopRuntime, resetDesktopRuntimesForTests } =
   await import('./desktop-runtime-registry.js');
 
 afterEach(() => {
@@ -66,5 +67,20 @@ describe('container desktop runtime setup', () => {
     containersExist = true;
     await registerContainerDesktopRuntimeOnBoot();
     expect(getDesktopRuntime('container')?.kind).toBe('container');
+  });
+
+  it('resolves the active runtime for the computer tool', () => {
+    expect(getActiveDesktopRuntime().kind).toBe('container');
+
+    firecracker = true;
+    const fc = { kind: 'firecracker' } as Parameters<typeof registerDesktopRuntime>[0];
+    registerDesktopRuntime(fc);
+    expect(getActiveDesktopRuntime()).toBe(fc);
+
+    resetDesktopRuntimesForTests();
+    cfg.desktopRuntime = 'firecracker';
+    expect(() => getActiveDesktopRuntime()).toThrow(DesktopRuntimeUnavailableError);
+    firecracker = false;
+    expect(() => getActiveDesktopRuntime()).toThrow(DesktopRuntimeUnavailableError);
   });
 });

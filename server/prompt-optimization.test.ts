@@ -270,7 +270,15 @@ describe('buildEnrichedPrompt — first message gating', () => {
   // else means a config gate was added to one branch and not the other, and
   // the model gets told about a tool the host will refuse.
   describe('ReAct branch parity — first-message vs follow-up tool sets', () => {
-    const REACT_TOOLS = ['wiki', 'skill', 'web', 'browser', 'preview', 'terminal'] as const;
+    const REACT_TOOLS = [
+      'wiki',
+      'skill',
+      'web',
+      'browser',
+      'preview',
+      'computer',
+      'terminal',
+    ] as const;
 
     const section = (prompt: string, heading: string) => {
       const start = prompt.indexOf(heading);
@@ -309,7 +317,44 @@ describe('buildEnrichedPrompt — first message gating', () => {
         agent: { browserToolsEnabled: false },
         project: { prEnv: { devServer: { startCommand: 'npm run dev' } } },
       },
+      { name: 'computer on', agent: { computerToolEnabled: true }, project: {} },
     ];
+
+    it('advertises computer only when the agent opts in', () => {
+      for (const isFirstMessage of [true, false]) {
+        const off = buildEnrichedPrompt(makeProject(), makeAgent(), { isFirstMessage });
+        const on = buildEnrichedPrompt(makeProject(), makeAgent({ computerToolEnabled: true }), {
+          isFirstMessage,
+        });
+        const tools = isFirstMessage ? firstTurnTools : followUpTools;
+        expect(tools(off)).not.toContain('computer');
+        expect(tools(on)).toContain('computer');
+      }
+      const first = buildEnrichedPrompt(makeProject(), makeAgent({ computerToolEnabled: true }), {
+        isFirstMessage: true,
+      });
+      for (const op of ['screenshot', 'double_click', 'drag', 'cursor_position', 'exec']) {
+        expect(first).toContain(`\`${op}\``);
+      }
+      expect(first).toContain('1280x800');
+    });
+
+    it('follows the session switch over the agent default', () => {
+      for (const isFirstMessage of [true, false]) {
+        const tools = isFirstMessage ? firstTurnTools : followUpTools;
+        const sessionOn = buildEnrichedPrompt(makeProject(), makeAgent(), {
+          isFirstMessage,
+          sessionComputerToolEnabled: 1,
+        });
+        const sessionOff = buildEnrichedPrompt(
+          makeProject(),
+          makeAgent({ computerToolEnabled: true }),
+          { isFirstMessage, sessionComputerToolEnabled: 0 },
+        );
+        expect(tools(sessionOn)).toContain('computer');
+        expect(tools(sessionOff)).not.toContain('computer');
+      }
+    });
 
     for (const { name, agent, project } of MATRIX) {
       it(`advertises no tool the first-message section withholds — ${name}`, () => {

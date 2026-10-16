@@ -1,4 +1,5 @@
 import { createUseAiSignInGuide } from '@shared/hooks/useAiSignInGuide';
+import { resolveComputerToolEnabled } from '@shared/utils/computerTool';
 import { promoteQueuedMessage } from '@shared/utils/promoteQueuedMessage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, {
@@ -2137,6 +2138,22 @@ export function AppProvider({ children }: any) {
   }, []);
   // Optimistically persist the Codex reasoning preset ('high' | 'pro'); reverts
   // on server error. Mirrors handleAskModeChange.
+  const sessionComputerToolOn = resolveComputerToolEnabled(
+    activeAgent?.computerToolEnabled,
+    activeSession?.computer_tool_enabled,
+  );
+  // Persist the per-session computer tool switch; the server row is the
+  // source of truth, so local state only changes once the PUT succeeds.
+  const handleComputerToolChange = useCallback(async (enabled: boolean) => {
+    const sid = activeSessionIdRef.current;
+    if (!sid) return;
+    const updated = await api.setSessionComputerTool(sid, enabled);
+    setSessions((list: any) =>
+      list.map((s: any) =>
+        s.id === updated.id ? { ...s, computer_tool_enabled: updated.computer_tool_enabled } : s,
+      ),
+    );
+  }, []);
   const handleReasoningEffortChange = useCallback(async (effort: any) => {
     let prev = 'high';
     setSessionReasoningEffort((cur: any) => {
@@ -2703,6 +2720,8 @@ export function AppProvider({ children }: any) {
     setSessionModel,
     sessionReasoningEffort,
     handleReasoningEffortChange,
+    sessionComputerToolOn,
+    handleComputerToolChange,
     modelConfig,
     sessionConsultMode,
     handleConsultModeChange,

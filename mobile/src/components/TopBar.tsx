@@ -30,6 +30,8 @@ export default function TopBar({ onOpenChatChannel }: TopBarProps = {}) {
     sessionModel,
     sessionReasoningEffort,
     handleReasoningEffortChange,
+    sessionComputerToolOn,
+    handleComputerToolChange,
     modelConfig,
     sessionConsultMode,
     handleEngineChange,
@@ -299,6 +301,8 @@ export default function TopBar({ onOpenChatChannel }: TopBarProps = {}) {
         onSelectEngine={handleEngineChange}
         onSelectModel={handleModelChange}
         onSelectReasoningEffort={handleReasoningEffortChange}
+        computerToolOn={sessionComputerToolOn}
+        onToggleComputerTool={handleComputerToolChange}
       />
     </View>
   );

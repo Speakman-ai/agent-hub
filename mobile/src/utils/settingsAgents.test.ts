@@ -132,6 +132,18 @@ describe('buildUpdateAgentPayload', () => {
   it('never writes engine to the agent row (engine is a per-user pick)', () => {
     expect(buildUpdateAgentPayload(original, { name: 'Old', engine: 'codex-cli' })).toEqual({});
   });
+  it('includes computerToolEnabled only when it changes, treating unset as off', () => {
+    expect(buildUpdateAgentPayload(original, { computerToolEnabled: false })).toEqual({});
+    expect(buildUpdateAgentPayload(original, { computerToolEnabled: true })).toEqual({
+      computerToolEnabled: true,
+    });
+    expect(
+      buildUpdateAgentPayload(
+        { ...original, computerToolEnabled: true },
+        { computerToolEnabled: false },
+      ),
+    ).toEqual({ computerToolEnabled: false });
+  });
   it('returns empty object when nothing changed or args missing', () => {
     expect(buildUpdateAgentPayload(original, { name: 'Old' })).toEqual({});
     expect(buildUpdateAgentPayload(null, { name: 'x' })).toEqual({});
