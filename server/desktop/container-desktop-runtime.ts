@@ -42,6 +42,7 @@ import {
   parseScreenshotReply,
   type DesktopControlClient,
 } from './desktop-control-client.js';
+import { desktopInputArgv } from './desktop-input-commands.js';
 import type { DesktopContainerHost, DesktopHostStatus } from './container-desktop-host.js';
 import type { DesktopContainerPlacement } from './desktop-runtime-selection.js';
 import {
@@ -688,6 +689,9 @@ export function createContainerDesktopRuntime(
       return parseScreenshotReply(await client.op(endpoint, token, { op: 'screenshot' }));
     },
     async input(key, event: DesktopInputEvent) {
+      // The Firecracker guest's rules, before any start: a bad coordinate
+      // must not cost a boot, and both backends refuse the same events.
+      desktopInputArgv(event);
       const { body, timeoutMs } = inputEventToOp(event);
       await withComputer(key, (endpoint, token) => client.op(endpoint, token, body, timeoutMs));
     },

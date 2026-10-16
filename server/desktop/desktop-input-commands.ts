@@ -1,8 +1,11 @@
 /**
- * Shell commands that drive the desktop from inside a computer reached over
- * `exec` (the Firecracker backend). Validation and xdotool argv come from the
- * container's control daemon, so both backends accept and reject exactly the
- * same input.
+ * xdotool argv for DesktopRuntime input events, outside the container's
+ * control daemon. The Firecracker backend validates with it on the Hub before
+ * booting, and the guest vm-agent validates again and runs it. Validation and
+ * argv come from the control daemon, so both backends accept and reject
+ * exactly the same input.
+ *
+ * Imported by the guest bundle: keep it free of Hub-only dependencies.
  */
 import {
   OpValidationError,
@@ -49,31 +52,29 @@ function parse(event: DesktopInputEvent): DesktopOp {
   }
 }
 
-export interface DesktopShellCommand {
-  command: string;
+export interface DesktopInputArgv {
+  /** xdotool arguments; never passed through a shell. */
+  args: string[];
   timeoutMs: number;
 }
 
-/** One shell command that performs `event` on the desktop, plus its deadline. */
-export function buildDesktopInputCommand(event: DesktopInputEvent): DesktopShellCommand {
+/** Validate `event` (throws DesktopInputError) and build the xdotool argv for it. */
+export function desktopInputArgv(event: DesktopInputEvent): DesktopInputArgv {
   const op = parse(event) as InputOp;
-  const args =
-    event.type === 'move' ? ['mousemove', String(event.x), String(event.y)] : xdotoolArgs(op);
   return {
-    command: `DISPLAY=${DESKTOP_DISPLAY} xdotool ${args.map(shellQuote).join(' ')}`,
+    args: event.type === 'move' ? ['mousemove', String(event.x), String(event.y)] : xdotoolArgs(op),
     timeoutMs: inputTimeoutMs(op),
   };
 }
 
-/**
- * Capture the full screen as base64 PNG on stdout. Written through a unique
- * temp file, removed on exit, so screenshots never pile up in the computer.
- */
-export function buildDesktopScreenshotCommand(tag: string): string {
-  if (!/^[A-Za-z0-9-]+$/.test(tag)) throw new DesktopInputError(`invalid screenshot tag: ${tag}`);
-  const file = `/tmp/ah-desktop-shot-${tag}.png`;
-  return (
-    `trap 'rm -f ${file}' EXIT; ` +
-    `DISPLAY=${DESKTOP_DISPLAY} scrot --overwrite --silent ${file} && base64 -w0 ${file}`
-  );
+/** Same as {@link desktopInputArgv}, as one shell command line. */
+export function buildDesktopInputCommand(event: DesktopInputEvent): {
+  command: string;
+  timeoutMs: number;
+} {
+  const { args, timeoutMs } = desktopInputArgv(event);
+  return {
+    command: `DISPLAY=${DESKTOP_DISPLAY} xdotool ${args.map(shellQuote).join(' ')}`,
+    timeoutMs,
+  };
 }

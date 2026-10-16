@@ -22,6 +22,11 @@
  * resumes the running desktop instead of cold booting it. When the snapshot
  * is missing or no longer matches the guest kernel/rootfs, the VM cold boots.
  * Storage, snapshot included, goes away only through `destroy`.
+ *
+ * Screenshots and input go to the guest vm-agent's `screenshot` and `input`
+ * requests (validated with the container daemon's rules on both sides), not
+ * through a shell. The live view reads the guest's VNC server on
+ * <guest-ip>:5900 and falls back to a vm-agent screenshot when VNC is down.
  */
 import { createHash } from 'crypto';
 import type {
@@ -50,11 +55,8 @@ import {
   desktopDeletionGuard,
   type DesktopDeletionGuard,
 } from './desktop-deletion-guard.js';
-import {
-  buildDesktopInputCommand,
-  buildDesktopScreenshotCommand,
-  shellQuote,
-} from './desktop-input-commands.js';
+import { desktopInputArgv, shellQuote } from './desktop-input-commands.js';
+import { connectVncFrameSource, type DesktopFrameSource } from './vnc-frame-source.js';
 
 /** Kernel cmdline flag that turns on the persistent home in the guest. */
 export const DESKTOP_GUEST_BOOT_ARG = 'ahvm.desktop=1';
@@ -67,6 +69,10 @@ export const DESKTOP_GUEST_HOME_REL = 'home';
 
 const DEFAULT_EXEC_TIMEOUT_MS = 120_000;
 const SCREENSHOT_TIMEOUT_MS = 30_000;
+/** Slack on top of the input's own xdotool deadline for the vsock round trip. */
+const INPUT_REPLY_SLACK_MS = 5_000;
+/** After a VNC failure, the live view uses vm-agent screenshots for this long. */
+const VNC_RETRY_MS = 30_000;
 const EXEC_OUTPUT_MAX_BYTES = 10 * 1024 * 1024;
 const DEFAULT_SWEEP_INTERVAL_MS = 60_000;
 
@@ -79,6 +85,10 @@ export interface FirecrackerDesktopVm {
   spawn(command: string, opts?: SessionEnvSpawnOpts): SessionEnvProcess;
   liveProcessCount(): number;
   dispose(opts?: SessionEnvDisposeOpts): Promise<void>;
+  /** Full-screen PNG through the vm-agent `screenshot` request. */
+  desktopScreenshot(timeoutMs?: number): Promise<Buffer>;
+  /** One input event through the vm-agent `input` request. */
+  desktopInput(event: DesktopInputEvent, timeoutMs: number): Promise<void>;
   /**
    * Stop the VM, keeping a snapshot to resume from. Returns its fingerprint,
    * or null when the VM stopped without one.
@@ -106,6 +116,8 @@ export interface FirecrackerDesktopRuntimeDeps {
   logger?: { warn: (msg: string) => void };
   /** Profile-deletion state. Starts are refused while a deletion is pending or once one began after the start arrived. */
   deletionGuard?: DesktopDeletionGuard;
+  /** Live-view frame source for a guest display. Defaults to the VNC client. */
+  openDisplay?: (endpoint: DesktopDisplayEndpoint) => Promise<DesktopFrameSource>;
 }
 
 /** Jailer VM ids are alphanumeric-with-dashes, max 64; the `ahdt-` prefix keeps them apart from session VMs (`ahvm-`). */
@@ -143,6 +155,10 @@ interface Entry {
   state: DesktopComputerState;
   lastActiveAt: number | null;
   error?: string;
+  /** Live-view connection to the running VM's display. */
+  display: DesktopFrameSource | null;
+  /** Epoch ms before which the live view skips VNC after a failure. */
+  vncRetryAt: number;
 }
 
 export class FirecrackerDesktopRuntime implements DesktopRuntime {
@@ -158,7 +174,7 @@ export class FirecrackerDesktopRuntime implements DesktopRuntime {
   readonly #entries = new Map<string, Entry>();
   /** Serializes start/stop/destroy per computer. */
   readonly #locks = new Map<string, Promise<unknown>>();
-  #shotCounter = 0;
+  readonly #openDisplay: NonNullable<FirecrackerDesktopRuntimeDeps['openDisplay']>;
 
   constructor(deps: FirecrackerDesktopRuntimeDeps) {
     this.#store = deps.store;
@@ -168,6 +184,7 @@ export class FirecrackerDesktopRuntime implements DesktopRuntime {
     this.#idleStopMs = deps.idleStopMs ?? DESKTOP_IDLE_STOP_MS;
     this.#logger = deps.logger ?? { warn: (msg) => console.warn(msg) };
     this.#deletion = deps.deletionGuard ?? desktopDeletionGuard;
+    this.#openDisplay = deps.openDisplay ?? ((endpoint) => connectVncFrameSource(endpoint));
   }
 
   async ensureStarted(key: DesktopComputerKey): Promise<DesktopComputerStatus> {
@@ -236,7 +253,10 @@ export class FirecrackerDesktopRuntime implements DesktopRuntime {
       // teardown, which removes the jail tree and the persistent disk.
       // That teardown also removes a stashed snapshot, which sits beside the disks.
       const vm = entry?.vm && !entry.vm.disposed ? entry.vm : this.#newVm(record, null);
-      if (entry) entry.state = 'stopping';
+      if (entry) {
+        entry.state = 'stopping';
+        this.#closeDisplay(entry);
+      }
       try {
         await vm.dispose({ forgetWorkspace: true });
       } catch (err) {
@@ -263,34 +283,49 @@ export class FirecrackerDesktopRuntime implements DesktopRuntime {
   }
 
   async screenshot(key: DesktopComputerKey): Promise<Buffer> {
-    return this.#shoot(await this.#runningVm(key));
+    const vm = await this.#runningVm(key);
+    try {
+      return await vm.desktopScreenshot(SCREENSHOT_TIMEOUT_MS);
+    } catch (err) {
+      throw new Error(`Desktop screenshot failed: ${errorMessage(err)}`);
+    }
   }
 
   async viewFrame(key: DesktopComputerKey): Promise<Buffer | null> {
     assertKey(key);
     const entry = this.#entries.get(keyString(key));
-    if (!entry?.vm || entry.vm.disposed || entry.state !== 'running') return null;
-    return this.#shoot(entry.vm);
-  }
-
-  async #shoot(vm: FirecrackerDesktopVm): Promise<Buffer> {
-    const tag = `${process.pid}-${++this.#shotCounter}`;
-    const res = await this.#capture(vm, buildDesktopScreenshotCommand(tag), SCREENSHOT_TIMEOUT_MS);
-    if (res.timedOut || res.exitCode !== 0) {
-      throw new Error(`Desktop screenshot failed: ${describeFailure(res)}`);
+    const vm = entry?.vm;
+    if (!entry || !vm || vm.disposed || entry.state !== 'running') return null;
+    if (vm.guestIp && this.#now() >= entry.vncRetryAt) {
+      try {
+        if (!entry.display || entry.display.closed) {
+          entry.display = await this.#openDisplay({ host: vm.guestIp, port: DESKTOP_VNC_PORT });
+          // A stop may have landed while connecting; don't keep its socket.
+          if (entry.vm !== vm || entry.state !== 'running') {
+            this.#closeDisplay(entry);
+            return null;
+          }
+        }
+        return await entry.display.capture();
+      } catch (err) {
+        this.#closeDisplay(entry);
+        entry.vncRetryAt = this.#now() + VNC_RETRY_MS;
+        this.#logger.warn(
+          `[desktop] VNC live view of ${vm.vmId} failed, using screenshots for now: ${errorMessage(err)}`,
+        );
+      }
     }
-    const png = Buffer.from(res.stdout.trim(), 'base64');
-    if (png.length === 0) throw new Error('Desktop screenshot returned no image');
-    return png;
+    return vm.desktopScreenshot(SCREENSHOT_TIMEOUT_MS);
   }
 
   async input(key: DesktopComputerKey, event: DesktopInputEvent): Promise<void> {
     // Validate before booting: a bad coordinate should not cost a VM start.
-    const { command, timeoutMs } = buildDesktopInputCommand(event);
+    const { timeoutMs } = desktopInputArgv(event);
     const vm = await this.#runningVm(key);
-    const res = await this.#capture(vm, command, timeoutMs);
-    if (res.timedOut || res.exitCode !== 0) {
-      throw new Error(`Desktop input (${event.type}) failed: ${describeFailure(res)}`);
+    try {
+      await vm.desktopInput(event, timeoutMs + INPUT_REPLY_SLACK_MS);
+    } catch (err) {
+      throw new Error(`Desktop input (${event.type}) failed: ${errorMessage(err)}`);
     }
   }
 
@@ -359,6 +394,7 @@ export class FirecrackerDesktopRuntime implements DesktopRuntime {
     }
     const vm = entry.vm;
     entry.state = 'stopping';
+    this.#closeDisplay(entry);
     let snapshot: string | null;
     try {
       snapshot = await vm.suspend();
@@ -394,6 +430,8 @@ export class FirecrackerDesktopRuntime implements DesktopRuntime {
       vm: null,
       state: 'stopped',
       lastActiveAt: record.lastActiveAt,
+      display: null,
+      vncRetryAt: 0,
     };
     this.#entries.set(id, entry);
     return entry;
@@ -446,6 +484,11 @@ export class FirecrackerDesktopRuntime implements DesktopRuntime {
       bootArgsExtra: [DESKTOP_GUEST_BOOT_ARG],
       restoreSnapshot,
     });
+  }
+
+  #closeDisplay(entry: Entry): void {
+    entry.display?.close();
+    entry.display = null;
   }
 
   #touch(entry: Entry): void {
@@ -532,8 +575,6 @@ export class FirecrackerDesktopRuntime implements DesktopRuntime {
   }
 }
 
-function describeFailure(res: DesktopExecResult): string {
-  if (res.timedOut) return 'timed out';
-  const detail = res.stderr.trim() || res.stdout.trim().slice(0, 200);
-  return `exit ${res.exitCode}${detail ? `: ${detail}` : ''}`;
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }

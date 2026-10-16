@@ -22,7 +22,7 @@
 import { spawn } from 'child_process';
 import { createServer, type Server, type Socket } from 'net';
 import { readFileSync } from 'fs';
-import { open, readFile, writeFile, chmod } from 'fs/promises';
+import { open, readFile, writeFile, chmod, unlink } from 'fs/promises';
 import { randomUUID } from 'crypto';
 import { userInfo } from 'os';
 import { pathToFileURL } from 'url';
@@ -34,15 +34,20 @@ import {
   type VmAgentControl,
   type VmAgentExecRequest,
   type VmAgentFrame,
+  type VmAgentInputRequest,
   type VmAgentPtyRequest,
   type VmAgentReadFileRequest,
   type VmAgentRequest,
   type VmAgentSetClockRequest,
   type VmAgentWriteFileRequest,
   READ_FILE_CHUNK_BYTES,
+  SCREENSHOT_MAX_BYTES,
   VM_AGENT_PROTOCOL_VERSION,
 } from '../vm-agent-protocol.js';
 import { parseListeningPorts } from './proc-net-tcp.js';
+import { runCommand, type ExecResult } from '../../../desktop/control-daemon.js';
+import { desktopInputArgv } from '../../../desktop/desktop-input-commands.js';
+import { DESKTOP_DISPLAY } from '../../../desktop/desktop-runtime.js';
 
 /**
  * node-pty is loaded on first use rather than imported at the top.
@@ -217,6 +222,54 @@ export const setClockWithDate: SetClockFn = (epochMs) =>
     });
   });
 
+/**
+ * The desktop display as the vm-agent drives it: scrot and xdotool, already
+ * validated argv only. Injected so the protocol path is testable without X.
+ */
+export interface GuestDesktop {
+  screenshot(): Promise<Buffer>;
+  input(args: string[], timeoutMs: number): Promise<void>;
+}
+
+const SCREENSHOT_TIMEOUT_MS = 15_000;
+
+function describeRun(what: string, r: ExecResult): string {
+  const detail = r.timedOut ? 'timed out' : r.stderr.trim() || `exit ${String(r.exitCode)}`;
+  return `${what} failed: ${detail}`;
+}
+
+/**
+ * Real display backend. scrot and xdotool run as the workspace user (the X
+ * server's owner), never as the root agent.
+ */
+export function createGuestDesktop(
+  user: ResolvedUser,
+  run: typeof runCommand = runCommand,
+): GuestDesktop {
+  const env = buildChildEnv(user, { DISPLAY: DESKTOP_DISPLAY });
+  const launch = (file: string, args: string[]) => buildChildLaunch(user, file, args);
+  return {
+    async screenshot() {
+      // /tmp is world-writable; the uuid keeps concurrent shots apart and
+      // scrot running as the workspace user can create the file there.
+      const file = `/tmp/ah-desktop-shot-${randomUUID()}.png`;
+      try {
+        const l = launch('/usr/bin/scrot', ['--overwrite', '--silent', file]);
+        const r = await run(l.file, l.args, { timeoutMs: SCREENSHOT_TIMEOUT_MS, env, cwd: '/' });
+        if (r.exitCode !== 0 || r.timedOut) throw new Error(describeRun('scrot', r));
+        return await readFile(file);
+      } finally {
+        await unlink(file).catch(() => undefined);
+      }
+    },
+    async input(args, timeoutMs) {
+      const l = launch('/usr/bin/xdotool', args);
+      const r = await run(l.file, l.args, { timeoutMs, env, cwd: '/' });
+      if (r.exitCode !== 0 || r.timedOut) throw new Error(describeRun('xdotool', r));
+    },
+  };
+}
+
 class Connection {
   #decoder = new VmAgentFrameDecoder();
   #request: VmAgentRequest | null = null;
@@ -229,6 +282,7 @@ class Connection {
     private readonly socket: Socket,
     private readonly workspaceUser: ResolvedUser,
     private readonly setClock: SetClockFn,
+    private readonly desktop: () => GuestDesktop,
   ) {
     socket.on('data', (chunk: Buffer) => this.#onData(chunk));
     socket.on('error', () => this.#cleanup());
@@ -326,6 +380,12 @@ class Connection {
           return;
         case 'set-clock':
           await this.#setClock(request);
+          return;
+        case 'screenshot':
+          await this.#screenshot();
+          return;
+        case 'input':
+          await this.#input(request);
           return;
         default: {
           const exhaustive: never = request;
@@ -474,6 +534,24 @@ class Connection {
     this.finish();
   }
 
+  async #screenshot(): Promise<void> {
+    const png = await this.desktop().screenshot();
+    if (png.length === 0) throw new Error('screenshot produced an empty image');
+    if (png.length > SCREENSHOT_MAX_BYTES) {
+      throw new Error(`screenshot of ${png.length} bytes exceeds ${SCREENSHOT_MAX_BYTES}`);
+    }
+    this.sendJson('reply', { kind: 'screenshot', pngBase64: png.toString('base64') });
+    this.finish();
+  }
+
+  async #input(request: VmAgentInputRequest): Promise<void> {
+    // Validated again here: the guest never trusts the frame to be well formed.
+    const { args, timeoutMs } = desktopInputArgv(request.event);
+    await this.desktop().input(args, timeoutMs);
+    this.sendJson('reply', { kind: 'input-done' });
+    this.finish();
+  }
+
   async #setClock(request: VmAgentSetClockRequest): Promise<void> {
     if (!Number.isFinite(request.epochMs) || request.epochMs <= 0) {
       throw new Error(`set-clock needs a positive epochMs, got ${String(request.epochMs)}`);
@@ -490,6 +568,8 @@ export interface VmAgentServerOpts {
   workspaceUser: ResolvedUser;
   /** Defaults to {@link setClockWithDate}. */
   setClock?: SetClockFn;
+  /** Defaults to {@link createGuestDesktop} for the workspace user. */
+  desktop?: GuestDesktop;
 }
 
 /**
@@ -499,9 +579,11 @@ export interface VmAgentServerOpts {
  * are unreachable if the module can only be started as a daemon.
  */
 export function createVmAgentServer(opts: VmAgentServerOpts): Server {
+  let desktop: GuestDesktop | null = opts.desktop ?? null;
+  const getDesktop = () => (desktop ??= createGuestDesktop(opts.workspaceUser));
   return createServer((socket) => {
     socket.setNoDelay(true);
-    new Connection(socket, opts.workspaceUser, opts.setClock ?? setClockWithDate);
+    new Connection(socket, opts.workspaceUser, opts.setClock ?? setClockWithDate, getDesktop);
   });
 }
 

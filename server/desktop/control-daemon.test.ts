@@ -13,7 +13,9 @@ import {
   inputTimeoutMs,
   OpValidationError,
   type DesktopBackend,
+  isControlDaemonEntry,
 } from './control-daemon.js';
+import { pathToFileURL } from 'node:url';
 
 describe('parseOp', () => {
   it('defaults the mouse button to left and accepts on-screen coordinates', () => {
@@ -303,5 +305,24 @@ describe('desktop image', () => {
     expect(specifiers.length).toBeGreaterThan(0);
     for (const s of specifiers) expect(s).toMatch(/^node:/);
     expect(source).not.toMatch(/^\s*(export\s+)?(const\s+)?enum\s/m);
+  });
+});
+
+describe('isControlDaemonEntry', () => {
+  it('starts the daemon when node runs control-daemon.ts directly', () => {
+    const file = '/opt/agent-hub-desktop/control-daemon.ts';
+    expect(isControlDaemonEntry(file, pathToFileURL(file).href)).toBe(true);
+  });
+
+  it('stays dormant inside a bundle that imports it (the guest vm-agent)', () => {
+    // In an esbuild bundle import.meta.url is the bundle itself, which is argv[1].
+    const bundle = '/usr/local/lib/agent-hub/vm-agent.mjs';
+    expect(isControlDaemonEntry(bundle, pathToFileURL(bundle).href)).toBe(false);
+  });
+
+  it('stays dormant when imported by another entry point', () => {
+    const file = '/opt/agent-hub-desktop/control-daemon.ts';
+    expect(isControlDaemonEntry('/usr/bin/vitest', pathToFileURL(file).href)).toBe(false);
+    expect(isControlDaemonEntry(undefined, pathToFileURL(file).href)).toBe(false);
   });
 });

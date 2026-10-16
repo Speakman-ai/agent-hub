@@ -26,6 +26,8 @@
  * blocking an unrelated exec's output.
  */
 
+import type { DesktopInputEvent } from '../../desktop/desktop-runtime.js';
+
 /**
  * Guest-side vsock port the agent listens on. Chosen above the privileged
  * range and fixed: the host has no way to discover a dynamic port before the
@@ -33,8 +35,14 @@
  */
 export const VM_AGENT_VSOCK_PORT = 1024;
 
+/**
+ * Largest PNG a `screenshot` reply may carry: one frame after base64, with
+ * room for the envelope. A 1280x800 desktop is far below it.
+ */
+export const SCREENSHOT_MAX_BYTES = 4 * 1024 * 1024;
+
 /** Bumped only on breaking frame/JSON changes; checked during the handshake. */
-export const VM_AGENT_PROTOCOL_VERSION = 3;
+export const VM_AGENT_PROTOCOL_VERSION = 4;
 
 /**
  * Hard cap on a single frame. Guards the guest against a host bug (and vice
@@ -181,6 +189,24 @@ export interface VmAgentSetClockRequest {
   epochMs: number;
 }
 
+/**
+ * Full-screen PNG of the desktop display (desktop computers only). Runs scrot
+ * as the workspace user so the Hub needs no shell round trip to see the screen.
+ */
+export interface VmAgentScreenshotRequest {
+  kind: 'screenshot';
+}
+
+/**
+ * One input event on the desktop display (desktop computers only). The guest
+ * validates it with the same rules as the container's control daemon and runs
+ * xdotool without a shell.
+ */
+export interface VmAgentInputRequest {
+  kind: 'input';
+  event: DesktopInputEvent;
+}
+
 export interface VmAgentPingRequest {
   kind: 'ping';
   protocolVersion: number;
@@ -193,6 +219,8 @@ export type VmAgentRequest =
   | VmAgentReadFileRequest
   | VmAgentWriteFileRequest
   | VmAgentSetClockRequest
+  | VmAgentScreenshotRequest
+  | VmAgentInputRequest
   | VmAgentPingRequest;
 
 export interface VmAgentStarted {
@@ -228,7 +256,9 @@ export type VmAgentReply =
   | { kind: 'file'; contentBase64: string; eof: boolean }
   | { kind: 'written' }
   /** `previousEpochMs` is the guest clock just before it was stepped. */
-  | { kind: 'clock-set'; previousEpochMs: number; epochMs: number };
+  | { kind: 'clock-set'; previousEpochMs: number; epochMs: number }
+  | { kind: 'screenshot'; pngBase64: string }
+  | { kind: 'input-done' };
 
 export type VmAgentControl =
   | { kind: 'resize'; cols: number; rows: number }

@@ -7,8 +7,10 @@ import {
   createVmAgentServer,
   buildChildEnv,
   buildChildLaunch,
+  createGuestDesktop,
   resolveWorkspaceUser,
   SETPRIV_BIN,
+  type GuestDesktop,
   type SetClockFn,
 } from './vm-agent.js';
 import {
@@ -46,12 +48,19 @@ afterEach(async () => {
 /** Never the real `date -s`: a test must not move the host clock. */
 const refuseSetClock: SetClockFn = () => Promise.reject(new Error('set-clock not stubbed'));
 
+/** Never the real scrot/xdotool: tests have no X display. */
+const noDesktop: GuestDesktop = {
+  screenshot: () => Promise.reject(new Error('desktop not stubbed')),
+  input: () => Promise.reject(new Error('desktop not stubbed')),
+};
+
 async function startAgent(
   setClock: SetClockFn = refuseSetClock,
+  desktop: GuestDesktop = noDesktop,
 ): Promise<{ socketPath: string; server: Server }> {
   const dir = await mkdtemp(join(tmpdir(), 'vm-agent-'));
   const socketPath = join(dir, 'agent.sock');
-  const server = createVmAgentServer({ workspaceUser: asCurrentUser, setClock });
+  const server = createVmAgentServer({ workspaceUser: asCurrentUser, setClock, desktop });
   await new Promise<void>((resolve) => server.listen(socketPath, resolve));
   cleanups.push(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -423,6 +432,121 @@ describe('vm-agent over a real socket', () => {
     const [framesA, framesB] = await Promise.all([a.done, b.done]);
     expect(text(framesA, 'stdout').trim()).toBe('A');
     expect(text(framesB, 'stdout').trim()).toBe('B');
+  });
+});
+
+describe('vm-agent desktop requests', () => {
+  function recordingDesktop(png: Buffer = Buffer.from([0x89, 0x50, 0x4e, 0x47, 7])) {
+    const inputs: { args: string[]; timeoutMs: number }[] = [];
+    const desktop: GuestDesktop = {
+      screenshot: async () => png,
+      input: async (args, timeoutMs) => {
+        inputs.push({ args, timeoutMs });
+      },
+    };
+    return { desktop, inputs };
+  }
+
+  it('returns the display as a base64 PNG', async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+    const { socketPath } = await startAgent(refuseSetClock, recordingDesktop(png).desktop);
+    const stream = await openStream(socketPath, { kind: 'screenshot' });
+    const reply = decodeJsonPayload<VmAgentReply>((await stream.waitFor('reply')).payload);
+    expect(reply).toEqual({ kind: 'screenshot', pngBase64: png.toString('base64') });
+    await stream.done;
+  });
+
+  it('reports a failed capture as an error frame', async () => {
+    const { socketPath } = await startAgent(refuseSetClock, {
+      ...noDesktop,
+      screenshot: () => Promise.reject(new Error("scrot failed: Can't open X display")),
+    });
+    const stream = await openStream(socketPath, { kind: 'screenshot' });
+    const err = decodeJsonPayload<{ message: string }>((await stream.waitFor('error')).payload);
+    expect(err.message).toContain("Can't open X display");
+  });
+
+  it('runs input as validated xdotool argv', async () => {
+    const { desktop, inputs } = recordingDesktop();
+    const { socketPath } = await startAgent(refuseSetClock, desktop);
+    const stream = await openStream(socketPath, {
+      kind: 'input',
+      event: { type: 'click', x: 10, y: 20, button: 'right' },
+    });
+    const reply = decodeJsonPayload<VmAgentReply>((await stream.waitFor('reply')).payload);
+    expect(reply).toEqual({ kind: 'input-done' });
+    expect(inputs).toEqual([
+      { args: ['mousemove', '10', '20', 'click', '3'], timeoutMs: expect.any(Number) },
+    ]);
+  });
+
+  it('refuses input the container daemon would refuse, without touching the display', async () => {
+    const { desktop, inputs } = recordingDesktop();
+    const { socketPath } = await startAgent(refuseSetClock, desktop);
+    for (const event of [
+      { type: 'click', x: 1280, y: 0 },
+      { type: 'key', combo: 'ctrl+l; rm -rf ~' },
+    ]) {
+      const stream = await openStream(socketPath, { kind: 'input', event: event as never });
+      const err = decodeJsonPayload<{ message: string }>((await stream.waitFor('error')).payload);
+      expect(err.message).toMatch(/must be/);
+    }
+    expect(inputs).toHaveLength(0);
+  });
+});
+
+describe('createGuestDesktop', () => {
+  it('runs scrot and xdotool as the workspace user on the desktop display', async () => {
+    const runner = { uid: 1000, gid: 1000, home: '/home/runner', name: 'runner' };
+    const calls: { file: string; args: string[]; env: NodeJS.ProcessEnv | undefined }[] = [];
+    const run = (async (file: string, args: string[], opts: { env?: NodeJS.ProcessEnv }) => {
+      calls.push({ file, args, env: opts.env });
+      // Pretend scrot wrote the file the agent then reads back.
+      const shot = args.find((a) => a.endsWith('.png'));
+      if (shot) await writeFile(shot, 'PNG');
+      return {
+        exitCode: 0,
+        signal: null,
+        stdout: '',
+        stderr: '',
+        timedOut: false,
+        truncated: false,
+      };
+    }) as unknown as Parameters<typeof createGuestDesktop>[1];
+    const desktop = createGuestDesktop(runner, run);
+
+    await desktop.input(['key', '--', 'Return'], 1000);
+    const shot = await desktop.screenshot();
+    expect(shot.toString()).toBe('PNG');
+
+    for (const c of calls) {
+      expect(c.env?.DISPLAY).toBe(':99');
+      expect(c.env?.HOME).toBe('/home/runner');
+    }
+    // The test process is not root, so launch is direct; root drops via setpriv
+    // (covered by buildChildLaunch below).
+    const expectedFile = (bin: string) => (process.getuid?.() === 0 ? SETPRIV_BIN : bin);
+    expect(calls[0]!.file).toBe(expectedFile('/usr/bin/xdotool'));
+    expect(calls[1]!.file).toBe(expectedFile('/usr/bin/scrot'));
+    const pngPath = calls[1]!.args.find((a) => a.endsWith('.png'))!;
+    // Removed after reading, so shots never pile up in the guest.
+    await expect(readFile(pngPath)).rejects.toThrow(/ENOENT/);
+  });
+
+  it('surfaces a non-zero exit with its stderr', async () => {
+    const run = (async () => ({
+      exitCode: 1,
+      signal: null,
+      stdout: '',
+      stderr: "Can't open display",
+      timedOut: false,
+      truncated: false,
+    })) as unknown as Parameters<typeof createGuestDesktop>[1];
+    const desktop = createGuestDesktop(asCurrentUser, run);
+    await expect(desktop.input(['key', 'a'], 1000)).rejects.toThrow(
+      "xdotool failed: Can't open display",
+    );
+    await expect(desktop.screenshot()).rejects.toThrow("scrot failed: Can't open display");
   });
 });
 

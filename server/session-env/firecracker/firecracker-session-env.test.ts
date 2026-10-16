@@ -1301,3 +1301,37 @@ describe('FirecrackerSessionEnv snapshots', () => {
     expect(env.bootMode).toBe('cold');
   });
 });
+
+describe('FirecrackerSessionEnv desktop requests', () => {
+  it('fetches a screenshot with the vm-agent screenshot request', async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 5]);
+    const { env, guest } = makeEnv();
+    guest.requestReply = (req) =>
+      req.kind === 'screenshot'
+        ? { type: 'reply', value: { kind: 'screenshot', pngBase64: png.toString('base64') } }
+        : null;
+    await expect(env.desktopScreenshot()).resolves.toEqual(png);
+    expect(guest.workConnections.map((c) => c.request)).toEqual([{ kind: 'screenshot' }]);
+  });
+
+  it('sends an input event with the vm-agent input request', async () => {
+    const { env, guest } = makeEnv();
+    guest.requestReply = (req) =>
+      req.kind === 'input' ? { type: 'reply', value: { kind: 'input-done' } } : null;
+    const event = { type: 'key', combo: 'ctrl+l' } as const;
+    await env.desktopInput(event, 5_000);
+    expect(guest.workConnections.map((c) => c.request)).toEqual([{ kind: 'input', event }]);
+  });
+
+  it('surfaces the guest error, e.g. a VM booted without a display', async () => {
+    const { env, guest } = makeEnv();
+    guest.requestReply = () => ({
+      type: 'error',
+      value: { message: "scrot failed: Can't open X display" },
+    });
+    await expect(env.desktopScreenshot()).rejects.toThrow("Can't open X display");
+    await expect(env.desktopInput({ type: 'move', x: 1, y: 1 }, 5_000)).rejects.toThrow(
+      "Can't open X display",
+    );
+  });
+});

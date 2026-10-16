@@ -539,6 +539,17 @@ function main(): void {
   process.on('SIGINT', stop);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+/**
+ * Whether this module is the process entry point. The guest vm-agent bundles
+ * this file (for parseOp and runCommand), and inside a bundle `import.meta.url`
+ * is the bundle's own URL, so the URL match alone would start a second daemon
+ * in the vm-agent. The file name has to say control-daemon too.
+ */
+export function isControlDaemonEntry(argv1: string | undefined, moduleUrl: string): boolean {
+  if (!argv1 || moduleUrl !== pathToFileURL(argv1).href) return false;
+  return /(^|\/)control-daemon\.[cm]?[jt]s$/.test(argv1);
+}
+
+if (isControlDaemonEntry(process.argv[1], import.meta.url)) {
   main();
 }

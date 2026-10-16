@@ -60,6 +60,7 @@ import {
 } from '../session-env.js';
 import type { SessionEnvPortRouting } from '../container-routing.js';
 import type { SessionWorktreeIo } from '../worktree-io.js';
+import type { DesktopInputEvent } from '../../desktop/desktop-runtime.js';
 import { GuestWorktreeIo } from './guest-worktree-io.js';
 import { resolveGuestNameservers } from './guest-nameservers.js';
 import { ensureFirecrackerGuestBridge, ensureFirecrackerGuestNat } from './firecracker-slots.js';
@@ -371,6 +372,7 @@ const VMM_API_TIMEOUT_MS = 10_000;
 const SNAPSHOT_CREATE_TIMEOUT_MS = 10 * 60_000;
 const SNAPSHOT_LOAD_TIMEOUT_MS = 2 * 60_000;
 const GUEST_CLOCK_CHECK_TIMEOUT_MS = 10_000;
+const DESKTOP_REQUEST_TIMEOUT_MS = 30_000;
 /**
  * Skew left after the resync. The step itself lands within one vsock round
  * trip, so anything past a few seconds means the set did not take.
@@ -937,6 +939,35 @@ export class FirecrackerSessionEnv implements SessionEnv {
       throw new Error(`Unexpected guest reply reading ${guestPath}: ${reply.kind}`);
     }
     return { chunk: Buffer.from(reply.contentBase64, 'base64'), eof: reply.eof };
+  }
+
+  /**
+   * Full-screen PNG of a desktop guest's display, through the vm-agent's
+   * `screenshot` request. Fails with the guest's error on a VM without a
+   * display (a session rootfs).
+   */
+  async desktopScreenshot(timeoutMs = DESKTOP_REQUEST_TIMEOUT_MS): Promise<Buffer> {
+    this.#assertLive('desktopScreenshot');
+    await this.ensureStarted();
+    const reply = await awaitReply(await this.#open({ kind: 'screenshot' }), timeoutMs);
+    this.touch();
+    if (reply.kind !== 'screenshot') {
+      throw new Error(`Unexpected guest reply to screenshot: ${reply.kind}`);
+    }
+    const png = Buffer.from(reply.pngBase64, 'base64');
+    if (png.length === 0) throw new Error('Desktop screenshot returned no image');
+    return png;
+  }
+
+  /** One input event on a desktop guest's display, through the vm-agent's `input` request. */
+  async desktopInput(event: DesktopInputEvent, timeoutMs: number): Promise<void> {
+    this.#assertLive('desktopInput');
+    await this.ensureStarted();
+    const reply = await awaitReply(await this.#open({ kind: 'input', event }), timeoutMs);
+    this.touch();
+    if (reply.kind !== 'input-done') {
+      throw new Error(`Unexpected guest reply to input: ${reply.kind}`);
+    }
   }
 
   /** Read a file by absolute guest path via the agent. */

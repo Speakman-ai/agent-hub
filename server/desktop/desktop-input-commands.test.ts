@@ -1,9 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-  DesktopInputError,
-  buildDesktopInputCommand,
-  buildDesktopScreenshotCommand,
-} from './desktop-input-commands.js';
+import { DesktopInputError, buildDesktopInputCommand } from './desktop-input-commands.js';
 
 const cmd = (event: unknown) => buildDesktopInputCommand(event as never).command;
 
@@ -56,18 +52,5 @@ describe('buildDesktopInputCommand', () => {
     { type: 'click', x: 0, y: 0, button: 'fourth' },
   ])('rejects %j', (event) => {
     expect(() => cmd(event)).toThrow(DesktopInputError);
-  });
-});
-
-describe('buildDesktopScreenshotCommand', () => {
-  it('captures to a temp file it removes and prints base64', () => {
-    const c = buildDesktopScreenshotCommand('42-1');
-    expect(c).toContain("trap 'rm -f /tmp/ah-desktop-shot-42-1.png' EXIT");
-    expect(c).toContain('DISPLAY=:99 scrot --overwrite --silent /tmp/ah-desktop-shot-42-1.png');
-    expect(c).toContain('base64 -w0 /tmp/ah-desktop-shot-42-1.png');
-  });
-
-  it('refuses a tag that could escape the path', () => {
-    expect(() => buildDesktopScreenshotCommand('../x')).toThrow(DesktopInputError);
   });
 });

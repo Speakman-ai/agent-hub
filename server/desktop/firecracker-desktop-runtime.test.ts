@@ -19,7 +19,13 @@ import {
   resetDesktopRuntimesForTests,
 } from './desktop-runtime-registry.js';
 import { DesktopComputerDeletingError } from './desktop-deletion-guard.js';
-import { DESKTOP_IDLE_STOP_MS, DESKTOP_VNC_PORT } from './desktop-runtime.js';
+import {
+  DESKTOP_IDLE_STOP_MS,
+  DESKTOP_VNC_PORT,
+  type DesktopDisplayEndpoint,
+  type DesktopInputEvent,
+} from './desktop-runtime.js';
+import { connectVncFrameSource, type DesktopFrameSource } from './vnc-frame-source.js';
 import { sessionVmId } from '../session-env/firecracker/firecracker-vm-args.js';
 import type {
   SessionEnvDisposeOpts,
@@ -80,6 +86,10 @@ class FakeVm implements FirecrackerDesktopVm {
   readonly disposeCalls: SessionEnvDisposeOpts[] = [];
   readonly spawns: { command: string; opts: SessionEnvSpawnOpts }[] = [];
   respond: Responder = () => ({ code: 0 });
+  screenshotPng: Buffer = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0]);
+  screenshotError: Error | null = null;
+  screenshotCalls = 0;
+  readonly inputs: { event: DesktopInputEvent; timeoutMs: number }[] = [];
 
   constructor(readonly spec: FirecrackerDesktopVmSpec) {}
   get vmId() {
@@ -106,6 +116,14 @@ class FakeVm implements FirecrackerDesktopVm {
   }
   liveProcessCount() {
     return this.live;
+  }
+  async desktopScreenshot() {
+    this.screenshotCalls++;
+    if (this.screenshotError) throw this.screenshotError;
+    return this.screenshotPng;
+  }
+  async desktopInput(event: DesktopInputEvent, timeoutMs: number) {
+    this.inputs.push({ event, timeoutMs });
   }
   /** What suspend reports: the snapshot fingerprint, or null for none taken. */
   snapshotResult: string | null = 'sha256:snap-1';
@@ -134,18 +152,51 @@ function memoryStore(): { store: DesktopComputersStore; db: Database.Database } 
   return { store: createDesktopComputersStore(() => db), db };
 }
 
+class FakeDisplay implements DesktopFrameSource {
+  closed = false;
+  captures = 0;
+  constructor(
+    readonly endpoint: DesktopDisplayEndpoint,
+    private readonly frame: () => Buffer,
+  ) {}
+  async capture() {
+    this.captures++;
+    if (this.closed) throw new Error('VNC connection closed');
+    return this.frame();
+  }
+  close() {
+    this.closed = true;
+  }
+}
+
 function makeRuntime(
   store: DesktopComputersStore,
-  opts: { configure?: (vm: FakeVm) => void } = {},
+  opts: {
+    configure?: (vm: FakeVm) => void;
+    /** VNC frame; a throw makes the VNC connect fail. */
+    vncFrame?: () => Buffer;
+    /** Replaces the fake VNC connection entirely. */
+    openDisplay?: (endpoint: DesktopDisplayEndpoint) => Promise<DesktopFrameSource>;
+  } = {},
 ) {
   let now = 1_000_000;
   const vms: FakeVm[] = [];
+  const displays: FakeDisplay[] = [];
+  const warnings: string[] = [];
   const slots = createFirecrackerSlotPool(store);
+  const vncFrame = opts.vncFrame ?? (() => Buffer.from('vnc-frame'));
   const runtime = new FirecrackerDesktopRuntime({
     store,
     slots,
     now: () => now,
-    logger: { warn: () => undefined },
+    logger: { warn: (m) => warnings.push(m) },
+    openDisplay: async (endpoint) => {
+      if (opts.openDisplay) return opts.openDisplay(endpoint);
+      vncFrame();
+      const d = new FakeDisplay(endpoint, vncFrame);
+      displays.push(d);
+      return d;
+    },
     createVm: (spec) => {
       const vm = new FakeVm(spec);
       opts.configure?.(vm);
@@ -157,6 +208,8 @@ function makeRuntime(
     runtime,
     slots,
     vms,
+    displays,
+    warnings,
     advance: (ms: number) => {
       now += ms;
     },
@@ -557,54 +610,113 @@ describe('FirecrackerDesktopRuntime tool ops', () => {
     }
   });
 
-  it('decodes a screenshot from base64 output', async () => {
+  it('takes screenshots through the vm-agent, not a shell', async () => {
     const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
     const { runtime, lastVm } = makeRuntime(store, {
       configure: (vm) => {
-        vm.respond = () => ({ code: 0, stdout: png.toString('base64') });
+        vm.screenshotPng = png;
       },
     });
     await expect(runtime.screenshot(ALICE)).resolves.toEqual(png);
-    expect(lastVm().spawns[0]!.command).toContain('scrot');
-  });
-
-  it('viewFrame returns null for a stopped computer and never boots it', async () => {
-    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 9]);
-    const { runtime, lastVm, advance } = makeRuntime(store, {
-      configure: (vm) => {
-        vm.respond = () => ({ code: 0, stdout: png.toString('base64') });
-      },
-    });
-    await expect(runtime.viewFrame(ALICE)).resolves.toBeNull();
-    expect(store.get(ALICE, 'firecracker')).toBeNull();
-    await runtime.ensureStarted(ALICE);
-    const before = (await runtime.status(ALICE)).lastActiveAt;
-    advance(60_000);
-    await expect(runtime.viewFrame(ALICE)).resolves.toEqual(png);
-    expect((await runtime.status(ALICE)).lastActiveAt).toBe(before);
-    expect(lastVm().spawns.at(-1)!.command).toContain('scrot');
+    expect(lastVm().screenshotCalls).toBe(1);
+    expect(lastVm().spawns).toHaveLength(0);
   });
 
   it('turns a failed screenshot into an error', async () => {
     const { runtime } = makeRuntime(store, {
       configure: (vm) => {
-        vm.respond = () => ({ code: 2, stderr: "Can't open X display" });
+        vm.screenshotError = new Error("scrot failed: Can't open X display");
       },
     });
-    await expect(runtime.screenshot(ALICE)).rejects.toThrow(/exit 2: Can't open X display/);
+    await expect(runtime.screenshot(ALICE)).rejects.toThrow(
+      /Desktop screenshot failed: scrot failed: Can't open X display/,
+    );
   });
 
-  it('sends input as xdotool and rejects off-screen coordinates before booting', async () => {
+  it('viewFrame returns null for a stopped computer and never boots it', async () => {
+    const { runtime, displays } = makeRuntime(store);
+    await expect(runtime.viewFrame(ALICE)).resolves.toBeNull();
+    expect(store.get(ALICE, 'firecracker')).toBeNull();
+    expect(displays).toHaveLength(0);
+  });
+
+  it('viewFrame reads the guest VNC server and does not count as activity', async () => {
+    const { runtime, lastVm, displays, advance } = makeRuntime(store);
+    await runtime.ensureStarted(ALICE);
+    const before = (await runtime.status(ALICE)).lastActiveAt;
+    advance(60_000);
+    await expect(runtime.viewFrame(ALICE)).resolves.toEqual(Buffer.from('vnc-frame'));
+    await expect(runtime.viewFrame(ALICE)).resolves.toEqual(Buffer.from('vnc-frame'));
+    expect((await runtime.status(ALICE)).lastActiveAt).toBe(before);
+    // One connection reused across frames, to the guest address on the VNC port.
+    expect(displays).toHaveLength(1);
+    expect(displays[0]!.endpoint).toEqual({ host: '172.30.0.3', port: DESKTOP_VNC_PORT });
+    expect(lastVm().screenshotCalls).toBe(0);
+  });
+
+  it('closes the VNC connection when the computer stops', async () => {
+    const { runtime, displays } = makeRuntime(store);
+    await runtime.ensureStarted(ALICE);
+    await runtime.viewFrame(ALICE);
+    await runtime.stop(ALICE);
+    expect(displays[0]!.closed).toBe(true);
+    await expect(runtime.viewFrame(ALICE)).resolves.toBeNull();
+  });
+
+  it('falls back to vm-agent screenshots while VNC is down, then retries VNC', async () => {
+    let vncUp = false;
+    const { runtime, lastVm, displays, warnings, advance } = makeRuntime(store, {
+      vncFrame: () => {
+        if (!vncUp) throw new Error('connect ECONNREFUSED 172.30.0.3:5900');
+        return Buffer.from('vnc-frame');
+      },
+    });
+    await runtime.ensureStarted(ALICE);
+    await expect(runtime.viewFrame(ALICE)).resolves.toEqual(lastVm().screenshotPng);
+    expect(warnings.join('\n')).toMatch(/ECONNREFUSED/);
+    vncUp = true;
+    // Still inside the back-off window: no new connection attempt.
+    await expect(runtime.viewFrame(ALICE)).resolves.toEqual(lastVm().screenshotPng);
+    expect(displays).toHaveLength(0);
+    advance(30_000);
+    await expect(runtime.viewFrame(ALICE)).resolves.toEqual(Buffer.from('vnc-frame'));
+    expect(displays).toHaveLength(1);
+  });
+
+  it('falls back to screenshots when the VNC connect stalls instead of waiting on TCP', async () => {
+    let aborted = false;
+    // A guest dropping SYNs: the connect never settles until it is aborted.
+    const stalled = (_e: DesktopDisplayEndpoint, signal: AbortSignal) =>
+      new Promise<never>((_, reject) => {
+        signal.addEventListener('abort', () => {
+          aborted = true;
+          reject(signal.reason as Error);
+        });
+      });
+    const { runtime, lastVm, warnings } = makeRuntime(store, {
+      openDisplay: (endpoint) =>
+        connectVncFrameSource(endpoint, { connect: stalled, timeoutMs: 20 }),
+    });
+    await runtime.ensureStarted(ALICE);
+    const started = Date.now();
+    await expect(runtime.viewFrame(ALICE)).resolves.toEqual(lastVm().screenshotPng);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(aborted).toBe(true);
+    expect(warnings.join('\n')).toMatch(/VNC connect to 172\.30\.0\.3:5900 timed out/);
+  });
+
+  it('sends input through the vm-agent and rejects off-screen coordinates before booting', async () => {
     const { runtime, vms, lastVm } = makeRuntime(store);
     await expect(runtime.input(ALICE, { type: 'click', x: 1280, y: 10 })).rejects.toThrow(
       /x must be within 0\.\.1279/,
     );
     expect(vms).toHaveLength(0);
 
-    await runtime.input(ALICE, { type: 'click', x: 10, y: 20, button: 'right' });
-    expect(lastVm().spawns[0]!.command).toBe(
-      "DISPLAY=:99 xdotool 'mousemove' '10' '20' 'click' '3'",
-    );
+    const click = { type: 'click', x: 10, y: 20, button: 'right' } as const;
+    await runtime.input(ALICE, click);
+    expect(lastVm().inputs).toEqual([{ event: click, timeoutMs: expect.any(Number) }]);
+    expect(lastVm().inputs[0]!.timeoutMs).toBeGreaterThan(15_000);
+    expect(lastVm().spawns).toHaveLength(0);
   });
 
   it('maps the display to the guest address and VNC port', async () => {
