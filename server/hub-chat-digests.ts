@@ -67,7 +67,7 @@ const MAX_CHANNEL_MESSAGES = 200;
 const MAX_MESSAGE_CHARS = 400;
 const MAX_PROJECT_ITEMS = 40;
 const MAX_FOOTER_REFS = 8;
-const GENERATE_TIMEOUT_MS = 90_000;
+const GENERATE_TIMEOUT_MS = 5 * 60_000;
 
 export interface DigestWindow {
   /** Inclusive ISO start. */

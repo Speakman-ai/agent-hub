@@ -6,9 +6,9 @@ describe('api.hubChat.runDigest', () => {
     vi.restoreAllMocks();
   });
 
-  it('waits longer than the server-side generation cap instead of the 15s default', async () => {
+  it('waits far longer than the 15s default for the digest generation', async () => {
     const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ result: { status: 'posted' }, digest: null }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -17,7 +17,10 @@ describe('api.hubChat.runDigest', () => {
 
     await api.hubChat.runDigest('chan-1', 'dig-1');
 
+    const [url, opts] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).toMatch(/\/chat\/channels\/chan-1\/digests\/dig-1\/run$/);
+    expect(opts.method).toBe('POST');
     expect(timeoutSpy).toHaveBeenCalledWith(DIGEST_RUN_TIMEOUT_MS);
-    expect(DIGEST_RUN_TIMEOUT_MS).toBeGreaterThanOrEqual(180_000);
+    expect(DIGEST_RUN_TIMEOUT_MS).toBeGreaterThanOrEqual(10 * 60_000);
   });
 });
