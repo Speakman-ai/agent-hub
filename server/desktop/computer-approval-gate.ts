@@ -17,12 +17,17 @@
  *   - block on any app or site a target touches refuses the op.
  *   - ask raises an approval unless an always-allow rule for that domain and
  *     op exists; a require rule always asks.
- *   - A shell (the exec op, or a terminal window identified by class or
- *     process) can reach any app or site, so while any policy is set it asks
- *     unless the human trusts it explicitly: an Allow policy on
- *     `desktop:shell` or a remembered always-allow rule.
- *   - An exec command matching the configurable deny list always asks, even
- *     on an allowed shell, and the answer is never remembered.
+ *   - The exec op always asks, and the answer is never remembered. A shell
+ *     command can read any file on the desktop, including Chromium's saved
+ *     passwords, and nothing in its text says which files it reaches (globs,
+ *     variables, scripts, the browser's loopback DevTools port), so no trust
+ *     setting can tell a safe command from one that reads the store. A block
+ *     policy on `desktop:shell` still refuses it outright.
+ *   - A terminal window (identified by class or process) can reach any app
+ *     or site, so while any policy is set typing into it asks unless the
+ *     human trusts it explicitly: an Allow policy on `desktop:shell` or a
+ *     remembered always-allow rule. The image ships no terminal, and
+ *     starting one takes exec.
  *
  * Whether a window is a browser or a terminal comes from its process
  * executable as well as its class, and a window whose process cannot be
@@ -35,8 +40,7 @@
  *
  * Trust boundary: window class, title and _NET_WM_PID are set by the
  * programs on the desktop, so only a program already running there could
- * forge them. Starting a program takes shell input, which asks while any
- * policy is set unless the human trusts the shell.
+ * forge them. Starting a program takes exec, which always asks.
  *
  * The same resolve-then-decide step runs again after every approval, from a
  * fresh read of the profile, so nothing decided before a wait is trusted
@@ -809,6 +813,9 @@ interface Source {
   why?: string;
 }
 
+const EXEC_ALWAYS_ASKS_REASON =
+  "Shell commands can read any file on the desktop, including the browser's saved passwords, so every command needs approval and the answer is not remembered.";
+
 const SHELL_TRUST_REASON =
   'Shell commands can reach any app or site, so they ask while any desktop or site policy is set. Set desktop:shell to Allow (or answer Always allow) to trust them.';
 
@@ -975,7 +982,8 @@ export function createComputerApprovalGate(
   return async (op, probe, callOpts = {}) => {
     if (!isGatedComputerOp(op.op)) return { proceed: true };
     const action = op.op;
-    const denyPattern = op.op === 'exec' ? matchExecApprovalPattern(op.command, patterns) : null;
+    const isExec = op.op === 'exec';
+    const denyPattern = isExec ? matchExecApprovalPattern(op.command, patterns) : null;
 
     let before: Awaited<ReturnType<typeof assess>>;
     try {
@@ -991,7 +999,7 @@ export function createComputerApprovalGate(
     if (
       evaluation &&
       !evaluation.unidentified &&
-      !denyPattern &&
+      !isExec &&
       keys.length > 0 &&
       keys.every((k) => cleared.includes(k))
     ) {
@@ -999,7 +1007,7 @@ export function createComputerApprovalGate(
     }
     const asks = evaluation?.asks ?? [];
     const unidentified = evaluation?.unidentified ?? false;
-    if (asks.length === 0 && !unidentified && !denyPattern) {
+    if (asks.length === 0 && !unidentified && !isExec) {
       return { proceed: true, targets: keys };
     }
 
@@ -1013,7 +1021,12 @@ export function createComputerApprovalGate(
         `The command matches the desktop exec deny list (\`${denyPattern}\`), so it always needs approval.`,
       );
     }
-    for (const reason of new Set(asks.map(askReason))) why.push(reason);
+    if (isExec) why.push(EXEC_ALWAYS_ASKS_REASON);
+    // On exec the shell's own trust reason would tell the human an Allow
+    // stops the asking, which it does not.
+    for (const reason of new Set(asks.filter((a) => !isExec || !a.why).map(askReason))) {
+      why.push(reason);
+    }
     if (unidentified) {
       why.push(
         'The host could not tell exactly which app or site this lands on, and some apps or sites need approval.',
@@ -1030,10 +1043,10 @@ export function createComputerApprovalGate(
     }
 
     // An Always allow can only be saved when exactly one domain is asking and
-    // nothing about the target is unknown; the deny list is never remembered.
+    // nothing about the target is unknown; an exec is never remembered.
     const askingDomains = new Set(asks.map((s) => s.domain));
     const rememberDomain =
-      !denyPattern && !unidentified && askingDomains.size === 1 ? [...askingDomains][0] : null;
+      !isExec && !unidentified && askingDomains.size === 1 ? [...askingDomains][0] : null;
     const approval = await requestHostApproval(
       {
         profileId,
@@ -1058,7 +1071,7 @@ export function createComputerApprovalGate(
       }
       const afterKeys = after.targets.map(desktopTargetKey);
       // Targets read before the wait must still be what the op lands on.
-      // (Before-keys are empty only for a deny-listed exec that nothing
+      // (Before-keys are empty only for an exec that nothing
       // gated: the approval named that exact command.)
       if (keys.length > 0 && afterKeys.join('\n') !== keys.join('\n')) {
         return refusal(

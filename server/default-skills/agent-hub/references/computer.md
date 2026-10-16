@@ -55,6 +55,32 @@ publishing anything from the desktop. You may type the user's own passwords
 and 2FA codes to sign in; collect them with an `agenthub:credential-request`
 card (never plain chat) and never echo them back.
 
+## Saved logins
+
+The desktop Chromium keeps a password manager in its persistent profile,
+local to this computer (sync and leak checks are off by policy), so a site
+that signs you out does not need the user again:
+
+1. The first time a site needs a password, ask the user to sign in through
+   the **Agent browser** pane and click **Save** when Chromium offers to save
+   the password (and tick "remember this device" if the site offers it).
+   If the user would rather give you the credentials, sign in yourself and
+   click **Save** the same way.
+2. On later logins, when the site signs you out, open its login page.
+   Chromium fills the saved username and password; if it does not, click the
+   username field and pick the saved account from Chromium's dropdown. Then
+   submit the form yourself.
+3. If the saved password is rejected, ask the user to sign in again through
+   the pane and click **Update** when Chromium offers it.
+
+Never echo a saved password back into chat, logs or files. A shell command
+can read any file, the saved passwords included, and nothing in its text
+says which files it reaches, so every `exec` waits for the human's approval,
+every time, and the answer is never remembered (a `desktop:shell` Block
+policy refuses it outright). Prefer clicks and typing, and batch shell work
+into few commands. Signing in with autofill is clicks and keystrokes, not
+`exec`, so it is not held up by this.
+
 ## Failure observations
 
 - **Computer tool disabled**: the tool is off for this session. Ask the user

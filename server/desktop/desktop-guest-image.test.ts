@@ -71,6 +71,20 @@ describe('install-desktop.sh', () => {
     // The gate reads frame origins with a Node script inside the desktop.
     expect(src).toMatch(/for bin in [^\n]*\bnode\b/);
   });
+  it('pins the password manager on for both browsers, with nothing leaving the box', () => {
+    const src = read(installer);
+    for (const dir of ['/etc/chromium/policies/managed', '/etc/opt/chrome/policies/managed']) {
+      expect(src).toContain(dir);
+    }
+    const m = src.match(/agent-hub-passwords\.json" <<'EOF'\n([\s\S]*?)\nEOF/);
+    expect(m, 'policy heredoc').toBeTruthy();
+    expect(JSON.parse(m![1]!)).toEqual({
+      PasswordManagerEnabled: true,
+      PasswordLeakDetectionEnabled: false,
+      SyncDisabled: true,
+      BrowserSignin: 0,
+    });
+  });
 });
 
 describe('desktop images share the installer', () => {

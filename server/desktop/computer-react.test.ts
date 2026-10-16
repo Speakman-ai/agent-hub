@@ -19,6 +19,7 @@ import {
 } from './container-desktop-runtime.js';
 import {
   COMPUTER_REACT_OPS,
+  COMPUTER_TOOL_PROMPT_LINE,
   parseComputerReactAction,
   pngDimensions,
   runComputerReActStep,
@@ -312,5 +313,18 @@ describe('splitGatedSteps', () => {
     expect(splitGatedSteps({ op: 'key', combo: 'ctrl+l' })).toBeNull();
     expect(splitGatedSteps({ op: 'type', text: 'hello' })).toBeNull();
     expect(splitGatedSteps({ op: 'click', x: 1, y: 1, button: 'left' })).toBeNull();
+  });
+});
+
+describe('computer tool prompt line', () => {
+  it('points the agent at Chromium saved logins', () => {
+    expect(COMPUTER_TOOL_PROMPT_LINE).toMatch(
+      /click Save when Chromium offers to save the password/,
+    );
+    expect(COMPUTER_TOOL_PROMPT_LINE).toMatch(/let Chromium fill the saved account/);
+    expect(COMPUTER_TOOL_PROMPT_LINE).toContain('Never echo a saved password');
+    expect(COMPUTER_TOOL_PROMPT_LINE).toContain(
+      "every `exec` waits for the human's approval, every time",
+    );
   });
 });

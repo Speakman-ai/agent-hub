@@ -1018,9 +1018,10 @@ describe('createComputerApprovalGate', () => {
       effect: 'allow',
     });
     setPolicy('shell.desktop.invalid', 'ask');
-    expect(await gate()(op({ op: 'exec', command: 'ls' }), probeFor())).toMatchObject({
-      proceed: true,
-    });
+    const plain = gate()(op({ op: 'exec', command: 'ls' }), probeFor());
+    ap.answerApprovalRequest(await raisedApprovalId(), 'allow_once', alice);
+    expect(await plain).toMatchObject({ proceed: true });
+    events = [];
 
     const pending = gate()(op({ op: 'exec', command: 'sudo rm -rf /opt' }), probeFor());
     const id = await raisedApprovalId();
@@ -1170,11 +1171,16 @@ describe('createComputerApprovalGate', () => {
     const g = gateMod.createComputerApprovalGate(ctx(), deps(), {
       execApprovalPatterns: ['^make deploy'],
     })!;
-    expect(await g(op({ op: 'exec', command: 'sudo ls' }), probeFor())).toMatchObject({
-      proceed: true,
-    });
+    const plain = g(op({ op: 'exec', command: 'sudo ls' }), probeFor());
+    const plainId = await raisedApprovalId();
+    expect(rules.getApprovalRequest(plainId)!.details).not.toContain('deny list');
+    ap.answerApprovalRequest(plainId, 'deny', alice);
+    expect(await plain).toMatchObject({ proceed: false });
+    events = [];
     const pending = g(op({ op: 'exec', command: 'make deploy prod' }), probeFor());
-    ap.answerApprovalRequest(await raisedApprovalId(), 'deny', alice);
+    const id = await raisedApprovalId();
+    expect(rules.getApprovalRequest(id)!.details).toContain('deny list');
+    ap.answerApprovalRequest(id, 'deny', alice);
     expect(await pending).toMatchObject({ proceed: false });
   });
 
@@ -1193,8 +1199,8 @@ describe('shell input while policies are set', () => {
     const pending = gate()(op({ op: 'exec', command: 'chromium https://shop.com' }), probeFor());
     const id = await raisedApprovalId();
     const row = rules.getApprovalRequest(id)!;
-    expect(row).toMatchObject({ action: 'exec', domain: 'shell.desktop.invalid' });
-    expect(row.details).toContain('Shell commands can reach any app or site');
+    expect(row).toMatchObject({ action: 'exec', domain: null });
+    expect(row.details).toContain('every command needs approval');
     ap.answerApprovalRequest(id, 'deny', alice);
     expect(await pending).toMatchObject({ proceed: false });
 
@@ -1213,31 +1219,100 @@ describe('shell input while policies are set', () => {
     expect(await sneaky).toMatchObject({ proceed: false });
   });
 
-  it('an explicit Allow on desktop:shell or a remembered rule trusts it', async () => {
+  it('an explicit Allow on desktop:shell or a remembered rule trusts terminal typing, not exec', async () => {
     setPolicy('shop.com', 'ask');
     setPolicy('shell.desktop.invalid', 'allow');
-    expect(await gate()(op({ op: 'exec', command: 'ls' }), probeFor())).toMatchObject({
+    expect(await gate()(op({ op: 'type', text: 'ls' }), probeFor('XTerm'))).toMatchObject({
       proceed: true,
     });
+    const exec = gate()(op({ op: 'exec', command: 'ls' }), probeFor());
+    ap.answerApprovalRequest(await raisedApprovalId(), 'deny', alice);
+    expect(await exec).toMatchObject({ proceed: false });
+
     policy.deleteBrowserDomainPolicy(profileId, 'shell.desktop.invalid');
-    const first = gate()(op({ op: 'exec', command: 'ls' }), probeFor());
+    events = [];
+    const first = gate()(op({ op: 'type', text: 'ls' }), probeFor('XTerm'));
     ap.answerApprovalRequest(await raisedApprovalId(), 'always_allow', alice);
     expect(await first).toMatchObject({ proceed: true });
     events = [];
-    expect(await gate()(op({ op: 'exec', command: 'pwd' }), probeFor())).toMatchObject({
+    expect(await gate()(op({ op: 'type', text: 'pwd' }), probeFor('XTerm'))).toMatchObject({
       proceed: true,
     });
     expect(events).toEqual([]);
-    // Still never for deny-listed commands.
-    const risky = gate()(op({ op: 'exec', command: 'sudo ls' }), probeFor());
-    ap.answerApprovalRequest(await raisedApprovalId(), 'deny', alice);
-    expect(await risky).toMatchObject({ proceed: false });
   });
 
-  it('does not ask for shell input when no policy is set at all', async () => {
-    expect(await gate()(op({ op: 'exec', command: 'ls' }), probeFor())).toMatchObject({
+  it('does not ask for terminal typing when no policy is set at all', async () => {
+    expect(await gate()(op({ op: 'type', text: 'ls' }), probeFor('XTerm'))).toMatchObject({
       proceed: true,
     });
+    expect(events).toEqual([]);
+  });
+});
+
+describe('exec and the saved-password store', () => {
+  // Commands that reach the store, named or not; plus one that does not.
+  const commands = [
+    'cat ~/.config/*/Default/Login*',
+    'f=Login; cp "$HOME/.config/x/Default/$f Data" /tmp/',
+    'python3 -c "import glob; print(glob.glob(\'/home/*/.config/*/*/L*\'))"',
+    'sqlite3 ~/.config/agent-hub-chromium/Default/"Login Data" "select * from logins"',
+    'curl -s http://127.0.0.1:9222/json/list',
+    'chromium chrome://password-manager/passwords',
+    'ls',
+  ];
+
+  async function expectAsksEveryTime(g: ReturnType<typeof gate>, command: string) {
+    for (const answer of ['always_allow', 'deny'] as const) {
+      events = [];
+      const pending = g(op({ op: 'exec', command }), probeFor());
+      const id = await raisedApprovalId();
+      const row = rules.getApprovalRequest(id)!;
+      expect(row).toMatchObject({ action: 'exec', domain: null });
+      expect(row.details).toContain('saved passwords');
+      const answered = ap.answerApprovalRequest(id, answer, alice);
+      expect(answered).toMatchObject({ ok: true, rule: null });
+      expect(await pending).toMatchObject({ proceed: answer === 'always_allow' });
+    }
+  }
+
+  it.each(commands)(
+    'asks for %s with no policy, no profile and an empty deny list',
+    async (command) => {
+      const g = gateMod.createComputerApprovalGate({ ...ctx(), agentId: 'agent-fresh' }, deps(), {
+        execApprovalPatterns: [],
+      })!;
+      await expectAsksEveryTime(g, command);
+    },
+  );
+
+  it.each(commands)('asks for %s on a shell trusted by an Allow policy', async (command) => {
+    setPolicy('shell.desktop.invalid', 'allow');
+    const g = gateMod.createComputerApprovalGate(ctx(), deps(), { execApprovalPatterns: [] })!;
+    await expectAsksEveryTime(g, command);
+  });
+
+  it.each(commands)(
+    'asks for %s on a shell trusted by a remembered Always allow',
+    async (command) => {
+      rules.saveApprovalRule({
+        profileId,
+        userId: alice,
+        domain: 'shell.desktop.invalid',
+        action: 'exec',
+        effect: 'allow',
+      });
+      const g = gateMod.createComputerApprovalGate(ctx(), deps(), { execApprovalPatterns: [] })!;
+      await expectAsksEveryTime(g, command);
+    },
+  );
+
+  it('a block policy on desktop:shell still refuses exec without asking', async () => {
+    setPolicy('shell.desktop.invalid', 'block');
+    const r = await gate()(
+      op({ op: 'exec', command: 'cat ~/.config/*/Default/Login*' }),
+      probeFor(),
+    );
+    expect(r).toMatchObject({ proceed: false, hostDetail: 'blocked' });
     expect(events).toEqual([]);
   });
 });
@@ -1312,6 +1387,23 @@ describe('runComputerReActStep with the gate', () => {
     expect(r.markdown).toContain('Host approval');
     expect(exec).toHaveBeenCalledWith(expect.anything(), 'echo hi', expect.anything());
   });
+
+  it.each(['cat ~/.config/*/Default/Login*', 'curl -s http://127.0.0.1:9222/json/list'])(
+    'never runs %s when the human denies it, even on a trusted shell',
+    async (command) => {
+      setPolicy('shell.desktop.invalid', 'allow');
+      const { runtime, exec } = fakeRuntime('XTerm');
+      const pending = runComputerReActStep(op({ op: 'exec', command }), ctx(), {
+        resolveRuntime: () => runtime,
+        gate: gate(),
+      });
+      ap.answerApprovalRequest(await raisedApprovalId(), 'deny', alice);
+      const r = await pending;
+      expect(r).toMatchObject({ hostExit: 2, hostDetail: 'approval_deny' });
+      expect(r.haltRemaining).toContain('computer exec');
+      expect(exec.mock.calls.map((c) => c[1])).not.toContain(command);
+    },
+  );
 
   /** A runtime whose focused window follows the app list, one entry per probe. */
   function focusRuntime(focusSequence: Win[], pages?: Array<{ title: string; url: string }>) {

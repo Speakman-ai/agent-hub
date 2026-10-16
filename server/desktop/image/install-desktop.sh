@@ -94,6 +94,23 @@ EOF
   chmod 0755 /usr/local/bin/chromium
 fi
 
+# Saved logins: the user saves a site's password once through the Agent
+# browser pane and Chromium refills it whenever the site signs the agent out.
+# The store lives in the persistent profile, local to this computer: sync is
+# off and leak detection is off, so neither passwords nor their hashes leave
+# it. Both paths are written so either browser picks the policy up.
+for dir in /etc/chromium/policies/managed /etc/opt/chrome/policies/managed; do
+  mkdir -p "$dir"
+  cat > "$dir/agent-hub-passwords.json" <<'EOF'
+{
+  "PasswordManagerEnabled": true,
+  "PasswordLeakDetectionEnabled": false,
+  "SyncDisabled": true,
+  "BrowserSignin": 0
+}
+EOF
+done
+
 mkdir -p /tmp/.X11-unix
 chmod 1777 /tmp/.X11-unix
 
