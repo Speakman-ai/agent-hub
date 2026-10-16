@@ -40,10 +40,13 @@ import {
   type BrowserSession,
 } from './browser.js';
 import { browserNavigate, getActivePage, type HubPage } from './browser-tools.js';
+import { browserDemoRecorder } from './browser-demo-recorder.js';
 import type { CdpSessionLike } from './browser-context-fetch-guard.js';
 import { PREVIEW_OFF_ORIGIN_HINT } from './browser-navigation-url.js';
 import {
   browserScreencastSurfaceOf,
+  isPreviewBrowserRegistryId,
+  PREVIEW_BROWSER_SESSION_PREFIX,
   previewBrowserRegistryId,
   resolveChatBrowserScreencastTarget,
   type BrowserScreencastSurface,
@@ -723,20 +726,45 @@ export function isAgentDrivingBrowser(chatSessionId: string): boolean {
 }
 
 /** Forward a human viewer's mouse / keyboard input to the agent browser. */
-export async function dispatchBrowserViewerInput(
+export function dispatchBrowserViewerInput(
   chatSessionId: string,
   input: BrowserViewerInput,
 ): Promise<BrowserViewerInputResult> {
+  // While a demo is recording (or its queue drains), human operations run in
+  // order through the recorder, so the page lookup and agent lock are checked
+  // when this input's turn comes, not when it arrived.
+  return browserDemoRecorder.record(
+    chatSessionId,
+    input,
+    () => viewerPage(chatSessionId),
+    () => dispatchViewerInputNow(chatSessionId, input),
+  );
+}
+
+function viewerPage(chatSessionId: string): ScreencastPage | null {
   const browserSessionId = resolveViewerRegistryId(chatSessionId);
   const session = browserSessionId ? getBrowserSession(browserSessionId) : undefined;
-  const page = session ? pageOf(session) : null;
-  if (!session || !page) {
+  return session ? pageOf(session) : null;
+}
+
+async function dispatchViewerInputNow(
+  chatSessionId: string,
+  input: BrowserViewerInput,
+): Promise<BrowserViewerInputResult> {
+  const page = viewerPage(chatSessionId);
+  if (!page) {
     return { ok: false, code: 'no_browser', message: 'The agent has not opened a browser yet.' };
   }
   if (isAgentDrivingBrowser(chatSessionId)) {
     return { ok: false, code: 'agent_busy', message: AGENT_BUSY_MESSAGE };
   }
+  return applyViewerInput(page, input);
+}
 
+async function applyViewerInput(
+  page: ScreencastPage,
+  input: BrowserViewerInput,
+): Promise<BrowserViewerInputResult> {
   try {
     switch (input.kind) {
       case 'mouse': {
@@ -814,7 +842,17 @@ export async function dispatchBrowserViewerInput(
  * agent already opened (loopback of that preview is allowed; leaving it is
  * not).
  */
-export async function navigateBrowserViewer(
+export function navigateBrowserViewer(
+  chatSessionId: string,
+  url: string,
+): Promise<BrowserViewerNavigateResult> {
+  // Same ordered queue as viewer input while a demo is recording or draining.
+  return browserDemoRecorder.recordNavigation(chatSessionId, () =>
+    navigateBrowserViewerNow(chatSessionId, url),
+  );
+}
+
+async function navigateBrowserViewerNow(
   chatSessionId: string,
   url: string,
 ): Promise<BrowserViewerNavigateResult> {
@@ -868,6 +906,22 @@ function previewAllowOrigins(session: BrowserSession): string[] | undefined {
     return undefined;
   }
 }
+
+browserDemoRecorder.configure({
+  currentUrl: (chatSessionId) => {
+    const id = resolveViewerRegistryId(chatSessionId);
+    const session = id ? getBrowserSession(id) : undefined;
+    return session ? safeUrl(pageOf(session)) : null;
+  },
+  isAgentDriving: isAgentDrivingBrowser,
+});
+// Agent op start/end are observation points for crediting URL changes.
+subscribeBrowserToolOpActivity((ev) => {
+  const chatSessionId = isPreviewBrowserRegistryId(ev.id)
+    ? ev.id.slice(PREVIEW_BROWSER_SESSION_PREFIX.length)
+    : ev.id;
+  browserDemoRecorder.observeAgentActivity(chatSessionId);
+});
 
 /** Test-only: drop every feed without touching Chromium. */
 export async function __resetBrowserScreencastForTests(): Promise<void> {

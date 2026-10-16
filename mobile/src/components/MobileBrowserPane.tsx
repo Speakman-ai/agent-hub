@@ -10,7 +10,7 @@ import {
   type GestureResponderEvent,
   type LayoutChangeEvent,
 } from 'react-native';
-import { Globe, KeyRound, RotateCw, X } from 'lucide-react-native';
+import { Circle, Globe, KeyRound, RotateCw, Square, X } from 'lucide-react-native';
 import { colors } from '../theme/colors';
 import { getBrowserWsUrl } from '../utils/config';
 import {
@@ -34,6 +34,13 @@ import {
   type BrowserPaneSurface,
   type BrowserPaneViewport,
 } from '@shared/utils/browserPaneInput';
+import {
+  BROWSER_PANE_RECORDING_IDLE,
+  browserPaneRecordingSavedNotice,
+  formatRecordingRemaining,
+  parseBrowserPaneRecording,
+  type BrowserPaneRecording,
+} from '@shared/utils/browserPaneRecording';
 
 const RECONNECT_DELAYS_MS = [1000, 2000, 4000, 8000, 10000];
 
@@ -74,12 +81,22 @@ export default function MobileBrowserPane({
   const [box, setBox] = useState({ width: 0, height: 0 });
   const [loginRequest, setLoginRequest] = useState<BrowserPaneLoginRequest | null>(null);
   const [loginAnswering, setLoginAnswering] = useState(false);
+  const [recording, setRecording] = useState<BrowserPaneRecording>(BROWSER_PANE_RECORDING_IDLE);
+  const [recordingPending, setRecordingPending] = useState(false);
+  const [clock, setClock] = useState(() => Date.now());
 
-  const showNotice = useCallback((text: string) => {
+  const showNotice = useCallback((text: string, ms = 2500) => {
     setNotice(text);
     if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
-    noticeTimerRef.current = setTimeout(() => setNotice(''), 2500);
+    noticeTimerRef.current = setTimeout(() => setNotice(''), ms);
   }, []);
+
+  useEffect(() => {
+    if (!recording.active) return undefined;
+    setClock(Date.now());
+    const t = setInterval(() => setClock(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [recording.active]);
 
   const sendFrame = useCallback((payload: Record<string, unknown>) => {
     const socket = socketRef.current;
@@ -128,8 +145,10 @@ export default function MobileBrowserPane({
         if (socketRef.current !== socket) return;
         attachedRef.current = true;
         setError('');
-        // The server re-sends an open sign-in request on attach.
+        // The server re-sends an open sign-in request and an active recording on attach.
         setLoginRequest(null);
+        setRecording(BROWSER_PANE_RECORDING_IDLE);
+        setRecordingPending(false);
         socket.send(JSON.stringify({ type: 'attach', maxWidth: 900, maxHeight: 700, quality: 50 }));
       };
 
@@ -186,6 +205,15 @@ export default function MobileBrowserPane({
           setLoginAnswering(false);
           if (msg.ok) setLoginRequest(null);
           else showNotice(msg.message || 'That sign-in request is no longer open');
+        } else if (msg.type === 'recording') {
+          setRecording(parseBrowserPaneRecording(msg.state));
+          setRecordingPending(false);
+        } else if (msg.type === 'recording_saved') {
+          setRecordingPending(false);
+          showNotice(browserPaneRecordingSavedNotice(msg), 6000);
+        } else if (msg.type === 'recording_error') {
+          setRecordingPending(false);
+          showNotice(msg.message || 'Recording failed', 6000);
         } else if (msg.type === 'error') {
           setStatus('error');
           setError(msg.message || 'Browser connection failed');
@@ -269,7 +297,16 @@ export default function MobileBrowserPane({
     sendFrame({ type: 'input', input: { kind: 'key', type: 'press', key } });
   };
 
+  const toggleRecording = () => {
+    if (!sendFrame({ type: recording.active ? 'record_stop' : 'record_start' })) {
+      showNotice('Not connected');
+      return;
+    }
+    setRecordingPending(true);
+  };
+
   const live = status === 'live';
+  const canRecord = live && browserPaneHasUrlBar(surface);
   const surfaceBadge = browserPaneSurfaceBadge(surface);
   // The desktop is view-only on mobile: taps and typing go through the web pane.
   const viewOnly = surface === 'desktop';
@@ -287,6 +324,31 @@ export default function MobileBrowserPane({
         <Text style={styles.status} testID="mobile-browser-status">
           {browserPaneStatusLabel(status)}
         </Text>
+        {recording.active ? (
+          <TouchableOpacity
+            onPress={toggleRecording}
+            disabled={recordingPending}
+            style={[styles.recordBtn, styles.recordStop]}
+            accessibilityLabel="Stop recording"
+            testID="mobile-browser-record-stop"
+          >
+            <Square size={9} color={colors.rose400} fill={colors.rose400} />
+            <Text style={styles.recordText} testID="mobile-browser-record-remaining">
+              Stop {formatRecordingRemaining(recording, clock)}
+            </Text>
+          </TouchableOpacity>
+        ) : canRecord ? (
+          <TouchableOpacity
+            onPress={toggleRecording}
+            disabled={recordingPending}
+            style={styles.recordBtn}
+            accessibilityLabel="Record a demo"
+            testID="mobile-browser-record"
+          >
+            <Circle size={9} color={colors.rose400} fill={colors.rose400} />
+            <Text style={styles.recordText}>Record</Text>
+          </TouchableOpacity>
+        ) : null}
         <TouchableOpacity onPress={reconnectNow} accessibilityLabel="Reconnect agent browser">
           <RotateCw size={15} color={colors.gray400} />
         </TouchableOpacity>
@@ -486,6 +548,18 @@ const styles = StyleSheet.create({
     paddingVertical: 1,
   },
   status: { flex: 1, color: colors.gray500, fontSize: 11 },
+  recordBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  recordStop: { borderColor: colors.rose400, backgroundColor: colors.red900_50 },
+  recordText: { color: colors.gray200, fontSize: 11 },
   urlRow: {
     flexDirection: 'row',
     alignItems: 'center',

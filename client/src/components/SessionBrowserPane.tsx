@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent, KeyboardEvent, PointerEvent, WheelEvent } from 'react';
-import { Globe, KeyRound, Loader2, RotateCw, X } from 'lucide-react';
+import { Circle, Globe, KeyRound, Loader2, RotateCw, Square, X } from 'lucide-react';
 import { getBrowserWsUrl } from '../utils/connection';
 import {
   BROWSER_LOGIN_BANNER_HINT,
@@ -25,6 +25,13 @@ import {
   type BrowserPaneSurface,
   type BrowserPaneViewport,
 } from '@shared/utils/browserPaneInput';
+import {
+  BROWSER_PANE_RECORDING_IDLE,
+  browserPaneRecordingSavedNotice,
+  formatRecordingRemaining,
+  parseBrowserPaneRecording,
+  type BrowserPaneRecording,
+} from '@shared/utils/browserPaneRecording';
 
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 10_000];
 const POINTER_MOVE_MIN_INTERVAL_MS = 40;
@@ -79,12 +86,23 @@ export default function SessionBrowserPane({
   const [navigating, setNavigating] = useState(false);
   const [loginRequest, setLoginRequest] = useState<BrowserPaneLoginRequest | null>(null);
   const [loginAnswering, setLoginAnswering] = useState(false);
+  const [recording, setRecording] = useState<BrowserPaneRecording>(BROWSER_PANE_RECORDING_IDLE);
+  const [recordingPending, setRecordingPending] = useState(false);
+  const [clock, setClock] = useState(() => Date.now());
 
-  const showNotice = useCallback((text: string) => {
+  const showNotice = useCallback((text: string, ms = 2_500) => {
     setNotice(text);
     if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
-    noticeTimerRef.current = setTimeout(() => setNotice(''), 2_500);
+    noticeTimerRef.current = setTimeout(() => setNotice(''), ms);
   }, []);
+
+  // Tick the recording countdown once a second while recording.
+  useEffect(() => {
+    if (!recording.active) return undefined;
+    setClock(Date.now());
+    const t = setInterval(() => setClock(Date.now()), 1_000);
+    return () => clearInterval(t);
+  }, [recording.active]);
 
   const sendFrame = useCallback((payload: Record<string, unknown>) => {
     const socket = socketRef.current;
@@ -152,8 +170,10 @@ export default function SessionBrowserPane({
         if (socketRef.current !== socket) return;
         setError('');
         attachedRef.current = true;
-        // The server re-sends an open sign-in request on attach.
+        // The server re-sends an open sign-in request and an active recording on attach.
         setLoginRequest(null);
+        setRecording(BROWSER_PANE_RECORDING_IDLE);
+        setRecordingPending(false);
         socket.send(JSON.stringify({ type: 'attach', maxWidth: 1280, maxHeight: 800 }));
       };
 
@@ -219,6 +239,21 @@ export default function SessionBrowserPane({
           setLoginAnswering(false);
           if (msg.ok) setLoginRequest(null);
           else showNotice(msg.message || 'That sign-in request is no longer open');
+          return;
+        }
+        if (msg.type === 'recording') {
+          setRecording(parseBrowserPaneRecording(msg.state));
+          setRecordingPending(false);
+          return;
+        }
+        if (msg.type === 'recording_saved') {
+          setRecordingPending(false);
+          showNotice(browserPaneRecordingSavedNotice(msg), 6_000);
+          return;
+        }
+        if (msg.type === 'recording_error') {
+          setRecordingPending(false);
+          showNotice(msg.message || 'Recording failed', 6_000);
           return;
         }
         if (msg.type === 'error') {
@@ -350,10 +385,19 @@ export default function SessionBrowserPane({
     setLoginAnswering(true);
   };
 
+  const toggleRecording = () => {
+    if (!sendFrame({ type: recording.active ? 'record_stop' : 'record_start' })) {
+      showNotice('Not connected');
+      return;
+    }
+    setRecordingPending(true);
+  };
+
   const live = status === 'live';
   const statusText = browserPaneStatusLabel(status);
   const surfaceBadge = browserPaneSurfaceBadge(surface);
   const isDesktop = surface === 'desktop';
+  const canRecord = live && browserPaneHasUrlBar(surface);
 
   return (
     <aside
@@ -386,6 +430,36 @@ export default function SessionBrowserPane({
             statusText
           )}
         </span>
+        {recording.active ? (
+          <button
+            type="button"
+            onClick={toggleRecording}
+            disabled={recordingPending}
+            className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-rose-900/70 hover:bg-rose-800/80 text-rose-100 border border-rose-700/70 disabled:opacity-50"
+            title="Stop recording and save it to Artifacts"
+            aria-label="Stop recording"
+            data-testid="session-browser-record-stop"
+          >
+            <Square size={10} className="fill-current" aria-hidden />
+            <span>Stop</span>
+            <span className="font-mono tabular-nums" data-testid="session-browser-record-remaining">
+              {formatRecordingRemaining(recording, clock)}
+            </span>
+          </button>
+        ) : canRecord ? (
+          <button
+            type="button"
+            onClick={toggleRecording}
+            disabled={recordingPending}
+            className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded text-gray-300 hover:text-gray-100 hover:bg-gray-800 border border-gray-700 disabled:opacity-50"
+            title="Record a demo: do the task once here and it is saved to Artifacts (up to 10 minutes)"
+            aria-label="Record a demo"
+            data-testid="session-browser-record"
+          >
+            <Circle size={10} className="fill-rose-500 text-rose-500" aria-hidden />
+            Record
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={reconnectNow}
@@ -542,9 +616,11 @@ export default function SessionBrowserPane({
       </div>
 
       <div className="px-3 py-1 border-t border-gray-800 text-[10px] text-gray-600 truncate">
-        {isDesktop
-          ? "Click, scroll, or type here to use the agent's desktop. Input is held while the agent is acting."
-          : "Click, scroll, or type here to act in the agent's browser. Input is held while the agent is driving."}
+        {recording.active
+          ? `Recording your clicks, typing and page changes (${recording.steps} step${recording.steps === 1 ? '' : 's'}). Password fields are masked.`
+          : isDesktop
+            ? "Click, scroll, or type here to use the agent's desktop. Input is held while the agent is acting."
+            : "Click, scroll, or type here to act in the agent's browser. Input is held while the agent is driving."}
       </div>
     </aside>
   );

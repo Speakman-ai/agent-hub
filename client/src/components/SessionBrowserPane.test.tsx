@@ -292,4 +292,70 @@ describe('SessionBrowserPane', () => {
     unmount();
     expect(socket.closed).toBe(1);
   });
+
+  it('records a demo: Record on a live browser, Stop with countdown, saved notice', () => {
+    const { socket } = mountAndOpen();
+    expect(screen.queryByTestId('session-browser-record')).toBeNull();
+    act(() =>
+      socket.receive({
+        type: 'state',
+        status: 'live',
+        url: 'https://example.com/',
+        viewport: { width: 1280, height: 720 },
+        surface: 'web',
+      }),
+    );
+    fireEvent.click(screen.getByTestId('session-browser-record'));
+    expect(socket.sent.at(-1)).toEqual({ type: 'record_start' });
+
+    const now = Date.now();
+    act(() =>
+      socket.receive({
+        type: 'recording',
+        state: {
+          active: true,
+          startedAt: now,
+          endsAt: now + 600_000,
+          maxDurationMs: 600_000,
+          steps: 2,
+        },
+      }),
+    );
+    expect(screen.getByTestId('session-browser-record-remaining').textContent).toMatch(
+      /^(10:00|9:59)$/,
+    );
+    expect(
+      screen.getByText(/Recording your clicks.*2 steps.*Password fields are masked/),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('session-browser-record-stop'));
+    expect(socket.sent.at(-1)).toEqual({ type: 'record_stop' });
+    act(() => {
+      socket.receive({ type: 'recording', state: { active: false, steps: 0 } });
+      socket.receive({
+        type: 'recording_saved',
+        artifact: { id: 'a', filename: 'browser-demo.json', url: '/x' },
+        steps: 2,
+        stopReason: 'stopped',
+      });
+    });
+    expect(screen.getByTestId('session-browser-notice').textContent).toBe(
+      'Recording saved to Artifacts (2 steps).',
+    );
+    expect(screen.getByTestId('session-browser-record')).toBeInTheDocument();
+  });
+
+  it('hides Record on the desktop surface', () => {
+    const { socket } = mountAndOpen();
+    act(() =>
+      socket.receive({
+        type: 'state',
+        status: 'live',
+        url: null,
+        viewport: null,
+        surface: 'desktop',
+      }),
+    );
+    expect(screen.queryByTestId('session-browser-record')).toBeNull();
+  });
 });

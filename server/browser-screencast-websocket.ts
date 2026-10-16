@@ -16,6 +16,8 @@
  *   - `{type:'input', input: BrowserViewerInput}`
  *   - `{type:'navigate', url}`
  *   - `{type:'login_done'|'login_cancel', requestId}` — answer a sign-in handoff
+ *   - `{type:'record_start'|'record_stop'}` — record a demo of the human's
+ *     actions (browser-demo-recorder.ts); saved as a session artifact on stop
  *
  * Server frames:
  *   - `{type:'state', status:'waiting'|'live'|'closed', url, viewport, surface}`
@@ -29,6 +31,9 @@
  *   - `{type:'error', code, message}`
  *   - `{type:'login_request', request}` — open sign-in handoff, or null when none
  *   - `{type:'login_result', ok, requestId, outcome?}`
+ *   - `{type:'recording', state}` — demo recording state (on change, and on attach while recording)
+ *   - `{type:'recording_saved', artifact, steps, stopReason}`
+ *   - `{type:'recording_error', message}`
  *
  * Backpressure: frames are dropped (never queued) while the socket buffer is
  * above the cap, so a slow viewer sees a lower frame rate rather than a
@@ -52,6 +57,13 @@ import {
   type BrowserLoginRequest,
 } from './browser-login-handoff.js';
 import { authenticateWsDetailed, type WsAuthResult } from './auth.js';
+import {
+  browserDemoRecorder,
+  type BrowserDemoRecorder,
+  type DemoRecordingState,
+  type DemoSavedArtifact,
+  type DemoStopReason,
+} from './browser-demo-recorder.js';
 import {
   userOwnsSession as defaultUserOwnsSession,
   type OwnerResolvable,
@@ -144,6 +156,8 @@ const BrowserClientFrameSchema = z.discriminatedUnion('type', [
     .strict(),
   z.object({ type: z.literal('login_done'), requestId: z.string().min(1).max(64) }).strict(),
   z.object({ type: z.literal('login_cancel'), requestId: z.string().min(1).max(64) }).strict(),
+  z.object({ type: z.literal('record_start') }).strict(),
+  z.object({ type: z.literal('record_stop') }).strict(),
 ]);
 
 export type BrowserClientFrame = z.infer<typeof BrowserClientFrameSchema>;
@@ -162,7 +176,15 @@ export type BrowserServerFrame =
       requestId: string;
       outcome?: 'done' | 'cancelled';
       message?: string;
-    };
+    }
+  | { type: 'recording'; state: DemoRecordingState }
+  | {
+      type: 'recording_saved';
+      artifact: DemoSavedArtifact;
+      steps: number;
+      stopReason: DemoStopReason;
+    }
+  | { type: 'recording_error'; message: string };
 
 /** The sign-in request as the pane sees it (no session internals). */
 export interface BrowserLoginRequestView {
@@ -207,6 +229,7 @@ export interface BrowserScreencastWebSocketDeps {
   /** Per-session gate: is the generic browser tool enabled for this session's agent? */
   browserToolsEnabled?: (sessionId: string) => boolean;
   feedHost?: BrowserScreencastFeedHost;
+  demoRecorder?: BrowserDemoRecorder;
   authenticate?: (request: IncomingMessage) => WsAuthResult;
   userOwnsSession?: (req: OwnerResolvable | undefined, sessionId: string) => boolean;
   maxPayloadBytes?: number;
@@ -258,6 +281,7 @@ export function attachBrowserScreencastWebSocket(
   const authenticate = deps.authenticate ?? authenticateWsDetailed;
   const ownsSession = deps.userOwnsSession ?? defaultUserOwnsSession;
   const feedHost = deps.feedHost ?? defaultFeedHost;
+  const recorder = deps.demoRecorder ?? browserDemoRecorder;
   const logger = deps.logger ?? { warn: (message: string) => console.warn(message) };
   const maxPayloadBytes = deps.maxPayloadBytes ?? DEFAULT_BROWSER_WS_MAX_PAYLOAD_BYTES;
   const maxBufferedBytes = deps.maxBufferedBytes ?? DEFAULT_BROWSER_WS_MAX_BUFFERED_BYTES;
@@ -369,6 +393,10 @@ export function attachBrowserScreencastWebSocket(
             sendFrame({ type: 'state', ...s });
           },
         });
+        // A fresh pane starts idle, so only an in-progress recording is worth a frame.
+        if (recorder.isRecording(sessionId)) {
+          sendFrame({ type: 'recording', state: recorder.state(sessionId) });
+        }
         const pendingLogin = getPendingBrowserLogin(sessionId);
         if (pendingLogin)
           sendFrame({ type: 'login_request', request: loginRequestView(pendingLogin) });
@@ -385,6 +413,19 @@ export function attachBrowserScreencastWebSocket(
       }
       if (!detach) {
         sendError('not_attached', 'Attach the browser before sending input');
+        return;
+      }
+      if (frame.type === 'record_start') {
+        const r = recorder.start(sessionId);
+        if (!r.ok) sendFrame({ type: 'recording_error', message: r.message });
+        return;
+      }
+      if (frame.type === 'record_stop') {
+        if (!recorder.isRecording(sessionId)) {
+          sendFrame({ type: 'recording', state: recorder.state(sessionId) });
+          return;
+        }
+        void recorder.stop(sessionId, 'stopped');
         return;
       }
       if (frame.type === 'login_done' || frame.type === 'login_cancel') {
@@ -437,9 +478,23 @@ export function attachBrowserScreencastWebSocket(
       });
     });
 
+    const unsubscribeRecorder = recorder.subscribe((ev) => {
+      if (ev.sessionId !== sessionId || !detach) return;
+      if (ev.type === 'state') sendFrame({ type: 'recording', state: ev.state });
+      else if (ev.type === 'saved') {
+        sendFrame({
+          type: 'recording_saved',
+          artifact: ev.artifact,
+          steps: ev.steps,
+          stopReason: ev.stopReason,
+        });
+      } else sendFrame({ type: 'recording_error', message: ev.message });
+    });
+
     ws.on('close', () => {
       clearTimeout(attachTimer);
       unsubscribeLogin();
+      unsubscribeRecorder();
       detachCurrent();
     });
     ws.on('error', (err) => {

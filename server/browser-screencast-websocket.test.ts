@@ -13,6 +13,7 @@ import {
   type BrowserServerFrame,
 } from './browser-screencast-websocket.js';
 import type { ScreencastViewer } from './browser-screencast.js';
+import { BrowserDemoRecorder } from './browser-demo-recorder.js';
 import { createAgentPaneFeedHost } from './agent-pane-screencast.js';
 import { createDesktopScreencastHub } from './desktop/desktop-screencast.js';
 import {
@@ -458,5 +459,55 @@ describe('agent browser WebSocket route: desktop surface', () => {
       feedHost.dispose();
       hub.dispose();
     }
+  });
+});
+
+describe('agent browser WebSocket route: demo recording', () => {
+  it('starts, reports, stops, and announces the saved artifact to the pane', async () => {
+    const recorder = new BrowserDemoRecorder({
+      currentUrl: () => 'https://example.com/',
+      save: async () => ({ id: 'art-9', filename: 'browser-demo-x.json', url: '/content' }),
+    });
+    const { url } = await makeHarness({ demoRecorder: recorder });
+    const ws = await connect(url);
+    const frames = collectFrames(ws);
+    ws.send(JSON.stringify({ type: 'record_start' }));
+    await vi.waitFor(() => expect(frames.map((f) => f.type)).toContain('error'));
+    expect(recorder.isRecording('owned')).toBe(false);
+
+    ws.send(JSON.stringify({ type: 'attach' }));
+    ws.send(JSON.stringify({ type: 'record_start' }));
+    await vi.waitFor(() =>
+      expect(frames).toContainEqual(
+        expect.objectContaining({
+          type: 'recording',
+          state: expect.objectContaining({ active: true }),
+        }),
+      ),
+    );
+    ws.send(JSON.stringify({ type: 'record_start' }));
+    await vi.waitFor(() =>
+      expect(frames).toContainEqual(expect.objectContaining({ type: 'recording_error' })),
+    );
+
+    // A second pane joining mid-recording learns it is in progress.
+    const late = await connect(url);
+    const lateFrames = collectFrames(late);
+    late.send(JSON.stringify({ type: 'attach' }));
+    await vi.waitFor(() => expect(lateFrames.map((f) => f.type)).toContain('recording'));
+
+    ws.send(JSON.stringify({ type: 'record_stop' }));
+    await vi.waitFor(() =>
+      expect(frames).toContainEqual({
+        type: 'recording_saved',
+        artifact: { id: 'art-9', filename: 'browser-demo-x.json', url: '/content' },
+        steps: 0,
+        stopReason: 'stopped',
+      }),
+    );
+    await vi.waitFor(() => expect(lateFrames.map((f) => f.type)).toContain('recording_saved'));
+    ws.close();
+    late.close();
+    recorder.resetForTests();
   });
 });

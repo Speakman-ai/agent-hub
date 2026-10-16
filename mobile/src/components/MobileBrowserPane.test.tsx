@@ -11,7 +11,14 @@ vi.mock('react-native', () => ({
   View: 'View',
 }));
 
-vi.mock('lucide-react-native', () => ({ Globe: 'Globe', RotateCw: 'RotateCw', X: 'X' }));
+vi.mock('lucide-react-native', () => ({
+  Circle: 'Circle',
+  Globe: 'Globe',
+  KeyRound: 'KeyRound',
+  RotateCw: 'RotateCw',
+  Square: 'Square',
+  X: 'X',
+}));
 vi.mock('../theme/colors', () => ({ colors: new Proxy({}, { get: () => '#000' }) }));
 vi.mock('../utils/config', () => ({
   getBrowserWsUrl: (id: string) => `wss://hub.test/api/sessions/${id}/browser/ws`,
@@ -206,5 +213,42 @@ describe('MobileBrowserPane', () => {
     expect(renderer.root.findAllByProps({ testID: 'mobile-browser-frame' })).toHaveLength(0);
     const images = renderer.root.findAllByType('Image' as any);
     expect(images.some((i) => String(i.props.source?.uri).includes('SlBFRw=='))).toBe(false);
+  });
+
+  it('records a demo from the header and reports the saved artifact', async () => {
+    const { renderer, socket } = await mount();
+    act(() =>
+      socket.receive({
+        type: 'state',
+        status: 'live',
+        url: 'https://example.com/',
+        viewport: null,
+        surface: 'web',
+      }),
+    );
+    act(() => renderer.root.findByProps({ testID: 'mobile-browser-record' }).props.onPress());
+    expect(socket.sent.at(-1)).toEqual({ type: 'record_start' });
+    const now = Date.now();
+    act(() =>
+      socket.receive({
+        type: 'recording',
+        state: { active: true, startedAt: now, endsAt: now + 600_000, steps: 0 },
+      }),
+    );
+    const remaining = renderer.root.findByProps({ testID: 'mobile-browser-record-remaining' });
+    expect([remaining.props.children].flat().join('')).toMatch(/^Stop (10:00|9:59)$/);
+    act(() => renderer.root.findByProps({ testID: 'mobile-browser-record-stop' }).props.onPress());
+    expect(socket.sent.at(-1)).toEqual({ type: 'record_stop' });
+    act(() => {
+      socket.receive({ type: 'recording', state: { active: false } });
+      socket.receive({
+        type: 'recording_saved',
+        artifact: { id: 'a' },
+        steps: 3,
+        stopReason: 'stopped',
+      });
+    });
+    expect(JSON.stringify(renderer.toJSON())).toContain('Recording saved to Artifacts (3 steps).');
+    expect(renderer.root.findAllByProps({ testID: 'mobile-browser-record-stop' })).toHaveLength(0);
   });
 });

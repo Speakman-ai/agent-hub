@@ -11,18 +11,20 @@
  */
 import { Router, Request, Response } from 'express';
 import express from 'express';
-import { v4 as uuidv4 } from 'uuid';
 import type { RouteDeps, ArtifactRow } from '../types.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { userOwnsSession, getSessionOwner } from '../session-ownership.js';
 import { validateUploadContent } from '../upload-validation.js';
 import { ensureFilenameExtension, reconcileContentType } from '../mime-extensions.js';
 import {
-  getArtifactStore,
   getArtifactStoreForLocation,
   ArtifactStoreUnavailableError,
-  buildArtifactKey,
 } from '../artifacts/artifact-store.js';
+import {
+  saveSessionArtifact,
+  toArtifactView,
+  type ArtifactView,
+} from '../artifacts/save-session-artifact.js';
 
 const MAX_ARTIFACT_SIZE = 100 * 1024 * 1024; // 100 MB — matches /api/upload.
 
@@ -55,35 +57,6 @@ function isActiveContentType(contentType: string | null | undefined): boolean {
   // Any `*+xml` (e.g. application/rss+xml) can carry script when rendered.
   if (t.endsWith('+xml')) return true;
   return false;
-}
-
-interface ArtifactView {
-  id: string;
-  sessionId: string;
-  filename: string;
-  contentType: string;
-  size: number;
-  storageKind: string;
-  createdBy: string | null;
-  createdAt: string;
-  url: string;
-}
-
-function toArtifactView(row: ArtifactRow): ArtifactView {
-  return {
-    id: row.id,
-    sessionId: row.session_id,
-    filename: row.filename,
-    // Report the reconciled type so the Artifacts panel's inline-view decision
-    // matches what the content route actually serves, even for older rows
-    // stored as a generic `application/octet-stream`.
-    contentType: reconcileContentType(row.content_type, row.filename),
-    size: row.size,
-    storageKind: row.storage_kind,
-    createdBy: row.created_by,
-    createdAt: row.created_at,
-    url: `/api/sessions/${row.session_id}/artifacts/${row.id}/content`,
-  };
 }
 
 /**
@@ -214,43 +187,21 @@ export default function createArtifactRoutes(deps: RouteDeps): Router {
         return res.status(400).json({ error: rejectReason });
       }
 
-      const id = uuidv4();
-      const store = getArtifactStore(config);
-      const key = buildArtifactKey(sessionId, id);
-      // Stamp the S3 location on the row so reads resolve the ORIGINAL bucket
-      // even if `artifactsBucket` later changes (local rows leave these NULL).
-      const storageBucket = store.kind === 's3' ? config.artifactsBucket : null;
-      const storageRegion = store.kind === 's3' ? config.artifactsBucketRegion : null;
+      let view: ArtifactView;
       try {
-        await store.put(key, buf, contentType);
+        view = await saveSessionArtifact(deps, {
+          sessionId,
+          filename,
+          contentType,
+          body: buf,
+          createdBy,
+          presentation,
+        });
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         console.error('Artifact storage write failed:', message);
         return res.status(500).json({ error: 'Failed to store artifact' });
       }
-
-      stmts.insertArtifact.run(
-        id,
-        sessionId,
-        filename,
-        contentType,
-        buf.length,
-        store.kind,
-        key,
-        storageBucket,
-        storageRegion,
-        createdBy,
-      );
-      const row = stmts.getArtifact.get(id) as ArtifactRow;
-      const view = toArtifactView(row);
-      broadcast({
-        type: 'artifact_created',
-        sessionId,
-        ownerUserId: getSessionOwner(sessionId),
-        artifact: view,
-        presentation,
-        count: artifactCount(sessionId),
-      });
       res.json(view);
     },
   );

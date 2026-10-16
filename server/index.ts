@@ -400,6 +400,8 @@ import { PtySession } from './terminal/pty-session.js';
 import { buildTerminalShellEnv } from './terminal/terminal-shell-env.js';
 import { attachTerminalWebSocket } from './terminal/terminal-websocket.js';
 import { attachBrowserScreencastWebSocket } from './browser-screencast-websocket.js';
+import { browserDemoRecorder, demoRecordingFilename } from './browser-demo-recorder.js';
+import { saveSessionArtifact } from './artifacts/save-session-artifact.js';
 import { createAgentPaneFeedHost } from './agent-pane-screencast.js';
 import { createDesktopScreencastHub } from './desktop/desktop-screencast.js';
 import { effectiveBrowserToolsEnabled } from './browser-agent-settings.js';
@@ -2651,6 +2653,18 @@ const agentPaneFeedHost = createAgentPaneFeedHost({
       if (!session || !found?.project?.id || !userId) return null;
       return { userId, agentId: session.agent_id, projectId: found.project.id };
     },
+  },
+});
+browserDemoRecorder.configure({
+  save: async (recording) => {
+    const view = await saveSessionArtifact(routeDeps, {
+      sessionId: recording.sessionId,
+      filename: demoRecordingFilename(recording.startedAt),
+      contentType: 'application/json',
+      body: Buffer.from(JSON.stringify(recording, null, 2), 'utf8'),
+      createdBy: null,
+    });
+    return { id: view.id, filename: view.filename, url: view.url };
   },
 });
 const browserScreencastWebSocket = attachBrowserScreencastWebSocket(server, {

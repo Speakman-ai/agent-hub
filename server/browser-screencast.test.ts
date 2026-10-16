@@ -19,6 +19,14 @@ import {
   type ScreencastFrame,
   type ScreencastState,
 } from './browser-screencast.js';
+import { browserDemoRecorder } from './browser-demo-recorder.js';
+import { PAGE_READ_MARKER } from './browser-demo-element.js';
+
+/** Answer a demo page read like the real script: {doc, target} from one document. */
+function pageRead(script: string, target: (mode: string) => unknown, doc = 'doc-1') {
+  const mode = script.slice(PAGE_READ_MARKER.length, script.indexOf('*/'));
+  return { doc, target: mode === 'none' ? null : target(mode) };
+}
 
 class FakeCdp {
   readonly sent: Array<{ method: string; params?: object }> = [];
@@ -386,5 +394,196 @@ describe('human input forwarding', () => {
     expect(playwrightKeyFromDomKey('ArrowLeft', { shift: true })).toBe('Shift+ArrowLeft');
     expect(playwrightKeyFromDomKey('c', { ctrl: true, alt: true })).toBe('Control+Alt+c');
     expect(playwrightKeyFromDomKey('')).toBeNull();
+  });
+});
+
+describe('demo recording of human input', () => {
+  it('records accepted human input on the pane surface, and nothing while the agent drives', async () => {
+    const { session, page } = makeFakeSession('chat-rec');
+    (page as { evaluate: unknown }).evaluate = vi.fn(async (script: string) =>
+      pageRead(script, (mode) =>
+        mode === 'focus'
+          ? { selector: '#q', text: 'Search', tag: 'input', sensitive: false }
+          : { selector: 'a#docs', text: 'Docs', tag: 'a', sensitive: false },
+      ),
+    );
+    __registerBrowserSessionForTests(session);
+    const saved: unknown[] = [];
+    browserDemoRecorder.configure({
+      save: async (r) => {
+        saved.push(r);
+        return { id: 'a', filename: 'f.json', url: '/u' };
+      },
+    });
+    try {
+      browserDemoRecorder.start('chat-rec');
+      await dispatchBrowserViewerInput('chat-rec', { kind: 'mouse', type: 'down', x: 5, y: 6 });
+      await dispatchBrowserViewerInput('chat-rec', { kind: 'text', text: 'vitest' });
+      incrementBrowserToolOpEntered('chat-rec');
+      await dispatchBrowserViewerInput('chat-rec', { kind: 'key', type: 'press', key: 'Enter' });
+      notifyBrowserToolOpEnded('chat-rec');
+      expect(await navigateBrowserViewer('chat-rec', 'https://example.org/')).toMatchObject({
+        ok: true,
+      });
+      const out = await browserDemoRecorder.stop('chat-rec');
+      expect(out?.startUrl).toBe('https://example.com/');
+      expect(out?.steps).toEqual([
+        expect.objectContaining({ type: 'click', selector: 'a#docs', text: 'Docs', x: 5, y: 6 }),
+        expect.objectContaining({ type: 'type', selector: '#q', text: 'vitest', masked: false }),
+        expect.objectContaining({
+          type: 'navigate',
+          url: 'https://example.org/',
+          source: 'url_bar',
+        }),
+      ]);
+      expect(saved).toHaveLength(1);
+    } finally {
+      browserDemoRecorder.resetForTests();
+    }
+  });
+
+  it('refuses queued human input when an agent step starts while it waits on inspection', async () => {
+    const { session, page } = makeFakeSession('chat-race');
+    let releaseInspect!: () => void;
+    const inspectGate = new Promise<void>((r) => (releaseInspect = r));
+    const inspecting = vi.fn();
+    (page as { evaluate: unknown }).evaluate = vi.fn(async (script: string) => {
+      inspecting();
+      await inspectGate;
+      return pageRead(script, () => ({
+        selector: 'button#buy',
+        text: 'Buy',
+        tag: 'button',
+        sensitive: false,
+      }));
+    });
+    __registerBrowserSessionForTests(session);
+    browserDemoRecorder.configure({
+      save: async () => ({ id: 'a', filename: 'f.json', url: '/u' }),
+    });
+    try {
+      browserDemoRecorder.start('chat-race');
+      const pending = dispatchBrowserViewerInput('chat-race', {
+        kind: 'mouse',
+        type: 'down',
+        x: 1,
+        y: 1,
+      });
+      await vi.waitFor(() => expect(inspecting).toHaveBeenCalled());
+      incrementBrowserToolOpEntered('chat-race');
+      releaseInspect();
+      expect(await pending).toMatchObject({ ok: false, code: 'agent_busy' });
+      expect(page.mouse.down).not.toHaveBeenCalled();
+      notifyBrowserToolOpEnded('chat-race');
+      expect((await browserDemoRecorder.stop('chat-race'))?.steps).toEqual([]);
+    } finally {
+      browserDemoRecorder.resetForTests();
+    }
+  });
+
+  it('credits an agent navigation between polls to the agent (op activity wiring)', async () => {
+    const { session, page } = makeFakeSession('chat-agentnav');
+    __registerBrowserSessionForTests(session);
+    browserDemoRecorder.configure({
+      save: async () => ({ id: 'a', filename: 'f.json', url: '/u' }),
+    });
+    try {
+      browserDemoRecorder.start('chat-agentnav');
+      // The whole agent op happens well inside one poll interval.
+      incrementBrowserToolOpEntered('chat-agentnav');
+      await page.goto('https://example.com/agent-did-this');
+      notifyBrowserToolOpEnded('chat-agentnav');
+      const out = await browserDemoRecorder.stop('chat-agentnav');
+      expect(out?.steps).toEqual([]);
+    } finally {
+      browserDemoRecorder.resetForTests();
+    }
+  });
+
+  it('queues URL-bar navigation behind input still waiting on inspection', async () => {
+    const { session, page } = makeFakeSession('chat-navq');
+    let releaseInspect!: () => void;
+    const inspectGate = new Promise<void>((r) => (releaseInspect = r));
+    const order: string[] = [];
+    (page as { evaluate: unknown }).evaluate = vi.fn(async (script: string) => {
+      await inspectGate;
+      return pageRead(script, () => ({
+        selector: 'button#add',
+        text: 'Add to cart',
+        tag: 'button',
+        sensitive: false,
+      }));
+    });
+    page.mouse.down.mockImplementation(async () => {
+      order.push(`down@${page.url()}`);
+    });
+    page.goto.mockImplementation(async (u: string) => {
+      order.push('goto');
+      (page as { url: () => string }).url = () => u;
+    });
+    __registerBrowserSessionForTests(session);
+    browserDemoRecorder.configure({
+      save: async () => ({ id: 'a', filename: 'f.json', url: '/u' }),
+    });
+    try {
+      browserDemoRecorder.start('chat-navq');
+      const clicked = dispatchBrowserViewerInput('chat-navq', {
+        kind: 'mouse',
+        type: 'down',
+        x: 1,
+        y: 1,
+      });
+      const navigated = navigateBrowserViewer('chat-navq', 'https://example.org/');
+      await new Promise((r) => setTimeout(r, 10));
+      expect(order).toEqual([]);
+      releaseInspect();
+      await Promise.all([clicked, navigated]);
+      expect(order).toEqual(['down@https://example.com/', 'goto']);
+      const out = await browserDemoRecorder.stop('chat-navq');
+      expect(out?.steps).toEqual([
+        expect.objectContaining({
+          type: 'click',
+          url: 'https://example.com/',
+          selector: 'button#add',
+        }),
+        expect.objectContaining({ type: 'navigate', source: 'url_bar' }),
+      ]);
+    } finally {
+      browserDemoRecorder.resetForTests();
+    }
+  });
+
+  it('does not trust an inspection the agent invalidated before it resolved', async () => {
+    const { session, page } = makeFakeSession('chat-stale');
+    let focused = { selector: '#q', text: 'Search', tag: 'input', sensitive: false };
+    let first = true;
+    (page as { evaluate: unknown }).evaluate = vi.fn(async (script: string) => {
+      const seen = focused;
+      if (first) {
+        first = false;
+        // A whole agent op runs (and ends) while the first inspection is in flight.
+        incrementBrowserToolOpEntered('chat-stale');
+        focused = { selector: '#pw', text: 'Password', tag: 'input', sensitive: true };
+        notifyBrowserToolOpEnded('chat-stale');
+      }
+      return pageRead(script, () => seen);
+    });
+    __registerBrowserSessionForTests(session);
+    browserDemoRecorder.configure({
+      save: async () => ({ id: 'a', filename: 'f.json', url: '/u' }),
+    });
+    try {
+      browserDemoRecorder.start('chat-stale');
+      expect(
+        await dispatchBrowserViewerInput('chat-stale', { kind: 'text', text: 'hunter2' }),
+      ).toEqual({
+        ok: true,
+      });
+      const out = await browserDemoRecorder.stop('chat-stale');
+      expect(out?.steps).toEqual([expect.objectContaining({ type: 'type', masked: true })]);
+      expect(JSON.stringify(out)).not.toContain('hunter2');
+    } finally {
+      browserDemoRecorder.resetForTests();
+    }
   });
 });
