@@ -312,6 +312,15 @@ describe("this repo's .agent-hub/deploy.yaml", () => {
     expect(mobile.steps[0].run).toContain('--non-interactive');
     expect(mobile.steps[0].run).not.toMatch(/\b(?:gh|github)\b/i);
   });
+
+  it('pins the App Store Connect app id so non-interactive submit can run', () => {
+    // `eas submit --non-interactive` cannot look up the App Store Connect app
+    // and fails with "Set ascAppId in the submit profile" without this.
+    const eas = JSON.parse(
+      readFileSync(fileURLToPath(new URL('../../mobile/eas.json', import.meta.url)), 'utf8'),
+    ) as { submit?: { production?: { ios?: { ascAppId?: unknown } } } };
+    expect(eas.submit?.production?.ios?.ascAppId).toMatch(/^\d+$/);
+  });
 });
 
 describe('resolveDeployEnvironment', () => {
