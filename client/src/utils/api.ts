@@ -2406,6 +2406,11 @@ export const api = {
     fetchJSON<{ url: string }>(`/projects/${projectId}/pulls/${number}/preview/access`, {
       method: 'POST',
     }),
+  generatePrEnvironmentSharePassword: (projectId: string) =>
+    fetchJSON(`/projects/${projectId}/preview-share/password`, {
+      method: 'PUT',
+      body: JSON.stringify({ generate: true }),
+    }),
   setPrEnvironmentSharePassword: (projectId: string, password: string | null) =>
     fetchJSON(`/projects/${projectId}/preview-share/password`, {
       method: 'PUT',

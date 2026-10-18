@@ -29,6 +29,7 @@ vi.mock('../utils/api', () => ({
     createPrEnvironmentShareLink: vi.fn(),
     revokePrEnvironmentShareLink: vi.fn(),
     setPrEnvironmentSharePassword: vi.fn(),
+    generatePrEnvironmentSharePassword: vi.fn(),
   },
 }));
 
@@ -65,6 +66,42 @@ const click = async (el: Element | null) => {
 };
 
 describe('mobile PrEnvironmentShareLinks', () => {
+  it('reveals, copies and rotates the generated URL guard password', async () => {
+    const data = {
+      links: [],
+      passwordRequired: true,
+      generatedPassword: 'generated-guard-password',
+      canManage: true,
+      canSetPassword: true,
+    };
+    mocked.listPrEnvironmentShareLinks.mockReset().mockResolvedValue(data);
+    mocked.generatePrEnvironmentSharePassword.mockImplementation(async () => {
+      mocked.listPrEnvironmentShareLinks.mockResolvedValue({
+        ...data,
+        generatedPassword: 'replacement-password',
+      });
+      return { passwordRequired: true };
+    });
+    const el = await mount();
+    await click(el.querySelector('[aria-label="Share links"]'));
+    expect(el.textContent).not.toContain(data.generatedPassword);
+    await click(el.querySelector('[aria-label="Reveal password"]'));
+    expect(el.textContent).toContain(data.generatedPassword);
+    await click(el.querySelector('[aria-label="Copy password"]'));
+    expect(copyToClipboard).toHaveBeenCalledWith(data.generatedPassword);
+    await click(el.querySelector('[aria-label="Hide password"]'));
+    expect(el.textContent).not.toContain(data.generatedPassword);
+    await click(el.querySelector('[aria-label="Generate new password"]'));
+    expect(mocked.generatePrEnvironmentSharePassword).toHaveBeenCalledWith('demo');
+    expect(el.textContent).not.toContain('replacement-password');
+    await click(el.querySelector('[aria-label="Reveal password"]'));
+    expect(el.textContent).toContain('replacement-password');
+    flushSync(() => root!.render(<PrEnvironmentShareLinks projectId="demo" prNumber={8} />));
+    await settle();
+    await settle();
+    expect(el.textContent).not.toContain('replacement-password');
+  });
+
   it('renders nothing without wildcard ingress', async () => {
     mocked.listPrEnvironmentShareLinks.mockRejectedValue(
       Object.assign(new Error('no ingress'), {

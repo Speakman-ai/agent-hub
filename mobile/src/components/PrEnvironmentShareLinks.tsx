@@ -52,6 +52,7 @@ export default function PrEnvironmentShareLinks({
   const [hours, setHours] = useState(DEFAULT_SHARE_LINK_HOURS);
   const [label, setLabel] = useState('');
   const [password, setPassword] = useState('');
+  const [revealedPassword, setRevealedPassword] = useState<string | null>(null);
   const [busyFor, setBusyFor] = useState<string | null>(null);
   const busy = busyFor === key;
 
@@ -73,6 +74,7 @@ export default function PrEnvironmentShareLinks({
     dispatch({ type: 'reset', key, seq: ++seqRef.current });
     setLabel('');
     setPassword('');
+    setRevealedPassword(null);
     setHours(DEFAULT_SHARE_LINK_HOURS);
     void load();
   }, [key, load]);
@@ -85,9 +87,9 @@ export default function PrEnvironmentShareLinks({
     return () => clearTimeout(timer);
   }, [retryArmed, load]);
 
-  const copy = async (url: string) => {
+  const copy = async (url: string, kind = 'Share link') => {
     const ok = await copyToClipboard(url);
-    onMessage?.(ok ? 'Share link copied' : 'Could not copy the link');
+    onMessage?.(ok ? `${kind} copied` : `Could not copy ${kind.toLowerCase()}`);
   };
 
   /**
@@ -156,6 +158,46 @@ export default function PrEnvironmentShareLinks({
       {list.status === 'error' ? errorRow('Could not refresh') : null}
       {open ? (
         <View style={styles.body}>
+          {data.generatedPassword ? (
+            <View style={styles.block}>
+              <Text style={styles.muted}>Agent Hub URL guard password</Text>
+              <Text selectable style={styles.text}>
+                {revealedPassword === data.generatedPassword
+                  ? data.generatedPassword
+                  : '••••••••••••'}
+              </Text>
+              <View style={styles.row}>
+                <TouchableOpacity
+                  onPress={() =>
+                    setRevealedPassword(
+                      revealedPassword === data.generatedPassword ? null : data.generatedPassword!,
+                    )
+                  }
+                  accessibilityLabel={
+                    revealedPassword === data.generatedPassword
+                      ? 'Hide password'
+                      : 'Reveal password'
+                  }
+                >
+                  <Text style={styles.action}>
+                    {revealedPassword === data.generatedPassword
+                      ? 'Hide password'
+                      : 'Reveal password'}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => void copy(data.generatedPassword!, 'Password')}
+                  accessibilityLabel="Copy password"
+                >
+                  <Text style={styles.action}>Copy password</Text>
+                </TouchableOpacity>
+              </View>
+              <Text style={styles.muted}>
+                Use this password to unlock the environment URL. It is shared across this project's
+                PR environments.
+              </Text>
+            </View>
+          ) : null}
           {data.canManage ? (
             <View style={styles.block}>
               <TextInput
@@ -245,9 +287,28 @@ export default function PrEnvironmentShareLinks({
           {data.canSetPassword ? (
             <View style={[styles.block, styles.divider]}>
               <Text style={styles.muted}>
-                Project password {data.passwordRequired ? 'is set' : 'is off'}
+                URL guard password {data.passwordRequired ? 'is set' : 'is off'}
               </Text>
               <View style={styles.row}>
+                <TouchableOpacity
+                  disabled={busy}
+                  onPress={() =>
+                    void mutate(
+                      () => api.generatePrEnvironmentSharePassword(projectId),
+                      () => setRevealedPassword(null),
+                      'Failed to generate the password',
+                    )
+                  }
+                  accessibilityLabel="Generate new password"
+                >
+                  <Text style={styles.action}>Generate new password</Text>
+                </TouchableOpacity>
+                {data.passwordRequired && !data.generatedPassword ? (
+                  <Text style={styles.muted}>
+                    The custom password cannot be revealed. Generate a new password to reveal and
+                    copy it.
+                  </Text>
+                ) : null}
                 <TextInput
                   value={password}
                   onChangeText={setPassword}

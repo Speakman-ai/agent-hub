@@ -58,6 +58,43 @@ function mkLink(
   });
 }
 
+describe('generated guard passwords', () => {
+  it('survives store recreation, including rotation, without storing the password', () => {
+    const db = new Database(':memory:');
+    db.exec(PR_ENVIRONMENT_SHARE_SCHEMA);
+    const first = createPrEnvironmentShareStore(db);
+    const password = first.getGeneratedPassword('demo');
+    expect(password).toMatch(/^[A-Za-z0-9_-]{24}$/);
+    expect(createPrEnvironmentShareStore(db).getGeneratedPassword('demo')).toBe(password);
+    first.generatePassword('demo', 1000);
+    const rotated = first.getGeneratedPassword('demo');
+    expect(rotated).not.toBe(password);
+    expect(createPrEnvironmentShareStore(db).getGeneratedPassword('demo')).toBe(rotated);
+    const row = db.prepare('SELECT * FROM pr_environment_share_settings').get();
+    expect(JSON.stringify(row)).not.toContain(rotated!);
+    db.close();
+  });
+
+  it('invalidates unlocks even when two password changes share a timestamp', () => {
+    const store = freshStore();
+    store.generatePassword('demo', 1000);
+    const unlock = mintPasswordUnlock(
+      store.secret(),
+      'demo',
+      store.getPassword('demo')!.updatedAt,
+      1000,
+      7,
+    );
+    const cookie = `${PASSWORD_COOKIE}=${unlock}`;
+    expect(decideAccess(store, cookie, ENV, 1000).ok).toBe(true);
+    store.generatePassword('demo', 1000);
+    expect(decideAccess(store, cookie, ENV, 1000).ok).toBe(false);
+    store.setPassword('demo', null, 1000);
+    expect(store.getPassword('demo')).toBeNull();
+    expect(decideAccess(store, cookie, ENV, 1000).ok).toBe(false);
+  });
+});
+
 describe('share tokens', () => {
   it('verifies a minted token for its own environment', () => {
     const store = freshStore();
@@ -167,6 +204,40 @@ describe('cookies', () => {
     expect(stripAccessCookies('ah_pr_env=x')).toBeUndefined();
     expect(stripAccessCookies(undefined)).toBeUndefined();
   });
+
+  it.each(['share', 'member'] as const)(
+    'accepts a PR-scoped password unlock alongside an expired %s cookie',
+    (kind) => {
+      const store = freshStore();
+      const issuedAt = 1000;
+      const now = issuedAt + MEMBER_SESSION_TTL_MS;
+      const token =
+        kind === 'share'
+          ? shareTokenFor(store.secret(), mkLink(store, issuedAt, { hours: 1 }))
+          : mintMemberSession(store.secret(), ENV, 'u1', issuedAt);
+      const accessCookie = `${ACCESS_COOKIE}=${token}`;
+      expect(decideAccess(store, accessCookie, ENV, now)).toEqual({ ok: false, reason: 'expired' });
+
+      const passwordVersion = store.getPassword('demo')!.updatedAt;
+      const unlock = mintPasswordUnlock(store.secret(), 'demo', passwordVersion, now, 7);
+      const cookie = `${accessCookie}; ${PASSWORD_COOKIE}=${unlock}`;
+      expect(decideAccess(store, cookie, ENV, now)).toEqual({ ok: true, kind: 'password' });
+      expect(decideAccess(store, cookie, { ...ENV, prNumber: 8 }, now).ok).toBe(false);
+      expect(decideAccess(store, cookie, { ...ENV, projectId: 'other' }, now).ok).toBe(false);
+      expect(decideAccess(freshStore(), cookie, ENV, now).ok).toBe(false);
+      expect(decideAccess(store, cookie, ENV, now + 12 * HOUR).ok).toBe(false);
+
+      // Old project-only unlocks still require a usable share link.
+      const legacy = mintPasswordUnlock(store.secret(), 'demo', passwordVersion, now);
+      expect(
+        decideAccess(store, `${accessCookie}; ${PASSWORD_COOKIE}=${legacy}`, ENV, now).ok,
+      ).toBe(false);
+      store.generatePassword('demo', now);
+      expect(decideAccess(store, cookie, ENV, now).ok).toBe(false);
+      store.setPassword('demo', null, now);
+      expect(decideAccess(store, cookie, ENV, now).ok).toBe(false);
+    },
+  );
 
   it('a password unlock dies when the password changes', async () => {
     const store = freshStore();
@@ -290,7 +361,74 @@ describe('gated ingress', () => {
     return hit ? hit.split(';')[0] : null;
   };
 
+  it('the default password unlocks the bare URL and expires when rotated', async () => {
+    const locked = await request(hubUrl).get('/').set('Host', host(7));
+    expect(locked.status).toBe(401);
+    expect(locked.text).toContain('Password required');
+    const password = store.getGeneratedPassword('demo')!;
+    expect(locked.text).not.toContain(password);
+    const wrong = await request(hubUrl)
+      .post(UNLOCK_PATH)
+      .set('Host', host(7))
+      .type('form')
+      .send({ password: 'wrong' });
+    expect(wrong.status).toBe(401);
+    const right = await request(hubUrl)
+      .post(UNLOCK_PATH)
+      .set('Host', host(7))
+      .set('X-Forwarded-Proto', 'https')
+      .type('form')
+      .send({ password });
+    expect(right.status).toBe(303);
+    const cookie = cookieFrom(right.headers['set-cookie'] as unknown as string[], PASSWORD_COOKIE)!;
+    expect(right.headers['set-cookie'][0]).toContain('HttpOnly; SameSite=Lax; Secure');
+    expect(right.headers['set-cookie'][0]).not.toContain('Domain=');
+    const app = await request(hubUrl).get('/').set('Host', host(7)).set('Cookie', cookie);
+    expect(app.text).toBe('app:/');
+    expect(seenCookies).toEqual([undefined]);
+    expect(decideAccess(store, cookie, ENV, clock + 12 * HOUR).ok).toBe(false);
+    expect(decideAccess(store, cookie, { projectId: 'other', prNumber: 7 }, clock).ok).toBe(false);
+    expect(decideAccess(store, cookie, { projectId: 'demo', prNumber: 8 }, clock).ok).toBe(false);
+    const echoed = await new Promise<string>((resolve, reject) => {
+      const ws = new WebSocket(hubUrl.replace('http', 'ws'), {
+        headers: { Host: host(7), Cookie: cookie },
+      });
+      ws.on('open', () => ws.send('password-access'));
+      ws.on('message', (m) => {
+        resolve(String(m));
+        ws.close();
+      });
+      ws.on('error', reject);
+    });
+    expect(echoed).toBe('echo:password-access');
+    store.generatePassword('demo', clock);
+    expect((await request(hubUrl).get('/').set('Host', host(7)).set('Cookie', cookie)).status).toBe(
+      401,
+    );
+  });
+
+  it('rate limits attempts to unlock a bare URL', async () => {
+    for (let i = 0; i < 10; i++) {
+      const res = await request(hubUrl)
+        .post(UNLOCK_PATH)
+        .set('Host', host(7))
+        .set('X-Forwarded-For', '192.0.2.10')
+        .type('form')
+        .send({ password: 'wrong' });
+      expect(res.status).toBe(401);
+    }
+    const limited = await request(hubUrl)
+      .post(UNLOCK_PATH)
+      .set('Host', host(7))
+      .set('X-Forwarded-For', '192.0.2.10')
+      .type('form')
+      .send({ password: store.getGeneratedPassword('demo') });
+    expect(limited.status).toBe(429);
+    expect(seenCookies).toHaveLength(0);
+  });
+
   it('a logged-out browser gets the access page, never the app', async () => {
+    store.setPassword('demo', null, clock);
     const res = await request(hubUrl).get('/').set('Host', host(7));
     expect(res.status).toBe(401);
     expect(res.text).toContain('Access required');
@@ -299,6 +437,7 @@ describe('gated ingress', () => {
   });
 
   it('a valid share link sets a host-only cookie, drops the token from the URL, then serves the app', async () => {
+    store.setPassword('demo', null, clock);
     const token = shareTokenFor(store.secret(), mkLink(store, clock));
     const first = await request(hubUrl).get(`/docs?x=1&share=${token}`).set('Host', host(7));
     expect(first.status).toBe(303);
@@ -426,6 +565,7 @@ describe('gated ingress', () => {
   });
 
   it('refuses a websocket upgrade without access and tunnels one with it', async () => {
+    store.setPassword('demo', null, clock);
     const wsUrl = hubUrl.replace('http', 'ws');
     const denied = await new Promise<number>((resolve) => {
       const ws = new WebSocket(wsUrl, { headers: { Host: host(7) } });
