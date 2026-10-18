@@ -910,7 +910,9 @@ describe('agent digests', () => {
     const { channel, digest } = agentDigest();
     const { deps, runFailover } = runDeps();
     const runAgentTurn = vi.fn().mockReturnValue({ sessionId: 's-1', skippedSkills: [] });
-    const now = new Date('2026-10-16T14:00:00.000Z');
+    // window_start is stamped from the real clock at creation; a fixed `now`
+    // earlier than that clamps the window and drops window_start from the prompt.
+    const now = new Date(Date.parse(digest.window_start) + 60 * 60 * 1000);
 
     // An empty window: a summary digest would skip, an agent digest still runs.
     const result = await digests.runChannelDigest(digest, now, { ...deps, runAgentTurn });

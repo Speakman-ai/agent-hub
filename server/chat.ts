@@ -106,7 +106,13 @@ import {
   handleCardAutoClose,
 } from './card-auto-close.js';
 import { detectPreviewBlock, describePreviewReason } from './preview/preview-block.js';
-import { handleMutatingToolUseForCodeChange } from './code-change-tracker.js';
+import {
+  clearMutatingToolUses,
+  flushScheduledPreviewRefresh,
+  handleMutatingToolUseForCodeChange,
+  noteMutatingToolUse,
+  refreshPreviewAfterMutatingToolResult,
+} from './code-change-tracker.js';
 import {
   notePreviewWatchToolResult,
   notePreviewWatchToolUse,
@@ -1652,6 +1658,84 @@ export function consumePendingSkillInjection(
     console.error('[skill-invoke] failed to clear pending_skill_context:', message);
     return { suffix: '', forceSystemPromptThisTurn: false };
   }
+}
+
+/**
+ * Room left in the argv budget for what gets wrapped around the user turn
+ * after the observation is attached: the background-bash notice, image
+ * paths, and the local-commit reminder pinned at the tail.
+ */
+export const PENDING_OBSERVATION_ARGV_RESERVE_BYTES = 8 * 1024;
+
+const PENDING_OBSERVATION_TRUNCATED_MARKER =
+  '\n\n[Truncated: observation clipped to fit the engine argv cap]';
+
+/**
+ * Attach a one-shot tool observation to the user turn.
+ *
+ * Preview screenshots, wiki hits, and skill bodies used to be appended only
+ * to the enriched system prompt. Resume keeps the original system prompt
+ * (`--resume` / Cursor rules already loaded), so the next turn's user message
+ * was just "continue using the newly loaded context" with the context itself
+ * missing. The user turn is re-sent on every engine, so the observation goes
+ * there.
+ *
+ * The user turn rides argv on Claude/Cursor/Gemini, and `applyArgvPromptCap`
+ * keeps only the tail. Pending context may be larger than that cap, so the
+ * observation is clipped to whatever the current request leaves free and is
+ * placed before the request: the request always survives intact.
+ */
+export function attachPendingObservationToUserTurn(
+  cliContent: string,
+  pendingSuffix: string,
+  argvCapBytes: number = SAFE_ARG_STRLEN_BYTES,
+): string {
+  const suffix = pendingSuffix.trim();
+  if (!suffix) return cliContent;
+  const base = cliContent.trim();
+  if (!base) {
+    return clipUtf8StringToMaxBytes(suffix, argvCapBytes - PENDING_OBSERVATION_ARGV_RESERVE_BYTES);
+  }
+
+  const separator = '\n\n';
+  const budget =
+    argvCapBytes -
+    PENDING_OBSERVATION_ARGV_RESERVE_BYTES -
+    Buffer.byteLength(base, 'utf8') -
+    Buffer.byteLength(separator, 'utf8');
+  let observation = suffix;
+  if (Buffer.byteLength(observation, 'utf8') > budget) {
+    const markerBytes = Buffer.byteLength(PENDING_OBSERVATION_TRUNCATED_MARKER, 'utf8');
+    if (budget <= markerBytes) return base;
+    observation =
+      clipUtf8StringToMaxBytes(observation, budget - markerBytes) +
+      PENDING_OBSERVATION_TRUNCATED_MARKER;
+  }
+  return `${observation}${separator}${base}`;
+}
+
+/**
+ * Decide where one-shot pending context rides this turn. A fresh engine
+ * session reads the whole enriched prompt from a file with no argv cap, so
+ * pending context (SideBar transcript seeds, observations) stays there. A
+ * resumed session does not re-read the system prompt, so the context goes on
+ * the user turn, budgeted against the argv cap.
+ */
+export function routePendingContext(args: {
+  resumingEngineSession: boolean;
+  cliContent: string;
+  enrichedPrompt: string;
+  pendingSuffix: string;
+}): { cliContent: string; enrichedPrompt: string } {
+  const { resumingEngineSession, cliContent, enrichedPrompt, pendingSuffix } = args;
+  if (!pendingSuffix.trim()) return { cliContent, enrichedPrompt };
+  if (!resumingEngineSession) {
+    return { cliContent, enrichedPrompt: enrichedPrompt + pendingSuffix };
+  }
+  return {
+    cliContent: attachPendingObservationToUserTurn(cliContent, pendingSuffix),
+    enrichedPrompt,
+  };
 }
 
 export { stripAssistantControlBlocks };
@@ -3266,7 +3350,14 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         consumePendingSkillInjection(session!.pending_skill_context, () =>
           stmts.updateSessionPendingSkillContext.run(null, sessionId),
         );
-      if (pendingSkillSuffix) enrichedPrompt += pendingSkillSuffix;
+      if (pendingSkillSuffix) {
+        ({ cliContent, enrichedPrompt } = routePendingContext({
+          resumingEngineSession: !!session!.engine_session_id,
+          cliContent,
+          enrichedPrompt,
+          pendingSuffix: pendingSkillSuffix,
+        }));
+      }
       if (slashSkillSuffix) enrichedPrompt += slashSkillSuffix;
       if (routedSkillSuffix) enrichedPrompt += routedSkillSuffix;
 
@@ -5241,6 +5332,12 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             worktreePath: effectiveCwd,
             getDevServerRuntime,
           });
+          noteMutatingToolUse(
+            sessionId,
+            typeof event.id === 'string' ? event.id : undefined,
+            event.tool,
+            toolInput,
+          );
           notePreviewWatchToolUse(
             sessionId,
             typeof event.id === 'string' ? event.id : undefined,
@@ -5257,6 +5354,18 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             worktreePath: effectiveCwd,
             getDevServerRuntime,
           });
+          refreshPreviewAfterMutatingToolResult(
+            sessionId,
+            event.toolUseId,
+            event.isError === true,
+            {
+              stmts: S,
+              broadcast,
+              project,
+              worktreePath: effectiveCwd,
+              getDevServerRuntime,
+            },
+          );
           // Resolves a background launch's shell handle, and retires a shell
           // whose BashOutput poll came back with a terminal status.
           noteEphemeralBackgroundBashToolResult(
@@ -7081,8 +7190,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             console.error('[Preview] Failed to broadcast malformed-block notice:', err);
           }
         }
-        const sessionAfterTurn = stmts.getSession.get(sessionId) as SessionRow | undefined;
-        if (sessionAfterTurn?.code_changed_at) {
+        clearMutatingToolUses(sessionId);
+        // Reload even when `code_changed_at` was never set. Parallel writes
+        // all start before git can see them, so that flag stays null for the
+        // whole turn and the iframe would keep the old page.
+        if (!flushScheduledPreviewRefresh(sessionId, previewSyncDeps)) {
           void syncPreviewAfterWorktreeTurnIfDirty(sessionId, effectiveCwd, previewSyncDeps);
         }
 

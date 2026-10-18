@@ -144,6 +144,8 @@ export async function markCodeChangedIfDirty(
 export interface CodeChangePreviewSyncDeps extends CodeChangeTrackerDeps, PreviewWorktreeSyncDeps {
   project: Project;
   worktreePath: string;
+  /** Test hook. Production uses a timer that does not keep the process alive. */
+  schedule?: (fn: () => void, ms: number) => void;
 }
 
 /**
@@ -160,8 +162,110 @@ export function maybeAutoStartPreviewOnCodeChange(
 }
 
 /**
- * Turn-end hot reload: reload the preview iframe when this session recorded
- * a code change during the turn (caller gates on `code_changed_at`).
+ * Wait until a burst of writes settles before reloading the iframe, so the
+ * dev server has the new files compiled and a multi-file edit reloads once.
+ */
+export const PREVIEW_REFRESH_AFTER_WRITE_MS = 800;
+
+const pendingMutatingBySession = new Map<string, Set<string>>();
+/**
+ * Token of the write-refresh each session is waiting on. Tokens come from one
+ * counter and are never reused, so a timer whose schedule was flushed or
+ * superseded can never match a later schedule for the same session.
+ */
+const refreshTokenBySession = new Map<string, number>();
+let nextRefreshToken = 0;
+
+function defaultRefreshSchedule(fn: () => void, ms: number): void {
+  const timer = setTimeout(fn, ms);
+  timer.unref?.();
+}
+
+/**
+ * Remember a tool call that may write files. The call is recorded when it
+ * starts; the preview reload waits for its result, because `tool_use` fires
+ * before the write and a git check at that moment still sees a clean tree.
+ */
+export function noteMutatingToolUse(
+  sessionId: string,
+  toolUseId: string | undefined,
+  tool: string,
+  input: Record<string, unknown>,
+): void {
+  if (!toolUseId || !isMutatingToolUse(tool, input)) return;
+  let pending = pendingMutatingBySession.get(sessionId);
+  if (!pending) {
+    pending = new Set();
+    pendingMutatingBySession.set(sessionId, pending);
+  }
+  pending.add(toolUseId);
+}
+
+/**
+ * A remembered write just finished. Reload the preview after a short quiet
+ * period. Git status is not consulted: parallel tool calls all start before
+ * any write lands, so a cleanliness check at `tool_use` time skips the reload
+ * for the whole turn.
+ */
+export function refreshPreviewAfterMutatingToolResult(
+  sessionId: string,
+  toolUseId: string,
+  isError: boolean,
+  deps: CodeChangePreviewSyncDeps,
+): void {
+  const pending = pendingMutatingBySession.get(sessionId);
+  if (!pending?.delete(toolUseId)) return;
+  if (pending.size === 0) pendingMutatingBySession.delete(sessionId);
+  if (isError) return;
+  void markCodeChangedIfDirty(sessionId, deps.worktreePath, deps);
+  schedulePreviewRefreshAfterWrite(sessionId, deps);
+}
+
+/** Drop tool calls whose results never arrived (killed turn). */
+export function clearMutatingToolUses(sessionId: string): void {
+  pendingMutatingBySession.delete(sessionId);
+}
+
+function schedulePreviewRefreshAfterWrite(
+  sessionId: string,
+  deps: CodeChangePreviewSyncDeps,
+): void {
+  nextRefreshToken += 1;
+  const token = nextRefreshToken;
+  refreshTokenBySession.set(sessionId, token);
+  const schedule = deps.schedule ?? defaultRefreshSchedule;
+  schedule(() => {
+    if (refreshTokenBySession.get(sessionId) !== token) return;
+    refreshTokenBySession.delete(sessionId);
+    broadcastPreviewRefreshIfReady(sessionId, deps, {
+      force: true,
+      reason: 'Files changed during turn',
+    });
+  }, PREVIEW_REFRESH_AFTER_WRITE_MS);
+}
+
+/**
+ * The turn ended while a write-refresh was still waiting out its quiet
+ * period. Reload now instead of holding the iframe for the rest of the
+ * debounce. Returns false when nothing was waiting.
+ */
+export function flushScheduledPreviewRefresh(
+  sessionId: string,
+  deps: PreviewWorktreeSyncDeps,
+): boolean {
+  if (!refreshTokenBySession.has(sessionId)) return false;
+  refreshTokenBySession.delete(sessionId);
+  broadcastPreviewRefreshIfReady(sessionId, deps, {
+    force: true,
+    reason: 'Turn finished — reloading preview',
+  });
+  return true;
+}
+
+/**
+ * Turn-end hot reload: reload the preview iframe when the worktree is dirty.
+ * Callers should not also require `code_changed_at` — that flag is set from
+ * the same git check, which misses a turn whose writes all started together.
  */
 export async function syncPreviewAfterWorktreeTurnIfDirty(
   sessionId: string,
@@ -177,6 +281,10 @@ export async function syncPreviewAfterWorktreeTurnIfDirty(
 
 /**
  * Fire-and-forget hook from chat stream `tool_use` events.
+ *
+ * Marks the session when git already sees the edit. Does not reload the
+ * preview: this event arrives before the write, and a reload here shows the
+ * previous page. The reload is `refreshPreviewAfterMutatingToolResult`.
  */
 export function handleMutatingToolUseForCodeChange(
   sessionId: string,
@@ -185,16 +293,7 @@ export function handleMutatingToolUseForCodeChange(
   deps: CodeChangePreviewSyncDeps,
 ): void {
   if (!isMutatingToolUse(tool, input)) return;
-  void (async () => {
-    const row = deps.stmts.getSession.get(sessionId) as { code_changed_at?: string | null };
-    if (!row?.code_changed_at) {
-      const mark = await markCodeChangedIfDirty(sessionId, deps.worktreePath, deps);
-      if (!mark.newlyMarked && !mark.codeChangedAt) return;
-    }
-    broadcastPreviewRefreshIfReady(sessionId, deps, {
-      reason: 'Files changed during turn',
-    });
-  })();
+  void markCodeChangedIfDirty(sessionId, deps.worktreePath, deps);
 }
 
 /**

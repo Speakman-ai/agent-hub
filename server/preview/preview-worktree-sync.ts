@@ -3,10 +3,12 @@
  * Preview boot: toolbar / POST …/preview/start / ReAct `preview` `op: "start"`.
  * Do not emit `<agenthub:preview>` XML — the host ignores it.
  *
- * - `preview_refresh` WS event → client reloads the iframe (Angular HMR often
- *   picks up changes without this; the refresh covers API/proxy staleness).
- * - The dev server watches the worktree directly and picks up edits itself;
- *   we never restart it per turn (that would blip the iframe).
+ * - `preview_refresh` WS event → client reloads the iframe. Dev-server HMR
+ *   often never reaches the browser (the socket is tied to wildcard DNS and
+ *   the app's own client config), so this reload is what makes a session
+ *   edit show up. It does not restart the dev server.
+ * - The dev server still watches the worktree and may hot-reload on its own
+ *   when that socket is alive. The iframe reload covers the times it is not.
  */
 import type { BroadcastFn } from '../types.js';
 import type { DevServerRuntimeSync } from './preview-runtime-lookup.js';
