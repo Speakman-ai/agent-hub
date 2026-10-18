@@ -7,6 +7,7 @@ vi.mock('../utils/api', () => ({
     createPrEnvironmentShareLink: vi.fn(),
     revokePrEnvironmentShareLink: vi.fn(),
     setPrEnvironmentSharePassword: vi.fn(),
+    generatePrEnvironmentSharePassword: vi.fn(),
   },
 }));
 
@@ -34,6 +35,56 @@ describe('PrEnvironmentShareLinks', () => {
   beforeEach(() => {
     for (const fn of Object.values(mocked)) fn.mockReset();
     Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } });
+  });
+
+  it('reveals and copies the generated guard password, hiding it again after a PR switch', async () => {
+    const password = 'generated-guard-password';
+    mocked.listPrEnvironmentShareLinks.mockResolvedValue({
+      links: [],
+      passwordRequired: true,
+      generatedPassword: password,
+      canManage: true,
+      canSetPassword: true,
+    });
+    const view = render(<PrEnvironmentShareLinks projectId="demo" prNumber={7} />);
+    await screen.findByText('Agent Hub URL guard password');
+    expect(screen.queryByText(password)).toBeNull();
+    fireEvent.click(screen.getByText('Reveal password'));
+    expect(screen.getByText(password)).toBeTruthy();
+    fireEvent.click(screen.getByText('Copy password'));
+    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(password));
+    fireEvent.click(screen.getByText('Hide password'));
+    expect(screen.queryByText(password)).toBeNull();
+    fireEvent.click(screen.getByText('Reveal password'));
+    view.rerender(<PrEnvironmentShareLinks projectId="demo" prNumber={8} />);
+    await screen.findByText('Reveal password');
+    expect(screen.queryByText(password)).toBeNull();
+  });
+
+  it('generates a revealable replacement for a custom password', async () => {
+    mocked.listPrEnvironmentShareLinks.mockResolvedValue({
+      links: [],
+      passwordRequired: true,
+      generatedPassword: null,
+      canManage: true,
+      canSetPassword: true,
+    });
+    mocked.generatePrEnvironmentSharePassword.mockImplementation(async () => {
+      mocked.listPrEnvironmentShareLinks.mockResolvedValue({
+        links: [],
+        passwordRequired: true,
+        generatedPassword: 'replacement-password',
+        canManage: true,
+        canSetPassword: true,
+      });
+      return { passwordRequired: true };
+    });
+    render(<PrEnvironmentShareLinks projectId="demo" prNumber={7} />);
+    fireEvent.click(await screen.findByText('Generate new password'));
+    await screen.findByText('Reveal password');
+    expect(mocked.generatePrEnvironmentSharePassword).toHaveBeenCalledWith('demo');
+    fireEvent.click(screen.getByText('Reveal password'));
+    expect(screen.getByText('replacement-password')).toBeTruthy();
   });
 
   it('renders nothing without wildcard ingress', async () => {

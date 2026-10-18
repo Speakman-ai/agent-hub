@@ -21,6 +21,8 @@ export interface PrEnvironmentShareLink {
 export interface PrEnvironmentShareList {
   links: PrEnvironmentShareLink[];
   passwordRequired: boolean;
+  /** Absent on older servers; null for custom passwords or an explicitly disabled guard. */
+  generatedPassword?: string | null;
   canManage: boolean;
   canSetPassword: boolean;
 }

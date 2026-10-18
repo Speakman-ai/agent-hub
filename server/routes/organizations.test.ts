@@ -534,3 +534,40 @@ describe('organization invalidation and revocation', () => {
     expect(delivered(event, 'creator')).toBe(false);
   });
 });
+
+describe('organization project choices', () => {
+  it('requires a user identity and rejects foreign selectors', async () => {
+    await request(app(undefined, 'default', { authViaApiKey: true }))
+      .get('/api/organizations/project-choices')
+      .expect(401);
+    await request(app('outsider')).get('/api/organizations/project-choices').expect(404);
+    await request(app('creator'))
+      .get('/api/organizations/project-choices?serverId=other')
+      .expect(400);
+  });
+
+  it('lists only attachable summaries for the acting user, including before creating any organization', async () => {
+    const result = await request(app('nonmember'))
+      .get('/api/organizations/project-choices')
+      .expect(200);
+    expect(result.body.projects).toEqual([
+      { id: 'shared', name: 'shared', visibility: 'shared' },
+      { id: 'independent', name: 'independent', visibility: 'shared' },
+    ]);
+  });
+  it('reads the authenticated Server registry without switching the active Server', async () => {
+    const before = getActiveOrgId();
+    const result = await request(app('foreign-user', 'other'))
+      .get('/api/organizations/project-choices')
+      .expect(200);
+    expect(result.body.projects.map((p: { id: string }) => p.id)).toEqual(['foreign', 'shared']);
+    expect(result.body.projects[1].name).toBe('Other Server shared project');
+    expect(getActiveOrgId()).toBe(before);
+  });
+  it('does not give Server administrators a private-project read bypass', async () => {
+    const result = await request(app('server-owner'))
+      .get('/api/organizations/project-choices')
+      .expect(200);
+    expect(result.body.projects.map((p: { id: string }) => p.id)).not.toContain('private');
+  });
+});

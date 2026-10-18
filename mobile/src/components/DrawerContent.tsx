@@ -943,6 +943,20 @@ export default function DrawerContent({ navigation }: any) {
         >
           <BrandLogo size="sm" />
         </TouchableOpacity>
+        <TouchableOpacity
+          style={[
+            styles.dashboardItem,
+            routeName === 'Organizations' && styles.dashboardItemActive,
+          ]}
+          accessibilityLabel="Organizations"
+          accessibilityRole="button"
+          onPress={() => {
+            navigation.navigate('Organizations');
+            navigation.closeDrawer();
+          }}
+        >
+          <Text style={styles.navButtonText}>Organizations</Text>
+        </TouchableOpacity>
         <View style={styles.connectionRow}>
           <Pressable
             onLongPress={showConnectionInfo}

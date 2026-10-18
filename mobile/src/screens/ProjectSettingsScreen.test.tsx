@@ -46,6 +46,9 @@ vi.mock('react-native', () => ({
   StyleSheet: { create: (styles: any) => styles },
 }));
 vi.mock('react-native-safe-area-context', () => ({ SafeAreaView: host('main') }));
+vi.mock('../components/OrganizationsPanel', () => ({
+  default: ({ projectId }: any) => <div data-testid={`project-organizations-${projectId}`} />,
+}));
 vi.mock('../utils/api', () => ({ api: apiMocks }));
 vi.mock('../components/ProjectScreenHeader', () => ({ default: () => null }));
 vi.mock('../components/settings/ProjectDefaultAutomationSection', () => ({ default: () => null }));
@@ -89,6 +92,7 @@ describe('ProjectSettingsScreen — feature request approval toggle', () => {
     const toggle = container.querySelector(
       '[data-testid="project-voting-enabled-p1"]',
     ) as HTMLInputElement;
+    expect(container.querySelector('[data-testid="project-organizations-p1"]')).toBeTruthy();
     expect(toggle).toBeTruthy();
     expect(toggle.checked).toBe(false);
 

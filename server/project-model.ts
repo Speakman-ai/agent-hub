@@ -461,14 +461,17 @@ function findProject(projectId: string): Project | null {
  * Inactive partitions are read from disk; remote bookmarks have no local
  * project registry. Registry read/parse failures propagate (fail closed).
  */
-export function findProjectForServer(serverId: string, projectId: string): Project | null {
+export function listProjectsForServer(serverId: string): Project[] {
   const server = getOrg(serverId);
-  if (!server || server.mode !== 'local') return null;
-  if (serverId === getActiveOrgId()) return findProject(projectId);
+  if (!server || server.mode !== 'local') return [];
+  if (serverId === getActiveOrgId()) return projects;
   const registryPath = path.join(orgDataDir(serverId), 'projects.json');
-  if (!existsSync(registryPath)) return null;
-  const registry = JSON.parse(readFileSync(registryPath, 'utf-8')) as Project[];
-  return registry.find((project) => project.id === projectId) ?? null;
+  if (!existsSync(registryPath)) return [];
+  return JSON.parse(readFileSync(registryPath, 'utf-8')) as Project[];
+}
+
+export function findProjectForServer(serverId: string, projectId: string): Project | null {
+  return listProjectsForServer(serverId).find((project) => project.id === projectId) ?? null;
 }
 
 function getEnrichedAgent(agentId: string): EnrichedAgent | null {

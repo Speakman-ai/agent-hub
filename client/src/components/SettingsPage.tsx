@@ -1,3 +1,4 @@
+import OrganizationsPage from './OrganizationsPage';
 import ProjectIcon from './ProjectIcon';
 import ProjectIconEditor from './ProjectIconEditor';
 import AiSignInHint from './AiSignInHint';
@@ -1457,6 +1458,7 @@ export function ProjectsSection({
         onProjectsChange={onProjectsChange}
       />
 
+      <OrganizationsPage projectId={p.id} />
       <ProjectSecretsEditor projectId={p.id} />
 
       {/* Owner-managed visibility ACL — assign which users can see and open

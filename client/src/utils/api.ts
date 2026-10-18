@@ -1,3 +1,4 @@
+import { createOrganizationApi } from '@shared/utils/organizations';
 import type { UploadedAttachment } from '@shared/types/uploads';
 import {
   ROUTINE_DRAFT_TIMEOUT_MS,
@@ -681,6 +682,7 @@ function infraQuery(params: Record<string, unknown>): string {
 }
 
 export const api = {
+  organizations: createOrganizationApi(fetchJSON),
   // Projects
   getProjects: () => fetchJSON<ProjectWire[]>('/projects'),
   getProject: (projectId: string) => fetchJSON<ProjectWire>(`/projects/${projectId}`),
@@ -2405,6 +2407,11 @@ export const api = {
   openPrEnvironmentAccess: (projectId: string, number: number) =>
     fetchJSON<{ url: string }>(`/projects/${projectId}/pulls/${number}/preview/access`, {
       method: 'POST',
+    }),
+  generatePrEnvironmentSharePassword: (projectId: string) =>
+    fetchJSON(`/projects/${projectId}/preview-share/password`, {
+      method: 'PUT',
+      body: JSON.stringify({ generate: true }),
     }),
   setPrEnvironmentSharePassword: (projectId: string, password: string | null) =>
     fetchJSON(`/projects/${projectId}/preview-share/password`, {

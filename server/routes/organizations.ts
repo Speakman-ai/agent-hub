@@ -1,3 +1,4 @@
+import { listProjectsForServer } from '../project-model.js';
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import type { AuthenticatedRequest } from '../auth.js';
 import type { BusinessOrganizationRow, RouteDeps } from '../types.js';
@@ -159,6 +160,19 @@ export default function createOrganizationsRoutes(deps: Pick<RouteDeps, 'broadca
       });
       emit(caller, organization.id, 'organization_updated', 'created');
       res.status(201).json({ organization: summary(organization, caller) });
+    }),
+  );
+  router.get(
+    '/api/organizations/project-choices',
+    route(null, false, (_req, res, caller) => {
+      res.json({
+        projects: listProjectsForServer(caller.serverId).flatMap((candidate) => {
+          const project = visibleOrganizationProject(caller, candidate.id);
+          return project
+            ? [{ id: project.id, name: project.name, visibility: getVisibility(project) }]
+            : [];
+        }),
+      });
     }),
   );
   router.get(

@@ -1884,3 +1884,11 @@ describe('Sidebar project icons', () => {
     expect(screen.getByTestId('project-icon')).toHaveStyle({ backgroundColor: '#22d3ee' });
   });
 });
+
+it('opens Organizations without replacing the normal project list', () => {
+  const props = buildProps();
+  render(<Sidebar {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: /^Organizations$/ }));
+  expect(props.onNavigate).toHaveBeenCalledWith('organizations');
+  expect(screen.getByText('Test Project')).toBeTruthy();
+});

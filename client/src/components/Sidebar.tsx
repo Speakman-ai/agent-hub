@@ -606,6 +606,12 @@ export default function Sidebar({
             <BrandLogo size="md" />
           </button>
 
+          <button
+            className={`w-full text-left px-3 py-2 rounded-lg mb-3 ${currentView === 'organizations' ? 'bg-gray-800' : 'hover:bg-gray-800/50'}`}
+            onClick={() => onNavigate('organizations')}
+          >
+            Organizations
+          </button>
           <div className="flex items-center gap-2 mb-3">
             <span
               className={`flex-1 min-w-0 text-xs px-2.5 py-2 rounded-lg text-center truncate ${

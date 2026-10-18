@@ -1,3 +1,4 @@
+import OrganizationsPage from './components/OrganizationsPage';
 import {
   useState,
   useEffect,
@@ -3157,6 +3158,7 @@ export default function App({ initialView }: any = {}) {
           break;
 
         case 'projects_updated':
+          window.dispatchEvent(new CustomEvent('organizations_changed'));
           // Server added/changed an agent or project (e.g. GitHub App auto-setup
           // seeded a Reviewer agent). Re-fetch so the sidebar reflects it
           // without requiring a page refresh.
@@ -3346,6 +3348,11 @@ export default function App({ initialView }: any = {}) {
         // server; bridged so the session panel and the Chat pane both update.
         case 'google_chat_draft_update':
           window.dispatchEvent(new CustomEvent('google_chat_draft_update', { detail: data }));
+          break;
+        case 'organization_updated':
+        case 'organization_invalidated':
+        case 'organization_access_revoked':
+          window.dispatchEvent(new CustomEvent('organizations_changed'));
           break;
         // Shared org-todo change: bridge to a window CustomEvent so the org
         // section of <TodosPage /> refetches without subscribing to the WS
@@ -6894,7 +6901,9 @@ export default function App({ initialView }: any = {}) {
                 </div>
               )}
 
-              {currentView.startsWith('kanban:') ? (
+              {currentView === 'organizations' ? (
+                <OrganizationsPage />
+              ) : currentView.startsWith('kanban:') ? (
                 <KanbanBoard
                   projectId={currentView.split(':')[1]}
                   project={projects.find((p: any) => p.id === currentView.split(':')[1])}

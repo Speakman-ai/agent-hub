@@ -670,11 +670,14 @@ describe('SettingsPage — sidebar navigation', () => {
     expect(queryByText('Projects')).toBeNull();
   });
 
-  it('renders project settings via ProjectsSection in single-project mode', async () => {
+  it('renders project settings and organization links via ProjectsSection in single-project mode', async () => {
     const projects = [
       { id: 'p1', name: 'Acme', color: '#ff0000', cwd: '/tmp/a', githubRepo: '', agents: [] },
     ];
-    const { findByText } = render(<ProjectsSection projects={projects} projectId="p1" />);
+    const { findByText, getByTestId } = render(
+      <ProjectsSection projects={projects} projectId="p1" />,
+    );
+    expect(getByTestId('project-organizations-p1')).toBeTruthy();
     await findByText('Project settings');
     expect(
       await findByText(
@@ -1395,3 +1398,7 @@ describe('AgentConfigSection — context files', () => {
     expect(queryByPlaceholderText('github-username')).toBeNull();
   });
 });
+
+vi.mock('./OrganizationsPage', () => ({
+  default: ({ projectId }: any) => <div data-testid={`project-organizations-${projectId}`} />,
+}));

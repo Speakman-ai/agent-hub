@@ -28,7 +28,7 @@ interface Props {
 
 /**
  * Share links for a PR environment: create (with expiry), copy, revoke, and
- * the optional project password. Renders nothing only when the server says
+ * the Agent Hub URL guard password. Renders nothing only when the server says
  * share links cannot exist here (no wildcard ingress, not Hub-hosted). Any
  * other load failure keeps what was already shown, offers Retry, and retries
  * on its own.
@@ -52,6 +52,7 @@ export default function PrEnvironmentShareLinks({
   const [busyFor, setBusyFor] = useState<string | null>(null);
   const busy = busyFor === key;
   const [password, setPassword] = useState('');
+  const [revealedPassword, setRevealedPassword] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const seq = ++seqRef.current;
@@ -71,6 +72,7 @@ export default function PrEnvironmentShareLinks({
     dispatch({ type: 'reset', key, seq: ++seqRef.current });
     setLabel('');
     setPassword('');
+    setRevealedPassword(null);
     setHours(DEFAULT_SHARE_LINK_HOURS);
     void load();
   }, [key, load]);
@@ -85,12 +87,12 @@ export default function PrEnvironmentShareLinks({
   }, [retryArmed, load]);
 
   const copy = useCallback(
-    async (url: string) => {
+    async (url: string, kind = 'Share link') => {
       try {
         await navigator.clipboard.writeText(url);
-        onToast?.('Share link copied', 'success');
+        onToast?.(`${kind} copied`, 'success');
       } catch {
-        onToast?.('Could not copy the link', 'error');
+        onToast?.(`Could not copy ${kind.toLowerCase()}`, 'error');
       }
     },
     [onToast],
@@ -199,6 +201,38 @@ export default function PrEnvironmentShareLinks({
             {retryButton}
           </div>
         )}
+        {data.generatedPassword && (
+          <div className="flex flex-wrap items-center gap-2 text-xs text-gray-300">
+            <span>Agent Hub URL guard password</span>
+            <code>
+              {revealedPassword === data.generatedPassword
+                ? data.generatedPassword
+                : '••••••••••••'}
+            </code>
+            <button
+              type="button"
+              onClick={() =>
+                setRevealedPassword(
+                  revealedPassword === data.generatedPassword ? null : data.generatedPassword!,
+                )
+              }
+              className="text-sky-300 hover:text-sky-100"
+            >
+              {revealedPassword === data.generatedPassword ? 'Hide password' : 'Reveal password'}
+            </button>
+            <button
+              type="button"
+              onClick={() => copy(data.generatedPassword!, 'Password')}
+              className="text-sky-300 hover:text-sky-100"
+            >
+              Copy password
+            </button>
+            <p className="w-full text-gray-500">
+              Use this password to unlock the environment URL. It is shared across this project's PR
+              environments.
+            </p>
+          </div>
+        )}
         {data.canManage && (
           <div className="flex flex-wrap items-center gap-2">
             <input
@@ -283,8 +317,28 @@ export default function PrEnvironmentShareLinks({
           <div className="flex flex-wrap items-center gap-2 border-t border-gray-700/60 pt-2">
             <KeyRound size={13} className="text-gray-400" />
             <span className="text-xs text-gray-400">
-              Project password {data.passwordRequired ? 'is set' : 'is off'}
+              URL guard password {data.passwordRequired ? 'is set' : 'is off'}
             </span>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() =>
+                mutate(
+                  () => api.generatePrEnvironmentSharePassword(projectId),
+                  () => setRevealedPassword(null),
+                  'Failed to generate the password',
+                )
+              }
+              className="text-xs text-sky-300 hover:text-sky-100 disabled:opacity-50"
+            >
+              Generate new password
+            </button>
+            {data.passwordRequired && !data.generatedPassword && (
+              <p className="w-full text-xs text-gray-500">
+                The custom password cannot be revealed. Generate a new password to reveal and copy
+                it.
+              </p>
+            )}
             <input
               data-testid="pr-share-password"
               type="password"

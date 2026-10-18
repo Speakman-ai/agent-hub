@@ -85,6 +85,51 @@ const as = (user: string, role = 'User') => ({ 'x-user': user, 'x-role': role })
 describe('share link routes', () => {
   beforeEach(() => resetMemberTicketsForTest());
 
+  it('provides a stable generated URL guard password by default, scoped to the org and project', async () => {
+    const { app } = setup();
+    const first = await request(app).get(LINKS).set(as('viewer'));
+    expect(first.status).toBe(200);
+    expect(first.body.passwordRequired).toBe(true);
+    expect(first.body.generatedPassword).toMatch(/^[A-Za-z0-9_-]{24}$/);
+    expect(first.headers['cache-control']).toBe('no-store');
+    const again = await request(app).get(LINKS).set(as('viewer'));
+    expect(again.body.generatedPassword).toBe(first.body.generatedPassword);
+    const otherOrg = await request(setup().app).get(LINKS).set(as('viewer'));
+    expect(otherOrg.body.generatedPassword).not.toBe(first.body.generatedPassword);
+    const otherProject = await request(app)
+      .get('/api/projects/ghp/pulls/7/preview/share-links')
+      .set(as('viewer'));
+    expect(otherProject.body.generatedPassword).not.toBe(first.body.generatedPassword);
+    const hidden = await request(app)
+      .get('/api/projects/secret/pulls/7/preview/share-links')
+      .set(as('viewer'));
+    expect(hidden.status).toBe(404);
+    expect(hidden.body.generatedPassword).toBeUndefined();
+  });
+
+  it('preserves custom passwords and explicit removal, and lets admins generate a replacement', async () => {
+    const { app, store } = setup();
+    const path = '/api/projects/demo/preview-share/password';
+    const original = (await request(app).get(LINKS).set(as('viewer'))).body.generatedPassword;
+    await request(app).put(path).set(as('a', 'Admin')).send({ password: 'custom-password' });
+    expect((await request(app).get(LINKS).set(as('viewer'))).body.generatedPassword).toBeNull();
+    await request(app).put(path).set(as('a', 'Admin')).send({ password: null });
+    expect((await request(app).get(LINKS).set(as('viewer'))).body).toMatchObject({
+      passwordRequired: false,
+      generatedPassword: null,
+    });
+    expect((await request(app).put(path).set(as('viewer')).send({ generate: true })).status).toBe(
+      403,
+    );
+    const generated = await request(app).put(path).set(as('a', 'Admin')).send({ generate: true });
+    expect(generated.status).toBe(200);
+    expect(generated.body.passwordRequired).toBe(true);
+    const replacement = (await request(app).get(LINKS).set(as('viewer'))).body.generatedPassword;
+    expect(replacement).toMatch(/^[A-Za-z0-9_-]{24}$/);
+    expect(replacement).not.toBe(original);
+    expect(store.getPassword('demo')?.hash).not.toContain(replacement);
+  });
+
   it('the PR author creates a link scoped to the environment host', async () => {
     const { app, store } = setup();
     const res = await request(app)
@@ -170,7 +215,7 @@ describe('share link routes', () => {
     ]);
     expect(asAuthor.body.links[1].url).toBeNull();
     expect(asAuthor.body).toMatchObject({
-      passwordRequired: false,
+      passwordRequired: true,
       canManage: true,
       canSetPassword: false,
     });

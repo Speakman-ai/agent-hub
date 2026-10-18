@@ -46814,6 +46814,81 @@ paths:
                     type: string
                 required:
                   - error
+  /api/organizations/project-choices:
+    get:
+      tags:
+        - Organizations
+      summary: List projects available for organization attachment
+      description: Includes independent projects. Excludes hidden/internal workspaces and inaccessible projects, using the authenticated Server registry. Scoped to the authenticated Server and current user. Organization membership never grants project access. Global API keys without a user identity cannot access this surface.
+      responses:
+        "200":
+          description: Attachable project summaries only.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  projects:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/BusinessOrganizationProject"
+                required:
+                  - projects
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: An authenticated user identity is required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Organization administration requires Owner/Admin.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Resource absent or inaccessible in the authenticated Server.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: The last organization Owner cannot be removed or demoted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
   /api/orgs:
     get:
       tags: &a6
@@ -51411,6 +51486,10 @@ paths:
                         - canRevoke
                   passwordRequired:
                     type: boolean
+                  generatedPassword:
+                    type: string
+                    nullable: true
+                    description: Generated Agent Hub URL guard password for project viewers to reveal and copy. Null for custom passwords or when explicitly disabled.
                   canManage:
                     type: boolean
                     description: Whether the caller may create and revoke links (Admin/Owner or the PR author).
@@ -51420,6 +51499,7 @@ paths:
                 required:
                   - links
                   - passwordRequired
+                  - generatedPassword
                   - canManage
                   - canSetPassword
         "400":
@@ -51809,8 +51889,8 @@ paths:
     put:
       tags:
         - Projects
-      summary: Set or clear the project share password for PR environments
-      description: When set, a visitor arriving with a share link must also enter this password. Hub members are not asked. Changing or clearing it signs out every share-link visitor who unlocked with the old one. Admin/Owner.
+      summary: Generate, set or clear the project URL guard password for PR environments
+      description: Projects use a generated password by default. Visitors can unlock the bare environment URL or a share link with it; Hub member tickets bypass it. Send {generate:true} to rotate to a new revealable password, {password:string} for a custom password, or {password:null} to require share links or member tickets only. Changing the password invalidates existing password unlocks. Admin/Owner.
       parameters:
         - schema:
             type: string
@@ -51821,16 +51901,27 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                password:
-                  type: string
-                  nullable: true
-                  minLength: 4
-                  maxLength: 200
-                  description: New project share password, or null to remove it.
-              required:
-                - password
+              anyOf:
+                - type: object
+                  properties:
+                    password:
+                      type: string
+                      nullable: true
+                      minLength: 4
+                      maxLength: 200
+                      description: New project URL guard password, or null to require share links or member access only.
+                  required:
+                    - password
+                  additionalProperties: false
+                - type: object
+                  properties:
+                    generate:
+                      type: boolean
+                      enum:
+                        - true
+                  required:
+                    - generate
+                  additionalProperties: false
       responses:
         "200":
           description: Saved.

@@ -205,3 +205,21 @@ registerPath({
   request: { params: OrganizationProjectParams, query: OrganizationQuery },
   responses: { 200: { description: 'Project unlinked.', content: json(ok) }, ...errors },
 });
+
+registerPath({
+  method: 'get',
+  path: '/api/organizations/project-choices',
+  tags: ['Organizations'],
+  summary: 'List projects available for organization attachment',
+  description:
+    'Includes independent projects. Excludes hidden/internal workspaces and inaccessible projects, using the authenticated Server registry.' +
+    scope,
+  request: { query: OrganizationQuery },
+  responses: {
+    200: {
+      description: 'Attachable project summaries only.',
+      content: json(z.object({ projects: z.array(OrganizationProject) })),
+    },
+    ...errors,
+  },
+});

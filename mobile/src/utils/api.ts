@@ -1,3 +1,4 @@
+import { createOrganizationApi } from '@shared/utils/organizations';
 import type {
   CreateReminderBody,
   ReminderStatus,
@@ -110,6 +111,7 @@ export function infraQuery(params: Record<string, any>): string {
   return qs ? `?${qs}` : '';
 }
 export const api = {
+  organizations: createOrganizationApi(fetchJSON),
   // Agents & Sessions
   getAgents: () => fetchJSON('/agents'),
   getSessions: (agentId: any) => fetchJSON(`/agents/${agentId}/sessions`),
@@ -2111,6 +2113,11 @@ export const api = {
     ),
   openPrEnvironmentAccess: (projectId: string, number: number) =>
     fetchJSON(`/projects/${projectId}/pulls/${number}/preview/access`, { method: 'POST' }),
+  generatePrEnvironmentSharePassword: (projectId: string) =>
+    fetchJSON(`/projects/${projectId}/preview-share/password`, {
+      method: 'PUT',
+      body: JSON.stringify({ generate: true }),
+    }),
   setPrEnvironmentSharePassword: (projectId: string, password: string | null) =>
     fetchJSON(`/projects/${projectId}/preview-share/password`, {
       method: 'PUT',

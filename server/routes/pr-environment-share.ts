@@ -78,18 +78,31 @@ export const CreateShareLinkBody = z.object({
   label: z.string().trim().max(120).optional().describe('Who the link is for, shown in the list.'),
 });
 
-export const SharePasswordBody = z.object({
-  password: z
-    .string()
-    .min(4)
-    .max(200)
-    .nullable()
-    .describe('New project share password, or null to remove it.'),
-});
+export const SharePasswordBody = z.union([
+  z
+    .object({
+      password: z
+        .string()
+        .min(4)
+        .max(200)
+        .nullable()
+        .describe(
+          'New project URL guard password, or null to require share links or member access only.',
+        ),
+    })
+    .strict(),
+  z.object({ generate: z.literal(true) }).strict(),
+]);
 
 const ShareListResponse = z.object({
   links: z.array(ShareLinkSchema),
   passwordRequired: z.boolean(),
+  generatedPassword: z
+    .string()
+    .nullable()
+    .describe(
+      'Generated Agent Hub URL guard password for project viewers to reveal and copy. Null for custom passwords or when explicitly disabled.',
+    ),
   canManage: z
     .boolean()
     .describe('Whether the caller may create and revoke links (Admin/Owner or the PR author).'),
@@ -170,9 +183,9 @@ registerPath({
   method: 'put',
   path: '/api/projects/{projectId}/preview-share/password',
   tags: ['Projects'],
-  summary: 'Set or clear the project share password for PR environments',
+  summary: 'Generate, set or clear the project URL guard password for PR environments',
   description:
-    'When set, a visitor arriving with a share link must also enter this password. Hub members are not asked. Changing or clearing it signs out every share-link visitor who unlocked with the old one. Admin/Owner.',
+    'Projects use a generated password by default. Visitors can unlock the bare environment URL or a share link with it; Hub member tickets bypass it. Send {generate:true} to rotate to a new revealable password, {password:string} for a custom password, or {password:null} to require share links or member tickets only. Changing the password invalidates existing password unlocks. Admin/Owner.',
   request: {
     params: z.object({ projectId: z.string() }),
     body: { content: jsonContent(SharePasswordBody) },
@@ -347,8 +360,10 @@ export default function createPrEnvironmentShareRoutes(deps: ShareDeps): Router 
       const links = ctx.store
         .list({ projectId: ctx.project.id, prNumber: ctx.number })
         .map((row) => toShareLinkDto(ctx.store, row, ctx.envUrl, t, mayRevoke(req, ctx, row)));
+      res.setHeader('Cache-Control', 'no-store');
       res.json({
         links,
+        generatedPassword: ctx.store.getGeneratedPassword(ctx.project.id),
         passwordRequired: ctx.store.getPassword(ctx.project.id) != null,
         canManage: isAdmin(req) || isAuthor(req, ctx),
         canSetPassword: isAdmin(req),
@@ -450,6 +465,10 @@ export default function createPrEnvironmentShareRoutes(deps: ShareDeps): Router 
         return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid body' });
       }
       const store = prEnvironmentShareStoreFor(deps.prEnvironments.pin().org.db);
+      if ('generate' in parsed.data) {
+        store.generatePassword(project.id, now());
+        return res.json({ passwordRequired: true });
+      }
       const hash = parsed.data.password == null ? null : await hashPassword(parsed.data.password);
       store.setPassword(project.id, hash, now());
       return res.json({ passwordRequired: hash != null });

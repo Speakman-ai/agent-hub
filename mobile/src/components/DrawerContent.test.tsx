@@ -358,6 +358,17 @@ describe('mobile DrawerContent — web sidebar order', () => {
     testState.navGroups = () => [];
   });
 
+  it('opens Organizations while keeping projects in the drawer', async () => {
+    const nav = navigation();
+    const renderer = await renderDrawer(nav);
+    await TestRenderer.act(async () =>
+      renderer.root.findByProps({ accessibilityLabel: 'Organizations' }).props.onPress(),
+    );
+    expect(nav.navigate).toHaveBeenCalledWith('Organizations');
+    expect(nav.closeDrawer).toHaveBeenCalled();
+    expect(collectText(renderer.toJSON())).toContain('PROJECTS');
+  });
+
   it('puts New Project under Projects and Chat in the footer', async () => {
     const renderer = await renderDrawer(navigation());
     const texts = collectText(renderer.toJSON());

@@ -1,3 +1,4 @@
+import OrganizationsPanel from '../components/OrganizationsPanel';
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
@@ -103,6 +104,7 @@ export default function ProjectSettingsScreen({ route, navigation }: any) {
           <ActivityIndicator size="small" color={colors.gray400} style={{ marginBottom: 8 }} />
         )}
 
+        <OrganizationsPanel projectId={projectId} />
         <Text style={styles.label}>Name</Text>
         <TextInput
           style={styles.input}

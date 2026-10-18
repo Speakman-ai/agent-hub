@@ -292,6 +292,8 @@ export function AppProvider({ children }: any) {
   // Last `google_chat_draft_update` WS event (owner-only on the server):
   // { draft, bump }. Drives the session's agent-reply approval panel.
   const [lastGoogleChatDraftEvent, setLastGoogleChatDraftEvent] = useState<any>(null);
+  // Refresh business organizations after membership, links, or project access changes.
+  const [lastOrganizationEvent, setLastOrganizationEvent] = useState(0);
   // Last `org_todo_update` WS event — the shared-org counterpart of
   // `lastUserTodoEvent`. Drives live refetches of the org Todos section without
   // a poll. Shape: { orgId, action, bump }.
@@ -524,6 +526,7 @@ export function AppProvider({ children }: any) {
       const msgForActiveSession = data.message?.session_id === activeSessionIdRef.current;
       switch (data.type) {
         case 'projects_updated':
+          setLastOrganizationEvent((value) => value + 1);
           api
             .getProjects()
             .then(setProjects)
@@ -998,6 +1001,11 @@ export function AppProvider({ children }: any) {
               reminder: data.reminder ?? null,
             });
           }
+          break;
+        case 'organization_updated':
+        case 'organization_invalidated':
+        case 'organization_access_revoked':
+          setLastOrganizationEvent((value) => value + 1);
           break;
         case 'org_todo_update':
           // Shared org todo changed. The server fans this to every member of
@@ -2940,6 +2948,7 @@ export function AppProvider({ children }: any) {
     lastUserTodoEvent,
     subscribeReminderUpdates,
     lastGoogleChatDraftEvent,
+    lastOrganizationEvent,
     // Shared org todos (live refetch signal)
     lastOrgTodoEvent,
     lastDesignEvent,
