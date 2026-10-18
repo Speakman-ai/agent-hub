@@ -19113,6 +19113,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ArtifactList"
+        "403":
+          description: Organization capabilities cannot read retained artifacts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtifactErrorResponse"
         "404":
           description: Session not found / not owned by caller.
           content:
@@ -19219,6 +19225,12 @@ paths:
           description: Artifact bytes.
         "302":
           description: Redirect to a presigned download URL (S3 backend, redirect=1).
+        "403":
+          description: Organization capabilities cannot read retained artifacts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtifactErrorResponse"
         "404":
           description: Session or artifact not found.
           content:
@@ -25694,6 +25706,12 @@ paths:
                     items:
                       $ref: "#/components/schemas/Message"
                   - $ref: "#/components/schemas/SessionMessagesList"
+        "403":
+          description: Organization capabilities cannot read retained session history.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
         "404":
           description: Session not found (or hidden by ownership).
           content:
@@ -45856,6 +45874,128 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgTodosErrorResponse"
+  /api/sessions/{sessionId}/organization-capability/renew:
+    post:
+      tags:
+        - Organizations
+      summary: Renew an organization session capability against current access
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Rotated capability. The previous token is revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+                  expiresAt:
+                    type: number
+                required:
+                  - token
+                  - expiresAt
+        "401":
+          description: Capability missing, expired, revoked or out of scope.
+        "403":
+          description: Capability missing, expired, revoked or out of scope.
+  /api/organizations/{organizationId}/capability-context:
+    get:
+      tags:
+        - Organizations
+      summary: Discover projects and agent roster within the current capability scope
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: organizationId
+          in: path
+        - schema:
+            type: integer
+            nullable: true
+            minimum: 0
+            default: 0
+          required: false
+          name: offset
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+          required: false
+          name: limit
+          in: query
+      responses:
+        "200":
+          description: Paginated authorized project identities, with source and timestamp.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  serverId:
+                    type: string
+                  organizationId:
+                    type: string
+                  sessionId:
+                    type: string
+                  agentId:
+                    type: string
+                  timestamp:
+                    type: string
+                  offset:
+                    type: number
+                  nextOffset:
+                    type: number
+                    nullable: true
+                  projects:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        agents:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              id:
+                                type: string
+                              name:
+                                type: string
+                            required:
+                              - id
+                              - name
+                      required:
+                        - id
+                        - name
+                        - agents
+                required:
+                  - serverId
+                  - organizationId
+                  - sessionId
+                  - agentId
+                  - timestamp
+                  - offset
+                  - nextOffset
+                  - projects
+        "400":
+          description: Invalid pagination
+        "401":
+          description: Capability missing, expired, revoked or out of scope.
+        "403":
+          description: Capability missing, expired, revoked or out of scope.
   /api/organizations:
     get:
       tags:
@@ -56603,6 +56743,19 @@ paths:
                   - error
         "401":
           description: No user identity to own the session.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Organization capability scope denied or dispatch override forbidden.
           content:
             application/json:
               schema:

@@ -3153,7 +3153,26 @@ export interface HookConfig {
   hooks: HookEntry[];
 }
 
+export interface OrganizationAgentScope {
+  enabled: boolean;
+  archivedAt?: string | null;
+  tools: Array<
+    | 'projects:read'
+    | 'dispatch'
+    | 'artifacts'
+    | 'credentials'
+    | 'skills'
+    | 'web'
+    | 'browser'
+    | 'computer'
+    | 'approvals'
+  >;
+  projects: 'all-linked' | string[];
+}
+
 export interface Agent {
+  /** Server-enforced organization permissions; names and role templates carry no authority. */
+  organizationScope?: OrganizationAgentScope;
   id: string;
   name: string;
   engine: string;
@@ -3818,6 +3837,9 @@ export interface Project {
    * or Settings project list. Identified by `kind: 'system'` and/or id `__hub__`.
    */
   kind?: 'system';
+  workspaceKind?: 'hub' | 'organization';
+  organizationId?: string;
+  serverId?: string;
   agents: Agent[];
   [key: string]: unknown;
 }

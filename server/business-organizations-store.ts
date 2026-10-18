@@ -1,3 +1,4 @@
+import { revalidateOrganizationAccess } from './organization-spawn-policy.js';
 /** Persistence only. Callers must authorize the acting user and project ACLs
  * before using this store; organization membership does not grant project
  * access. Every operation requires an explicit legacy Server partition ID.
@@ -5,7 +6,7 @@
 import { randomUUID } from 'crypto';
 import { getOrg, getOrgsDb } from './orgs.js';
 import { findProjectForServer } from './project-model.js';
-import { isHubSystemProject } from '../shared/utils/hub.js';
+import { isInternalSystemProject } from '../shared/utils/hub.js';
 import type {
   BusinessOrganizationMemberRow,
   BusinessOrganizationRole,
@@ -39,7 +40,7 @@ export function listBusinessOrganizations(serverId: string): BusinessOrganizatio
 function withActiveOrganization<T>(serverId: string, organizationId: string, write: () => T): T {
   // Serialize the active-state check with the write, including against other
   // processes using orgs.db. An archive cannot race a new link or membership.
-  return getOrgsDb()
+  const result = getOrgsDb()
     .transaction(() => {
       if (!getBusinessOrganization(serverId, organizationId)) {
         throw new Error('Organization not found');
@@ -47,6 +48,8 @@ function withActiveOrganization<T>(serverId: string, organizationId: string, wri
       return write();
     })
     .immediate();
+  revalidateOrganizationAccess();
+  return result;
 }
 
 function organizationName(name: string): string {
@@ -100,7 +103,7 @@ export function renameBusinessOrganization(
  */
 export function archiveBusinessOrganization(serverId: string, organizationId: string): boolean {
   const db = getOrgsDb();
-  return db.transaction(() => {
+  const result = db.transaction(() => {
     const changed = db
       .prepare(
         `UPDATE business_organizations SET archived_at = datetime('now'), updated_at = datetime('now')
@@ -116,6 +119,8 @@ export function archiveBusinessOrganization(serverId: string, organizationId: st
     ).run(serverId, organizationId);
     return true;
   })();
+  revalidateOrganizationAccess();
+  return result;
 }
 
 /** Validate in the selected Server's registry, never against an unscoped ID. */
@@ -128,7 +133,7 @@ export function attachBusinessOrganizationProject(
     const project = findProjectForServer(serverId, projectId);
     if (
       !project ||
-      isHubSystemProject(project) ||
+      isInternalSystemProject(project) ||
       project.hidden === true ||
       project.internal === true
     ) {
@@ -198,9 +203,11 @@ export function removeBusinessOrganizationProjectLinks(
   serverId: string,
   projectId: string,
 ): number {
-  return getOrgsDb()
+  const changes = getOrgsDb()
     .prepare('DELETE FROM business_organization_projects WHERE server_id = ? AND project_id = ?')
     .run(serverId, projectId).changes;
+  revalidateOrganizationAccess();
+  return changes;
 }
 
 export function setBusinessOrganizationMember(

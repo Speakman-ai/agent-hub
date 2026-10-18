@@ -1,3 +1,4 @@
+import { revalidateOrganizationAccess } from './organization-spawn-policy.js';
 /**
  * Users store — Auth Phase 3.
  *
@@ -87,6 +88,7 @@ export function countUsers(): number {
 export function deleteUser(id: string): void {
   const db = getOrgsDb();
   db.prepare('DELETE FROM users WHERE id = ?').run(id);
+  revalidateOrganizationAccess();
 }
 
 export function updateUserPassword(id: string, passwordHash: string): void {
@@ -96,6 +98,7 @@ export function updateUserPassword(id: string, passwordHash: string): void {
      SET password_hash = ?, credential_version = COALESCE(credential_version, 0) + 1
      WHERE id = ?`,
   ).run(passwordHash, id);
+  revalidateOrganizationAccess();
 }
 
 export function updateUserUsername(id: string, username: string): UserRow | null {

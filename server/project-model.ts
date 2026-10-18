@@ -1,3 +1,4 @@
+import { revalidateOrganizationAccess } from './organization-spawn-policy.js';
 import {
   readFileSync,
   writeFileSync,
@@ -163,6 +164,7 @@ function getProjects(): Project[] {
 
 function setProjects(p: Project[]): void {
   projects = p;
+  revalidateOrganizationAccess();
 }
 
 function getProjectsPath(): string {
@@ -285,6 +287,7 @@ function saveProjects(): void {
     return rest;
   });
   writeFileSync(PROJECTS_PATH, JSON.stringify(toSave, null, 2) + '\n');
+  revalidateOrganizationAccess();
 }
 
 function reloadProjects(dataDir: string): void {

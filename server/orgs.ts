@@ -1,3 +1,4 @@
+import { revalidateOrganizationAccess } from './organization-spawn-policy.js';
 import Database from 'better-sqlite3';
 import path from 'path';
 import { mkdirSync, existsSync, readFileSync, readdirSync, unlinkSync } from 'fs';
@@ -655,6 +656,7 @@ export function getActiveOrgId(): string {
 
 export function setActiveOrgId(orgId: string): void {
   orgsStmts.setActiveOrgId.run(orgId);
+  revalidateOrganizationAccess();
 }
 
 export function getAllOrgs(): OrgRow[] {

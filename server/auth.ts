@@ -1,3 +1,9 @@
+import {
+  isOrganizationCapability,
+  verifyOrganizationCapability,
+  organizationCapabilityAllows,
+  type OrganizationCapability,
+} from './organization-capabilities.js';
 import type { IncomingMessage } from 'http';
 import type { Request, Response, NextFunction } from 'express';
 import config from './config.js';
@@ -130,6 +136,8 @@ export function isLocalBundledServer(): boolean {
 
 /** Augmented Express request populated by the middleware on success. */
 export interface AuthenticatedRequest extends Request {
+  authOrganizationCapability?: OrganizationCapability;
+  authOrganizationToken?: string;
   /** Subject (username) when the caller used a JWT. */
   authUser?: string;
   /** Stable user id resolved from the JWT or per-user API key (Phase 3). Absent on the legacy global apiKey path. */
@@ -256,6 +264,32 @@ function resolveJwtCaller(payload: { sub: string; uid?: string; credentialVersio
 }
 
 export function authMiddleware(req: Request, res: Response, next: NextFunction): void {
+  // Capability credentials take precedence over EVERY bypass and any competing credential.
+  const candidates = [extractBearerToken(req), extractApiKey(req)];
+  const capabilityToken = candidates.find(isOrganizationCapability);
+  if (capabilityToken) {
+    const grant = verifyOrganizationCapability(capabilityToken);
+    if (!grant) {
+      res.status(401).json({ error: 'Invalid organization capability' });
+      return;
+    }
+    if (!organizationCapabilityAllows(grant, req.method, req.path)) {
+      res.status(403).json({ error: 'Operation unavailable to organization capability' });
+      return;
+    }
+    Object.assign(req, {
+      authUserId: grant.userId,
+      authOrgId: grant.serverId,
+      authRole: 'User',
+      authSpawnSessionId: grant.sessionId,
+      authOrganizationCapability: grant,
+      authOrganizationToken: capabilityToken,
+      authViaApiKey: false,
+      authLocalOrgBypass: false,
+    });
+    next();
+    return;
+  }
   const apiKey = config.apiKey;
   const authRecord = getAuthRecord();
 
@@ -601,6 +635,18 @@ export interface WsAuthResult {
  * structured reason so the server can close the handshake cleanly.
  */
 export function authenticateWsDetailed(request: IncomingMessage): WsAuthResult {
+  // Agent tools use REST. Never grant the browser's broad subscriptions to a CLI capability.
+  const credentialUrl = new URL(request.url || '/', 'http://localhost');
+  if (
+    [
+      credentialUrl.searchParams.get('token'),
+      credentialUrl.searchParams.get('apiKey'),
+      request.headers['x-api-key'],
+      request.headers.authorization?.replace(/^Bearer /i, ''),
+    ].some(isOrganizationCapability)
+  ) {
+    return { ok: false, reason: 'unauthenticated' };
+  }
   const apiKey = config.apiKey;
   const authRecord = getAuthRecord();
   if (!apiKey && !authRecord) return { ok: true };

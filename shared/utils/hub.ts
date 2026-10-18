@@ -41,10 +41,23 @@ export function isHubProjectId(id: string | null | undefined): boolean {
 }
 
 export function isHubSystemProject(
-  project: { id?: string | null; kind?: string | null } | null | undefined,
+  project:
+    | {
+        id?: string | null;
+        kind?: string | null;
+        workspaceKind?: string | null;
+        organizationId?: string | null;
+      }
+    | null
+    | undefined,
 ): boolean {
   if (!project) return false;
-  return project.id === HUB_PROJECT_ID || project.kind === 'system';
+  return (
+    project.id === HUB_PROJECT_ID ||
+    (project.kind === 'system' &&
+      project.workspaceKind !== 'organization' &&
+      !project.organizationId)
+  );
 }
 
 export function isHubAssistantRole(role: string | null | undefined): boolean {
@@ -76,4 +89,24 @@ export function isSummariesPaneAlias(value: unknown): boolean {
 export function hubPaneFromLegacyView(view: string | null | undefined): HubWorkspacePane | null {
   if (!view) return null;
   return LEGACY_HUB_VIEWS[view] ?? null;
+}
+
+/** All hidden workflow workspaces, without confusing an organization with the Hub singleton. */
+export function isInternalSystemProject(
+  project:
+    | {
+        id?: string | null;
+        kind?: string | null;
+        workspaceKind?: string | null;
+        organizationId?: string | null;
+      }
+    | null
+    | undefined,
+): boolean {
+  return Boolean(
+    project &&
+    (isHubSystemProject(project) ||
+      project.workspaceKind === 'organization' ||
+      project.organizationId),
+  );
 }

@@ -1,3 +1,5 @@
+import type { AuthenticatedRequest } from '../auth.js';
+import { organizationCapabilityCanReadProject } from '../organization-capabilities.js';
 /**
  * POST /api/projects/:projectId/sessions/dispatch — start a chat session on a
  * project agent and send it a first prompt, without opening it in a client.
@@ -20,7 +22,7 @@ import {
   BackgroundSessionDispatchError,
   dispatchBackgroundAgentSession,
 } from '../background-agent-session.js';
-import { isHubSystemProject } from '../../shared/utils/hub.js';
+import { isInternalSystemProject } from '../../shared/utils/hub.js';
 import { formatHubChatRefToken } from '../../shared/utils/hubChatRefTokens.js';
 
 const MAX_PROMPT_CHARS = 50_000;
@@ -88,6 +90,10 @@ registerPath({
     },
     400: { description: 'Invalid body, agent or mode.', content: errorContent },
     401: { description: 'No user identity to own the session.', content: errorContent },
+    403: {
+      description: 'Organization capability scope denied or dispatch override forbidden.',
+      content: errorContent,
+    },
     404: { description: 'Project not found or not visible.', content: errorContent },
     503: { description: 'Session dispatch is not ready.', content: errorContent },
   },
@@ -106,11 +112,30 @@ export default function createSessionDispatchRoutes(
   const router = Router();
 
   router.post('/api/projects/:projectId/sessions/dispatch', (req: Request, res: Response) => {
+    const capability = (req as AuthenticatedRequest).authOrganizationCapability;
+    if (
+      capability &&
+      (!organizationCapabilityCanReadProject(
+        capability,
+        String(req.params.projectId),
+        'dispatch',
+      ) ||
+        !z
+          .object({ prompt: z.string(), agentId: z.string().min(1), name: z.string().optional() })
+          .strict()
+          .safeParse(req.body).success)
+    ) {
+      res.status(403).json({
+        error:
+          'Organization dispatch requires a scoped project and explicit agent; automation overrides are forbidden',
+      });
+      return;
+    }
     const project = deps.findProject(String(req.params.projectId));
     if (
       !project ||
-      isHubSystemProject(project) ||
-      !canViewProject(project, resolveVisibilityCaller(req))
+      isInternalSystemProject(project) ||
+      (!capability && !canViewProject(project, resolveVisibilityCaller(req)))
     ) {
       res.status(404).json({ error: 'Project not found', code: 'project_not_found' });
       return;

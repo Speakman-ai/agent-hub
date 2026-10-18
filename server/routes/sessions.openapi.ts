@@ -869,6 +869,7 @@ registerPath({
         'Message rows (oldest-first), or a truncated envelope for very large un-paginated transcripts.',
       content: jsonContent(z.union([z.array(MessageComponent), SessionMessagesListComponent])),
     },
+    403: errorResponse('Organization capabilities cannot read retained session history.'),
     404: errorResponse('Session not found (or hidden by ownership).'),
   },
 });

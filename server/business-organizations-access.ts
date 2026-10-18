@@ -8,7 +8,7 @@ import { getAllOrgs, getOrg } from './orgs.js';
 import { findProjectForServer } from './project-model.js';
 import { assignedProjectIdsForUser, restrictedProjectIds } from './project-members-store.js';
 import { canViewProject } from './project-visibility.js';
-import { isHubSystemProject } from '../shared/utils/hub.js';
+import { isInternalSystemProject } from '../shared/utils/hub.js';
 import type { BroadcastEvent } from './event-project-resolver.js';
 import type { Role } from './roles.js';
 import type { BusinessOrganizationRole, Project } from './types.js';
@@ -59,7 +59,7 @@ export function visibleOrganizationProject(
   const project = findProjectForServer(caller.serverId, projectId);
   if (
     !project ||
-    isHubSystemProject(project) ||
+    isInternalSystemProject(project) ||
     project.hidden === true ||
     project.internal === true
   )

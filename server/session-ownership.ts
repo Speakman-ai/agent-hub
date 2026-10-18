@@ -60,7 +60,7 @@ function isAuthDisabled(): boolean {
 
 export type OwnerResolvable = Pick<
   AuthenticatedRequest,
-  'authUserId' | 'authViaApiKey' | 'authLocalOrgBypass' | 'authRole'
+  'authUserId' | 'authViaApiKey' | 'authLocalOrgBypass' | 'authRole' | 'authOrganizationCapability'
 >;
 
 /**
@@ -272,6 +272,11 @@ export function isSharedCronSession(sessionId: string): boolean {
  * `userOwnsSession` — visibility is broader than mutation rights.
  */
 export function userCanReadSession(req: OwnerResolvable | undefined, sessionId: string): boolean {
+  if (req?.authOrganizationCapability)
+    return (
+      req.authOrganizationCapability.sessionId === sessionId &&
+      req.authOrganizationCapability.userId === getSessionOwner(sessionId)
+    );
   if (isReviewerSession(sessionId)) return true;
   if (isSharedCronSession(sessionId)) return true;
   if (userOwnsSession(req, sessionId)) return true;
@@ -289,6 +294,11 @@ export function userCanReadSession(req: OwnerResolvable | undefined, sessionId: 
  * not auto-granted to any user — there is no org-owner grace path.
  */
 export function userOwnsSession(req: OwnerResolvable | undefined, sessionId: string): boolean {
+  if (req?.authOrganizationCapability)
+    return (
+      req.authOrganizationCapability.sessionId === sessionId &&
+      req.authOrganizationCapability.userId === getSessionOwner(sessionId)
+    );
   // No auth at all (fresh install / tests) → every caller "owns" everything.
   // This mirrors `authMiddleware`'s no-auth bypass so ownership doesn't
   // gate routes that auth itself doesn't.

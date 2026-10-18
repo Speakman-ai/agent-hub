@@ -16,7 +16,11 @@ export function buildBackgroundShellEnv(
   delete env.PROJECT_ID;
   if (project) {
     env.PROJECT_ID = project.id;
-    if (projectHasAwsSsoProfiles(project) && !mergeProjectAwsSpawnEnv(env, project)) {
+    if (
+      env.AGENT_HUB_CREDENTIAL_SCOPE !== 'organization' &&
+      projectHasAwsSsoProfiles(project) &&
+      !mergeProjectAwsSpawnEnv(env, project)
+    ) {
       throw new Error('Could not prepare the project AWS profiles for this background shell');
     }
   }

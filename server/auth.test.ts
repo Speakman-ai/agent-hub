@@ -4,6 +4,15 @@ import type { AuthRecord } from './auth-store.js';
 import type { Role } from './roles.js';
 import type { UserRow } from './users-store.js';
 
+// Capability behavior is covered with the real stores in organization-capabilities.test.ts.
+// Keep this unit suite independent of the database/config runtime.
+vi.mock('./organization-capabilities.js', () => ({
+  isOrganizationCapability: (value: unknown) =>
+    typeof value === 'string' && value.startsWith('ahorg_'),
+  verifyOrganizationCapability: () => null,
+  organizationCapabilityAllows: () => false,
+}));
+
 // Mocks
 // `./config.js` is stubbed so tests can flip `apiKey` between cases. The
 // auth-store mock lets us simulate "no JWT user configured" vs "user

@@ -1,3 +1,4 @@
+import { revalidateOrganizationAccess } from './organization-spawn-policy.js';
 /**
  * Project-members store — per-project user assignment (the visibility ACL).
  *
@@ -41,6 +42,7 @@ export function addProjectMember(projectId: string, userId: string, addedBy: str
     insertMember.run(projectId, userId, addedBy);
   });
   tx();
+  revalidateOrganizationAccess();
 }
 
 /** Remove `userId` from `projectId`. Returns true if a row was deleted. */
@@ -49,6 +51,7 @@ export function removeProjectMember(projectId: string, userId: string): boolean 
   const info = db
     .prepare('DELETE FROM project_members WHERE project_id = ? AND user_id = ?')
     .run(projectId, userId);
+  revalidateOrganizationAccess();
   return info.changes > 0;
 }
 
@@ -123,5 +126,7 @@ export function removeAllProjectMembers(projectId: string): number {
     deleteRestriction.run(projectId);
     return info.changes;
   });
-  return tx();
+  const changes = tx();
+  revalidateOrganizationAccess();
+  return changes;
 }

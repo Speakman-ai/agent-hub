@@ -676,3 +676,46 @@ If the topology ever changes (moving behind an ALB, Cloudflare, or any
 non-loopback proxy), this value must be revisited — `'loopback'` will
 drop the forwarded IP outside 127.0.0.1 and per-IP limits will collapse
 to a single bucket.
+
+## Organization session capabilities
+
+Organization workflow sessions use opaque `ahorg_` capabilities instead of the global
+break-glass key or a per-user `ahub_` key. Each token is bound to the Server partition,
+organization, agent, session and recorded session owner, expires after 15 minutes,
+and is revoked by a server restart. The authority comes from the token; caller-supplied
+session/user headers cannot expand it.
+
+The runtime requires an explicit `workspaceKind: "organization"`, canonical
+`organizationId` and `serverId` on the internal project, plus an `organizationScope`
+on its agent. Scope contains `enabled`, optional `archivedAt`, `projects`
+(`"all-linked"` or an explicit ID array, including empty), and `tools`. Supported
+permissions are `projects:read`, `dispatch`, `artifacts`, `credentials`, `skills`,
+`web`, `browser`, `computer`, and `approvals`. No agent name, role or template grants
+permissions. Organization-agent creation and configuration must use the separate
+organization management flow, never ordinary project/agent routes.
+
+Every token use checks current membership, enabled/archive state, linked projects,
+configured scope and the acting user's existing project ACL. Scope changes revoke
+old tokens and stop the active turn; a fresh user turn rebuilds context. Shared
+workspace memory and historical transcripts are not injected into fresh organization
+CLI contexts. The owner's historical messages remain stored.
+
+Use `ah-api.sh` normally with the injected token. Organization wrappers never fall
+back to host config or legacy spawn credential files. Permitted REST operations are
+explicitly enumerated, including authorized project wiki/board reads, explicit-agent
+dispatch without automation overrides, and configured tools in the originating
+session. General config/admin APIs and browser WebSocket subscriptions are denied.
+
+- `GET /api/organizations/<organizationId>/capability-context?limit=25&offset=0`
+  returns only authorized project identities and agent names, with source identity
+  and a timestamp. It does not return hidden-project counts.
+- `POST /api/sessions/<sessionId>/organization-capability/renew` rotates a valid
+  capability after rechecking current access. Replace `AGENT_HUB_API_KEY` with the
+  response's `token` before `expiresAt`; the old token immediately stops working.
+  Expired/revoked capabilities cannot renew themselves. Never log a token.
+
+The environment retains only the initiating user's provider identity and strips
+host/integration secrets. This is API credential isolation, not a filesystem sandbox
+for an unrestricted host CLI. Organization Assistant seeding, custom-agent management,
+provenance-aware cross-project context/dispatch and Computer provisioning remain
+separate rollout steps built on this boundary.

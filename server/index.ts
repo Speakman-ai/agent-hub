@@ -1,3 +1,4 @@
+import createOrganizationCapabilityRoutes from './routes/organization-capabilities.js';
 import { installLogCapture, setLogBroadcast } from './server-log.js';
 installLogCapture(); // Must be first — captures all subsequent console output
 import { initLogShipperFromEnv } from './log-shipper.js';
@@ -215,7 +216,7 @@ import {
   resolveVisibilityCaller,
 } from './project-visibility-middleware.js';
 import { filterVisibleProjects } from './project-visibility.js';
-import { isHubSystemProject } from '../shared/utils/hub.js';
+import { isInternalSystemProject } from '../shared/utils/hub.js';
 import { isAwaitingUserReply } from '../shared/utils/userInputRequest.js';
 import { cascadeDeleteUserPrivateProjects } from './project-owner-cascade.js';
 import createPreviewSecretsRoutes from './routes/preview-secrets.js';
@@ -1469,6 +1470,7 @@ app.use(
 startFleetScaler();
 
 app.use(authMiddleware);
+app.use(createOrganizationCapabilityRoutes());
 
 // Releases page powers the in-app "What's new" view, only reachable from
 // the logged-in sidebar. Mount AFTER authMiddleware so the `?refresh=1`
@@ -2602,7 +2604,7 @@ app.use(
       const caller = resolveVisibilityCaller(req);
       return new Set(
         filterVisibleProjects(getProjects(), caller)
-          .filter((p) => !isHubSystemProject(p))
+          .filter((p) => !isInternalSystemProject(p))
           .map((p) => p.id),
       );
     },

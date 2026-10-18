@@ -1,3 +1,11 @@
+import {
+  isOrganizationWorkspace,
+  prepareOrganizationTurn,
+  organizationSessionPrompt,
+  setOrganizationRevocationHandler,
+  organizationSessionAllowsTool,
+  sanitizeOrganizationSpawnEnv,
+} from './organization-capabilities.js';
 import { spawn, execSync } from 'child_process';
 import type { ChildProcess } from 'child_process';
 import { readFileSync, existsSync, mkdirSync, copyFileSync } from 'fs';
@@ -314,7 +322,11 @@ import {
   evaluateReactContinuationBudgets,
 } from './orchestration-budgets.js';
 import { emitReactLoopStep, mergeHostActionExitForEmit } from './react-loop-observability.js';
-import { clearReactChainCancel, isReactChainCancelRequested } from './react-chain-cancel.js';
+import {
+  clearReactChainCancel,
+  isReactChainCancelRequested,
+  requestReactChainCancel,
+} from './react-chain-cancel.js';
 import { formatOuterOrchestrationPromptAppend } from './orchestration.js';
 import {
   getProjectMode,
@@ -990,6 +1002,10 @@ export function buildEnrichedPrompt(
     : '';
   const systemPromptBody = (agent.systemPrompt || '').trim();
   let prompt: string = identityAnchor + rosterSection + systemPromptBody;
+  if (isOrganizationWorkspace(project)) {
+    if (!options.sessionId) throw new Error('Organization prompt requires a session identity');
+    return identityAnchor + systemPromptBody + organizationSessionPrompt(options.sessionId);
+  }
 
   // Resolve flags used by both the early capability callout and the
   // existing ReAct Loop section further down.
@@ -2423,6 +2439,15 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     autoCommitAndPR,
     tryAutonomousDispatch,
   } = deps;
+  setOrganizationRevocationHandler((sessionId) => {
+    requestReactChainCancel(sessionId);
+    activeProcesses.get(sessionId)?.kill('SIGTERM');
+    broadcast({
+      type: 'error',
+      sessionId,
+      error: 'Organization access changed. Send a new message to rebuild context.',
+    });
+  });
 
   function saveErrorMessage(
     sessionId: string,
@@ -3009,6 +3034,17 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         setImmediate(() => drainQueue(sessionId));
 
         return;
+      }
+
+      // Only clear revoked context once the previous process has exited. Queued or
+      // automatic continuations cannot silently resume after access loss/restart.
+      if (isOrganizationWorkspace(project)) {
+        prepareOrganizationTurn(
+          sessionId,
+          !msg._autoContinuation && !msg._fromQueue && !msg._skipUserMessagePersist,
+          project,
+        );
+        session = stmts.getSession.get(sessionId) as SessionRow;
       }
 
       let userMsgId: string | null = null;
@@ -4085,7 +4121,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         cliContent = `${ephemeralBashNotice}\n\n${cliContent}`;
       }
 
-      const needsHistoryBootstrap = isNewEngineSession && priorMessages.length > 0;
+      const needsHistoryBootstrap =
+        !isOrganizationWorkspace(project) && isNewEngineSession && priorMessages.length > 0;
       // A forwarded / pre-seeded session stores its context as message rows
       // before any engine session exists, so this is the only chance the CLI
       // gets to see it. Trim to fit rather than dropping the whole history.
@@ -4730,7 +4767,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // change accidentally leaks a token into the reviewer spawn env,
         // the credential cannot be used to forge commits or open PRs.
         applyReviewerRoleLock(base, agent.role);
-        applyGithubSpawnCredentials(base, tokenToInject);
+        if (!isOrganizationWorkspace(project)) applyGithubSpawnCredentials(base, tokenToInject);
         // Hub-hosted git remotes (gitHost: 'agenthub'): register a git
         // credential helper for the Hub's own /git/<id>.git origins that
         // derefs AGENT_HUB_API_KEY (injected by buildSpawnEnv). Harmless
@@ -4775,9 +4812,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         } catch {
           /* non-fatal — env var simply omitted, prompt block already covers the agent */
         }
-        mergeSkillCredentialSpawnEnv(base, { ownerId, agentId: agent.id, project });
-        mergeProjectSecretsSpawnEnv(base, { projectId: project.id, sessionId });
-        mergeProjectAwsSpawnEnv(base, project, projectAwsFiles);
+        if (!isOrganizationWorkspace(project)) {
+          mergeSkillCredentialSpawnEnv(base, { ownerId, agentId: agent.id, project });
+          mergeProjectSecretsSpawnEnv(base, { projectId: project.id, sessionId });
+          mergeProjectAwsSpawnEnv(base, project, projectAwsFiles);
+        }
         applySessionGitGuards(base, session!.worktree_path);
         return base;
       })();
@@ -4790,6 +4829,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       // autonomous-dispatch for cross-hub cards). See `mergeAllowlistedExtraEnv`.
       mergeAllowlistedExtraEnv(spawnEnv, msg.extraEnv);
       if (extraChildEnv) Object.assign(spawnEnv, extraChildEnv);
+      if (isOrganizationWorkspace(project)) sanitizeOrganizationSpawnEnv(spawnEnv);
 
       if (process.env.AGENT_HUB_DEBUG_CLAUDE_AUTH === '1' && engine === 'claude-code') {
         console.log('[chat] claude-code spawn auth:', {
@@ -6182,6 +6222,12 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               break;
             }
             const action = boundedActions[actionIdx]!;
+            if (!organizationSessionAllowsTool(sessionId, action.tool)) {
+              reactObservations.push(
+                `- ${action.tool} denied by current organization agent scope.`,
+              );
+              continue;
+            }
             const hostStepStart = Date.now();
             let hostExit = 0;
             let hostDetail: string | undefined;
@@ -7078,7 +7124,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           );
         }
 
-        if (project.ahw && !isAutoContinuation) {
+        if (project.ahw && !isAutoContinuation && !isOrganizationWorkspace(project)) {
           const briefEntry = `**Chat** — User: ${content.substring(0, 100)}${content.length > 100 ? '...' : ''}\nAssistant: ${finalContent.substring(0, 200)}${finalContent.length > 200 ? '...' : ''}`;
           appendDailyNote(project.ahw, briefEntry);
 

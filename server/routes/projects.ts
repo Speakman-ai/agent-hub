@@ -94,7 +94,7 @@ import { isPushConcurrencyMode } from '../git-host/push-concurrency.js';
 import { sanitizeOrchestrationBudgetsPartial } from '../orchestration-budgets.js';
 import { resolveProjectSkillsDir } from '../project-model.js';
 import { getProjectMode, getWorkflowWorkspaceDir } from '../project-mode.js';
-import { isHubSystemProject } from '../../shared/utils/hub.js';
+import { isInternalSystemProject } from '../../shared/utils/hub.js';
 import { parseBaseDriftPatch } from '../finalize/base-drift-policy.js';
 
 const ANALYZE_SYSTEM_PROMPT = `You are a project analyzer for Agent Hub, an AI-powered workspace manager. Analyze the code repository at your current working directory and return structured JSON.
@@ -1122,7 +1122,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     // Owners do NOT get a read bypass — they hit the admin endpoint
     // (`GET /api/admin/projects`) for the kill-switch view.
     const projects = filterVisibleProjects(getProjects(), caller).filter(
-      (p) => !isHubSystemProject(p),
+      (p) => !isInternalSystemProject(p),
     );
     const enriched = projects.map((p) => ({
       ...p,
@@ -2127,7 +2127,7 @@ This workspace has no git repo and no PR automation — your job is planning, or
     // Its id (`__hub__`) is a published constant and the Hub assistant can edit
     // project config when asked — a PATCH of engine/role/mode here must not be
     // able to reshape the singleton. Hiding it is not the same as protecting it.
-    if (isHubSystemProject(project)) {
+    if (isInternalSystemProject(project)) {
       return res.status(403).json({
         error: 'The Hub is a system project and cannot be modified or deleted.',
         code: 'hub_project_protected',
@@ -3040,7 +3040,7 @@ This workspace has no git repo and no PR automation — your job is planning, or
 
     // The Hub is a system project: never deletable, even by an Owner. Deleting
     // it would drop every user's Hub chat via the scoped-row cleanup below.
-    if (isHubSystemProject(project)) {
+    if (isInternalSystemProject(project)) {
       return res.status(403).json({
         error: 'The Hub is a system project and cannot be modified or deleted.',
         code: 'hub_project_protected',

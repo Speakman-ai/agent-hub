@@ -36,6 +36,15 @@ set -euo pipefail
 
 # ah_resolve_key — echoes the resolved API key (or empty string) to stdout.
 ah_resolve_key() {
+  # Organization processes must never fall back to host config or legacy spawn keys.
+  if [[ "${AGENT_HUB_CREDENTIAL_SCOPE:-}" == "organization" ]]; then
+    if [[ "${AGENT_HUB_API_KEY:-}" != ahorg_* ]]; then
+      echo "ah_api: organization capability missing; resume the session to refresh access." >&2
+      return 1
+    fi
+    printf '%s' "$AGENT_HUB_API_KEY"
+    return 0
+  fi
   if [[ -n "${AGENT_HUB_API_KEY:-}" ]]; then
     printf '%s' "$AGENT_HUB_API_KEY"
     return 0

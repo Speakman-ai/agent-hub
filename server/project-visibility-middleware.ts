@@ -1,3 +1,7 @@
+import {
+  isOrganizationWorkspace,
+  organizationCapabilityCanReadProject,
+} from './organization-capabilities.js';
 /**
  * Project-scoped route gate.
  *
@@ -55,7 +59,9 @@ export interface VisibilityGateDeps {
 export function resolveVisibilityCaller(req: Request): VisibilityCaller {
   const areq = req as AuthenticatedRequest;
   const noAuthConfigured = !areq.authUserId && !areq.authUser && areq.authRole === 'Owner';
-  const localBypass = Boolean(areq.authLocalOrgBypass || areq.authViaApiKey || noAuthConfigured);
+  const localBypass =
+    !areq.authOrganizationCapability &&
+    Boolean(areq.authLocalOrgBypass || areq.authViaApiKey || noAuthConfigured);
   const userId = areq.authUserId ?? null;
   // Bypass callers see everything, so skip the two ACL lookups entirely.
   // For everyone else load the assignment ACL from orgs.db. A store failure
@@ -97,7 +103,24 @@ export function createProjectVisibilityGate(
       next();
       return;
     }
+    const grant = (req as AuthenticatedRequest).authOrganizationCapability;
     const project = deps.findProject(projectId);
+    if (
+      isOrganizationWorkspace(project) ||
+      (grant &&
+        !organizationCapabilityCanReadProject(
+          grant,
+          projectId,
+          req.method === 'POST' && req.path === '/sessions/dispatch' ? 'dispatch' : 'projects:read',
+        ))
+    ) {
+      res.status(404).json({ error: 'Project not found' });
+      return;
+    }
+    if (grant) {
+      next();
+      return;
+    }
     if (!project) {
       next();
       return;
