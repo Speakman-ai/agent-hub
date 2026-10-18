@@ -13106,6 +13106,74 @@ components:
         - createdAt
         - updatedAt
       description: A single shared organization todo, visible and editable by every member of the org. A distinct list, not an aggregation of members' personal todos.
+    LegacyOrgConnection:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        mode:
+          type: string
+          enum:
+            - local
+            - remote
+        color:
+          type: string
+        position:
+          type: number
+        remote_url:
+          type: string
+        api_key:
+          type: string
+        created_at:
+          type: string
+        updated_at:
+          type: string
+      required:
+        - id
+        - name
+        - mode
+        - color
+        - position
+        - remote_url
+        - api_key
+        - created_at
+        - updated_at
+    ServerConnection:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        mode:
+          type: string
+          enum:
+            - local
+            - remote
+        color:
+          type: string
+        position:
+          type: number
+        remoteUrl:
+          type: string
+        apiKey:
+          type: string
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - name
+        - mode
+        - color
+        - position
+        - remoteUrl
+        - apiKey
+        - createdAt
+        - updatedAt
     PrAutoMergeRequest:
       type: object
       properties:
@@ -45717,6 +45785,1242 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgTodosErrorResponse"
+  /api/orgs:
+    get:
+      tags: &a6
+        - Legacy Server Connections
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: List saved Server connections
+      responses:
+        "200":
+          description: Connections in saved order.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/LegacyOrgConnection"
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+    post:
+      tags: *a6
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: Create a Server connection (Owner)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id:
+                  type: string
+                  minLength: 1
+                name:
+                  type: string
+                  minLength: 1
+                mode:
+                  type: string
+                color:
+                  type: string
+                remoteUrl:
+                  type: string
+                apiKey:
+                  type: string
+              required:
+                - name
+      responses:
+        "201":
+          description: Created connection; creator receives Owner membership.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyOrgConnection"
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/orgs/{id}:
+    get:
+      tags: *a6
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: Get a Server connection
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Saved connection.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyOrgConnection"
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+    put:
+      tags: *a6
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: Update a Server connection
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                mode:
+                  type: string
+                color:
+                  type: string
+                remoteUrl:
+                  type: string
+                apiKey:
+                  type: string
+                position:
+                  type: number
+      responses:
+        "200":
+          description: Updated connection with stable ID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyOrgConnection"
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+    delete:
+      tags: *a6
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: Delete a Server connection (target Owner)
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Connection removed; data directory retained.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/orgs/{id}/members:
+    get:
+      tags: *a6
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: List Server members (target Admin or Owner)
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Existing Server memberships.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  orgId:
+                    type: string
+                  members:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        username:
+                          type: string
+                        role:
+                          type: string
+                          enum:
+                            - Owner
+                            - Admin
+                            - User
+                        createdAt:
+                          type: string
+                      required:
+                        - id
+                        - username
+                        - role
+                        - createdAt
+                required:
+                  - orgId
+                  - members
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/orgs/{id}/switch:
+    post:
+      tags: *a6
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: Activate an existing Server partition (target member)
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Active partition; repeated switches are a no-op. Keeps the legacy org_switched event.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  orgId:
+                    type: string
+                  projects:
+                    type: number
+                  agents:
+                    type: number
+                required:
+                  - ok
+                  - orgId
+                  - projects
+                  - agents
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "500":
+          description: Partition initialization failed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/org/switch:
+    post:
+      tags: *a6
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: Activate a Server partition using a body ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                orgId:
+                  type: string
+                  minLength: 1
+              required:
+                - orgId
+      responses:
+        "200":
+          description: Active partition.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  orgId:
+                    type: string
+                  projects:
+                    type: number
+                  agents:
+                    type: number
+                required:
+                  - ok
+                  - orgId
+                  - projects
+                  - agents
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "500":
+          description: Partition initialization failed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/servers:
+    get:
+      tags: &a7
+        - Servers
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: List saved Server connections
+      responses:
+        "200":
+          description: Connections in saved order.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ServerConnection"
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+    post:
+      tags: *a7
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: Create a Server connection (Owner)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id:
+                  type: string
+                  minLength: 1
+                name:
+                  type: string
+                  minLength: 1
+                mode:
+                  type: string
+                  enum:
+                    - local
+                    - remote
+                color:
+                  type: string
+                remoteUrl:
+                  type: string
+                apiKey:
+                  type: string
+              required:
+                - name
+      responses:
+        "201":
+          description: Created connection; creator receives Owner membership.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerConnection"
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/servers/{id}:
+    get:
+      tags: *a7
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: Get a Server connection
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Saved connection.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerConnection"
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+    put:
+      tags: *a7
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: Update a Server connection
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                mode:
+                  type: string
+                  enum:
+                    - local
+                    - remote
+                color:
+                  type: string
+                remoteUrl:
+                  type: string
+                apiKey:
+                  type: string
+                position:
+                  type: number
+      responses:
+        "200":
+          description: Updated connection with stable ID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerConnection"
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+    delete:
+      tags: *a7
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: Delete a Server connection (target Owner)
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Connection removed; data directory retained.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/servers/{id}/members:
+    get:
+      tags: *a7
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: List Server members (target Admin or Owner)
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Existing Server memberships.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  serverId:
+                    type: string
+                  members:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        username:
+                          type: string
+                        role:
+                          type: string
+                          enum:
+                            - Owner
+                            - Admin
+                            - User
+                        createdAt:
+                          type: string
+                      required:
+                        - id
+                        - username
+                        - role
+                        - createdAt
+                required:
+                  - serverId
+                  - members
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/servers/{id}/switch:
+    post:
+      tags: *a7
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: Activate an existing Server partition (target member)
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Active partition; repeated switches are a no-op. Keeps the legacy org_switched event.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  serverId:
+                    type: string
+                  projects:
+                    type: number
+                  agents:
+                    type: number
+                required:
+                  - ok
+                  - serverId
+                  - projects
+                  - agents
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "500":
+          description: Partition initialization failed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/server/switch:
+    post:
+      tags: *a7
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: Activate a Server partition using a body ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                serverId:
+                  type: string
+                  minLength: 1
+              required:
+                - serverId
+      responses:
+        "200":
+          description: Active partition.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  serverId:
+                    type: string
+                  projects:
+                    type: number
+                  agents:
+                    type: number
+                required:
+                  - ok
+                  - serverId
+                  - projects
+                  - agents
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "500":
+          description: Partition initialization failed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
   /api/auth/me/claude-auth/browser/code:
     post:
       tags:

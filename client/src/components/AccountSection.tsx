@@ -257,7 +257,7 @@ export default function AccountSection() {
 }
 
 /**
- * Organization tab — Admin+ view of org membership: the configured-users
+ * Server Members tab — Admin+ view of server membership: the configured-users
  * roster (create / change-role / remove / reset-MFA), pending member invites,
  * and the host-wide SMTP delivery used to send invite + password-reset email.
  * Split out of the Account tab so per-user credentials and org administration
@@ -393,7 +393,7 @@ export function OrganizationSection() {
     return (
       <div className="flex items-center gap-2 text-sm text-gray-400">
         <Loader2 size={14} className="animate-spin" />
-        Loading organization…
+        Loading server members…
       </div>
     );
   }
@@ -410,7 +410,7 @@ export function OrganizationSection() {
         <div className="bg-gray-800 rounded-xl p-4">
           <div className="flex items-center justify-between mb-3">
             <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
-              <Users size={14} /> Configured users
+              <Users size={14} /> Server members
             </h4>
             {isOwner && (
               <button
@@ -1282,7 +1282,8 @@ export function InvitesSection({ callerRole, invites, emailDelivery, onChanged }
           <Users size={14} /> Member invites
         </h4>
         <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">
-          Invite links create Admin or User accounts. Promote a member to Owner after they accept.
+          Invite links create Admin or User accounts on this server. Promote a member to Owner after
+          they accept.
         </p>
       </div>
 
@@ -1784,7 +1785,7 @@ export function ApiKeysSection({ bare = false }: { bare?: boolean } = {}) {
         </ul>
       )}
       <p className="text-[11px] text-gray-500 mt-3 leading-relaxed">
-        API keys grant your full access to this org. Use{' '}
+        API keys grant your full access to this server. Use{' '}
         <code className="text-gray-400">Authorization: Bearer ahub_…</code> on REST calls or{' '}
         <code className="text-gray-400">?apiKey=ahub_…</code> on WebSocket handshakes.
       </p>

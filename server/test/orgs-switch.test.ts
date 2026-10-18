@@ -39,35 +39,43 @@ describe('routeDeps wiring (org switch dependencies)', () => {
   });
 });
 
-describe('POST /api/orgs/:id/switch', () => {
-  it('switches to the default org without error', async () => {
-    const res = await request.post('/api/orgs/default/switch').expect(200);
-    expect(res.body.ok).toBe(true);
-    expect(res.body.orgId).toBe('default');
-    expect(typeof res.body.projects).toBe('number');
-    expect(typeof res.body.agents).toBe('number');
+describe.each(['/api/orgs', '/api/servers'])('%s production switch wiring', (base) => {
+  describe('POST /api/orgs/:id/switch', () => {
+    it('switches to the default org without error', async () => {
+      const res = await request.post(`${base}/default/switch`).expect(200);
+      expect(res.body.ok).toBe(true);
+      expect(res.body[base === '/api/servers' ? 'serverId' : 'orgId']).toBe('default');
+      expect(typeof res.body.projects).toBe('number');
+      expect(typeof res.body.agents).toBe('number');
+    });
+
+    it('is a no-op when the org is already active (avoids scheduler storm)', async () => {
+      await request.post(`${base}/default/switch`).expect(200);
+      const res = await request.post(`${base}/default/switch`).expect(200);
+      expect(res.body.ok).toBe(true);
+      expect(res.body[base === '/api/servers' ? 'serverId' : 'orgId']).toBe('default');
+    });
+
+    it('returns 404 for an unknown org', async () => {
+      await request.post(`${base}/does-not-exist/switch`).expect(404);
+    });
   });
 
-  it('is a no-op when the org is already active (avoids scheduler storm)', async () => {
-    await request.post('/api/orgs/default/switch').expect(200);
-    const res = await request.post('/api/orgs/default/switch').expect(200);
-    expect(res.body.ok).toBe(true);
-    expect(res.body.orgId).toBe('default');
-  });
+  describe('POST /api/org/switch', () => {
+    it('switches via the legacy body-param endpoint', async () => {
+      const res = await request
+        .post(base === '/api/servers' ? '/api/server/switch' : '/api/org/switch')
+        .send(base === '/api/servers' ? { serverId: 'default' } : { orgId: 'default' })
+        .expect(200);
+      expect(res.body.ok).toBe(true);
+      expect(res.body[base === '/api/servers' ? 'serverId' : 'orgId']).toBe('default');
+    });
 
-  it('returns 404 for an unknown org', async () => {
-    await request.post('/api/orgs/does-not-exist/switch').expect(404);
-  });
-});
-
-describe('POST /api/org/switch', () => {
-  it('switches via the legacy body-param endpoint', async () => {
-    const res = await request.post('/api/org/switch').send({ orgId: 'default' }).expect(200);
-    expect(res.body.ok).toBe(true);
-    expect(res.body.orgId).toBe('default');
-  });
-
-  it('rejects missing orgId with 400', async () => {
-    await request.post('/api/org/switch').send({}).expect(400);
+    it('rejects missing orgId with 400', async () => {
+      await request
+        .post(base === '/api/servers' ? '/api/server/switch' : '/api/org/switch')
+        .send({})
+        .expect(400);
+    });
   });
 });

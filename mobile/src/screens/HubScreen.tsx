@@ -37,7 +37,7 @@ function parseHubTab(value: unknown): HubTab {
 const TABS: { id: HubTab; label: string; icon: string }[] = [
   { id: 'assistant', label: 'Assistant', icon: 'Bot' },
   { id: 'today', label: 'Dashboard', icon: 'LayoutGrid' },
-  { id: 'org', label: 'Org', icon: 'BarChart3' },
+  { id: 'org', label: 'Server', icon: 'BarChart3' },
   { id: 'todos', label: 'Todos', icon: 'ListTodo' },
   { id: 'reminders', label: 'Reminders', icon: 'BellRing' },
   { id: 'calendar', label: 'Calendar', icon: 'CalendarDays' },

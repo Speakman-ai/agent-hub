@@ -925,7 +925,7 @@ export default function DrawerContent({ navigation }: any) {
               navigation.closeDrawer();
             }}
           >
-            <Text style={styles.orgManageText}>Manage Organizations</Text>
+            <Text style={styles.orgManageText}>Manage Servers</Text>
           </TouchableOpacity>
         </View>
       )}

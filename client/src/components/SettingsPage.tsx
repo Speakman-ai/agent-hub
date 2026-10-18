@@ -383,10 +383,10 @@ export function OrganizationsSection() {
   return (
     <div className="space-y-6">
       <div>
-        <h3 className="text-lg font-semibold mb-4">Organizations</h3>
+        <h3 className="text-lg font-semibold mb-4">Servers</h3>
         <p className="text-xs text-gray-500 mb-4">
-          Organizations are connection profiles. Each org points to a different Agent Hub server
-          (local or remote). Switching orgs changes which server the client talks to.
+          Servers are saved connections to Agent Hub. Each server has its own projects, members and
+          shared data. Switch servers to change which data you see.
         </p>
       </div>
 
@@ -510,10 +510,10 @@ export function OrganizationsSection() {
         })}
       </div>
 
-      {/* Add Organization */}
+      {/* Add Server */}
       {showNewForm ? (
         <div className="bg-gray-800 rounded-xl p-4 space-y-4 border border-dashed border-gray-600">
-          <h4 className="text-sm font-medium text-gray-300">New Organization</h4>
+          <h4 className="text-sm font-medium text-gray-300">New Server</h4>
           <div>
             <label className={labelClass}>Name</label>
             <input
@@ -568,7 +568,7 @@ export function OrganizationsSection() {
               disabled={!newForm.name.trim()}
               className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm px-4 py-2 rounded-lg transition-colors disabled:cursor-not-allowed"
             >
-              Create Organization
+              Create Server
             </button>
           </div>
         </div>
@@ -577,7 +577,7 @@ export function OrganizationsSection() {
           onClick={() => setShowNewForm(true)}
           className="w-full py-3 rounded-xl border border-dashed border-gray-700 hover:border-gray-500 text-gray-400 hover:text-gray-200 text-sm transition-colors flex items-center justify-center gap-2"
         >
-          <Plus size={16} /> Add Organization
+          <Plus size={16} /> Add Server
         </button>
       )}
     </div>
@@ -2155,7 +2155,7 @@ export function CronSection({ projects = [], showToast, projectId = null }: any)
             <span className="text-xs text-gray-300">
               Shared
               <span className="block text-gray-500">
-                Visible to the org. Runs still use your credentials.
+                Visible to server members. Runs still use your credentials.
               </span>
             </span>
           </label>
@@ -2315,7 +2315,7 @@ export function CronSection({ projects = [], showToast, projectId = null }: any)
                   <span className="text-xs text-gray-300">
                     Shared
                     <span className="block text-gray-500">
-                      Visible to the org. Runs still use the owner credentials.
+                      Visible to server members. Runs still use the owner credentials.
                     </span>
                   </span>
                 </label>
@@ -5517,8 +5517,8 @@ const SETTINGS_TABS = [
   { id: 'notifications', iconName: 'Bell', text: 'Notifications' },
   { id: 'browser-profiles', iconName: 'Cookie', text: 'Browser Profiles' },
   { id: 'approvals', iconName: 'ShieldCheck', text: 'Approvals' },
-  { id: 'organization', iconName: 'Users', text: 'Organization' },
-  { id: 'orgs', iconName: 'Building2', text: 'Organizations' },
+  { id: 'organization', iconName: 'Users', text: 'Server Members' },
+  { id: 'orgs', iconName: 'Building2', text: 'Servers' },
   // Host-wide Gemini API key (used for wiki embeddings; managed in
   // ~/.agent-hub/data/config.json). Per-user Claude/Cursor/Codex creds live
   // on Settings → Account, so this tab is gated to Admin/Owner via
@@ -5630,7 +5630,7 @@ export default function SettingsPage({
     if (tab === 'orgs' && !isElectron()) setTab('general');
   }, [tab]);
 
-  // The "Organizations" tab manages remote Hub-server bookmarks and the
+  // The "Servers" tab manages remote Hub-server bookmarks and the
   // multi-org switcher. That UX only makes sense in Electron (which can
   // hop between Hub servers via its file-backed remote-orgs store +
   // cross-origin API-key injector). The web app is locked to a single

@@ -584,7 +584,7 @@ export default function Sidebar({
         )}
         <div className="p-3">
           {/* Hub — org/user home: assistant + Dashboard / Org / Chat /
-              Todos / Calendar / Mail / Support. The org-wide support overview is
+              Todos / Calendar / Mail / Support. The server-wide support overview is
               a Hub tab, not a standalone section; per-project Support links —
               with unread badges — stay in each project's menu below. */}
           <button

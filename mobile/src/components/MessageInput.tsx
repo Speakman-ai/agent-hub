@@ -246,7 +246,7 @@ export default function MessageInput({
             style={{ marginRight: 4 }}
           />
           <Text style={styles.askModeBannerText}>
-            Reviewer thread, read-only. Shared with everyone in the org.
+            Reviewer thread, read-only. Shared with everyone on this server.
           </Text>
         </View>
       </View>

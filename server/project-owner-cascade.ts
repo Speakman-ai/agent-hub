@@ -24,6 +24,8 @@ import { deleteAllPreviewSecretsForProject } from './preview/preview-secrets-sto
 import { deleteProjectSkillsDir } from './project-skill-paths.js';
 import { deleteProjectBrandingDir } from './project-branding.js';
 import { removeAllProjectMembers } from './project-members-store.js';
+import { removeBusinessOrganizationProjectLinks } from './business-organizations-store.js';
+import { getActiveOrgId } from './orgs.js';
 import { purgeProjectWikiFiles } from './wiki-files.js';
 
 export interface CascadeDeps {
@@ -47,6 +49,10 @@ export interface CascadeResult {
  * delete paths will pick it up automatically.
  */
 export function deleteProjectScopedRows(stmts: Stmts, project: Project): void {
+  // Shared orgs.db links have no FK to projects.json. Clean them before
+  // destructive work and stop deletion if cleanup fails. The route and
+  // owner-deletion sweep both operate on the active Server registry.
+  removeBusinessOrganizationProjectLinks(getActiveOrgId(), project.id);
   try {
     deleteAllPreviewSecretsForProject(project.id);
   } catch (err) {

@@ -91,8 +91,9 @@ export default function InviteAcceptPage({ token }: any) {
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="rounded-lg border border-gray-700 bg-gray-800 p-3 text-sm text-gray-300">
               <p>
-                You were invited to <span className="text-white font-medium">{invite.orgName}</span>{' '}
-                as <span className="text-white font-medium">{invite.role}</span>.
+                You were invited to the server{' '}
+                <span className="text-white font-medium">{invite.orgName}</span> as{' '}
+                <span className="text-white font-medium">{invite.role}</span>.
               </p>
               <p className="text-xs text-gray-500 mt-1">Expires {invite.expiresAt}</p>
             </div>

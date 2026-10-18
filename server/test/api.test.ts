@@ -865,6 +865,73 @@ describe('Projects', () => {
   });
 
   describe('DELETE /api/projects/:projectId', () => {
+    it('removes every organization link before a project ID can be reused', async () => {
+      const { getOrgsDb, getActiveOrgId } = await import('../orgs.js');
+      const {
+        createBusinessOrganization,
+        attachBusinessOrganizationProject,
+        listBusinessOrganizationsForProject,
+      } = await import('../business-organizations-store.js');
+      const project = await createProject();
+      const projectId = project.id as string;
+      const serverId = getActiveOrgId();
+      const ownerId = `org-owner-${projectId}`;
+      const db = getOrgsDb();
+      db.prepare('INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)').run(
+        ownerId,
+        ownerId,
+        'unused',
+      );
+      db.prepare('INSERT INTO memberships (user_id, org_id, role) VALUES (?, ?, ?)').run(
+        ownerId,
+        serverId,
+        'Owner',
+      );
+      try {
+        for (const name of ['First', 'Second']) {
+          const organization = createBusinessOrganization({ serverId, name, createdBy: ownerId });
+          attachBusinessOrganizationProject(serverId, organization.id, projectId);
+        }
+        expect(listBusinessOrganizationsForProject(serverId, projectId)).toHaveLength(2);
+        await request.delete(`/api/projects/${projectId}`).expect(204);
+        expect(listBusinessOrganizationsForProject(serverId, projectId)).toEqual([]);
+        await createProject({ id: projectId });
+        expect(listBusinessOrganizationsForProject(serverId, projectId)).toEqual([]);
+      } finally {
+        db.prepare('DELETE FROM users WHERE id = ?').run(ownerId);
+      }
+    });
+
+    it('keeps project and board data when organization link cleanup fails', async () => {
+      const { getOrgsDb, getActiveOrgId } = await import('../orgs.js');
+      const project = await createProject();
+      const projectId = project.id as string;
+      const card = await createCard(projectId, { title: 'Retain on failure' });
+      const db = getOrgsDb();
+      const organizationId = `cleanup-${projectId}`;
+      db.prepare('INSERT INTO business_organizations (server_id, id, name) VALUES (?, ?, ?)').run(
+        getActiveOrgId(),
+        organizationId,
+        'Cleanup',
+      );
+      db.prepare(
+        'INSERT INTO business_organization_projects (server_id, organization_id, project_id) VALUES (?, ?, ?)',
+      ).run(getActiveOrgId(), organizationId, projectId);
+      db.exec(`CREATE TRIGGER fail_organization_link_cleanup BEFORE DELETE ON business_organization_projects
+        BEGIN SELECT RAISE(ABORT, 'injected cleanup failure'); END;`);
+      try {
+        await request.delete(`/api/projects/${projectId}`).expect(500);
+        await request.get(`/api/projects/${projectId}`).expect(200);
+        const board = await request.get(`/api/projects/${projectId}/board`).expect(200);
+        expect(board.body.cards).toEqual(
+          expect.arrayContaining([expect.objectContaining({ id: card.id })]),
+        );
+      } finally {
+        db.exec('DROP TRIGGER fail_organization_link_cleanup');
+      }
+      await request.delete(`/api/projects/${projectId}`).expect(204);
+    });
+
     it('deletes a project', async () => {
       const proj = await createProject();
       await request.delete(`/api/projects/${proj.id}`).expect(204);

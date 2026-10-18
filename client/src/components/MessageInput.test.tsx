@@ -790,10 +790,10 @@ describe('MessageInput readOnly (reviewer thread) mode', () => {
       <MessageInput
         {...baseProps}
         consultMode={true}
-        consultHint="Hub assistant — org & account help, no code ship or Finalize"
+        consultHint="Hub assistant — server & account help, no code ship or Finalize"
       />,
     );
-    expect(screen.getByText(/Hub assistant — org & account help/)).toBeInTheDocument();
+    expect(screen.getByText(/Hub assistant — server & account help/)).toBeInTheDocument();
     expect(screen.queryByText(/Hub project updates only/)).not.toBeInTheDocument();
   });
 });

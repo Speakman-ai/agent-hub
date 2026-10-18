@@ -618,7 +618,7 @@ export function WorkflowProjectForm({ onSubmit, onBack, onClose }: any) {
                 {
                   value: 'shared',
                   label: 'Shared',
-                  hint: 'Visible to every member of your org',
+                  hint: 'Visible to every member of this server',
                 },
                 {
                   value: 'private',

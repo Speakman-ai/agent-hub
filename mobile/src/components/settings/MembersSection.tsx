@@ -276,9 +276,10 @@ export default function MembersSection() {
 
   return (
     <View style={[styles.accountCard, { marginTop: 16 }]}>
-      <Text style={styles.accountCardTitle}>Members</Text>
+      <Text style={styles.accountCardTitle}>Server Members</Text>
       <Text style={styles.sectionDesc}>
-        Invite links create Admin or User accounts. Promote a member to Owner after they accept.
+        Invite links create Admin or User accounts on this server. Promote a member to Owner after
+        they accept.
       </Text>
 
       <Text style={styles.inputLabel}>Email</Text>

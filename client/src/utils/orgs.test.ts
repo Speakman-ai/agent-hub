@@ -262,3 +262,56 @@ describe('orgs.js — auth header propagation', () => {
     expect(authHeaderOf(putCall)).toBe('Bearer jwt-token-abc');
   });
 });
+
+describe('Electron Server bookmarks retain the legacy bridge', () => {
+  beforeEach(() => {
+    clearAllOrgState();
+    vi.resetModules();
+  });
+  afterEach(() => {
+    clearAllOrgState();
+    vi.restoreAllMocks();
+  });
+
+  it('restores file-backed selection across origins and saves edits through the original IPC API', async () => {
+    const servers = [
+      {
+        id: 'old-a',
+        name: 'Alpha',
+        mode: 'remote',
+        remote_url: 'https://a.test',
+        api_key: 'a-key',
+      },
+      { id: 'old-b', name: 'Beta', mode: 'remote', remote_url: 'https://b.test', api_key: 'b-key' },
+    ];
+    localStorage.setItem(ACTIVE_ORG_KEY, 'stale-browser-selection');
+    localStorage.setItem(REMOTE_ORGS_KEY, '[]');
+    const saveRemoteOrgs = vi.fn();
+    const saveActiveOrgId = vi.fn();
+    const saveConnectionConfig = vi.fn();
+    window.electronAPI = {
+      getRemoteOrgs: () => servers,
+      getActiveOrgId: () => 'old-b',
+      getConnectionConfig: () => ({ mode: 'remote', remoteUrl: 'https://b.test', apiKey: 'b-key' }),
+      saveRemoteOrgs,
+      saveActiveOrgId,
+      saveConnectionConfig,
+    } as any;
+    const orgs = await import('./orgs');
+    expect(await orgs.fetchOrgs()).toEqual({ orgs: servers, activeOrgId: 'old-b' });
+    await orgs.switchOrg('old-a');
+    expect(saveActiveOrgId).toHaveBeenCalledWith('old-a');
+    expect(saveConnectionConfig).toHaveBeenCalledWith({
+      mode: 'remote',
+      remoteUrl: 'https://a.test',
+      apiKey: 'a-key',
+    });
+    await orgs.updateOrg('old-a', { name: 'Renamed server' });
+    expect(saveRemoteOrgs).toHaveBeenCalledWith([
+      { ...servers[0], name: 'Renamed server' },
+      servers[1],
+    ]);
+    expect(orgs.getActiveOrg()?.id).toBe('old-a');
+    expect(JSON.parse(localStorage.getItem(REMOTE_ORGS_KEY)!)[0].api_key).toBe('a-key');
+  });
+});

@@ -98,6 +98,8 @@ describe('OrgTodosSection — mutation response never overwrites a newer refresh
     mockApi.listOrgTodos.mockResolvedValueOnce({ todos: [makeTodo({ id: 't1', title: 'A' })] });
     render(<OrgTodosSection orgId="acme" />);
     expect(await screen.findByText('A')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Server' })).toBeInTheDocument();
+    expect(screen.getByText('Shared with everyone on this server')).toBeInTheDocument();
 
     // A mutation (toggle → PUT) that resolves slowly, a teammate refresh GET, and
     // the post-mutation authoritative reconcile GET — all staged separately.
@@ -144,8 +146,8 @@ describe('OrgTodosSection — live refresh preserves an unsaved editor draft', (
     render(<OrgTodosSection orgId="acme" />);
     expect(await screen.findByText('Original')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByLabelText('Edit org todo'));
-    const input = (await screen.findByLabelText('Edit org todo title')) as HTMLInputElement;
+    fireEvent.click(screen.getByLabelText('Edit server todo'));
+    const input = (await screen.findByLabelText('Edit server todo title')) as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'dirty draft' } });
 
     // A teammate changes the same todo's title; our silent refresh applies it to
@@ -158,7 +160,7 @@ describe('OrgTodosSection — live refresh preserves an unsaved editor draft', (
     });
     await act(async () => {});
 
-    const stillEditing = screen.getByLabelText('Edit org todo title') as HTMLInputElement;
+    const stillEditing = screen.getByLabelText('Edit server todo title') as HTMLInputElement;
     expect(stillEditing.value).toBe('dirty draft');
   });
 });
@@ -174,13 +176,13 @@ describe('OrgTodosSection — failed edit keeps the draft', () => {
     expect(await screen.findByText('Original')).toBeInTheDocument();
 
     // Enter edit mode.
-    fireEvent.click(screen.getByLabelText('Edit org todo'));
-    const titleInput = (await screen.findByLabelText('Edit org todo title')) as HTMLInputElement;
+    fireEvent.click(screen.getByLabelText('Edit server todo'));
+    const titleInput = (await screen.findByLabelText('Edit server todo title')) as HTMLInputElement;
 
     // Type a new draft title, then attempt to save.
     fireEvent.change(titleInput, { target: { value: 'My unsaved draft' } });
     await act(async () => {
-      fireEvent.click(screen.getByLabelText('Save org todo'));
+      fireEvent.click(screen.getByLabelText('Save server todo'));
     });
 
     // The save failed → the editor must stay open with the draft intact, not
@@ -188,7 +190,7 @@ describe('OrgTodosSection — failed edit keeps the draft', () => {
     await waitFor(() => {
       expect(screen.getByText('save failed')).toBeInTheDocument();
     });
-    const stillEditing = screen.getByLabelText('Edit org todo title') as HTMLInputElement;
+    const stillEditing = screen.getByLabelText('Edit server todo title') as HTMLInputElement;
     expect(stillEditing).toBeInTheDocument();
     expect(stillEditing.value).toBe('My unsaved draft');
   });
@@ -209,7 +211,7 @@ describe('OrgTodosSection — mutation errors survive the reconcile refresh', ()
     });
 
     await act(async () => {
-      fireEvent.click(screen.getByLabelText('Delete org todo'));
+      fireEvent.click(screen.getByLabelText('Delete server todo'));
     });
 
     // Row restored by the reconcile AND the failure explanation still visible.
@@ -294,18 +296,18 @@ describe('OrgTodosSection — deferred save does not close a newer editor', () =
     mockApi.updateOrgTodo.mockReturnValueOnce(putA.promise);
 
     // Open row A's editor, change the title, click Save — the save is in flight.
-    fireEvent.click(screen.getAllByLabelText('Edit org todo')[0]); // Row A
-    fireEvent.change(await screen.findByLabelText('Edit org todo title'), {
+    fireEvent.click(screen.getAllByLabelText('Edit server todo')[0]); // Row A
+    fireEvent.change(await screen.findByLabelText('Edit server todo title'), {
       target: { value: 'A edited' },
     });
     await act(async () => {
-      fireEvent.click(screen.getByLabelText('Save org todo'));
+      fireEvent.click(screen.getByLabelText('Save server todo'));
     });
 
     // While A's save is pending, open row B's editor (only B shows a pencil now)
     // and type a draft.
-    fireEvent.click(screen.getByLabelText('Edit org todo'));
-    fireEvent.change(screen.getByLabelText('Edit org todo title'), {
+    fireEvent.click(screen.getByLabelText('Edit server todo'));
+    fireEvent.change(screen.getByLabelText('Edit server todo title'), {
       target: { value: 'B draft' },
     });
 
@@ -316,7 +318,7 @@ describe('OrgTodosSection — deferred save does not close a newer editor', () =
     await act(async () => {});
 
     // Row B's editor is still open with the unsaved draft.
-    const stillEditing = screen.getByLabelText('Edit org todo title') as HTMLInputElement;
+    const stillEditing = screen.getByLabelText('Edit server todo title') as HTMLInputElement;
     expect(stillEditing).toBeInTheDocument();
     expect(stillEditing.value).toBe('B draft');
   });
@@ -331,19 +333,21 @@ describe('OrgTodosSection — editor is locked while its save is in flight', () 
     const putA = deferred<{ todo: unknown }>();
     mockApi.updateOrgTodo.mockReturnValueOnce(putA.promise);
 
-    fireEvent.click(screen.getByLabelText('Edit org todo'));
-    fireEvent.change(await screen.findByLabelText('Edit org todo title'), {
+    fireEvent.click(screen.getByLabelText('Edit server todo'));
+    fireEvent.change(await screen.findByLabelText('Edit server todo title'), {
       target: { value: 'v1' },
     });
     await act(async () => {
-      fireEvent.click(screen.getByLabelText('Save org todo'));
+      fireEvent.click(screen.getByLabelText('Save server todo'));
     });
 
     // While the save is pending the title, notes, date and Cancel are locked, so
     // the user cannot introduce a same-row edit (or cancel/reopen) that the save
     // completion would then silently discard.
-    expect((screen.getByLabelText('Edit org todo title') as HTMLInputElement).disabled).toBe(true);
-    expect((screen.getByLabelText('Edit org todo detail') as HTMLTextAreaElement).disabled).toBe(
+    expect((screen.getByLabelText('Edit server todo title') as HTMLInputElement).disabled).toBe(
+      true,
+    );
+    expect((screen.getByLabelText('Edit server todo detail') as HTMLTextAreaElement).disabled).toBe(
       true,
     );
     expect((screen.getByLabelText('Cancel edit') as HTMLButtonElement).disabled).toBe(true);
@@ -353,7 +357,7 @@ describe('OrgTodosSection — editor is locked while its save is in flight', () 
       putA.resolve({ todo: makeTodo({ id: 'a', title: 'v1' }) });
     });
     await act(async () => {});
-    expect(screen.queryByLabelText('Edit org todo title')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Edit server todo title')).not.toBeInTheDocument();
   });
 
   it('re-enables the editor with the draft intact after a failed save', async () => {
@@ -362,18 +366,18 @@ describe('OrgTodosSection — editor is locked while its save is in flight', () 
     render(<OrgTodosSection orgId="acme" />);
     expect(await screen.findByText('Row A')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByLabelText('Edit org todo'));
-    fireEvent.change(await screen.findByLabelText('Edit org todo title'), {
+    fireEvent.click(screen.getByLabelText('Edit server todo'));
+    fireEvent.change(await screen.findByLabelText('Edit server todo title'), {
       target: { value: 'v1' },
     });
     await act(async () => {
-      fireEvent.click(screen.getByLabelText('Save org todo'));
+      fireEvent.click(screen.getByLabelText('Save server todo'));
     });
 
     // Failure keeps the editor open, re-enabled, with the draft — the user can
     // now edit again or cancel/reopen.
     await waitFor(() => expect(screen.getByText('save failed')).toBeInTheDocument());
-    const input = screen.getByLabelText('Edit org todo title') as HTMLInputElement;
+    const input = screen.getByLabelText('Edit server todo title') as HTMLInputElement;
     expect(input.disabled).toBe(false);
     expect(input.value).toBe('v1');
     expect((screen.getByLabelText('Cancel edit') as HTMLButtonElement).disabled).toBe(false);
@@ -392,20 +396,20 @@ describe('OrgTodosSection — a reopened editing session survives an earlier def
     mockApi.updateOrgTodo.mockReturnValueOnce(putA.promise);
 
     // Session 1: open A, edit, Save (stays pending; A's editor locks).
-    fireEvent.click(screen.getAllByLabelText('Edit org todo')[0]); // Row A
-    fireEvent.change(await screen.findByLabelText('Edit org todo title'), {
+    fireEvent.click(screen.getAllByLabelText('Edit server todo')[0]); // Row A
+    fireEvent.change(await screen.findByLabelText('Edit server todo title'), {
       target: { value: 'A v1' },
     });
     await act(async () => {
-      fireEvent.click(screen.getByLabelText('Save org todo'));
+      fireEvent.click(screen.getByLabelText('Save server todo'));
     });
 
     // Session 2: open B (bumps the editing session; A's editor closes).
-    fireEvent.click(screen.getByLabelText('Edit org todo')); // only B shows a pencil now
+    fireEvent.click(screen.getByLabelText('Edit server todo')); // only B shows a pencil now
 
     // Session 3: reopen A (bumps again; A reopens fresh/unlocked). Type a NEW draft.
-    fireEvent.click(screen.getByLabelText('Edit org todo')); // only A shows a pencil now
-    fireEvent.change(screen.getByLabelText('Edit org todo title'), {
+    fireEvent.click(screen.getByLabelText('Edit server todo')); // only A shows a pencil now
+    fireEvent.change(screen.getByLabelText('Edit server todo title'), {
       target: { value: 'A v2 reopened' },
     });
 
@@ -416,7 +420,7 @@ describe('OrgTodosSection — a reopened editing session survives an earlier def
     });
     await act(async () => {});
 
-    const input = screen.getByLabelText('Edit org todo title') as HTMLInputElement;
+    const input = screen.getByLabelText('Edit server todo title') as HTMLInputElement;
     expect(input).toBeInTheDocument();
     expect(input.value).toBe('A v2 reopened');
   });
@@ -435,20 +439,20 @@ describe('OrgTodosSection — concurrent writes to the same todo are serialized'
     mockApi.updateOrgTodo.mockReturnValueOnce(s1.promise).mockReturnValueOnce(s2.promise);
 
     // Session 1: edit A, save S1 (its PUT stays pending).
-    fireEvent.click(screen.getAllByLabelText('Edit org todo')[0]);
-    fireEvent.change(await screen.findByLabelText('Edit org todo title'), {
+    fireEvent.click(screen.getAllByLabelText('Edit server todo')[0]);
+    fireEvent.change(await screen.findByLabelText('Edit server todo title'), {
       target: { value: 'S1' },
     });
     await act(async () => {
-      fireEvent.click(screen.getByLabelText('Save org todo'));
+      fireEvent.click(screen.getByLabelText('Save server todo'));
     });
 
     // A→B→A, then save S2 on the reopened A.
-    fireEvent.click(screen.getByLabelText('Edit org todo')); // B
-    fireEvent.click(screen.getByLabelText('Edit org todo')); // A reopened
-    fireEvent.change(screen.getByLabelText('Edit org todo title'), { target: { value: 'S2' } });
+    fireEvent.click(screen.getByLabelText('Edit server todo')); // B
+    fireEvent.click(screen.getByLabelText('Edit server todo')); // A reopened
+    fireEvent.change(screen.getByLabelText('Edit server todo title'), { target: { value: 'S2' } });
     await act(async () => {
-      fireEvent.click(screen.getByLabelText('Save org todo'));
+      fireEvent.click(screen.getByLabelText('Save server todo'));
     });
 
     // S1's PUT is in flight; S2's PUT must NOT have been dispatched yet — the
@@ -484,22 +488,24 @@ describe('OrgTodosSection — a stale save failure does not unlock a newer save 
     mockApi.updateOrgTodo.mockReturnValueOnce(s1.promise).mockReturnValueOnce(s2.promise);
 
     // Session 1: open A, edit, Save S1 (pending → A locks).
-    fireEvent.click(screen.getAllByLabelText('Edit org todo')[0]); // Row A
-    fireEvent.change(await screen.findByLabelText('Edit org todo title'), {
+    fireEvent.click(screen.getAllByLabelText('Edit server todo')[0]); // Row A
+    fireEvent.change(await screen.findByLabelText('Edit server todo title'), {
       target: { value: 'A s1' },
     });
     await act(async () => {
-      fireEvent.click(screen.getByLabelText('Save org todo'));
+      fireEvent.click(screen.getByLabelText('Save server todo'));
     });
 
     // A→B→A: open B (session 2), reopen A (session 3, unlocked).
-    fireEvent.click(screen.getByLabelText('Edit org todo')); // B
-    fireEvent.click(screen.getByLabelText('Edit org todo')); // A reopened
-    fireEvent.change(screen.getByLabelText('Edit org todo title'), { target: { value: 'A s3' } });
+    fireEvent.click(screen.getByLabelText('Edit server todo')); // B
+    fireEvent.click(screen.getByLabelText('Edit server todo')); // A reopened
+    fireEvent.change(screen.getByLabelText('Edit server todo title'), {
+      target: { value: 'A s3' },
+    });
 
     // Session 3: Save S2 (pending → A locks again).
     await act(async () => {
-      fireEvent.click(screen.getByLabelText('Save org todo'));
+      fireEvent.click(screen.getByLabelText('Save server todo'));
     });
 
     // The stale S1 now rejects. It must NOT unlock the session-3 editor (whose
@@ -509,14 +515,16 @@ describe('OrgTodosSection — a stale save failure does not unlock a newer save 
       s1.reject(new Error('s1 failed'));
     });
     await act(async () => {});
-    expect((screen.getByLabelText('Edit org todo title') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText('Edit server todo title') as HTMLInputElement).disabled).toBe(
+      true,
+    );
 
     // S2 succeeds → the editor closes cleanly.
     await act(async () => {
       s2.resolve({ todo: makeTodo({ id: 'a', title: 'A s3' }) });
     });
     await act(async () => {});
-    expect(screen.queryByLabelText('Edit org todo title')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Edit server todo title')).not.toBeInTheDocument();
   });
 });
 
@@ -630,7 +638,7 @@ describe('OrgTodosSection — reorder while another row is being edited', () => 
     expect(await screen.findByText('Row A')).toBeInTheDocument();
 
     // Edit the middle row B — it becomes the pinned editor, hidden from the list.
-    fireEvent.click(screen.getAllByLabelText('Edit org todo')[1]);
+    fireEvent.click(screen.getAllByLabelText('Edit server todo')[1]);
 
     // The reconcile after the reorder returns A moved below C (B kept in place).
     mockApi.reorderOrgTodos.mockResolvedValueOnce({ todos: [] });
@@ -667,8 +675,8 @@ describe('OrgTodosSection — a remote status transition preserves the open edit
     expect(await screen.findByText('Row A')).toBeInTheDocument();
 
     // Open A's editor and type an unsaved draft.
-    fireEvent.click(screen.getByLabelText('Edit org todo'));
-    fireEvent.change(await screen.findByLabelText('Edit org todo title'), {
+    fireEvent.click(screen.getByLabelText('Edit server todo'));
+    fireEvent.change(await screen.findByLabelText('Edit server todo title'), {
       target: { value: 'A unsaved draft' },
     });
 
@@ -683,7 +691,7 @@ describe('OrgTodosSection — a remote status transition preserves the open edit
 
     // The editor stays open with the draft intact (it no longer lives in the
     // unmounted row), and the conflict is surfaced.
-    const input = screen.getByLabelText('Edit org todo title') as HTMLInputElement;
+    const input = screen.getByLabelText('Edit server todo title') as HTMLInputElement;
     expect(input).toBeInTheDocument();
     expect(input.value).toBe('A unsaved draft');
     expect(screen.getByTestId('org-todo-edit-conflict')).toBeInTheDocument();
@@ -700,7 +708,7 @@ describe('OrgTodosSection — a reconcile GET failure after a successful mutatio
     mockApi.createOrgTodo.mockResolvedValueOnce({ todo: makeTodo({ id: 'x', title: 'new todo' }) });
     mockApi.listOrgTodos.mockRejectedValueOnce(new Error('refresh failed'));
 
-    fireEvent.change(screen.getByLabelText('New org todo title'), {
+    fireEvent.change(screen.getByLabelText('New server todo title'), {
       target: { value: 'new todo' },
     });
     await act(async () => {
@@ -739,7 +747,7 @@ describe('OrgTodosSection — deferred create does not wipe a new add-form entry
     mockApi.createOrgTodo.mockReturnValueOnce(create.promise);
 
     // Submit "first todo"; the create stays pending.
-    fireEvent.change(screen.getByLabelText('New org todo title'), {
+    fireEvent.change(screen.getByLabelText('New server todo title'), {
       target: { value: 'first todo' },
     });
     await act(async () => {
@@ -747,7 +755,7 @@ describe('OrgTodosSection — deferred create does not wipe a new add-form entry
     });
 
     // Start typing the next todo while the create is still in flight.
-    fireEvent.change(screen.getByLabelText('New org todo title'), {
+    fireEvent.change(screen.getByLabelText('New server todo title'), {
       target: { value: 'second todo' },
     });
 
@@ -757,7 +765,7 @@ describe('OrgTodosSection — deferred create does not wipe a new add-form entry
     });
     await act(async () => {});
 
-    expect((screen.getByLabelText('New org todo title') as HTMLInputElement).value).toBe(
+    expect((screen.getByLabelText('New server todo title') as HTMLInputElement).value).toBe(
       'second todo',
     );
   });

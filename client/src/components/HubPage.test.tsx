@@ -57,6 +57,7 @@ describe('HubPage', () => {
     expect(screen.getByTestId('hub-pane-support')).toHaveTextContent('Support');
     expect(screen.queryByTestId('hub-pane-troubleshoot')).not.toBeInTheDocument();
 
+    expect(screen.getByTestId('hub-pane-org')).toHaveTextContent('Server');
     fireEvent.click(screen.getByTestId('hub-pane-org'));
     expect(onPaneChange).toHaveBeenCalledWith('org');
     fireEvent.click(screen.getByTestId('hub-pane-support'));

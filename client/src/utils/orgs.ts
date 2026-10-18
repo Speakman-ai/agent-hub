@@ -1,5 +1,8 @@
 /**
- * Organization management — hybrid approach.
+ * Legacy org helper names, storage keys and wire fields are retained for saved
+ * connections and older clients. These records are Servers, not business organizations.
+ *
+ * Server connection management — hybrid approach.
  *
  * LOCAL orgs: stored on the server in SQLite (survive browser clears).
  *   These represent data-isolated workspaces on the current server.
@@ -209,7 +212,7 @@ export async function createOrg({
     headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
     body: JSON.stringify({ name, mode, color, remoteUrl, apiKey }),
   });
-  if (!res.ok) throw new Error('Failed to create org');
+  if (!res.ok) throw new Error('Failed to create server');
   const org = await res.json();
   await fetchOrgs();
   return org;
@@ -235,7 +238,7 @@ export async function updateOrg(orgId: any, updates: any) {
     headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
     body: JSON.stringify(updates),
   });
-  if (!res.ok) throw new Error('Failed to update org');
+  if (!res.ok) throw new Error('Failed to update server');
   const org = await res.json();
   await fetchOrgs();
   if (_activeOrgId === orgId) syncToConnection(org);

@@ -615,7 +615,7 @@ function MessageInput(
             />
           </svg>
           <span>
-            Reviewer thread, read-only. This conversation is shared with everyone in the org.
+            Reviewer thread, read-only. This conversation is shared with everyone on this server.
           </span>
         </div>
       </div>

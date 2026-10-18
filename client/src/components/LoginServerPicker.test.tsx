@@ -67,6 +67,7 @@ describe('LoginServerPicker', () => {
   it('swaps to another bookmarked org and reloads the window', async () => {
     renderPicker();
     fireEvent.click(await screen.findByTestId('login-server-change'));
+    expect(screen.getByText('Other servers')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('login-server-org-b'));
     await waitFor(() => expect(switchOrg).toHaveBeenCalledWith('b'));
     expect(reloadForOrgSwitch).toHaveBeenCalledTimes(1);

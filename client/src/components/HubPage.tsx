@@ -26,7 +26,7 @@ const PANE_META: Record<
   { label: string; icon: typeof Briefcase; testId: string }
 > = {
   today: { label: 'Dashboard', icon: Briefcase, testId: 'hub-pane-today' },
-  org: { label: 'Org', icon: BarChart3, testId: 'hub-pane-org' },
+  org: { label: 'Server', icon: BarChart3, testId: 'hub-pane-org' },
   todos: { label: 'Todos', icon: ListTodo, testId: 'hub-pane-todos' },
   reminders: { label: 'Reminders', icon: BellRing, testId: 'hub-pane-reminders' },
   calendar: { label: 'Calendar', icon: CalendarDays, testId: 'hub-pane-calendar' },

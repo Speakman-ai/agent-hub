@@ -917,7 +917,9 @@ export function ensureOwnerUserFromAuthRecord(): UserRow | null {
 
   const orgRows = db.prepare('SELECT id FROM orgs').all() as Array<{ id: string }>;
   const upsertMembership = db.prepare(
-    'INSERT OR REPLACE INTO memberships (user_id, org_id, role) VALUES (?, ?, ?)',
+    // Preserve child organization memberships during legacy Owner repair.
+    `INSERT INTO memberships (user_id, org_id, role) VALUES (?, ?, ?)
+     ON CONFLICT(user_id, org_id) DO UPDATE SET role = excluded.role`,
   );
   for (const org of orgRows) {
     upsertMembership.run(user.id, org.id, 'Owner');

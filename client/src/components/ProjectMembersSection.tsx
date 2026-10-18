@@ -197,7 +197,7 @@ export default function ProjectMembersSection({ project, showToast }: ProjectMem
             ) : (
               <span>
                 This shared project has no members, so it is visible to{' '}
-                <strong className="text-gray-300">everyone</strong> in the org. Assign a user to
+                <strong className="text-gray-300">everyone</strong> on this server. Assign a user to
                 restrict it to members only.
               </span>
             )}

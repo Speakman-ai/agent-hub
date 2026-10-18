@@ -20,7 +20,7 @@ import {
 } from '../utils/todos';
 
 /**
- * Shared, organization-wide Todos section — the mobile 1:1 peer of the web
+ * Shared, server-wide Todos section — the mobile 1:1 peer of the web
  * `OrgTodosSection`. Rendered above the personal list in the Todos screen. Every
  * member of the org sees and edits the SAME list; this is a distinct shared
  * list, not an aggregation of members' personal todos.
@@ -428,8 +428,8 @@ export default function OrgTodosSection({ orgId }: { orgId: string }) {
       <View style={styles.header}>
         <HubIcon name="Users" size={18} color={colors.emerald400} />
         <View style={{ flex: 1 }}>
-          <Text style={styles.headerTitle}>Organization</Text>
-          <Text style={styles.headerSubtitle}>Shared with everyone in your org</Text>
+          <Text style={styles.headerTitle}>Server</Text>
+          <Text style={styles.headerSubtitle}>Shared with everyone on this server</Text>
         </View>
       </View>
 
@@ -441,7 +441,7 @@ export default function OrgTodosSection({ orgId }: { orgId: string }) {
           onChangeText={setNewTitle}
           placeholder="Add a shared todo…"
           placeholderTextColor={colors.gray600}
-          accessibilityLabel="New org todo title"
+          accessibilityLabel="New server todo title"
           testID="org-todo-new-title"
           returnKeyType="done"
           onSubmitEditing={addTodo}
@@ -452,7 +452,7 @@ export default function OrgTodosSection({ orgId }: { orgId: string }) {
           onChangeText={setNewNotes}
           placeholder="Add more detail (optional)…"
           placeholderTextColor={colors.gray600}
-          accessibilityLabel="New org todo detail"
+          accessibilityLabel="New server todo detail"
           multiline
         />
         <PrioritySelect value={newPriority} onChange={setNewPriority} />
@@ -463,7 +463,7 @@ export default function OrgTodosSection({ orgId }: { orgId: string }) {
             onChangeText={setNewDue}
             placeholder="YYYY-MM-DD"
             placeholderTextColor={colors.gray600}
-            accessibilityLabel="New org todo due date"
+            accessibilityLabel="New server todo due date"
             autoCapitalize="none"
             autoCorrect={false}
           />
@@ -533,7 +533,9 @@ export default function OrgTodosSection({ orgId }: { orgId: string }) {
         <Text style={styles.muted}>Loading shared todos…</Text>
       ) : open.length === 0 && done.length === 0 ? (
         <View style={styles.emptyBox} testID="org-todos-empty">
-          <Text style={styles.emptyText}>No shared todos yet. Add one your whole org can see.</Text>
+          <Text style={styles.emptyText}>
+            No shared todos yet. Add one everyone on this server can see.
+          </Text>
         </View>
       ) : (
         <>
@@ -617,7 +619,7 @@ function TodoEditor({
         value={draft.title}
         onChangeText={(t) => onChange({ title: t })}
         editable={!saving}
-        accessibilityLabel="Edit org todo title"
+        accessibilityLabel="Edit server todo title"
         autoFocus
       />
       <TextInput
@@ -627,7 +629,7 @@ function TodoEditor({
         editable={!saving}
         placeholder="Add more detail (optional)…"
         placeholderTextColor={colors.gray600}
-        accessibilityLabel="Edit org todo detail"
+        accessibilityLabel="Edit server todo detail"
         multiline
       />
       <PrioritySelect
@@ -643,7 +645,7 @@ function TodoEditor({
           editable={!saving}
           placeholder="YYYY-MM-DD"
           placeholderTextColor={colors.gray600}
-          accessibilityLabel="Edit org todo do date"
+          accessibilityLabel="Edit server todo do date"
           autoCapitalize="none"
           autoCorrect={false}
         />
@@ -651,7 +653,7 @@ function TodoEditor({
           style={[styles.iconButton, (!draft.title.trim() || saving) && styles.disabled]}
           disabled={!draft.title.trim() || saving}
           onPress={onSave}
-          accessibilityLabel="Save org todo"
+          accessibilityLabel="Save server todo"
         >
           <HubIcon name="Check" size={16} color={colors.emerald400} />
         </TouchableOpacity>
@@ -779,7 +781,7 @@ function OrgTodoRow({
           <TouchableOpacity
             onPress={onStartEdit}
             style={styles.iconButton}
-            accessibilityLabel="Edit org todo"
+            accessibilityLabel="Edit server todo"
           >
             <HubIcon name="Pencil" size={14} color={colors.gray500} />
           </TouchableOpacity>
@@ -788,7 +790,7 @@ function OrgTodoRow({
       <TouchableOpacity
         onPress={onDelete}
         style={styles.iconButton}
-        accessibilityLabel="Delete org todo"
+        accessibilityLabel="Delete server todo"
       >
         <HubIcon name="Trash2" size={15} color={colors.gray500} />
       </TouchableOpacity>

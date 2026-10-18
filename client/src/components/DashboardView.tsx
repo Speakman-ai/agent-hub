@@ -181,7 +181,7 @@ export default function DashboardView({
   if (!orgId) {
     return (
       <div className="flex-1 flex items-center justify-center text-gray-500">
-        Select an organization to see its dashboard.
+        Select a server to see its dashboard.
       </div>
     );
   }

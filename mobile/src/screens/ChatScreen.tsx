@@ -705,7 +705,9 @@ export default function ChatScreen({
               queueLength={(messageQueues[activeSessionId] || []).length}
               consultMode={consultLike}
               consultHint={
-                hubSession ? 'Hub assistant — org & account help, no code ship or Finalize' : null
+                hubSession
+                  ? 'Hub assistant — server & account help, no code ship or Finalize'
+                  : null
               }
               toolbarStart={
                 hubSession ? (

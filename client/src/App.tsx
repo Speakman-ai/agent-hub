@@ -6597,7 +6597,7 @@ export default function App({ initialView }: any = {}) {
             agentColor={chatAccentColor}
             skills={skills}
             consultMode
-            consultHint="Hub assistant — org & account help, no code ship or Finalize"
+            consultHint="Hub assistant — server & account help, no code ship or Finalize"
             readOnly={false}
             draftKey={activeSessionId || 'hub'}
             onFileError={(msg: any) => showToast(msg, 'error', 6000)}

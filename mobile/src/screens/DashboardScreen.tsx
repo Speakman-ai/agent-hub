@@ -197,7 +197,7 @@ export default function DashboardScreen() {
     if (!org) {
       if (!silent && mountedRef.current && req.canCommit()) {
         req.commit();
-        setError('No active organization.');
+        setError('No active server.');
       }
       return;
     }
