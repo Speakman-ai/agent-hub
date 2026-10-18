@@ -1,3 +1,4 @@
+import ProjectIcon from './ProjectIcon';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeft, FileText, Pencil, Plus, Trash2 } from 'lucide-react';
 import { api } from '../utils/api';
@@ -191,11 +192,8 @@ export default function KanbanCardTemplatesView({
             <ArrowLeft size={14} />
             Board
           </button>
-          {project?.color ? (
-            <span
-              className="w-2 h-2 rounded-full ring-2 ring-white/10"
-              style={{ backgroundColor: project.color }}
-            />
+          {project ? (
+            <ProjectIcon project={project} className="w-2 h-2 rounded-full ring-2 ring-white/10" />
           ) : null}
           <div className="min-w-0">
             <h1 className="text-base font-semibold text-gray-100 truncate">Card templates</h1>

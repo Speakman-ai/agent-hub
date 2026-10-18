@@ -1,3 +1,4 @@
+import ProjectIcon from '../components/ProjectIcon';
 import { useIsFocused } from '@react-navigation/native';
 import AiSignInHint from '../components/AiSignInHint';
 import React, { useState, useEffect, useMemo, useContext } from 'react';
@@ -2172,14 +2173,7 @@ function ProjectsSection() {
       {projects.map((project: any) => (
         <View key={project.id} style={styles.formCard}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-            <View
-              style={{
-                width: 12,
-                height: 12,
-                borderRadius: 3,
-                backgroundColor: project.color || '#6366f1',
-              }}
-            />
+            <ProjectIcon project={project} />
             <Text style={[styles.fieldLabel, { marginBottom: 0, flex: 1 }]}>{project.name}</Text>
             {saving[project.id] && <ActivityIndicator size="small" color={colors.gray400} />}
           </View>

@@ -1,3 +1,4 @@
+import ProjectIcon from '../components/ProjectIcon';
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
@@ -1080,9 +1081,7 @@ export default function SkillsScreen() {
                 style={[styles.agentTab, activeProjectId === project.id && styles.agentTabActive]}
                 onPress={() => setActiveProjectId(project.id)}
               >
-                <View
-                  style={[styles.tabDot, { backgroundColor: project.color || colors.gray500 }]}
-                />
+                <ProjectIcon project={project} style={styles.tabDot} />
                 <Text
                   style={[
                     styles.agentTabText,

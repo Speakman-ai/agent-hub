@@ -1,3 +1,4 @@
+import ProjectIcon from './ProjectIcon';
 import AiSignInHint from './AiSignInHint';
 import React, { useState, useEffect, useRef } from 'react';
 import {
@@ -1075,9 +1076,7 @@ export default function DrawerContent({ navigation }: any) {
                         Alert.alert(project.name, 'Reorder project', buttons);
                       }}
                     >
-                      <View
-                        style={[styles.projectDot, { backgroundColor: project.color || '#6366f1' }]}
-                      />
+                      <ProjectIcon project={project} style={styles.projectDot} />
                       <Text style={styles.projectName} numberOfLines={1}>
                         {project.name}
                         {workflow ? <Text style={styles.workflowTag}> Wf</Text> : null}

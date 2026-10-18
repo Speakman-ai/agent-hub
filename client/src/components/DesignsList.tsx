@@ -1,3 +1,4 @@
+import ProjectIcon from './ProjectIcon';
 import { useState } from 'react';
 import { Palette, Plus, Trash2, X } from 'lucide-react';
 import { api } from '../utils/api';
@@ -210,10 +211,10 @@ export default function DesignsList({ designs = [], projects = [], onNavigate, o
                           onChange={() => toggleProject(p.id)}
                           className="rounded border-gray-700 bg-gray-950"
                         />
-                        {p.color && (
-                          <span
+                        {(p.icon || p.color) && (
+                          <ProjectIcon
+                            project={p}
                             className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                            style={{ backgroundColor: p.color }}
                           />
                         )}
                         <span className="text-sm text-gray-200 truncate">{p.name}</span>

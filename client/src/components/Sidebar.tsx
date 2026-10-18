@@ -1,3 +1,4 @@
+import ProjectIcon from './ProjectIcon';
 import AiSignInHint from './AiSignInHint';
 import DesktopUpdateHint from './DesktopUpdateHint';
 import { useState, useEffect, useRef } from 'react';
@@ -849,9 +850,9 @@ export default function Sidebar({
                         : 'text-gray-400 hover:text-gray-200'
                     }`}
                   >
-                    <span
+                    <ProjectIcon
+                      project={project}
                       className="w-2.5 h-2.5 rounded-sm block flex-shrink-0"
-                      style={{ backgroundColor: project.color }}
                     />
                     <span className="flex-1 truncate text-sm font-medium">{project.name}</span>
                     {project.visibility === 'private' && (

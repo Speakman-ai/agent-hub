@@ -1871,3 +1871,16 @@ describe('Sidebar Chat link', () => {
     expect(screen.queryByTestId('sidebar-chat-badge')).toBeNull();
   });
 });
+
+describe('Sidebar project icons', () => {
+  it('uses the saved icon and restores the color after a project refresh', () => {
+    const props = buildProps();
+    props.projects[0].icon = '★';
+    const { rerender } = render(<Sidebar {...props} />);
+    expect(screen.getByTestId('project-icon')).toHaveTextContent('★');
+    props.projects[0] = { ...props.projects[0], icon: null };
+    rerender(<Sidebar {...props} projects={[...props.projects]} />);
+    expect(screen.getByTestId('project-icon')).toBeEmptyDOMElement();
+    expect(screen.getByTestId('project-icon')).toHaveStyle({ backgroundColor: '#22d3ee' });
+  });
+});

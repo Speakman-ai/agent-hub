@@ -4,6 +4,7 @@ export interface ProjectWire {
   name: string;
   cwd: string;
   color?: string;
+  icon?: string | null;
   ownerUserId?: string | null;
   visibility?: string;
   gitHost?: string;

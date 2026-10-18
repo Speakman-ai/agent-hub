@@ -1,3 +1,4 @@
+import ProjectIcon from '../ProjectIcon';
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import {
   View,
@@ -632,9 +633,7 @@ export default function AgentsSection({ projectId: filterProjectId, hideBulk = f
         <View key={group.projectId || 'other'} style={styles.projectGroup}>
           {!filterProjectId && (
             <View style={styles.projectHeader}>
-              <View
-                style={[styles.projectDot, { backgroundColor: group.color || colors.gray600 }]}
-              />
+              <ProjectIcon project={group} style={styles.projectDot} />
               <Text style={styles.projectName}>{group.projectName}</Text>
               <Text style={styles.projectCount}>
                 {group.agents.length} agent{group.agents.length === 1 ? '' : 's'}

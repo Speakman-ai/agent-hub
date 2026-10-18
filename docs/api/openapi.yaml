@@ -3713,7 +3713,13 @@ components:
           type: string
         project:
           type: object
-          properties: {}
+          properties:
+            icon:
+              type: string
+              nullable: true
+              maxLength: 32
+              description: Emoji or symbol replacing the project color marker (up to 32 UTF-16 code units). Null or empty restores the colored marker.
+              example: 🚀
           additionalProperties:
             nullable: true
         crons:
@@ -3825,7 +3831,13 @@ components:
               - type: boolean
         project:
           type: object
-          properties: {}
+          properties:
+            icon:
+              type: string
+              nullable: true
+              maxLength: 32
+              description: Emoji or symbol replacing the project color marker (up to 32 UTF-16 code units). Null or empty restores the colored marker.
+              example: 🚀
           additionalProperties:
             nullable: true
       required:
@@ -13947,6 +13959,14 @@ components:
     ProjectDetail:
       type: object
       properties:
+        icon:
+          type: string
+          nullable: true
+          maxLength: 32
+          description: Emoji or symbol replacing the project color marker (up to 32 UTF-16 code units). Null or empty restores the colored marker.
+          example: 🚀
+        color:
+          type: string
         id:
           type: string
           description: Project slug — unique within the install.
@@ -50759,6 +50779,67 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ProjectDetailErrorResponse"
+    patch:
+      tags:
+        - Projects
+      summary: Update project configuration
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                cwd:
+                  type: string
+                color:
+                  type: string
+                icon:
+                  type: string
+                  nullable: true
+                  maxLength: 32
+                  description: Emoji or symbol replacing the project color marker (up to 32 UTF-16 code units). Null or empty restores the colored marker.
+                  example: 🚀
+              additionalProperties:
+                nullable: true
+      responses:
+        "200":
+          description: Updated project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectDetail"
+        "400":
+          description: Invalid project configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectDetailErrorResponse"
+        "403":
+          description: Project cannot be modified by this caller
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectDetailErrorResponse"
+        "404":
+          description: Project not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectDetailErrorResponse"
+        "409":
+          description: Project configuration conflict
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectDetailErrorResponse"
   /api/projects/analyze:
     post:
       tags:
@@ -50836,6 +50917,12 @@ paths:
                     color:
                       type: string
                       description: Sidebar accent color.
+                    icon:
+                      type: string
+                      nullable: true
+                      maxLength: 32
+                      description: Emoji or symbol replacing the project color marker (up to 32 UTF-16 code units). Null or empty restores the colored marker.
+                      example: 🚀
                     githubRepo:
                       type: object
                       properties:
@@ -51234,6 +51321,54 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/ProjectDetail"
+    post:
+      tags:
+        - Projects
+      summary: Create a project
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                cwd:
+                  type: string
+                color:
+                  type: string
+                icon:
+                  type: string
+                  nullable: true
+                  maxLength: 32
+                  description: Emoji or symbol replacing the project color marker (up to 32 UTF-16 code units). Null or empty restores the colored marker.
+                  example: 🚀
+                id:
+                  type: string
+                  pattern: ^[a-zA-Z0-9-]+$
+              required:
+                - id
+              additionalProperties:
+                nullable: true
+      responses:
+        "201":
+          description: Created project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectDetail"
+        "400":
+          description: Invalid project configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectDetailErrorResponse"
+        "409":
+          description: Project id already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectDetailErrorResponse"
   /api/projects/provision/suggest:
     post:
       tags:

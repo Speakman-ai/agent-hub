@@ -1,3 +1,4 @@
+import ProjectIcon from './ProjectIcon';
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   ArrowLeft,
@@ -436,7 +437,6 @@ export default function ProjectWorkflowBuilder({
   };
 
   const projectName = project?.name || 'Project';
-  const projectColor = project?.color || '#6366f1';
 
   const refLines = useMemo(() => {
     const lines = [
@@ -463,10 +463,7 @@ export default function ProjectWorkflowBuilder({
           <ArrowLeft size={16} />
           Workflows
         </button>
-        <span
-          className="w-2.5 h-2.5 rounded-sm flex-shrink-0"
-          style={{ backgroundColor: projectColor }}
-        />
+        <ProjectIcon project={project} className="w-2.5 h-2.5 rounded-sm flex-shrink-0" />
         <h1 className="text-lg font-semibold text-white truncate flex items-center gap-2 min-w-0">
           <ListOrdered size={18} className="text-violet-400 flex-shrink-0" />
           <span className="truncate">{projectName}</span>

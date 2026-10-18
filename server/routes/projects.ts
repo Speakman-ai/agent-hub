@@ -1,3 +1,4 @@
+import { ProjectIconSchema } from '../openapi/schemas/project-icon.js';
 import { Router, Request, Response } from 'express';
 import cron from 'node-cron';
 import { execFileSync, spawn, ChildProcess, exec, execFile } from 'child_process';
@@ -421,6 +422,7 @@ function extractOneShotAnalysisText(engine: SupportedEngine, output: string): st
 
 interface OnboardBody {
   project: {
+    icon?: string | null;
     id: string;
     name?: string;
     cwd?: string;
@@ -1779,6 +1781,11 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
   );
 
   router.post('/api/projects', (req: Request, res: Response) => {
+    const icon = ProjectIconSchema.safeParse(req.body.icon);
+    if (!icon.success)
+      return res.status(400).json({
+        error: 'Invalid project icon: use a single-line emoji or symbol up to 32 characters.',
+      });
     const projects = getProjects();
     const {
       id,
@@ -1905,6 +1912,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       cwd: workflowWorkspaceDir ?? (cwd || config.defaultCwd),
       ahw: dataDir,
       color: color || '#6b7280',
+      ...(icon.data !== undefined ? { icon: icon.data || null } : {}),
       visibility: initialVisibility,
       ownerUserId,
       agents: [],
@@ -2107,6 +2115,11 @@ This workspace has no git repo and no PR automation — your job is planning, or
   });
 
   router.patch('/api/projects/:projectId', (req: Request, res: Response) => {
+    const icon = ProjectIconSchema.safeParse(req.body.icon);
+    if (!icon.success)
+      return res.status(400).json({
+        error: 'Invalid project icon: use a single-line emoji or symbol up to 32 characters.',
+      });
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
@@ -3006,7 +3019,10 @@ This workspace has no git repo and no PR automation — your job is planning, or
         patchProjectBrowserPageLoadTimeout(project, req.body as Record<string, unknown>);
       if (err) return res.status(400).json({ error: err });
     }
+    if (icon.data !== undefined) project.icon = icon.data || null;
     saveProjects();
+    if (icon.data !== undefined)
+      broadcast({ type: 'projects_updated', reason: 'project-icon-updated' });
     // Re-register the wiki background agent so schedule/enable changes take
     // effect immediately without waiting for the next full scheduler sweep.
     // Only when this PATCH actually touched backgroundAgents — avoids
@@ -3405,6 +3421,8 @@ This workspace has no git repo and no PR automation — your job is planning, or
       return res.status(409).json({ error: 'Project id already exists' });
     }
 
+    const icon = ProjectIconSchema.safeParse(projectData.icon);
+    if (!icon.success) return res.status(400).json({ error: 'Invalid project icon' });
     const resolvedCwd = (projectData.cwd || config.defaultCwd).replace(
       /^~/,
       process.env.HOME || '/tmp',
@@ -3417,6 +3435,7 @@ This workspace has no git repo and no PR automation — your job is planning, or
       cwd: resolvedCwd,
       ahw: dataDir,
       color: projectData.color || '#6b7280',
+      ...(icon.data !== undefined ? { icon: icon.data || null } : {}),
       agents: [],
     };
     if (commands && typeof commands === 'object') {

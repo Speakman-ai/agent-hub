@@ -1,3 +1,4 @@
+import ProjectIcon from './ProjectIcon';
 import { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
 import {
   Plus,
@@ -2052,10 +2053,10 @@ export default function KanbanBoard({
       {/* Header */}
       <div className="flex items-center justify-between px-5 py-3.5 border-b border-white/[0.06] bg-gray-950/90 backdrop-blur-sm">
         <div className="flex items-center gap-3 min-w-0">
-          {project?.color && (
-            <span
+          {project && (
+            <ProjectIcon
+              project={project}
               className="w-2.5 h-2.5 rounded-full block flex-shrink-0 ring-2 ring-white/10"
-              style={{ backgroundColor: project.color }}
             />
           )}
           <div className="min-w-0">

@@ -3409,6 +3409,8 @@ export interface ProjectEmailLogo {
 export type PushConcurrencyMode = 'queue' | 'cancel';
 
 export interface Project {
+  /** Optional emoji or symbol used instead of the project color marker. */
+  icon?: string | null;
   id: string;
   name: string;
   cwd: string;

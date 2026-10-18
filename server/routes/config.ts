@@ -1,3 +1,4 @@
+import { ProjectIconSchema } from '../openapi/schemas/project-icon.js';
 import { Router, Request, Response } from 'express';
 import { readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs';
 import path from 'path';
@@ -213,6 +214,7 @@ interface ProjectExportData {
     name?: string;
     cwd?: string;
     ahw?: string;
+    icon?: string | null;
     agents?: unknown[];
     color?: string;
     leadAgent?: string;
@@ -1343,9 +1345,13 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
 
     if (data.project) {
       runSection('project', () => {
+        const icon = ProjectIconSchema.parse(data.project!.icon);
         (targetProject as Record<string, unknown>).agents =
           data.project!.agents || (targetProject as Record<string, unknown>).agents;
         targetProject.color = data.project!.color || targetProject.color;
+        if (data.project!.icon !== undefined) {
+          targetProject.icon = icon || null;
+        }
         (targetProject as Record<string, unknown>).leadAgent =
           data.project!.leadAgent || (targetProject as Record<string, unknown>).leadAgent;
         if (data.project!.commands)
@@ -1713,6 +1719,9 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
   router.post('/api/projects/:projectId/import', (req: Request, res: Response) => {
     try {
       const data = req.body as ProjectExportData;
+      if (!ProjectIconSchema.safeParse(data?.project?.icon).success) {
+        return res.status(400).json({ error: 'Invalid project icon' });
+      }
       if (!data || data.version !== 3 || data.type !== 'project') {
         return res
           .status(400)
@@ -1750,6 +1759,9 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
   router.post('/api/projects/import', (req: Request, res: Response) => {
     try {
       const data = req.body as ProjectExportData;
+      if (!ProjectIconSchema.safeParse(data?.project?.icon).success) {
+        return res.status(400).json({ error: 'Invalid project icon' });
+      }
       if (!data || data.version !== 3 || data.type !== 'project') {
         return res
           .status(400)

@@ -1,3 +1,5 @@
+import ProjectIcon from './ProjectIcon';
+import ProjectIconEditor from './ProjectIconEditor';
 import AiSignInHint from './AiSignInHint';
 import DesktopUpdateHint from './DesktopUpdateHint';
 import DesktopUpdateCard, { type DesktopUpdateInfo } from './DesktopUpdateCard';
@@ -1448,6 +1450,7 @@ export function ProjectsSection({
 
   const projectSettingsBody = (p: any) => (
     <div className={singleProjectMode ? 'space-y-4' : 'pl-8 pt-3 space-y-4'}>
+      <ProjectIconEditor project={p} onProjectsChange={onProjectsChange} />
       <ProjectWorkflowCommandsEditor
         project={p}
         showToast={showToast}
@@ -1667,10 +1670,7 @@ export function ProjectsSection({
                   ) : (
                     <ChevronRight size={16} className="text-gray-500 flex-shrink-0" />
                   )}
-                  <div
-                    className="w-3 h-3 rounded-sm flex-shrink-0"
-                    style={{ backgroundColor: p.color }}
-                  />
+                  <ProjectIcon project={p} className="w-3 h-3 rounded-sm flex-shrink-0" />
                   <span className="text-sm font-medium">{p.name}</span>
                   <span className="ml-auto flex items-center gap-1.5">
                     {repo ? (

@@ -18,6 +18,7 @@
  */
 
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
+import { ProjectIconSchema } from '../openapi/schemas/project-icon.js';
 
 const ErrorResponse = registerComponent(
   'ConfigErrorResponse',
@@ -273,7 +274,7 @@ export const ProjectExportEnvelopeComponent = registerComponent(
       version: z.literal(3).or(z.number().int()),
       type: z.string().optional(),
       exportedAt: z.string().optional(),
-      project: z.object({}).passthrough().optional(),
+      project: z.object({ icon: ProjectIconSchema }).passthrough().optional(),
       crons: z.array(z.object({}).passthrough()).optional(),
       rooms: z.array(z.object({}).passthrough()).optional(),
       wiki: z.array(z.object({}).passthrough()).optional(),
@@ -315,7 +316,7 @@ export const ImportResultComponent = registerComponent(
     .object({
       message: z.string(),
       results: z.record(z.string(), z.union([z.string(), z.boolean()])),
-      project: z.object({}).passthrough().optional(),
+      project: z.object({ icon: ProjectIconSchema }).passthrough().optional(),
     })
     .openapi({
       description:

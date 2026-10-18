@@ -13,6 +13,7 @@
  */
 
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
+import { ProjectIconSchema } from '../openapi/schemas/project-icon.js';
 
 // Component schemas
 
@@ -66,6 +67,8 @@ export const ProjectDetailComponent = registerComponent(
   'ProjectDetail',
   z
     .object({
+      icon: ProjectIconSchema,
+      color: z.string().optional(),
       id: z.string().openapi({ description: 'Project slug — unique within the install.' }),
       name: z.string().openapi({ description: 'Human-readable project name.' }),
       cwd: z
@@ -186,6 +189,7 @@ export const ProjectOnboardRequestSchema = z
         name: z.string().optional().openapi({ description: 'Human-readable project name.' }),
         cwd: z.string().optional().openapi({ description: 'Project working directory.' }),
         color: z.string().optional().openapi({ description: 'Sidebar accent color.' }),
+        icon: ProjectIconSchema,
         githubRepo: z
           .object({
             owner: z.string(),
@@ -748,5 +752,68 @@ registerPath({
   summary: 'List visible projects with agents and module enablement',
   responses: {
     200: { description: 'Visible projects', content: jsonContent(z.array(ProjectDetailComponent)) },
+  },
+});
+
+// These legacy bodies accept additional project configuration fields.
+export const ProjectUpdateRequestSchema = z
+  .object({
+    name: z.string().optional(),
+    cwd: z.string().optional(),
+    color: z.string().optional(),
+    icon: ProjectIconSchema,
+  })
+  .passthrough();
+
+registerPath({
+  method: 'post',
+  path: '/api/projects',
+  tags: ['Projects'],
+  summary: 'Create a project',
+  request: {
+    body: {
+      content: jsonContent(
+        ProjectUpdateRequestSchema.extend({
+          id: z.string().regex(/^[a-zA-Z0-9-]+$/),
+        }),
+      ),
+    },
+  },
+  responses: {
+    201: { description: 'Created project', content: jsonContent(ProjectDetailComponent) },
+    400: {
+      description: 'Invalid project configuration',
+      content: jsonContent(ProjectDetailErrorComponent),
+    },
+    409: {
+      description: 'Project id already exists',
+      content: jsonContent(ProjectDetailErrorComponent),
+    },
+  },
+});
+registerPath({
+  method: 'patch',
+  path: '/api/projects/{projectId}',
+  tags: ['Projects'],
+  summary: 'Update project configuration',
+  request: {
+    params: z.object({ projectId: z.string() }),
+    body: { content: jsonContent(ProjectUpdateRequestSchema) },
+  },
+  responses: {
+    200: { description: 'Updated project', content: jsonContent(ProjectDetailComponent) },
+    400: {
+      description: 'Invalid project configuration',
+      content: jsonContent(ProjectDetailErrorComponent),
+    },
+    403: {
+      description: 'Project cannot be modified by this caller',
+      content: jsonContent(ProjectDetailErrorComponent),
+    },
+    404: { description: 'Project not found', content: jsonContent(ProjectDetailErrorComponent) },
+    409: {
+      description: 'Project configuration conflict',
+      content: jsonContent(ProjectDetailErrorComponent),
+    },
   },
 });

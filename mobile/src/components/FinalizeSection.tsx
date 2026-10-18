@@ -1,3 +1,4 @@
+import ProjectIcon from './ProjectIcon';
 /**
  * Settings → Finalize panel. Mirrors FinalizeSettingsSection.
  * Wizard runs as a worktree-backed chat session:
@@ -114,9 +115,7 @@ export default function FinalizeSection({ navigation, fixedProjectId }: any) {
                   style={[styles.chip, active && styles.chipActive]}
                   testID={`finalize-project-${p.id}`}
                 >
-                  <View
-                    style={[styles.chipDot, { backgroundColor: p.color || colors.indigo500 }]}
-                  />
+                  <ProjectIcon project={p} style={styles.chipDot} />
                   <Text style={[styles.chipText, active && styles.chipTextActive]}>
                     {p.name || p.id}
                   </Text>

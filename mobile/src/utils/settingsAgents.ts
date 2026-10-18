@@ -16,6 +16,7 @@ export function groupAgentsByProject(agents: any, projects: any) {
     projectId: p.id,
     projectName: p.name || p.id,
     color: p.color || null,
+    ...(p.icon ? { icon: p.icon } : {}),
     agents: safeAgents.filter((a: any) => a.projectId === p.id),
   }));
   const knownIds = new Set(safeProjects.map((p: any) => p.id));

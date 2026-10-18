@@ -1,3 +1,4 @@
+import ProjectIcon from './ProjectIcon';
 import { Bot, Clock, FolderGit2, Sparkles } from 'lucide-react';
 import { AgentConfigSection, CronSection, ProjectsSection } from './SettingsPage';
 import BackgroundAgentsSection from './BackgroundAgentsSection';
@@ -28,16 +29,12 @@ export default function ProjectMenuPage({
   const meta = TAB_META[activeTab];
   const Icon = meta.Icon;
   const projectName = project?.name || 'Project';
-  const projectColor = project?.color || '#6366f1';
 
   return (
     <div className="flex-1 overflow-y-auto p-4 md:p-6">
       <div className="max-w-4xl mx-auto">
         <div className="flex items-center gap-2 mb-1">
-          <span
-            className="w-2.5 h-2.5 rounded-sm flex-shrink-0"
-            style={{ backgroundColor: projectColor }}
-          />
+          <ProjectIcon project={project} className="w-2.5 h-2.5 rounded-sm flex-shrink-0" />
           <h2 className="text-lg font-semibold text-white truncate">{projectName}</h2>
           <span className="text-gray-600">·</span>
           <span className="text-sm text-gray-400 flex items-center gap-1.5 truncate">

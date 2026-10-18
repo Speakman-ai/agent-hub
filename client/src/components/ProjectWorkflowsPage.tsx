@@ -1,3 +1,4 @@
+import ProjectIcon from './ProjectIcon';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   ArrowLeft,
@@ -218,7 +219,6 @@ export default function ProjectWorkflowsPage({
   };
 
   const projectName = project?.name || 'Project';
-  const projectColor = project?.color || '#6366f1';
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden bg-gray-950 text-gray-100">
@@ -231,10 +231,7 @@ export default function ProjectWorkflowsPage({
           <ArrowLeft size={16} />
           Chat
         </button>
-        <span
-          className="w-2.5 h-2.5 rounded-sm flex-shrink-0"
-          style={{ backgroundColor: projectColor }}
-        />
+        <ProjectIcon project={project} className="w-2.5 h-2.5 rounded-sm flex-shrink-0" />
         <h1 className="text-lg font-semibold text-white truncate flex items-center gap-2">
           <ListOrdered size={18} className="text-violet-400 flex-shrink-0" />
           <span className="truncate">{projectName}</span>

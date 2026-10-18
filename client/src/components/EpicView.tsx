@@ -1,3 +1,4 @@
+import ProjectIcon from './ProjectIcon';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, LayoutGrid, List, MessagesSquare, Plus, Search, Trash2 } from 'lucide-react';
 import { api } from '../utils/api';
@@ -848,11 +849,8 @@ export default function EpicView({
             <ArrowLeft size={14} />
             {epicId ? 'All epics' : 'Board'}
           </button>
-          {project?.color && (
-            <span
-              className="w-2 h-2 rounded-full ring-2 ring-white/10"
-              style={{ backgroundColor: project.color }}
-            />
+          {project && (
+            <ProjectIcon project={project} className="w-2 h-2 rounded-full ring-2 ring-white/10" />
           )}
           <div className="min-w-0">
             <h1 className="text-base font-semibold text-gray-100 truncate">
