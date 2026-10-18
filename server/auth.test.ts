@@ -859,6 +859,21 @@ describe('authenticateWsDetailed — local-bundled-server bypass (AGENT_HUB_MODE
     expect(result.orgId).toBe('default');
   });
 
+  it('attributes local WebSocket organization events to the same real Owner as REST', () => {
+    process.env.AGENT_HUB_MODE = 'local';
+    seedUser({ id: 'owner-uid', username: 'owner', password_hash: 'x', created_at: '2026-04-18' });
+    const result = authenticateWsDetailed({
+      url: '/ws',
+      headers: { host: 'localhost:3051' },
+    } as unknown as import('http').IncomingMessage);
+    expect(result).toMatchObject({
+      ok: true,
+      userId: 'owner-uid',
+      orgId: 'default',
+      localBypass: true,
+    });
+  });
+
   it('rejects WS handshake when AGENT_HUB_MODE is unset and no token is provided', () => {
     const result = authenticateWsDetailed({
       url: '/ws',

@@ -20,6 +20,7 @@ import { handleBroadcastForNotifications } from './notification-fanout.js';
 import { isChatTriggerSourceType, routeBroadcastToChatTriggers } from './chat-trigger-router.js';
 import { resolveProjectIdFromEvent } from './event-project-resolver.js';
 import { shouldDeliverBroadcast } from './broadcast-filter.js';
+import { canReadOrganizationEvent } from './business-organizations-access.js';
 import { createSidebarBroadcastTagger } from './session-sidebar.js';
 import { buildBackgroundShellSnapshot } from './background-shells/background-shell-snapshot.js';
 import type { WebSocketDeps, BroadcastFn, MessageQueueRow } from './types.js';
@@ -458,6 +459,7 @@ export default function createWebSocket(
             getSessionOwner,
             isSharedReadableSession,
             isOrgMember: (userId, orgId) => getMembershipRole(userId, orgId) !== null,
+            canReadOrganizationEvent,
           })
         ) {
           return;
@@ -514,8 +516,9 @@ export default function createWebSocket(
     //     (consistent with how those callers see every project in REST).
     const stamp: WsVisibilityStamp = {
       userId: wsAuth.userId ?? null,
+      serverId: wsAuth.orgId,
       role: wsAuth.role,
-      localBypass: Boolean(wsAuth.viaApiKey) || !wsAuth.userId,
+      localBypass: Boolean(wsAuth.localBypass || wsAuth.viaApiKey) || !wsAuth.userId,
     };
     setWsAuthVisibility(ws as AuthStampedWs, stamp);
 

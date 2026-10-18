@@ -13106,6 +13106,77 @@ components:
         - createdAt
         - updatedAt
       description: A single shared organization todo, visible and editable by every member of the org. A distinct list, not an aggregation of members' personal todos.
+    BusinessOrganization:
+      type: object
+      properties:
+        id:
+          type: string
+        serverId:
+          type: string
+        name:
+          type: string
+        createdBy:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+        role:
+          type: string
+          nullable: true
+          enum:
+            - Owner
+            - Admin
+            - Member
+            - null
+        canManage:
+          type: boolean
+      required:
+        - id
+        - serverId
+        - name
+        - createdBy
+        - createdAt
+        - updatedAt
+        - role
+        - canManage
+    BusinessOrganizationMember:
+      type: object
+      properties:
+        userId:
+          type: string
+        username:
+          type: string
+        role:
+          type: string
+          enum:
+            - Owner
+            - Admin
+            - Member
+        createdAt:
+          type: string
+      required:
+        - userId
+        - username
+        - role
+        - createdAt
+    BusinessOrganizationProject:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        visibility:
+          type: string
+          enum:
+            - shared
+            - private
+      required:
+        - id
+        - name
+        - visibility
     LegacyOrgConnection:
       type: object
       properties:
@@ -45785,6 +45856,964 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgTodosErrorResponse"
+  /api/organizations:
+    get:
+      tags:
+        - Organizations
+      summary: List accessible organizations
+      description: " Scoped to the authenticated Server and current user. Organization membership never grants project access. Global API keys without a user identity cannot access this surface."
+      responses:
+        "200":
+          description: Only accessible active organizations; no unfiltered counts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  organizations:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/BusinessOrganization"
+                required:
+                  - organizations
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: An authenticated user identity is required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Organization administration requires Owner/Admin.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Resource absent or inaccessible in the authenticated Server.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: The last organization Owner cannot be removed or demoted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+    post:
+      tags:
+        - Organizations
+      summary: Create an organization with the caller as Owner
+      description: " Scoped to the authenticated Server and current user. Organization membership never grants project access. Global API keys without a user identity cannot access this surface."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+              required:
+                - name
+              additionalProperties: false
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  organization:
+                    $ref: "#/components/schemas/BusinessOrganization"
+                required:
+                  - organization
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: An authenticated user identity is required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Organization administration requires Owner/Admin.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Resource absent or inaccessible in the authenticated Server.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: The last organization Owner cannot be removed or demoted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/organizations/{organizationId}:
+    get:
+      tags:
+        - Organizations
+      summary: Read an organization
+      description: " Scoped to the authenticated Server and current user. Organization membership never grants project access. Global API keys without a user identity cannot access this surface."
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+      responses:
+        "200":
+          description: Accessible organization metadata.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  organization:
+                    $ref: "#/components/schemas/BusinessOrganization"
+                required:
+                  - organization
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: An authenticated user identity is required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Organization administration requires Owner/Admin.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Resource absent or inaccessible in the authenticated Server.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: The last organization Owner cannot be removed or demoted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+    patch:
+      tags:
+        - Organizations
+      summary: Rename an organization
+      description: " Scoped to the authenticated Server and current user. Organization membership never grants project access. Global API keys without a user identity cannot access this surface."
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+              required:
+                - name
+              additionalProperties: false
+      responses:
+        "200":
+          description: Renamed with stable identity.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  organization:
+                    $ref: "#/components/schemas/BusinessOrganization"
+                required:
+                  - organization
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: An authenticated user identity is required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Organization administration requires Owner/Admin.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Resource absent or inaccessible in the authenticated Server.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: The last organization Owner cannot be removed or demoted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+    delete:
+      tags:
+        - Organizations
+      summary: Archive an organization
+      description: Revokes organization membership and removes links; preserves projects and session history. Scoped to the authenticated Server and current user. Organization membership never grants project access. Global API keys without a user identity cannot access this surface.
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+      responses:
+        "200":
+          description: Archived.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: An authenticated user identity is required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Organization administration requires Owner/Admin.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Resource absent or inaccessible in the authenticated Server.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: The last organization Owner cannot be removed or demoted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/organizations/{organizationId}/members:
+    get:
+      tags:
+        - Organizations
+      summary: List organization members
+      description: " Scoped to the authenticated Server and current user. Organization membership never grants project access. Global API keys without a user identity cannot access this surface."
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+      responses:
+        "200":
+          description: Organization members.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  members:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/BusinessOrganizationMember"
+                required:
+                  - members
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: An authenticated user identity is required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Organization administration requires Owner/Admin.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Resource absent or inaccessible in the authenticated Server.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: The last organization Owner cannot be removed or demoted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/organizations/{organizationId}/members/{userId}:
+    put:
+      tags:
+        - Organizations
+      summary: Add a Server member or change their organization role
+      description: Requires organization or Server Owner/Admin. The last Owner is protected. Scoped to the authenticated Server and current user. Organization membership never grants project access. Global API keys without a user identity cannot access this surface.
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: userId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role:
+                  type: string
+                  enum:
+                    - Owner
+                    - Admin
+                    - Member
+              required:
+                - role
+              additionalProperties: false
+      responses:
+        "200":
+          description: Membership saved.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: An authenticated user identity is required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Organization administration requires Owner/Admin.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Resource absent or inaccessible in the authenticated Server.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: The last organization Owner cannot be removed or demoted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+    delete:
+      tags:
+        - Organizations
+      summary: Remove organization membership
+      description: " Scoped to the authenticated Server and current user. Organization membership never grants project access. Global API keys without a user identity cannot access this surface."
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: userId
+          in: path
+      responses:
+        "200":
+          description: Membership removed; repeated removal is a no-op.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: An authenticated user identity is required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Organization administration requires Owner/Admin.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Resource absent or inaccessible in the authenticated Server.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: The last organization Owner cannot be removed or demoted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/organizations/{organizationId}/projects:
+    get:
+      tags:
+        - Organizations
+      summary: List linked projects the caller may read
+      description: " Scoped to the authenticated Server and current user. Organization membership never grants project access. Global API keys without a user identity cannot access this surface."
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+      responses:
+        "200":
+          description: Authorized project summaries only; no hidden counts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  projects:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/BusinessOrganizationProject"
+                required:
+                  - projects
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: An authenticated user identity is required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Organization administration requires Owner/Admin.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Resource absent or inaccessible in the authenticated Server.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: The last organization Owner cannot be removed or demoted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/organizations/{organizationId}/projects/{projectId}:
+    put:
+      tags:
+        - Organizations
+      summary: Attach an accessible project
+      description: Idempotent; neither copies the project nor changes its ACL. Scoped to the authenticated Server and current user. Organization membership never grants project access. Global API keys without a user identity cannot access this surface.
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Project linked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: An authenticated user identity is required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Organization administration requires Owner/Admin.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Resource absent or inaccessible in the authenticated Server.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: The last organization Owner cannot be removed or demoted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+    delete:
+      tags:
+        - Organizations
+      summary: Detach an accessible project
+      description: Idempotent; preserves the project and other organization links. Scoped to the authenticated Server and current user. Organization membership never grants project access. Global API keys without a user identity cannot access this surface.
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Project unlinked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: An authenticated user identity is required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Organization administration requires Owner/Admin.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Resource absent or inaccessible in the authenticated Server.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: The last organization Owner cannot be removed or demoted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
   /api/orgs:
     get:
       tags: &a6

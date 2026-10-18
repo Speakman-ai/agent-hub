@@ -584,6 +584,8 @@ export interface WsAuthResult {
   orgId?: string;
   role?: Role;
   viaApiKey?: boolean;
+  /** Bundled local mode retains its legacy bypass while also attributing a real user. */
+  localBypass?: boolean;
   /** When `ok === false`, a short reason so callers can log / close-code. */
   reason?: 'unauthenticated' | 'no-membership' | 'unknown-user';
 }
@@ -611,7 +613,13 @@ export function authenticateWsDetailed(request: IncomingMessage): WsAuthResult {
     try {
       orgId = getActiveOrgId();
     } catch {}
-    return { ok: true, subject: 'local', role: 'Owner', orgId };
+    let userId: string | undefined;
+    try {
+      if (authRecord?.username) userId = getUserByUsername(authRecord.username)?.id;
+    } catch {
+      /* Keep the synthetic identity until the user store is ready. */
+    }
+    return { ok: true, subject: 'local', role: 'Owner', orgId, userId, localBypass: true };
   }
 
   const url = new URL(request.url!, `http://${request.headers.host}`);

@@ -79,6 +79,22 @@ afterEach(() => {
 });
 
 describe('business organization persistence', () => {
+  it('refuses removing or demoting the last Owner, including through the store', () => {
+    const organization = create();
+    expect(() => removeBusinessOrganizationMember('default', organization.id, 'owner')).toThrow(
+      'Organization must retain an Owner',
+    );
+    expect(() =>
+      setBusinessOrganizationMember('default', organization.id, 'owner', 'Admin'),
+    ).toThrow('Organization must retain an Owner');
+    setBusinessOrganizationMember('default', organization.id, 'member', 'Owner');
+    setBusinessOrganizationMember('default', organization.id, 'owner', 'Member');
+    expect(removeBusinessOrganizationMember('default', organization.id, 'owner')).toBe(true);
+    expect(() => removeBusinessOrganizationMember('default', organization.id, 'member')).toThrow(
+      'Organization must retain an Owner',
+    );
+  });
+
   it('creates an empty organization with its creator as Owner and renames without changing identity', () => {
     const organization = create();
     expect(listBusinessOrganizationProjectIds('default', organization.id)).toEqual([]);

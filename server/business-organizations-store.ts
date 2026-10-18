@@ -210,6 +210,7 @@ export function setBusinessOrganizationMember(
   role: BusinessOrganizationRole,
 ): void {
   withActiveOrganization(serverId, organizationId, () => {
+    if (role !== 'Owner') requireAnotherOwner(serverId, organizationId, userId);
     getOrgsDb()
       .prepare(
         `INSERT INTO business_organization_members (server_id, organization_id, user_id, role)
@@ -225,17 +226,48 @@ export function removeBusinessOrganizationMember(
   organizationId: string,
   userId: string,
 ): boolean {
-  return withActiveOrganization(
-    serverId,
-    organizationId,
-    () =>
+  return withActiveOrganization(serverId, organizationId, () => {
+    requireAnotherOwner(serverId, organizationId, userId);
+    return (
       getOrgsDb()
         .prepare(
           `DELETE FROM business_organization_members
        WHERE server_id = ? AND organization_id = ? AND user_id = ?`,
         )
-        .run(serverId, organizationId, userId).changes > 0,
+        .run(serverId, organizationId, userId).changes > 0
+    );
+  });
+}
+
+export class LastOrganizationOwnerError extends Error {
+  constructor() {
+    super('Organization must retain an Owner');
+  }
+}
+
+/** Called within the immediate write transaction so concurrent demotions cannot orphan a group. */
+function requireAnotherOwner(serverId: string, organizationId: string, userId: string): void {
+  const owners = listBusinessOrganizationMembers(serverId, organizationId).filter(
+    (member) => member.role === 'Owner',
   );
+  if (owners.length === 1 && owners[0].user_id === userId) {
+    throw new LastOrganizationOwnerError();
+  }
+}
+
+export function getBusinessOrganizationRole(
+  serverId: string,
+  organizationId: string,
+  userId: string,
+): BusinessOrganizationRole | null {
+  const row = getOrgsDb()
+    .prepare(
+      `SELECT m.role FROM business_organization_members m
+      JOIN business_organizations o ON o.server_id = m.server_id AND o.id = m.organization_id
+      WHERE m.server_id = ? AND m.organization_id = ? AND m.user_id = ? AND o.archived_at IS NULL`,
+    )
+    .get(serverId, organizationId, userId) as { role: BusinessOrganizationRole } | undefined;
+  return row?.role ?? null;
 }
 
 export function listBusinessOrganizationMembers(

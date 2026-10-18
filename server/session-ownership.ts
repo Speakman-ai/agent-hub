@@ -91,6 +91,8 @@ function callerCanAdministerOrg(req: OwnerResolvable | undefined): boolean {
  */
 export interface WsVisibilityStamp {
   userId: string | null;
+  /** Authenticated Server partition at connection time, independent of later global switches. */
+  serverId?: string;
   role?: Role;
   /**
    * True for callers with no privacy boundary — single-tenant local

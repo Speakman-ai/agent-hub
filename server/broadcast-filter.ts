@@ -35,6 +35,8 @@ import type { WsVisibilityStamp } from './session-ownership.js';
 import { HUB_CHAT_EVENT_TYPES } from './hub-chat-events.js';
 
 export interface BroadcastFilterDeps {
+  /** Organization events fail closed and recheck current membership and project access. */
+  canReadOrganizationEvent?: (data: BroadcastEvent, userId: string, serverId: string) => boolean;
   /** Resolve a projectId from the broadcast payload; null when unresolvable. */
   resolveProjectId: (data: BroadcastEvent) => string | null;
   /** Look up a project by id; null when unknown. */
@@ -146,6 +148,14 @@ export function shouldDeliverBroadcast(
   stamp: WsVisibilityStamp | undefined,
   deps: BroadcastFilterDeps,
 ): boolean {
+  if (
+    data.type === 'organization_updated' ||
+    data.type === 'organization_invalidated' ||
+    data.type === 'organization_access_revoked'
+  ) {
+    if (!stamp?.userId || !stamp.serverId || data.serverId !== stamp.serverId) return false;
+    return deps.canReadOrganizationEvent?.(data, stamp.userId, stamp.serverId) === true;
+  }
   // 1. Recipients with no stamp keep legacy behavior. Test harnesses,
   //    local-bundled callers that didn't get a stamp, and any pre-
   //    visibility connection fall here.

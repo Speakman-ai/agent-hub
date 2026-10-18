@@ -28,6 +28,20 @@ function makeDeps(overrides: Partial<BroadcastFilterDeps> = {}): BroadcastFilter
 }
 
 describe('shouldDeliverBroadcast', () => {
+  it.each(['organization_updated', 'organization_invalidated', 'organization_access_revoked'])(
+    'fails closed for %s without an organization authorization resolver',
+    (type) => {
+      const event = { type, serverId: 'server-a', organizationId: 'private-organization' };
+      for (const stamp of [
+        undefined,
+        { userId: 'outsider', role: 'Owner' as const },
+        { userId: null, localBypass: true },
+      ]) {
+        expect(shouldDeliverBroadcast(event, stamp, makeDeps())).toBe(false);
+      }
+    },
+  );
+
   it('delivers to clients without a visibility stamp (legacy / test harness)', () => {
     const data = { type: 'done', sessionId: 's1' };
     const deps = makeDeps({
