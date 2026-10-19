@@ -6,7 +6,10 @@
  * the stack, then watch it. The watch polls the runner's durable status, so
  * the same loop serves a build started in this process and one adopted after
  * a Hub restart (`reattach`). A runner that dies is reported as lost: the
- * environment is failed and requeued, a bounded number of times in a row.
+ * environment is failed and requeued, a bounded number of times in a row. A
+ * loss only starts a new run of losses when the environment had stayed ready
+ * for {@link DEFAULT_STABLE_READY_MS}: an environment that comes up and dies
+ * again minutes later is still failing, and must not rebuild forever.
  */
 import { randomUUID } from 'crypto';
 import type { Project } from '../types.js';
@@ -26,6 +29,12 @@ import type {
 /** Consecutive runner losses that are rebuilt automatically before giving up. */
 export const DEFAULT_MAX_LOSS_REQUEUES = 2;
 
+/**
+ * How long an environment must stay ready before its next loss counts as the
+ * first in a row. Shorter-lived ready periods keep counting toward the cap.
+ */
+export const DEFAULT_STABLE_READY_MS = 60 * 60_000;
+
 /** How long a build may wait for a runner before it fails. */
 export const DEFAULT_ENVIRONMENT_QUEUE_TIMEOUT_MS = 30 * 60_000;
 
@@ -41,6 +50,7 @@ export interface RunnerPrEnvironmentRuntimeDeps {
   orgId: () => string;
   pollMs?: number;
   maxLossRequeues?: number;
+  stableReadyMs?: number;
   queueTimeoutMs?: number;
   now?: () => number;
   /** Start the poll timer. Tests pass a no-op and drive `tick()`. */
@@ -64,6 +74,8 @@ interface Watch {
   reporter: PrEnvironmentReporter;
   since: number;
   readyReported: boolean;
+  /** When this watch first saw the environment ready; null until then. */
+  readyAt: number | null;
   logCursor: number;
   upstream: EnvironmentUpstream | null;
 }
@@ -99,6 +111,7 @@ export function createRunnerPrEnvironmentRuntime(
   const now = deps.now ?? Date.now;
   const logWarn = deps.log ?? ((m: string) => console.warn(m));
   const maxRequeues = deps.maxLossRequeues ?? DEFAULT_MAX_LOSS_REQUEUES;
+  const stableReadyMs = deps.stableReadyMs ?? DEFAULT_STABLE_READY_MS;
   const queueTimeoutMs = deps.queueTimeoutMs ?? DEFAULT_ENVIRONMENT_QUEUE_TIMEOUT_MS;
   const pollMs = deps.pollMs ?? DEFAULT_ENVIRONMENT_POLL_MS;
   const startTimer =
@@ -110,7 +123,8 @@ export function createRunnerPrEnvironmentRuntime(
     });
 
   const watches = new Map<string, Watch>();
-  // Runner losses in a row per environment; reset once it is ready again.
+  // Runner losses in a row per environment. Reaching ready does not reset it;
+  // a loss after a long enough ready period does (see reportLoss).
   const losses = new Map<string, number>();
   // Bumped by every teardown so a start that resolves afterwards is undone.
   const epochs = new Map<string, number>();
@@ -137,6 +151,7 @@ export function createRunnerPrEnvironmentRuntime(
       reporter,
       since: now(),
       readyReported: false,
+      readyAt: null,
       // Remote frames start at seq 0; the cursor is the last seq read.
       logCursor: -1,
       upstream: null,
@@ -145,7 +160,8 @@ export function createRunnerPrEnvironmentRuntime(
   }
 
   function reportLoss(w: Watch, detail: string): void {
-    const count = losses.get(w.envId) ?? 0;
+    const stable = w.readyAt != null && now() - w.readyAt >= stableReadyMs;
+    const count = stable ? 0 : (losses.get(w.envId) ?? 0);
     const requeue = count < maxRequeues;
     losses.set(w.envId, count + 1);
     w.reporter.log(`Runner lost: ${detail}${requeue ? ' (rebuilding)' : ''}`);
@@ -174,7 +190,7 @@ export function createRunnerPrEnvironmentRuntime(
         w.upstream = st.upstream;
         if (!w.readyReported && st.upstream) {
           w.readyReported = true;
-          losses.delete(w.envId);
+          w.readyAt = now();
           w.reporter.ready(upstreamUrl(st.upstream));
         }
         return;

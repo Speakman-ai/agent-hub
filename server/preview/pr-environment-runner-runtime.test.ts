@@ -174,15 +174,35 @@ describe('runner PR environment runtime', () => {
     expect(r2.lost).toHaveBeenCalledWith(expect.any(String), { requeue: false });
   });
 
-  it('a ready report resets the loss budget', async () => {
+  it('keeps counting losses of environments that die soon after ready', async () => {
+    // Regression: every rebuild reached ready, which reset the count, so an
+    // environment whose runner died ~15 minutes after each boot rebuilt 113
+    // times instead of stopping at the cap.
     const f = fakeRunner();
-    const { rt } = make(f, { maxLossRequeues: 1 });
-    for (const ref of ['job-1', 'job-2']) {
+    const { rt, advance } = make(f, { maxLossRequeues: 1, stableReadyMs: 60 * 60_000 });
+    const expected = [true, false];
+    for (const [i, ref] of ['job-1', 'job-2'].entries()) {
       const r = reporter();
       await rt.build({ project: PROJECT, env: env(), reporter: r });
       f.set(ref, { state: 'ready', upstream: { host: 'h', port: 1 } });
       await rt.tick();
-      f.set(ref, { state: 'lost', detail: 'gone' });
+      advance(15 * 60_000);
+      f.set(ref, { state: 'lost', detail: 'lease expired' });
+      await rt.tick();
+      expect(r.lost).toHaveBeenCalledWith(expect.any(String), { requeue: expected[i] });
+    }
+  });
+
+  it('a loss after a long ready period starts a new count', async () => {
+    const f = fakeRunner();
+    const { rt, advance } = make(f, { maxLossRequeues: 1, stableReadyMs: 60 * 60_000 });
+    for (const ref of ['job-1', 'job-2', 'job-3']) {
+      const r = reporter();
+      await rt.build({ project: PROJECT, env: env(), reporter: r });
+      f.set(ref, { state: 'ready', upstream: { host: 'h', port: 1 } });
+      await rt.tick();
+      advance(61 * 60_000);
+      f.set(ref, { state: 'lost', detail: 'spot reclaim' });
       await rt.tick();
       expect(r.lost).toHaveBeenCalledWith(expect.any(String), { requeue: true });
     }
