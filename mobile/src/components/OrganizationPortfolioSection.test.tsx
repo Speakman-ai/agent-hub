@@ -267,7 +267,13 @@ describe('OrganizationPortfolioSection', () => {
     expect(container.querySelector('button[aria-label="Open target session"]')).toBeNull();
     await press('Open organization chat');
     expect(onOpenChat).toHaveBeenCalledWith(
-      expect.objectContaining({ agentId: 'assistant', sessionId: 'chat-1' }),
+      expect.objectContaining({
+        organizationId: 'org',
+        // Without the name the chat's Computer owner reads "in this organization".
+        organizationName: 'Group',
+        agentId: 'assistant',
+        sessionId: 'chat-1',
+      }),
     );
   });
 

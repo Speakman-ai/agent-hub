@@ -463,7 +463,11 @@ function ChatHistory({
     <div className="space-y-2">
       <h5 className="text-sm font-medium text-gray-300">Your conversations</h5>
       {chats.map((chat) => (
-        <div className="flex flex-wrap items-center gap-2" key={chat.id}>
+        <div
+          className="flex flex-wrap items-center gap-2"
+          key={chat.id}
+          data-testid={`organization-chat-${chat.id}`}
+        >
           <button className={button} onClick={() => onOpen(chat)}>
             Open {chat.name}
           </button>

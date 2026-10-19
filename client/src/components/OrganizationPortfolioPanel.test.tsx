@@ -279,7 +279,13 @@ describe('OrganizationPortfolioPanel', () => {
       ) as HTMLButtonElement
     ).click();
     expect(onOpenChat).toHaveBeenCalledWith(
-      expect.objectContaining({ organizationId: 'org', agentId: 'assistant', sessionId: 'chat-1' }),
+      expect.objectContaining({
+        organizationId: 'org',
+        // Without the name the chat's Computer owner reads "in this organization".
+        organizationName: organization.name,
+        agentId: 'assistant',
+        sessionId: 'chat-1',
+      }),
     );
   });
 

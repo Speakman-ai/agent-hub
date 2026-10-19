@@ -123,6 +123,7 @@ export default function OrganizationPortfolioSection({
               onOpenChat={() =>
                 onOpenChat?.({
                   organizationId: organization.id,
+                  organizationName: organization.name,
                   agentId: d.organizationAgentId,
                   sessionId: d.initiatingSessionId,
                   agent: state.agents.find((a) => a.id === d.organizationAgentId) ?? null,

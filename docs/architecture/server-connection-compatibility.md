@@ -72,11 +72,10 @@ not change its existing ownership, ID or data directory. This API addition
 creates no business organization, does not reassign projects and runs no
 connection or client-storage migration.
 
-The same-phase UI terminology card
-`f651d834-d2f4-4adb-8c67-50dafb44be53` owns visible connection and Server-wide
-labels across web, mobile and Electron. It should use this inventory while
-preserving the compatibility identifiers above. Later organization phases must
-not start until both Server terminology phase cards are Done.
+Web, mobile and Electron label these connections and Server-wide surfaces as
+Servers while keeping the compatibility identifiers above. Organization access
+rules, agents, Computer isolation and the disable and rollback procedure are in
+[organizations-rollout.md](organizations-rollout.md).
 
 ## Verification
 
