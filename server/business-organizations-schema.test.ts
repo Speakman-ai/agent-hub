@@ -71,6 +71,32 @@ describe('business organization migration', () => {
     expect(getOrgsDb().pragma('foreign_key_check')).toEqual([]);
   });
 
+  it('backfills a link generation ID for legacy links and keeps it across reruns', () => {
+    const db = getOrgsDb();
+    db.exec(`
+      DROP TABLE business_organization_projects;
+      CREATE TABLE business_organization_projects (
+        server_id TEXT NOT NULL, organization_id TEXT NOT NULL, project_id TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (server_id, organization_id, project_id)
+      );
+      INSERT INTO business_organizations (server_id, id, name) VALUES ('default', 'o', 'Org');
+      INSERT INTO business_organization_projects (server_id, organization_id, project_id)
+        VALUES ('default', 'o', 'p');
+    `);
+    setOrgsDbPathForTests(dbPath);
+    initOrgsDb();
+    const first = getOrgsDb()
+      .prepare('SELECT link_id FROM business_organization_projects')
+      .get() as { link_id: string };
+    expect(first.link_id).toMatch(/^[0-9a-f]{32}$/);
+    setOrgsDbPathForTests(dbPath);
+    initOrgsDb();
+    expect(getOrgsDb().prepare('SELECT link_id FROM business_organization_projects').get()).toEqual(
+      first,
+    );
+  });
+
   it('enforces uniqueness and Server-scoped foreign keys with indexes in both link directions', () => {
     const db = getOrgsDb();
     db.exec(`

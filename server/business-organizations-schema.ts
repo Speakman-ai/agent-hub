@@ -1,3 +1,4 @@
+import type Database from 'better-sqlite3';
 /** Business groups are separate from the legacy `orgs` Server partitions.
  * Projects live in each Server's projects.json, so their existence is checked
  * by the store and their links are explicitly removed on project deletion.
@@ -56,3 +57,18 @@ export const BUSINESS_ORGANIZATIONS_SCHEMA = `
       REFERENCES memberships(user_id, org_id) ON DELETE CASCADE
   );
 `;
+
+/** Each link generation gets its own ID, so unlink-and-relink never revives memory
+ * or cached context derived under the earlier link. Rerunnable. */
+export function migrateBusinessOrganizationLinkIds(db: Database.Database): void {
+  db.transaction(() => {
+    const columns = db.prepare('PRAGMA table_info(business_organization_projects)').all() as Array<{
+      name: string;
+    }>;
+    if (!columns.some((column) => column.name === 'link_id'))
+      db.exec('ALTER TABLE business_organization_projects ADD COLUMN link_id TEXT');
+    db.exec(
+      'UPDATE business_organization_projects SET link_id = lower(hex(randomblob(16))) WHERE link_id IS NULL',
+    );
+  })();
+}

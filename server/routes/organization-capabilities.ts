@@ -6,13 +6,14 @@ import {
   verifyOrganizationCapability,
 } from '../organization-capabilities.js';
 import { findProjectForServer } from '../project-model.js';
+import { CONTEXT_PAGE_MAX, capList, sanitizeContextOutput } from '../organization-context.js';
 
 const SessionParams = z.object({ sessionId: z.string().min(1) });
 const OrganizationParams = z.object({ organizationId: z.string().min(1) });
 const Pagination = z
   .object({
     offset: z.coerce.number().int().min(0).default(0),
-    limit: z.coerce.number().int().min(1).max(100).default(25),
+    limit: z.coerce.number().int().min(1).max(CONTEXT_PAGE_MAX).default(25),
   })
   .strict();
 const Renewed = z.object({ token: z.string(), expiresAt: z.number() });
@@ -29,6 +30,8 @@ const Context = z.object({
       id: z.string(),
       name: z.string(),
       agents: z.array(z.object({ id: z.string(), name: z.string() })),
+      agentCount: z.number(),
+      agentsTruncated: z.boolean(),
     }),
   ),
 });
@@ -109,23 +112,29 @@ export default function createOrganizationCapabilityRoutes(): Router {
     const { offset, limit } = parsed.data;
     const projects = grant.projectIds.slice(offset, offset + limit).map((id) => {
       const project = findProjectForServer(grant.serverId, id)!;
+      const agents = capList(project.agents);
       return {
         id,
         name: project.name,
-        agents: project.agents.map((agent) => ({ id: agent.id, name: agent.name })),
+        agents: agents.items.map((agent) => ({ id: agent.id, name: agent.name })),
+        agentCount: agents.total,
+        agentsTruncated: agents.truncated,
       };
     });
+    // Project and agent names are user-controlled: same redaction as all organization context.
     res.json(
-      Context.parse({
-        serverId: grant.serverId,
-        organizationId: grant.organizationId,
-        sessionId: grant.sessionId,
-        agentId: grant.agentId,
-        timestamp: new Date().toISOString(),
-        offset,
-        nextOffset: offset + limit < grant.projectIds.length ? offset + limit : null,
-        projects,
-      }),
+      sanitizeContextOutput(
+        Context.parse({
+          serverId: grant.serverId,
+          organizationId: grant.organizationId,
+          sessionId: grant.sessionId,
+          agentId: grant.agentId,
+          timestamp: new Date().toISOString(),
+          offset,
+          nextOffset: offset + limit < grant.projectIds.length ? offset + limit : null,
+          projects,
+        }),
+      ),
     );
   });
   return router;

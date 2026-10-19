@@ -147,10 +147,10 @@ export function attachBusinessOrganizationProject(
     return (
       getOrgsDb()
         .prepare(
-          `INSERT INTO business_organization_projects (server_id, organization_id, project_id)
-       VALUES (?, ?, ?) ON CONFLICT(server_id, organization_id, project_id) DO NOTHING`,
+          `INSERT INTO business_organization_projects (server_id, organization_id, project_id, link_id)
+       VALUES (?, ?, ?, ?) ON CONFLICT(server_id, organization_id, project_id) DO NOTHING`,
         )
-        .run(serverId, organizationId, projectId).changes > 0
+        .run(serverId, organizationId, projectId, randomUUID()).changes > 0
     );
   });
 }
@@ -186,6 +186,21 @@ export function listBusinessOrganizationProjectIds(
     )
     .all(serverId, organizationId) as Array<{ project_id: string }>;
   return rows.map((row) => row.project_id);
+}
+
+/** Current link generation per project. A relinked project gets a new ID. */
+export function listBusinessOrganizationProjectLinks(
+  serverId: string,
+  organizationId: string,
+): Map<string, string> {
+  if (!getBusinessOrganization(serverId, organizationId)) return new Map();
+  const rows = getOrgsDb()
+    .prepare(
+      `SELECT project_id, link_id FROM business_organization_projects
+       WHERE server_id = ? AND organization_id = ? ORDER BY project_id`,
+    )
+    .all(serverId, organizationId) as Array<{ project_id: string; link_id: string | null }>;
+  return new Map(rows.map((row) => [row.project_id, row.link_id ?? '']));
 }
 
 export function listBusinessOrganizationsForProject(

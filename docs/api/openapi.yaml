@@ -13106,6 +13106,26 @@ components:
         - createdAt
         - updatedAt
       description: A single shared organization todo, visible and editable by every member of the org. A distinct list, not an aggregation of members' personal todos.
+    OrganizationContextSource:
+      type: object
+      properties:
+        serverId:
+          type: string
+        organizationId:
+          type: string
+        projectId:
+          type: string
+        projectName:
+          type: string
+        record:
+          type: string
+          example: card:3f2a…
+      required:
+        - serverId
+        - organizationId
+        - projectId
+        - projectName
+        - record
     BusinessOrganization:
       type: object
       properties:
@@ -46020,7 +46040,7 @@ paths:
         - schema:
             type: integer
             minimum: 1
-            maximum: 100
+            maximum: 50
             default: 25
           required: false
           name: limit
@@ -46069,10 +46089,16 @@ paths:
                             required:
                               - id
                               - name
+                        agentCount:
+                          type: number
+                        agentsTruncated:
+                          type: boolean
                       required:
                         - id
                         - name
                         - agents
+                        - agentCount
+                        - agentsTruncated
                 required:
                   - serverId
                   - organizationId
@@ -46088,6 +46114,784 @@ paths:
           description: Capability missing, expired, revoked or out of scope.
         "403":
           description: Capability missing, expired, revoked or out of scope.
+  /api/organizations/summary:
+    get:
+      tags:
+        - Organizations
+      summary: Server-wide organization totals for the current user
+      description: Counts only organizations and projects the user can see. A project linked to several organizations is counted once. Not available to organization capabilities.
+      parameters:
+        - schema:
+            type: integer
+            nullable: true
+            minimum: 0
+            maximum: 9007199254740991
+            default: 0
+          required: false
+          name: offset
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+          required: false
+          name: limit
+          in: query
+      responses:
+        "200":
+          description: Totals.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  serverId:
+                    type: string
+                  retrievedAt:
+                    type: string
+                  organizations:
+                    type: number
+                  linkedProjects:
+                    type: number
+                    description: Distinct visible projects; a project linked to several organizations counts once.
+                  offset:
+                    type: number
+                  nextOffset:
+                    type: number
+                    nullable: true
+                  perOrganization:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        organizationId:
+                          type: string
+                        name:
+                          type: string
+                        linkedProjects:
+                          type: number
+                      required:
+                        - organizationId
+                        - name
+                        - linkedProjects
+                    description: One page of the per-organization breakdown.
+                required:
+                  - serverId
+                  - retrievedAt
+                  - organizations
+                  - linkedProjects
+                  - offset
+                  - nextOffset
+                  - perOrganization
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication or capability missing, expired or revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Capability lacks projects:read or targets another organization.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Organization, project or record absent or not authorized.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/organizations/{organizationId}/context:
+    get:
+      tags:
+        - Organizations
+      summary: Paginated overview of authorized linked projects
+      description: Roster, board, wiki and own-session counts per project. Authorized for the intersection of current organization links, the calling agent project scope (organization capabilities) and the acting user project ACL. Sessions are limited to the acting user. Free text is redacted and truncated.
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+        - schema:
+            type: integer
+            nullable: true
+            minimum: 0
+            maximum: 9007199254740991
+            default: 0
+          required: false
+          name: offset
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+          required: false
+          name: limit
+          in: query
+      responses:
+        "200":
+          description: Overview page.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  serverId:
+                    type: string
+                  organizationId:
+                    type: string
+                  retrievedAt:
+                    type: string
+                  offset:
+                    type: number
+                  nextOffset:
+                    type: number
+                    nullable: true
+                  agentId:
+                    type: string
+                    nullable: true
+                  projects:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        source:
+                          $ref: "#/components/schemas/OrganizationContextSource"
+                        timestamp:
+                          type: string
+                          nullable: true
+                        agents:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              id:
+                                type: string
+                              name:
+                                type: string
+                              role:
+                                type: string
+                                nullable: true
+                            required:
+                              - id
+                              - name
+                              - role
+                        agentCount:
+                          type: number
+                        agentsTruncated:
+                          type: boolean
+                        board:
+                          type: object
+                          properties:
+                            columns:
+                              type: array
+                              items:
+                                type: object
+                                properties:
+                                  name:
+                                    type: string
+                                  count:
+                                    type: number
+                                required:
+                                  - name
+                                  - count
+                              description: At most 20 columns; see columnCount/columnsTruncated.
+                            columnCount:
+                              type: number
+                            columnsTruncated:
+                              type: boolean
+                            openCards:
+                              type: number
+                            totalCards:
+                              type: number
+                            epics:
+                              type: number
+                            phases:
+                              type: number
+                          required:
+                            - columns
+                            - columnCount
+                            - columnsTruncated
+                            - openCards
+                            - totalCards
+                            - epics
+                            - phases
+                        wiki:
+                          type: object
+                          properties:
+                            pages:
+                              type: number
+                            updatedAt:
+                              type: string
+                              nullable: true
+                          required:
+                            - pages
+                            - updatedAt
+                        sessions:
+                          type: object
+                          properties:
+                            own:
+                              type: number
+                            updatedAt:
+                              type: string
+                              nullable: true
+                          required:
+                            - own
+                            - updatedAt
+                      required:
+                        - id
+                        - name
+                        - source
+                        - timestamp
+                        - agents
+                        - agentCount
+                        - agentsTruncated
+                        - board
+                        - wiki
+                        - sessions
+                required:
+                  - serverId
+                  - organizationId
+                  - retrievedAt
+                  - offset
+                  - nextOffset
+                  - agentId
+                  - projects
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication or capability missing, expired or revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Capability lacks projects:read or targets another organization.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Organization, project or record absent or not authorized.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/organizations/{organizationId}/context/search:
+    get:
+      tags:
+        - Organizations
+      summary: Search wiki pages, cards and epics across authorized linked projects
+      description: Results are cited and newest-first. Authorized for the intersection of current organization links, the calling agent project scope (organization capabilities) and the acting user project ACL. Sessions are limited to the acting user. Free text is redacted and truncated.
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+          required: false
+          name: limit
+          in: query
+        - schema:
+            type: string
+            maxLength: 2000
+            description: nextCursor from the previous page; omit for the first page.
+          required: false
+          description: nextCursor from the previous page; omit for the first page.
+          name: cursor
+          in: query
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: q
+          in: query
+        - schema:
+            type: string
+          required: false
+          name: types
+          in: query
+      responses:
+        "200":
+          description: Search page.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  serverId:
+                    type: string
+                  organizationId:
+                    type: string
+                  retrievedAt:
+                    type: string
+                  partial:
+                    type: boolean
+                    description: True when the page stopped at the per-request scan budget; fewer results does not mean the end.
+                  nextCursor:
+                    type: string
+                    nullable: true
+                    description: Opaque keyset cursor for the next page; null on the last page.
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        type:
+                          type: string
+                          enum:
+                            - wiki
+                            - cards
+                            - epics
+                        id:
+                          type: string
+                        title:
+                          type: string
+                        snippet:
+                          type: string
+                        source:
+                          $ref: "#/components/schemas/OrganizationContextSource"
+                        timestamp:
+                          type: string
+                          nullable: true
+                      required:
+                        - type
+                        - id
+                        - title
+                        - snippet
+                        - source
+                        - timestamp
+                required:
+                  - serverId
+                  - organizationId
+                  - retrievedAt
+                  - partial
+                  - nextCursor
+                  - results
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication or capability missing, expired or revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Capability lacks projects:read or targets another organization.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Organization, project or record absent or not authorized.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/organizations/{organizationId}/context/projects/{projectId}/{resource}:
+    get:
+      tags:
+        - Organizations
+      summary: List one resource of an authorized linked project
+      description: agents, cards, epics, phases, wiki pages or the acting user sessions. Authorized for the intersection of current organization links, the calling agent project scope (organization capabilities) and the acting user project ACL. Sessions are limited to the acting user. Free text is redacted and truncated.
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            enum:
+              - agents
+              - cards
+              - epics
+              - phases
+              - wiki
+              - sessions
+          required: true
+          name: resource
+          in: path
+        - schema:
+            type: integer
+            nullable: true
+            minimum: 0
+            maximum: 9007199254740991
+            default: 0
+          required: false
+          name: offset
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+          required: false
+          name: limit
+          in: query
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: false
+          name: q
+          in: query
+        - schema:
+            type: string
+            maxLength: 2000
+            description: "With q (or a card column filter): nextCursor from the previous page. Filtered results are cursor-paged."
+          required: false
+          description: "With q (or a card column filter): nextCursor from the previous page. Filtered results are cursor-paged."
+          name: cursor
+          in: query
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: false
+          name: column
+          in: query
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: false
+          name: epicId
+          in: query
+      responses:
+        "200":
+          description: Resource page.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  serverId:
+                    type: string
+                  organizationId:
+                    type: string
+                  retrievedAt:
+                    type: string
+                  offset:
+                    type: number
+                  nextOffset:
+                    type: number
+                    nullable: true
+                  projectId:
+                    type: string
+                  resource:
+                    type: string
+                    enum:
+                      - agents
+                      - cards
+                      - epics
+                      - phases
+                      - wiki
+                      - sessions
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        source:
+                          $ref: "#/components/schemas/OrganizationContextSource"
+                        timestamp:
+                          type: string
+                          nullable: true
+                      required:
+                        - source
+                        - timestamp
+                      additionalProperties:
+                        nullable: true
+                      description: A record with its source citation and last-update timestamp.
+                  partial:
+                    type: boolean
+                    description: "Filtered pages: the page stopped at the per-request scan budget; keep following nextCursor."
+                  nextCursor:
+                    type: string
+                    nullable: true
+                    description: "Filtered pages: opaque continuation; null on the last page."
+                required:
+                  - serverId
+                  - organizationId
+                  - retrievedAt
+                  - offset
+                  - nextOffset
+                  - projectId
+                  - resource
+                  - items
+                  - partial
+                  - nextCursor
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication or capability missing, expired or revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Capability lacks projects:read or targets another organization.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Organization, project or record absent or not authorized.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/organizations/{organizationId}/context/projects/{projectId}/{resource}/{recordId}:
+    get:
+      tags:
+        - Organizations
+      summary: Read one record of an authorized linked project on demand
+      description: Card (with recent comments), epic, wiki page (by slug) or own session status with its latest result. Authorized for the intersection of current organization links, the calling agent project scope (organization capabilities) and the acting user project ACL. Sessions are limited to the acting user. Free text is redacted and truncated.
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            enum:
+              - cards
+              - epics
+              - wiki
+              - sessions
+          required: true
+          name: resource
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: recordId
+          in: path
+      responses:
+        "200":
+          description: Record.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  serverId:
+                    type: string
+                  organizationId:
+                    type: string
+                  projectId:
+                    type: string
+                  resource:
+                    type: string
+                    enum:
+                      - cards
+                      - epics
+                      - wiki
+                      - sessions
+                  retrievedAt:
+                    type: string
+                  record:
+                    type: object
+                    properties:
+                      source:
+                        $ref: "#/components/schemas/OrganizationContextSource"
+                      timestamp:
+                        type: string
+                        nullable: true
+                    required:
+                      - source
+                      - timestamp
+                    additionalProperties:
+                      nullable: true
+                    description: A record with its source citation and last-update timestamp.
+                required:
+                  - serverId
+                  - organizationId
+                  - projectId
+                  - resource
+                  - retrievedAt
+                  - record
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication or capability missing, expired or revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Capability lacks projects:read or targets another organization.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Organization, project or record absent or not authorized.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
   /api/organizations:
     get:
       tags:

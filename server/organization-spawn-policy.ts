@@ -15,11 +15,17 @@ export function getOrganizationSpawnPolicy(
   return sessionId && policy?.matches(sessionId) ? policy : null;
 }
 
-let revalidate: () => void = () => {};
+const revalidators = new Set<() => void>();
 export function registerOrganizationAccessRevalidator(handler: () => void): void {
-  revalidate = handler;
+  revalidators.add(handler);
 }
 /** Synchronous notification after authority mutations, including remove-and-readd within a turn. */
 export function revalidateOrganizationAccess(): void {
-  revalidate();
+  for (const handler of revalidators) {
+    try {
+      handler();
+    } catch {
+      /* One failing listener must not skip revocation in the others. */
+    }
+  }
 }

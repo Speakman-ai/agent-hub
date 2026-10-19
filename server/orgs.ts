@@ -28,7 +28,10 @@ import { ORG_TODOS_SCHEMA } from './org-todos-schema.js';
 import { PROJECT_MEMBERS_SCHEMA } from './project-members-schema.js';
 import { NOTIFICATIONS_SCHEMA } from './notifications-schema.js';
 import { REMINDERS_SCHEMA } from './reminders-schema.js';
-import { BUSINESS_ORGANIZATIONS_SCHEMA } from './business-organizations-schema.js';
+import {
+  BUSINESS_ORGANIZATIONS_SCHEMA,
+  migrateBusinessOrganizationLinkIds,
+} from './business-organizations-schema.js';
 
 const HOME = process.env.HOME || '/home/' + (process.env.USER || 'user');
 
@@ -263,6 +266,7 @@ export function initOrgsDb(): void {
   // Additive, rerunnable migration. Never convert Server partitions or
   // auto-assign existing projects to a business organization.
   orgsDb.transaction(() => orgsDb!.exec(BUSINESS_ORGANIZATIONS_SCHEMA))();
+  migrateBusinessOrganizationLinkIds(orgsDb);
   // Per-user notification inbox (bell feed). See notifications-store.ts.
   orgsDb.exec(NOTIFICATIONS_SCHEMA);
   // Per-user reminders that fire into the inbox. See reminders-store.ts.

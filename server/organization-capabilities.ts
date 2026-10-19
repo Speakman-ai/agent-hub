@@ -20,7 +20,7 @@ import { getUserById } from './users-store.js';
 import {
   getBusinessOrganization,
   getBusinessOrganizationRole,
-  listBusinessOrganizationProjectIds,
+  listBusinessOrganizationProjectLinks,
 } from './business-organizations-store.js';
 import {
   resolveOrganizationCaller,
@@ -41,6 +41,11 @@ export interface OrganizationCapability {
   projectIds: string[];
   tools: string[];
   fingerprint: string;
+  /** Access/configuration generation for derived memory: changes on any agent scope or tool
+   * change (narrowing or widening), role change or credential rotation. Unlike the
+   * fingerprint it ignores cosmetic edits and links to other projects, so linking a new
+   * project to an all-linked agent does not discard memory about existing ones. */
+  configVersion: string;
 }
 const grants = new Map<string, OrganizationCapability>();
 const revokedSessions = new Set<string>();
@@ -52,6 +57,14 @@ const contexts = new Map<
 const sessionKey = (sessionId: string, serverId = getActiveOrgId()) =>
   JSON.stringify([serverId, sessionId]);
 let onRevocation: (sessionId: string) => void = () => {};
+const invalidationListeners = new Set<(sessionId: string, serverId: string) => void>();
+/** Derived state (context caches, private memory) subscribes here so access loss reaches it
+ * even when no request or turn follows. */
+export function onOrganizationContextInvalidated(
+  listener: (sessionId: string, serverId: string) => void,
+): void {
+  invalidationListeners.add(listener);
+}
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 export const isOrganizationCapability = (value: unknown): value is string =>
   typeof value === 'string' && value.startsWith(ORGANIZATION_CAPABILITY_PREFIX);
@@ -116,7 +129,8 @@ function authority(sessionId: string): Omit<OrganizationCapability, 'expiresAt'>
   }
   const caller = resolveOrganizationCaller(serverId, userId);
   if (!caller) throw new Error('Organization session unavailable');
-  const linked = listBusinessOrganizationProjectIds(serverId, organizationId).sort();
+  const links = listBusinessOrganizationProjectLinks(serverId, organizationId);
+  const linked = [...links.keys()].sort();
   const projectIds = linked.filter(
     (id) =>
       (scope.projects === 'all-linked' || scope.projects.includes(id)) &&
@@ -132,7 +146,7 @@ function authority(sessionId: string): Omit<OrganizationCapability, 'expiresAt'>
       userId,
       workspaceId: project.id,
       agentId: agent.id,
-      linked,
+      links: linked.map((id) => [id, links.get(id)]),
       userCredentialVersion: user.credential_version,
       serverRole: caller.serverRole,
       organizationRole: getBusinessOrganizationRole(serverId, organizationId, userId),
@@ -145,6 +159,19 @@ function authority(sessionId: string): Omit<OrganizationCapability, 'expiresAt'>
       model: agent.model,
     }),
   );
+  const configVersion = digest(
+    JSON.stringify({
+      serverId,
+      organizationId,
+      userId,
+      workspaceId: project.id,
+      agentId: agent.id,
+      scope: { projects: scope.projects, tools, enabled: scope.enabled },
+      userCredentialVersion: user.credential_version,
+      serverRole: caller.serverRole,
+      organizationRole: getBusinessOrganizationRole(serverId, organizationId, userId),
+    }),
+  );
   return {
     serverId,
     organizationId,
@@ -155,7 +182,19 @@ function authority(sessionId: string): Omit<OrganizationCapability, 'expiresAt'>
     projectIds,
     tools,
     fingerprint,
+    configVersion,
   };
+}
+
+/** Current authority regardless of revocation state; null when the session lost access. */
+export function currentOrganizationAuthority(
+  sessionId: string,
+): Omit<OrganizationCapability, 'expiresAt'> | null {
+  try {
+    return authority(sessionId);
+  } catch {
+    return null;
+  }
 }
 
 export function resolveOrganizationSessionAuthority(sessionId: string) {
@@ -184,6 +223,13 @@ export function revokeOrganizationSession(sessionId: string, serverId = getActiv
         .run(sessionId);
   } catch {
     /* Storage failures still revoke in-memory credentials and stop the process. */
+  }
+  for (const listener of invalidationListeners) {
+    try {
+      listener(sessionId, serverId);
+    } catch {
+      /* Derived-state cleanup never blocks stopping the process. */
+    }
   }
   try {
     onRevocation(sessionId);
@@ -367,6 +413,14 @@ export function organizationCapabilityAllows(
     suffix === 'capability-context'
   )
     return read;
+  // Organization-scoped context reads; the handler re-resolves project scope per request.
+  if (
+    resource === 'organizations' &&
+    id === grant.organizationId &&
+    grant.tools.includes('projects:read') &&
+    (suffix === 'context' || suffix.startsWith('context/'))
+  )
+    return read;
   if (resource === 'projects' && id && method === 'POST' && suffix === 'sessions/dispatch')
     return organizationCapabilityCanReadProject(grant, id, 'dispatch');
   if (resource === 'projects' && id && organizationCapabilityCanReadProject(grant, id)) {
@@ -476,7 +530,7 @@ export function organizationSessionPrompt(sessionId: string): string {
   return `\n\nOrganization: ${current.organizationId}; Server: ${current.serverId}; session: ${current.sessionId}.
 Use ah-api.sh with the injected capability. Discover authorized projects and agent IDs at GET /api/organizations/${current.organizationId}/capability-context?limit=25&offset=0.
 Configured tools: ${current.tools.join(', ') || 'none'}. Project membership and tools are checked for every request.
-Read linked-project wiki/board resources on demand. Dispatch requires an explicit project and agent, using POST /api/projects/<projectId>/sessions/dispatch with {"agentId":"<id>","prompt":"<task>"}; automation overrides are forbidden.
+Read linked-project context on demand, a page at a time: GET /api/organizations/${current.organizationId}/context?limit=20 (overview), /context/search?q=<terms> (follow nextCursor via &cursor= until it is null; a partial page can be empty), /context/projects/<projectId>/<agents|cards|epics|phases|wiki|sessions> (cards and wiki accept q=<terms>, paged by nextCursor) and /context/projects/<projectId>/<cards|epics|wiki|sessions>/<id or slug> for detail. Cite each result's source (server, organization, project, record) and timestamp. Dispatch requires an explicit project and agent, using POST /api/projects/<projectId>/sessions/dispatch with {"agentId":"<id>","prompt":"<task>"}; automation overrides are forbidden.
 Your capability expires after 15 minutes. Before expiry, POST /api/sessions/${current.sessionId}/organization-capability/renew and replace AGENT_HUB_API_KEY with the returned token. Do not print tokens. If access is revoked, stop and request a fresh user turn.
 Host actions use <agenthub:react>{"actions":[{"tool":"<configured-tool>","op":"<operation>"}]}</agenthub:react>. Only configured tools are permitted.
 Save private project-derived memory with POST /api/sessions/${current.sessionId}/organization-memory using {"projectId":"<authorized project>","sourceRecord":"<source record>","content":"<brief note>"}. Read it with GET at the same path. Each read rechecks current project access. Never save project-derived information into shared organization instructions.
