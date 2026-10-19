@@ -169,7 +169,7 @@ export default function createOrganizationRuntimeRoutes(
       name: body.data.name,
     });
     deps.broadcast({ type: 'session_created', sessionId: session.id, agentId: found.agent.id });
-    res.status(201).json({ session, agent: OrganizationRuntimeAgent.parse(found.agent) });
+    res.status(201).json({ session, agent: view(context, found.agent) });
   });
   // The caller's own organization chats, including those with since-archived or removed agents,
   // so history stays reachable after the roster changes. Never lists another user's sessions.

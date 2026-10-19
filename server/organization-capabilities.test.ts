@@ -181,9 +181,13 @@ describe('organization capability regressions', () => {
       expect(userCanReadSession(claims, 'org-session')).toBe(false);
       expect(userOwnsSession(claims, 'org-session')).toBe(false);
     }
-    expect(userCanReadSession({ authUserId: 'person' }, 'org-session')).toBe(true);
+    expect(userCanReadSession({ authUserId: 'person', authOrgId: 'default' }, 'org-session')).toBe(
+      true,
+    );
     archiveBusinessOrganization('default', organizationId);
-    expect(userCanReadSession({ authUserId: 'person' }, 'org-session')).toBe(true);
+    expect(userCanReadSession({ authUserId: 'person', authOrgId: 'default' }, 'org-session')).toBe(
+      true,
+    );
   });
   it('does not broadcast organization chat content to another user or an anonymous bypass', () => {
     const deps = {

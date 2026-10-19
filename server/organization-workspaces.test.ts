@@ -44,7 +44,11 @@ import { canReadOrganizationWorkspaceEvent } from './business-organizations-acce
 import { shouldDeliverBroadcast } from './broadcast-filter.js';
 import { organizationSessionIdentity } from './organization-session-identity.js';
 import { resolveProjectIdFromEvent } from './event-project-resolver.js';
-import { userCanReadSession, type WsVisibilityStamp } from './session-ownership.js';
+import {
+  userCanReadSession,
+  userOwnsSession,
+  type WsVisibilityStamp,
+} from './session-ownership.js';
 import createRuntimeRoutes from './routes/organization-runtime.js';
 import createOrganizationsRoutes from './routes/organizations.js';
 import createSessionRoutes from './routes/sessions.js';
@@ -220,6 +224,44 @@ describe('Organization workflow lifecycle', () => {
       getDb().prepare('DELETE FROM active_tasks WHERE session_id = ?').run(row.id);
     }
   });
+  it('denies session HTTP reads and writes once the owner leaves the organization or switches Server', async () => {
+    const row = session('member');
+    getStmts().addMessage.run(
+      'org-private-msg',
+      row.id,
+      'user',
+      'Private transcript',
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+    );
+    const messages = `/api/sessions/${row.id}/messages?paginated=1`;
+    const member = app('member');
+    await request(member).get(`/api/sessions/${row.id}`).expect(200);
+    expect(JSON.stringify((await request(member).get(messages).expect(200)).body)).toContain(
+      'Private transcript',
+    );
+
+    const otherServer = app('member', 'other-server');
+    await request(otherServer).get(`/api/sessions/${row.id}`).expect(404);
+    await request(otherServer).get(messages).expect(404);
+    expect(userOwnsSession({ authUserId: 'member', authOrgId: 'other-server' }, row.id)).toBe(
+      false,
+    );
+
+    removeBusinessOrganizationMember('default', organizationId, 'member');
+    await request(member).get(url()).expect(404);
+    await request(member).get(`/api/sessions/${row.id}`).expect(404);
+    const denied = await request(member).get(messages).expect(404);
+    expect(JSON.stringify(denied.body)).not.toContain('Private transcript');
+    await request(member).patch(`/api/sessions/${row.id}`).send({ name: 'Renamed' }).expect(404);
+    expect(userOwnsSession({ authUserId: 'member', authOrgId: 'default' }, row.id)).toBe(false);
+    expect(userCanReadSession({ authUserId: 'member', authOrgId: 'default' }, row.id)).toBe(false);
+  });
   it('runs a mocked CLI in the owner context without Git worktrees or shared memory', async () => {
     const row = session('member');
     const output = path.join(config.dataDir, 'organization-spawn-record.txt');
@@ -346,7 +388,7 @@ describe('Organization workflow lifecycle', () => {
     repairOrganizationWorkspaces();
     resetOrganizationCapabilitiesForTests();
     expect(userCanReadSession({ authUserId: 'stranger', authRole: 'Admin' }, row.id)).toBe(false);
-    expect(userCanReadSession({ authUserId: 'owner' }, row.id)).toBe(true);
+    expect(userCanReadSession({ authUserId: 'owner', authOrgId: 'default' }, row.id)).toBe(true);
     expect(() => buildSpawnEnv(config, { sessionId: row.id, userId: 'owner' })).toThrow(
       'Organization session unavailable',
     );
@@ -410,7 +452,7 @@ describe('Organization workflow lifecycle', () => {
       organizationWorkspaceId('server-2', organizationId),
     );
     expect(userCanReadSession({ authUserId: 'member', authRole: 'Admin' }, one.id)).toBe(false);
-    expect(userCanReadSession({ authUserId: 'owner' }, one.id)).toBe(true);
+    expect(userCanReadSession({ authUserId: 'owner', authOrgId: 'default' }, one.id)).toBe(true);
   });
   it('filters private memory by project provenance and rotates cwd on revocation and restart', () => {
     const project = ensureOrganizationWorkspace('default', organizationId);
@@ -499,7 +541,7 @@ describe('Organization workflow lifecycle', () => {
     expect(stop).toHaveBeenCalledWith(one.id);
     expect(findAgent(one.agent_id)!.project.archivedAt).toBeTruthy();
     expect(getStmts().getSession.get(one.id)).toBeTruthy();
-    expect(userCanReadSession({ authUserId: 'owner' }, one.id)).toBe(true);
+    expect(userCanReadSession({ authUserId: 'owner', authOrgId: 'default' }, one.id)).toBe(true);
     expect(() => session()).toThrow();
   });
   it('delivers live organization chat only to its current owner/member, with no admin bypass', () => {

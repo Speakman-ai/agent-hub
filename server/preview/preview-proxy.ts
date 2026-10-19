@@ -404,7 +404,7 @@ export function handlePreviewProxyUpgrade(
   if (!sessionId) return;
 
   const auth = authenticateWsDetailed(req);
-  const ownerReq = { authUserId: auth.userId } as AuthenticatedRequest;
+  const ownerReq = { authUserId: auth.userId, authOrgId: auth.orgId } as AuthenticatedRequest;
   if (!auth.ok || !deps.userOwnsSession(ownerReq, sessionId)) {
     denyUpgrade(socket, 'HTTP/1.1 403 Forbidden');
     return;

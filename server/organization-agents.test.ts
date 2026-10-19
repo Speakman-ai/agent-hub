@@ -247,6 +247,13 @@ describe('organization agent lifecycle', () => {
     expect(memberView.organizationScope.projects).toEqual(['alpha']);
     expect(memberView.effectiveProjectIds).toEqual(['alpha']);
     expect(subset.effectiveProjectIds).toEqual(['alpha', 'secret']);
+    // Starting a chat returns the same caller-filtered view as the roster.
+    const started = (
+      await request(app('member')).post(`${url()}/${subset.id}/sessions`).send({}).expect(201)
+    ).body.agent;
+    expect(started.organizationScope.projects).toEqual(['alpha']);
+    expect(started.effectiveProjectIds).toEqual(['alpha']);
+    expect(JSON.stringify(started)).not.toContain('secret');
 
     const scopes: Record<string, string[]> = {};
     for (const [agent, user] of [

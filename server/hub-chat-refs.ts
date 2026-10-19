@@ -83,7 +83,12 @@ export function buildRefViewer(userId: string, orgId: string, localBypass: boole
       userId,
       orgId,
       visibility: { userId, role: 'Owner', localBypass: true },
-      owner: { authUserId: userId, authLocalOrgBypass: true, authRole: 'Owner' },
+      owner: {
+        authUserId: userId,
+        authOrgId: orgId,
+        authLocalOrgBypass: true,
+        authRole: 'Owner',
+      },
     };
   }
   const role = getMembershipRole(userId, orgId) ?? undefined;
@@ -106,7 +111,7 @@ export function buildRefViewer(userId: string, orgId: string, localBypass: boole
       restrictedProjectIds: restricted,
       assignmentAclUnavailable: unavailable,
     },
-    owner: { authUserId: userId, authRole: role },
+    owner: { authUserId: userId, authOrgId: orgId, authRole: role },
   };
 }
 

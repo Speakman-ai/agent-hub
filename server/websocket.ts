@@ -693,6 +693,7 @@ export default function createWebSocket(
     const ownerReq = {
       authUserId: getWsAuthUserId(ws as AuthStampedWs),
       authViaApiKey: Boolean(getWsAuthVisibility(ws as AuthStampedWs)?.localBypass),
+      authOrgId: getWsAuthVisibility(ws as AuthStampedWs)?.serverId,
     };
     const mayActOnSession = (sessionId: string): boolean => {
       try {

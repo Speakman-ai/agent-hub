@@ -37,6 +37,26 @@ export function canReadOrganizationWorkspaceEvent(
   }
 }
 
+/** Access to a session owner's own organization history. Requires current Server
+ * membership plus current organization membership. Archiving an organization stops
+ * running access and clears its roster, but owners keep read access to their history.
+ */
+export function canAccessOrganizationHistory(
+  project: Project,
+  userId: string,
+  serverId: string,
+): boolean {
+  try {
+    if (project.serverId !== serverId || !project.organizationId) return false;
+    if (!resolveOrganizationCaller(serverId, userId)) return false;
+    if (getBusinessOrganizationRole(serverId, project.organizationId, userId)) return true;
+    return !!getBusinessOrganization(serverId, project.organizationId, { includeArchived: true })
+      ?.archived_at;
+  } catch {
+    return false;
+  }
+}
+
 export function resolveOrganizationCaller(
   serverId: string,
   userId: string,

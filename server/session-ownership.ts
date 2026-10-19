@@ -23,9 +23,11 @@ import { getDb } from './db.js';
 import { getUserById } from './users-store.js';
 import config from './config.js';
 import { getAuthRecord } from './auth-store.js';
-import { findAgent } from './project-model.js';
+import { findAgent, findProjectForServer } from './project-model.js';
 import { isOrganizationSystemProject } from '../shared/utils/hub.js';
 import { organizationSessionIdentity } from './organization-session-identity.js';
+import { canReadOrganizationSession } from './organization-session-access.js';
+import { canAccessOrganizationHistory } from './business-organizations-access.js';
 import type { AuthenticatedRequest } from './auth.js';
 import { hasAtLeastRole, type Role } from './roles.js';
 
@@ -62,7 +64,12 @@ function isAuthDisabled(): boolean {
 
 export type OwnerResolvable = Pick<
   AuthenticatedRequest,
-  'authUserId' | 'authViaApiKey' | 'authLocalOrgBypass' | 'authRole' | 'authOrganizationCapability'
+  | 'authUserId'
+  | 'authViaApiKey'
+  | 'authLocalOrgBypass'
+  | 'authRole'
+  | 'authOrganizationCapability'
+  | 'authOrgId'
 >;
 
 /**
@@ -350,9 +357,28 @@ function organizationSessionOwnerMatches(
   sessionId: string,
 ): boolean {
   const capability = req?.authOrganizationCapability;
-  if (capability)
-    return capability.sessionId === sessionId && capability.userId === getSessionOwner(sessionId);
-  return !!req?.authUserId && req.authUserId === getSessionOwner(sessionId);
+  if (capability && capability.sessionId !== sessionId) return false;
+  const userId = capability ? capability.userId : req?.authUserId;
+  const serverId = capability ? capability.serverId : req?.authOrgId;
+  if (!userId || !serverId) return false;
+  const ownsSession = userId === getSessionOwner(sessionId);
+  // Ownership alone is not enough: the owner must still belong to the
+  // organization on the same Server. The persisted identity outlives the agent,
+  // so it is the boundary of record whenever it exists.
+  const identity = organizationSessionIdentity(sessionId);
+  if (identity)
+    return canReadOrganizationSession(
+      identity,
+      findProjectForServer(identity.server_id, identity.workspace_id),
+      { userId, serverId, ownsSession },
+      canAccessOrganizationHistory,
+    );
+  const row = getDb().prepare('SELECT agent_id FROM sessions WHERE id = ?').get(sessionId) as
+    | { agent_id: string }
+    | undefined;
+  const project = row ? findAgent(row.agent_id)?.project : null;
+  if (!project || !isOrganizationSystemProject(project)) return false;
+  return ownsSession && canAccessOrganizationHistory(project, userId, serverId);
 }
 
 /**
