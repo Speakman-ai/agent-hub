@@ -1,4 +1,6 @@
 import createOrganizationCapabilityRoutes from './routes/organization-capabilities.js';
+import { repairOrganizationWorkspaces } from './organization-workspaces.js';
+import createOrganizationRuntimeRoutes from './routes/organization-runtime.js';
 import { installLogCapture, setLogBroadcast } from './server-log.js';
 installLogCapture(); // Must be first — captures all subsequent console output
 import { initLogShipperFromEnv } from './log-shipper.js';
@@ -662,6 +664,7 @@ migrateProjectSkillDirectories();
 // Docs are no longer auto-seeded, Intake is retired, and Reviewer creation is
 // limited to explicit GitHub/hosting flows. Existing project rosters otherwise
 // remain unchanged.
+repairOrganizationWorkspaces();
 ensureContextFiles();
 // Retirement sweep: "Ticket Intake" agents (role: 'intake') are decommissioned
 // platform-wide. Unlike the deprecated-but-passive seeders above, this actively
@@ -2479,6 +2482,7 @@ export const routeDeps: RouteDeps = {
 // non-members. DELETE on the project itself is allowed through so the
 // route handler can apply its own Owner kill-switch logic.
 app.use('/api/projects/:projectId', createProjectVisibilityGate({ findProject }));
+app.use(createOrganizationRuntimeRoutes(routeDeps));
 
 app.use(createMemoryRoutes(routeDeps));
 app.use(createNoteRoutes(routeDeps));

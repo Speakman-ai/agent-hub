@@ -60,6 +60,12 @@ export function isHubSystemProject(
   );
 }
 
+export function isOrganizationSystemProject(
+  project: { workspaceKind?: string | null; organizationId?: string | null } | null | undefined,
+): boolean {
+  return Boolean(project && (project.workspaceKind === 'organization' || project.organizationId));
+}
+
 export function isHubAssistantRole(role: string | null | undefined): boolean {
   return (role ?? '').trim().toLowerCase() === HUB_ASSISTANT_ROLE;
 }

@@ -1248,19 +1248,21 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     if (areq.authRole !== 'Owner' && !caller.localBypass) {
       return res.status(403).json({ error: 'Owner role required.' });
     }
-    const rows = getProjects().map((p) => {
-      const owner = p.ownerUserId ? getUserById(p.ownerUserId) : null;
-      return {
-        id: p.id,
-        name: p.name,
-        color: p.color ?? null,
-        visibility: getVisibility(p),
-        ownerUserId: p.ownerUserId ?? null,
-        ownerUsername: owner?.username ?? null,
-        canEnter: canViewProject(p, caller),
-        agentCount: p.agents?.length ?? 0,
-      };
-    });
+    const rows = getProjects()
+      .filter((p) => !isInternalSystemProject(p))
+      .map((p) => {
+        const owner = p.ownerUserId ? getUserById(p.ownerUserId) : null;
+        return {
+          id: p.id,
+          name: p.name,
+          color: p.color ?? null,
+          visibility: getVisibility(p),
+          ownerUserId: p.ownerUserId ?? null,
+          ownerUsername: owner?.username ?? null,
+          canEnter: canViewProject(p, caller),
+          agentCount: p.agents?.length ?? 0,
+        };
+      });
     res.json(rows);
   });
 

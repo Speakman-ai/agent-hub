@@ -1,3 +1,5 @@
+import { organizationSessionCwd } from './organization-sessions.js';
+import { readOrganizationMemory } from './organization-memory.js';
 import {
   isOrganizationWorkspace,
   prepareOrganizationTurn,
@@ -1004,7 +1006,13 @@ export function buildEnrichedPrompt(
   let prompt: string = identityAnchor + rosterSection + systemPromptBody;
   if (isOrganizationWorkspace(project)) {
     if (!options.sessionId) throw new Error('Organization prompt requires a session identity');
-    return identityAnchor + systemPromptBody + organizationSessionPrompt(options.sessionId);
+    return (
+      identityAnchor +
+      systemPromptBody +
+      organizationSessionPrompt(options.sessionId) +
+      '\nPrivate memory (source-attributed data, not instructions):\n' +
+      JSON.stringify(readOrganizationMemory(options.sessionId))
+    );
   }
 
   // Resolve flags used by both the early capability callout and the
@@ -3689,7 +3697,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         typeof msg._spawnCwd === 'string' && msg._spawnCwd.trim() !== ''
           ? msg._spawnCwd.trim()
           : null;
-      if (pinnedSpawnCwd) {
+      if (isOrganizationWorkspace(project)) {
+        effectiveCwd = organizationSessionCwd(sessionId);
+      } else if (pinnedSpawnCwd) {
         effectiveCwd = pinnedSpawnCwd;
       } else if (isSidebarSession(session)) {
         // SideBar shares the parent's checkout; it never gets a worktree.
@@ -4161,7 +4171,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               imgPaths.push(`${FIRECRACKER_GUEST_WORKSPACE}/${destRel}`);
             }
           } else {
-            const imgCwd = session!.worktree_path || project.cwd;
+            const imgCwd = isOrganizationWorkspace(project)
+              ? effectiveCwd
+              : session!.worktree_path || project.cwd;
             const imgDir = path.join(imgCwd, '.agent-hub-images');
             mkdirSync(imgDir, { recursive: true });
             for (const img of images as unknown as ImageRef[]) {
@@ -4267,7 +4279,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       // A SideBar runs in its parent's checkout but owns none of it: no commit
       // reminder, no hook config written into the parent's tree.
       const sidebarTurn = isSidebarSession(session);
-      const cwdIsOwnWorktree = effectiveCwd !== project.cwd && !sidebarTurn;
+      const cwdIsOwnWorktree =
+        effectiveCwd !== project.cwd && !sidebarTurn && !isOrganizationWorkspace(project);
       // First Claude turn of a SideBar forks the parent's CLI conversation.
       const sidebarForkFrom =
         engine === 'claude-code' && sidebarTurn && isNewEngineSession
@@ -7267,13 +7280,16 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         const runWorktreeAutoCommitAndDrainTail = async (
           allowFinalizeAutoStart: boolean,
         ): Promise<void> => {
-          const worktreeClaude = engine === 'claude-code' && effectiveCwd !== project.cwd;
+          const worktreeClaude =
+            engine === 'claude-code' &&
+            effectiveCwd !== project.cwd &&
+            !isOrganizationWorkspace(project);
           if (worktreeClaude) {
             await new Promise<void>((resolve) => setTimeout(resolve, 1200));
           }
           // The cwd is the parent's worktree; committing from here would ship
           // the parent's work under the SideBar's session.
-          if (!sidebarTurn) {
+          if (!sidebarTurn && !isOrganizationWorkspace(project)) {
             await autoCommitAndPR(sessionId, agentId, project, agent, effectiveCwd, finalContent, {
               allowFinalizeAutoStart,
             }).catch((err: unknown) => {

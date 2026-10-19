@@ -8,6 +8,8 @@ import {
   isHubAssistantRole,
   isHubProjectId,
   isHubSystemProject,
+  isInternalSystemProject,
+  isOrganizationSystemProject,
   isSummariesPaneAlias,
   parseHubPane,
 } from './hub';
@@ -45,5 +47,19 @@ describe('hub constants', () => {
     // The org-wide support overview is now a Hub tab, not a standalone section.
     expect(hubPaneFromLegacyView('support-overview')).toBe('support');
     expect(hubPaneFromLegacyView('chat')).toBeNull();
+  });
+  it('classifies organization workspaces separately from the Hub singleton on every client', () => {
+    const project = {
+      id: 'organization-workspace',
+      kind: 'system',
+      workspaceKind: 'organization',
+      organizationId: 'business',
+    };
+    expect(isHubSystemProject(project)).toBe(false);
+    expect(isOrganizationSystemProject(project)).toBe(true);
+    expect(isInternalSystemProject(project)).toBe(true);
+    expect(isOrganizationSystemProject({ organizationId: 'business' })).toBe(true);
+    expect(isOrganizationSystemProject({ workspaceKind: 'hub' })).toBe(false);
+    expect(isOrganizationSystemProject(null)).toBe(false);
   });
 });

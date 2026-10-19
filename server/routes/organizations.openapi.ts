@@ -77,7 +77,9 @@ registerPath({
   path: base,
   tags: ['Organizations'],
   summary: 'Create an organization with the caller as Owner',
-  description: scope,
+  description:
+    'Seeds one hidden workflow workspace and one editable Organization Assistant, with Computer preference on but no desktop provisioning or scheduled work.' +
+    scope,
   request: {
     query: OrganizationQuery,
     body: { required: true, content: json(OrganizationNameBody) },
@@ -127,7 +129,7 @@ registerPath({
   tags: ['Organizations'],
   summary: 'Archive an organization',
   description:
-    'Revokes organization membership and removes links; preserves projects and session history.' +
+    'Archives the hidden workflow workspace, revokes active organization turns and membership, and removes links; preserves projects and owner-private session history.' +
     scope,
   request: { params: OrganizationParams, query: OrganizationQuery },
   responses: { 200: { description: 'Archived.', content: json(ok) }, ...errors },

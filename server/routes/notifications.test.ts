@@ -134,7 +134,11 @@ describe('POST /api/notifications/:id/read', () => {
       unreadCount: 1,
     });
 
-    const deps = { getSessionOwner: () => null } as never;
+    const deps = {
+      resolveProjectId: () => null,
+      findProject: () => null,
+      getSessionOwner: () => null,
+    };
     expect(shouldDeliverBroadcast(event, { userId: userA } as never, deps)).toBe(true);
     expect(shouldDeliverBroadcast(event, { userId: userB } as never, deps)).toBe(false);
     const ownerless = { ...event, ownerUserId: undefined };

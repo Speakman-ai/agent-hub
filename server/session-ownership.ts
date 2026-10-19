@@ -24,6 +24,8 @@ import { getUserById } from './users-store.js';
 import config from './config.js';
 import { getAuthRecord } from './auth-store.js';
 import { findAgent } from './project-model.js';
+import { isOrganizationSystemProject } from '../shared/utils/hub.js';
+import { organizationSessionIdentity } from './organization-session-identity.js';
 import type { AuthenticatedRequest } from './auth.js';
 import { hasAtLeastRole, type Role } from './roles.js';
 
@@ -272,6 +274,7 @@ export function isSharedCronSession(sessionId: string): boolean {
  * `userOwnsSession` — visibility is broader than mutation rights.
  */
 export function userCanReadSession(req: OwnerResolvable | undefined, sessionId: string): boolean {
+  if (isOrganizationOwnedSession(sessionId)) return organizationSessionOwnerMatches(req, sessionId);
   if (req?.authOrganizationCapability)
     return (
       req.authOrganizationCapability.sessionId === sessionId &&
@@ -294,6 +297,7 @@ export function userCanReadSession(req: OwnerResolvable | undefined, sessionId: 
  * not auto-granted to any user — there is no org-owner grace path.
  */
 export function userOwnsSession(req: OwnerResolvable | undefined, sessionId: string): boolean {
+  if (isOrganizationOwnedSession(sessionId)) return organizationSessionOwnerMatches(req, sessionId);
   if (req?.authOrganizationCapability)
     return (
       req.authOrganizationCapability.sessionId === sessionId &&
@@ -331,6 +335,24 @@ export function userOwnsSession(req: OwnerResolvable | undefined, sessionId: str
   // NULL-owner rows belong to nobody — not auto-granted to any user.
   if (!owner) return false;
   return callerId === owner;
+}
+
+function isOrganizationOwnedSession(sessionId: string): boolean {
+  if (organizationSessionIdentity(sessionId)) return true;
+  const row = getDb().prepare('SELECT agent_id FROM sessions WHERE id = ?').get(sessionId) as
+    | { agent_id: string }
+    | undefined;
+  return !!row && isOrganizationSystemProject(findAgent(row.agent_id)?.project);
+}
+
+function organizationSessionOwnerMatches(
+  req: OwnerResolvable | undefined,
+  sessionId: string,
+): boolean {
+  const capability = req?.authOrganizationCapability;
+  if (capability)
+    return capability.sessionId === sessionId && capability.userId === getSessionOwner(sessionId);
+  return !!req?.authUserId && req.authUserId === getSessionOwner(sessionId);
 }
 
 /**

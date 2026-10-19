@@ -51,6 +51,9 @@ describe('resolveProjectIdFromEvent', () => {
       getAgentProjectId: (aid) => (aid === 'agent-1' ? 'proj-x' : null),
     });
     expect(resolveProjectIdFromEvent({ type: 'done', sessionId: 'sess-1' }, deps)).toBe('proj-x');
+    expect(
+      resolveProjectIdFromEvent({ type: 'session-updated', session: { id: 'sess-1' } }, deps),
+    ).toBe('proj-x');
   });
 
   it('resolves via cardId → board → project', () => {

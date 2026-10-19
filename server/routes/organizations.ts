@@ -1,4 +1,8 @@
 import { listProjectsForServer } from '../project-model.js';
+import {
+  ensureOrganizationWorkspace,
+  archiveOrganizationWorkspace,
+} from '../organization-workspaces.js';
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import type { AuthenticatedRequest } from '../auth.js';
 import type { BusinessOrganizationRow, RouteDeps } from '../types.js';
@@ -158,6 +162,7 @@ export default function createOrganizationsRoutes(deps: Pick<RouteDeps, 'broadca
         name: body.data.name,
         createdBy: caller.userId,
       });
+      ensureOrganizationWorkspace(caller.serverId, organization.id);
       emit(caller, organization.id, 'organization_updated', 'created');
       res.status(201).json({ organization: summary(organization, caller) });
     }),
@@ -206,6 +211,7 @@ export default function createOrganizationsRoutes(deps: Pick<RouteDeps, 'broadca
           .map((m) => m.userId),
       ]);
       archiveBusinessOrganization(caller.serverId, id);
+      archiveOrganizationWorkspace(caller.serverId, id);
       for (const userId of recipients) revoked(caller, id, userId, 'archived');
       res.json({ ok: true });
     }),

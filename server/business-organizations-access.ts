@@ -19,6 +19,24 @@ export interface OrganizationCaller {
   serverRole: Role;
 }
 
+export function canReadOrganizationWorkspaceEvent(
+  project: Project,
+  userId: string,
+  serverId: string,
+): boolean {
+  try {
+    return (
+      project.serverId === serverId &&
+      !!project.organizationId &&
+      !project.archivedAt &&
+      !!resolveOrganizationCaller(serverId, userId) &&
+      !!getBusinessOrganizationRole(serverId, project.organizationId, userId)
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function resolveOrganizationCaller(
   serverId: string,
   userId: string,

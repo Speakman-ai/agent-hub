@@ -1,4 +1,4 @@
-import { isInternalSystemProject } from '../../shared/utils/hub.js';
+import { isInternalSystemProject, isOrganizationSystemProject } from '../../shared/utils/hub.js';
 import { Router, Request, Response } from 'express';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'fs';
 import path from 'path';
@@ -202,7 +202,7 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     agentId: string,
   ): { project: Project; agent: Agent } | null {
     const found = findAgent(agentId);
-    if (!found) {
+    if (!found || isOrganizationSystemProject(found.project)) {
       res.status(404).json({ error: 'Agent not found' });
       return null;
     }

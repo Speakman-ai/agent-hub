@@ -3838,6 +3838,9 @@ export interface Project {
    */
   kind?: 'system';
   workspaceKind?: 'hub' | 'organization';
+  /** Stable initial identity and seed marker, retained even if the Assistant is removed. */
+  organizationAssistantId?: string;
+  archivedAt?: string | null;
   organizationId?: string;
   serverId?: string;
   agents: Agent[];

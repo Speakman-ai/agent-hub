@@ -25134,7 +25134,7 @@ paths:
       tags:
         - Sessions
       summary: Create a new session for an agent
-      description: Defaults the engine and model to the agent's configured engine/model. Sessions are always created with a per-session git worktree (the legacy shared-checkout option was removed when Agent Hub locked to worktree-only sessions).
+      description: Defaults the engine and model to the agent's configured engine/model. Sessions are created with a per-session git worktree. Organization agents must use POST /api/organizations/{organizationId}/agents/{agentId}/sessions for their private workflow sessions.
       parameters:
         - schema:
             type: string
@@ -25187,6 +25187,12 @@ paths:
                 $ref: "#/components/schemas/Session"
         "400":
           description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "403":
+          description: Organization agents require the scoped workflow session endpoint; reviewer sessions cannot be started manually.
           content:
             application/json:
               schema:
@@ -26146,7 +26152,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/SessionErrorResponse"
         "403":
-          description: Reviewer agents cannot join multi-agent sessions.
+          description: Reviewer agents cannot join multi-agent sessions. Organization chats use one agent per session.
           content:
             application/json:
               schema:
@@ -27428,6 +27434,54 @@ paths:
                 $ref: "#/components/schemas/SessionErrorResponse"
         "500":
           description: Failed to compute file diff.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/active-tasks:
+    get:
+      tags:
+        - Sessions
+      summary: Read active chat tasks
+      description: Organization workflow tasks are visible only to their initiating user while current organization access remains valid.
+      responses:
+        "200":
+          description: Visible active tasks.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    sessionId:
+                      type: string
+                    messageId:
+                      type: string
+                    agentId:
+                      type: string
+                    engine:
+                      type: string
+                    model:
+                      type: string
+                      nullable: true
+                    prompt:
+                      type: string
+                    content:
+                      type: string
+                    startedAt:
+                      type: string
+                  required:
+                    - sessionId
+                    - messageId
+                    - agentId
+                    - engine
+                    - model
+                    - prompt
+                    - content
+                    - startedAt
+        "500":
+          description: Task storage unavailable.
           content:
             application/json:
               schema:
@@ -46075,7 +46129,7 @@ paths:
       tags:
         - Organizations
       summary: Create an organization with the caller as Owner
-      description: " Scoped to the authenticated Server and current user. Organization membership never grants project access. Global API keys without a user identity cannot access this surface."
+      description: Seeds one hidden workflow workspace and one editable Organization Assistant, with Computer preference on but no desktop provisioning or scheduled work. Scoped to the authenticated Server and current user. Organization membership never grants project access. Global API keys without a user identity cannot access this surface.
       requestBody:
         required: true
         content:
@@ -46336,7 +46390,7 @@ paths:
       tags:
         - Organizations
       summary: Archive an organization
-      description: Revokes organization membership and removes links; preserves projects and session history. Scoped to the authenticated Server and current user. Organization membership never grants project access. Global API keys without a user identity cannot access this surface.
+      description: Archives the hidden workflow workspace, revokes active organization turns and membership, and removes links; preserves projects and owner-private session history. Scoped to the authenticated Server and current user. Organization membership never grants project access. Global API keys without a user identity cannot access this surface.
       parameters:
         - schema:
             type: string
@@ -47029,6 +47083,434 @@ paths:
                     type: string
                 required:
                   - error
+  /api/organizations/{organizationId}/agents:
+    get:
+      tags:
+        - Organizations
+      summary: List organization agents, including disabled and archived entries for administrators
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+      responses:
+        "200":
+          description: Organization roster; an empty roster is valid.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agents:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        engine:
+                          type: string
+                        model:
+                          type: string
+                        systemPrompt:
+                          type: string
+                        computerToolEnabled:
+                          type: boolean
+                        organizationScope:
+                          type: object
+                          properties:
+                            enabled:
+                              type: boolean
+                            archivedAt:
+                              type: string
+                              nullable: true
+                            projects:
+                              anyOf:
+                                - type: string
+                                  enum:
+                                    - all-linked
+                                - type: array
+                                  items:
+                                    type: string
+                            tools:
+                              type: array
+                              items:
+                                type: string
+                          required:
+                            - enabled
+                            - projects
+                            - tools
+                      required:
+                        - id
+                        - name
+                        - engine
+                        - organizationScope
+                required:
+                  - agents
+        "400":
+          description: Invalid request.
+        "401":
+          description: User identity required.
+        "403":
+          description: Organization administrator required.
+        "404":
+          description: Organization agent or session unavailable.
+  /api/organizations/{organizationId}/agents/{agentId}:
+    patch:
+      tags:
+        - Organizations
+      summary: Edit, disable or archive an existing organization agent without replacing its identity
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: agentId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                systemPrompt:
+                  type: string
+                  maxLength: 32000
+                model:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                enabled:
+                  type: boolean
+                archived:
+                  type: boolean
+              additionalProperties: false
+      responses:
+        "200":
+          description: Updated agent; history retained.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      engine:
+                        type: string
+                      model:
+                        type: string
+                      systemPrompt:
+                        type: string
+                      computerToolEnabled:
+                        type: boolean
+                      organizationScope:
+                        type: object
+                        properties:
+                          enabled:
+                            type: boolean
+                          archivedAt:
+                            type: string
+                            nullable: true
+                          projects:
+                            anyOf:
+                              - type: string
+                                enum:
+                                  - all-linked
+                              - type: array
+                                items:
+                                  type: string
+                          tools:
+                            type: array
+                            items:
+                              type: string
+                        required:
+                          - enabled
+                          - projects
+                          - tools
+                    required:
+                      - id
+                      - name
+                      - engine
+                      - organizationScope
+                required:
+                  - agent
+        "400":
+          description: Invalid request.
+        "401":
+          description: User identity required.
+        "403":
+          description: Organization administrator required.
+        "404":
+          description: Organization agent or session unavailable.
+  /api/organizations/{organizationId}/agents/{agentId}/sessions:
+    post:
+      tags:
+        - Organizations
+      summary: Start a private organization workflow chat using the initiating user identity
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: agentId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+              additionalProperties: false
+      responses:
+        "201":
+          description: New user-owned session; no Git workspace or background job.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session:
+                    $ref: "#/components/schemas/Session"
+                  agent:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      engine:
+                        type: string
+                      model:
+                        type: string
+                      systemPrompt:
+                        type: string
+                      computerToolEnabled:
+                        type: boolean
+                      organizationScope:
+                        type: object
+                        properties:
+                          enabled:
+                            type: boolean
+                          archivedAt:
+                            type: string
+                            nullable: true
+                          projects:
+                            anyOf:
+                              - type: string
+                                enum:
+                                  - all-linked
+                              - type: array
+                                items:
+                                  type: string
+                          tools:
+                            type: array
+                            items:
+                              type: string
+                        required:
+                          - enabled
+                          - projects
+                          - tools
+                    required:
+                      - id
+                      - name
+                      - engine
+                      - organizationScope
+                required:
+                  - session
+                  - agent
+        "400":
+          description: Invalid request.
+        "401":
+          description: User identity required.
+        "403":
+          description: Organization administrator required.
+        "404":
+          description: Organization agent or session unavailable.
+  /api/sessions/{sessionId}/organization-memory:
+    get:
+      tags:
+        - Organizations
+      summary: Read authorized private organization memory
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Scoped to the session owner, organization and current project/tool access.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  memories:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        projectId:
+                          type: string
+                          minLength: 1
+                          maxLength: 200
+                        sourceRecord:
+                          type: string
+                          minLength: 1
+                          maxLength: 500
+                        content:
+                          type: string
+                          minLength: 1
+                          maxLength: 2000
+                        id:
+                          type: string
+                        serverId:
+                          type: string
+                        organizationId:
+                          type: string
+                        timestamp:
+                          type: string
+                      required:
+                        - projectId
+                        - sourceRecord
+                        - content
+                        - id
+                        - serverId
+                        - organizationId
+                        - timestamp
+                      additionalProperties: false
+                required:
+                  - memories
+        "400":
+          description: Invalid request.
+        "401":
+          description: User identity required.
+        "403":
+          description: Organization administrator required.
+        "404":
+          description: Organization agent or session unavailable.
+    post:
+      tags:
+        - Organizations
+      summary: Save private organization memory with project provenance
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: sessionId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                projectId:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                sourceRecord:
+                  type: string
+                  minLength: 1
+                  maxLength: 500
+                content:
+                  type: string
+                  minLength: 1
+                  maxLength: 2000
+              required:
+                - projectId
+                - sourceRecord
+                - content
+              additionalProperties: false
+      responses:
+        "201":
+          description: Scoped to the session owner, organization and current project/tool access.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  memory:
+                    type: object
+                    properties:
+                      projectId:
+                        type: string
+                        minLength: 1
+                        maxLength: 200
+                      sourceRecord:
+                        type: string
+                        minLength: 1
+                        maxLength: 500
+                      content:
+                        type: string
+                        minLength: 1
+                        maxLength: 2000
+                      id:
+                        type: string
+                      serverId:
+                        type: string
+                      organizationId:
+                        type: string
+                      timestamp:
+                        type: string
+                    required:
+                      - projectId
+                      - sourceRecord
+                      - content
+                      - id
+                      - serverId
+                      - organizationId
+                      - timestamp
+                    additionalProperties: false
+                required:
+                  - memory
+        "400":
+          description: Invalid request.
+        "401":
+          description: User identity required.
+        "403":
+          description: Organization administrator required.
+        "404":
+          description: Organization agent or session unavailable.
   /api/orgs:
     get:
       tags: &a6

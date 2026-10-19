@@ -53,8 +53,8 @@
     "note": "pre-existing migration debt (card 3ed3bfc9)"
   },
   "sessions": {
-    "allowed_unregistered": 19,
-    "note": "pre-existing migration debt (card 3ed3bfc9); advisor endpoints + /forward now registered"
+    "allowed_unregistered": 18,
+    "note": "pre-existing migration debt (card 3ed3bfc9); advisor endpoints, /forward and /active-tasks now registered"
   },
   "skills": {
     "allowed_unregistered": 5,

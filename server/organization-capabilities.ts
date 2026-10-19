@@ -5,6 +5,10 @@ import {
 import { revokeApiKeysBySpawnSession } from './api-keys-store.js';
 import { removeSpawnCredsFile } from './spawn-creds-file.js';
 import { ensurePerUserHome } from './per-user-home.js';
+import {
+  organizationSessionIdentity,
+  recordOrganizationSessionIdentity,
+} from './organization-session-identity.js';
 /** Organization CLI credentials. Opaque, short-lived and deliberately separate from user API keys.
  * Grants live only in this process: restart revokes them. Every use resolves current authority.
  */
@@ -41,7 +45,10 @@ export interface OrganizationCapability {
 const grants = new Map<string, OrganizationCapability>();
 const revokedSessions = new Set<string>();
 const organizationSessions = new Set<string>();
-const contexts = new Map<string, { serverId: string; sessionId: string; fingerprint: string }>();
+const contexts = new Map<
+  string,
+  { serverId: string; sessionId: string; fingerprint: string; epoch: string }
+>();
 const sessionKey = (sessionId: string, serverId = getActiveOrgId()) =>
   JSON.stringify([serverId, sessionId]);
 let onRevocation: (sessionId: string) => void = () => {};
@@ -65,9 +72,16 @@ export function organizationSessionWorkspace(sessionId: string): Project | null 
   const project = row ? findAgent(row.agent_id)?.project : null;
   if (isOrganizationWorkspace(project)) {
     organizationSessions.add(sessionKey(sessionId));
+    if (project!.serverId && project!.organizationId && row)
+      recordOrganizationSessionIdentity(sessionId, {
+        server_id: project!.serverId,
+        organization_id: project!.organizationId,
+        workspace_id: project!.id,
+        agent_id: row.agent_id,
+      });
     return project!;
   }
-  if (organizationSessions.has(sessionKey(sessionId)))
+  if (organizationSessions.has(sessionKey(sessionId)) || organizationSessionIdentity(sessionId))
     throw new Error('Organization session unavailable');
   return null;
 }
@@ -85,6 +99,7 @@ function authority(sessionId: string): Omit<OrganizationCapability, 'expiresAt'>
   const user = userId ? getUserById(userId) : null;
   if (
     project.workspaceKind !== 'organization' ||
+    project.archivedAt ||
     project.serverId !== serverId ||
     !organizationId ||
     !userId ||
@@ -125,6 +140,9 @@ function authority(sessionId: string): Omit<OrganizationCapability, 'expiresAt'>
       scope,
       computer: agent.computerToolEnabled,
       browser: agent.browserToolsEnabled,
+      instructions: agent.systemPrompt,
+      name: agent.name,
+      model: agent.model,
     }),
   );
   return {
@@ -138,6 +156,12 @@ function authority(sessionId: string): Omit<OrganizationCapability, 'expiresAt'>
     tools,
     fingerprint,
   };
+}
+
+export function resolveOrganizationSessionAuthority(sessionId: string) {
+  const current = authority(sessionId);
+  if (revokedSessions.has(sessionKey(sessionId))) throw new Error('Organization context revoked');
+  return current;
 }
 
 export function setOrganizationRevocationHandler(handler: (sessionId: string) => void): void {
@@ -237,6 +261,7 @@ export function prepareOrganizationTurn(
     serverId: current.serverId,
     sessionId,
     fingerprint: current.fingerprint,
+    epoch: hasCurrentContext ? contexts.get(identity)!.epoch : randomBytes(16).toString('hex'),
   });
 }
 
@@ -317,6 +342,8 @@ export function organizationCapabilityAllows(
   const suffix = tail.join('/');
   const read = method === 'GET' || method === 'HEAD';
   if (resource === 'sessions' && id === grant.sessionId) {
+    if (suffix === 'organization-memory' && grant.tools.includes('projects:read'))
+      return read || method === 'POST';
     if (method === 'POST' && suffix === 'organization-capability/renew') return true;
     // Retained transcripts can contain projects removed from the current scope.
     // Only normal user authentication may read that history; a fresh capability cannot.
@@ -452,6 +479,7 @@ Configured tools: ${current.tools.join(', ') || 'none'}. Project membership and 
 Read linked-project wiki/board resources on demand. Dispatch requires an explicit project and agent, using POST /api/projects/<projectId>/sessions/dispatch with {"agentId":"<id>","prompt":"<task>"}; automation overrides are forbidden.
 Your capability expires after 15 minutes. Before expiry, POST /api/sessions/${current.sessionId}/organization-capability/renew and replace AGENT_HUB_API_KEY with the returned token. Do not print tokens. If access is revoked, stop and request a fresh user turn.
 Host actions use <agenthub:react>{"actions":[{"tool":"<configured-tool>","op":"<operation>"}]}</agenthub:react>. Only configured tools are permitted.
+Save private project-derived memory with POST /api/sessions/${current.sessionId}/organization-memory using {"projectId":"<authorized project>","sourceRecord":"<source record>","content":"<brief note>"}. Read it with GET at the same path. Each read rechecks current project access. Never save project-derived information into shared organization instructions.
 Use only deliberately shared organization instructions and newly authorized tool results. Historical transcripts remain available to their owner but are not automatically injected into a fresh CLI context.`;
 }
 
@@ -462,4 +490,13 @@ export function resetOrganizationCapabilitiesForTests(): void {
   contexts.clear();
   revokedSessions.clear();
   organizationSessions.clear();
+}
+
+/** A new authorization context gets a new cwd even after unlink-and-relink or restart. */
+export function organizationContextEpoch(sessionId: string): string {
+  const current = resolveOrganizationSessionAuthority(sessionId);
+  const context = contexts.get(sessionKey(sessionId));
+  if (!context || context.fingerprint !== current.fingerprint)
+    throw new Error('Organization context revoked');
+  return context.epoch;
 }

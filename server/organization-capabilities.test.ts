@@ -52,6 +52,7 @@ import { readSpawnCredsFile } from './spawn-creds-file.js';
 import createChatHandler, { buildEnrichedPrompt, type ChatHandlerDeps } from './chat.js';
 import { isReactChainCancelRequested, clearReactChainCancel } from './react-chain-cancel.js';
 import { isHubSystemProject, isInternalSystemProject } from '../shared/utils/hub.js';
+import { shouldDeliverBroadcast } from './broadcast-filter.js';
 const run = promisify(execFile);
 const handleChat = vi.fn(async () => {});
 const stop = vi.fn();
@@ -170,6 +171,31 @@ afterEach(() => {
 });
 
 describe('organization capability regressions', () => {
+  it('keeps organization history private even from Server administrators and bypass callers', () => {
+    for (const claims of [
+      { authUserId: 'another', authRole: 'Owner' as const },
+      { authUserId: 'another', authRole: 'Admin' as const },
+      { authViaApiKey: true },
+      { authLocalOrgBypass: true },
+    ]) {
+      expect(userCanReadSession(claims, 'org-session')).toBe(false);
+      expect(userOwnsSession(claims, 'org-session')).toBe(false);
+    }
+    expect(userCanReadSession({ authUserId: 'person' }, 'org-session')).toBe(true);
+    archiveBusinessOrganization('default', organizationId);
+    expect(userCanReadSession({ authUserId: 'person' }, 'org-session')).toBe(true);
+  });
+  it('does not broadcast organization chat content to another user or an anonymous bypass', () => {
+    const deps = {
+      resolveProjectId: () => workspace.id,
+      findProject: () => workspace,
+      getSessionOwner: () => 'person',
+    };
+    const event = { type: 'text', sessionId: 'org-session', text: 'private result' };
+    expect(shouldDeliverBroadcast(event, { userId: 'another', role: 'Owner' }, deps)).toBe(false);
+    expect(shouldDeliverBroadcast(event, { userId: null, localBypass: true }, deps)).toBe(false);
+    expect(shouldDeliverBroadcast(event, undefined, deps)).toBe(false);
+  });
   it('never injects the global key into an organization session', () => {
     const env = buildSpawnEnv(
       { ...config, apiKey: 'global-secret' },
@@ -716,6 +742,7 @@ describe('runtime boundaries', () => {
     workspace.ahw = directory;
     writeFileSync(path.join(directory, 'MEMORY.md'), 'OTHER USER PRIVATE PROJECT CONTENT');
     workspace.agents[0].systemPrompt = 'Deliberately shared instructions';
+    prepareOrganizationTurn('org-session', true, workspace);
     try {
       const prompt = buildEnrichedPrompt(workspace, workspace.agents[0], {
         sessionId: 'org-session',

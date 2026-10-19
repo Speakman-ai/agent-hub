@@ -21,6 +21,21 @@ function makeProject(overrides: Partial<Project> = {}): Project {
 }
 
 describe('project-visibility', () => {
+  it('excludes organization workspaces from ordinary project access even for owners and bypasses', () => {
+    const workspace = makeProject({
+      kind: 'system',
+      workspaceKind: 'organization',
+      organizationId: 'group',
+      ownerUserId: 'owner',
+    });
+    for (const caller of [
+      { userId: 'owner', role: 'Owner' as const },
+      { userId: null, localBypass: true },
+    ]) {
+      expect(canViewProject(workspace, caller)).toBe(false);
+      expect(filterVisibleProjects([workspace], caller)).toEqual([]);
+    }
+  });
   describe('getVisibility', () => {
     it('defaults to shared when unset', () => {
       expect(getVisibility(makeProject())).toBe('shared');

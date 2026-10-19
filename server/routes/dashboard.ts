@@ -14,7 +14,7 @@ import { reviewDecisionFor } from '../native-pr/review-decision.js';
 import { mapWithConcurrency } from '../git-host/recent-pushes.js';
 import { computeSessionState } from '../session-state.js';
 import { getUserById } from '../users-store.js';
-import { isHubAssistantAgentId } from '../../shared/utils/hub.js';
+import { isHubAssistantAgentId, isOrganizationSystemProject } from '../../shared/utils/hub.js';
 import { isWikiDocSessionName } from '../wiki-doc-session.js';
 
 /**
@@ -169,13 +169,27 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
 
     const db = getDb();
 
-    const projects = getProjects();
+    const organizationAgentIds = new Set(
+      getProjects()
+        .filter(isOrganizationSystemProject)
+        .flatMap((p) => p.agents.map((a) => a.id)),
+    );
+    for (const row of db
+      .prepare('SELECT DISTINCT agent_id FROM organization_workflow_sessions')
+      .all() as Array<{ agent_id: string }>)
+      organizationAgentIds.add(row.agent_id);
+    const projects = getProjects().filter((p) => !isOrganizationSystemProject(p));
     const projectCount = projects.length;
-    const agentCount = allAgents().length;
+    const agentCount = allAgents().filter((a) => !organizationAgentIds.has(a.id)).length;
 
     // Headline counters
-    const sessionsTotal =
-      (db.prepare('SELECT COUNT(*) as c FROM sessions').get() as { c: number }).c || 0;
+    const sessionsTotal = (
+      db
+        .prepare(
+          'SELECT COUNT(*) as c FROM sessions WHERE agent_id NOT IN (SELECT value FROM json_each(?))',
+        )
+        .get(JSON.stringify([...organizationAgentIds])) as { c: number }
+    ).c;
 
     // Active sessions queue (detail + count)
     // The queue surfaces *every in-flight session* in this org, not just the
@@ -205,7 +219,11 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
     // session → agent → project → org explicitly and drops orphaned rows for
     // since-deleted agents instead of surfacing a bare unknown id.
     const ACTIVE_SESSIONS_DISPLAY_LIMIT = 200;
-    const agentsById = new Map(allAgents().map((a) => [a.id, a]));
+    const agentsById = new Map(
+      allAgents()
+        .filter((a) => !organizationAgentIds.has(a.id))
+        .map((a) => [a.id, a]),
+    );
 
     // Prompt + start time for the rows whose CLI is *currently* streaming —
     // fetched in one pass and looked up per session. Most sessions in the
@@ -602,6 +620,7 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
       });
     }
     for (const s of recentSessions) {
+      if (organizationAgentIds.has(s.agent_id)) continue;
       activity.push({
         type: 'session_created',
         id: s.id,

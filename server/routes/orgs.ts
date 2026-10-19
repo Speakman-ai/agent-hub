@@ -1,3 +1,4 @@
+import { repairOrganizationWorkspaces } from '../organization-workspaces.js';
 import { Router, Request, Response, type NextFunction } from 'express';
 import { mkdirSync } from 'fs';
 import {
@@ -107,6 +108,7 @@ export default function createOrgRoutes(deps: RouteDeps): Router {
     setActiveOrgId(orgId);
 
     reloadProjects(dataDir);
+    repairOrganizationWorkspaces(orgId);
     // First time this org becomes active, backfill the per-project Skill
     // Builder coach into any pre-feature projects (marker-guarded, once).
     // Best-effort: a seeding/marker-write hiccup must never break the org
