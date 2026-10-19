@@ -2459,6 +2459,8 @@ export const api = {
     fetchJSON(`/projects/${projectId}/ci-runs?trigger=${trigger}&limit=${limit}`),
   getCiRunStats: (projectId: any, { range = 'all' }: any = {}) =>
     fetchJSON(`/projects/${projectId}/ci-runs/stats?range=${encodeURIComponent(range)}`),
+  getCiRunnerOptions: (projectId: any) =>
+    fetchJSON(`/projects/${projectId}/ci-runs/runner-options`),
   getCiRunDetail: (projectId: any, runId: any) =>
     fetchJSON(`/projects/${projectId}/ci-runs/${runId}`),
   // Per-project Stats page — daily/weekly/monthly product metrics.

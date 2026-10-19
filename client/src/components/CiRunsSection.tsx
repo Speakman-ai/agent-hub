@@ -22,6 +22,7 @@ import {
   Zap,
   Square,
   BarChart3,
+  Cloud,
 } from 'lucide-react';
 import { api } from '../utils/api';
 import { relativePrTime } from '../utils/prFormatting';
@@ -795,6 +796,8 @@ export default function CiRunsSection({ project, onProjectsChange, showToast }: 
   const projectId = project?.id;
   const hosted = project?.gitHost === 'agenthub';
   const ciOnPush = project?.ciOnPush?.enabled === true;
+  const ciSpot = project?.finalizeRunner?.spot !== false;
+  const [spotChoiceAvailable, setSpotChoiceAvailable] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!projectId) return;
@@ -842,6 +845,35 @@ export default function CiRunsSection({ project, onProjectsChange, showToast }: 
       if (pollRef.current) clearInterval(pollRef.current);
     };
   }, [runs, refresh]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setSpotChoiceAvailable(false);
+    if (!projectId) return undefined;
+    // Optional capability probe: any failure just leaves the toggle hidden.
+    Promise.resolve()
+      .then(() => api.getCiRunnerOptions(projectId))
+      .then((res: any) => {
+        if (!cancelled) setSpotChoiceAvailable(res?.spotChoiceAvailable === true);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
+  const toggleCiSpot = async () => {
+    if (!projectId) return;
+    setSavingToggle(true);
+    try {
+      await api.updateProject(projectId, { finalizeRunner: { spot: !ciSpot } });
+      if (onProjectsChange) onProjectsChange();
+    } catch (err: any) {
+      if (showToast) showToast(String(err?.message || err || 'Failed to update'), 'error');
+    } finally {
+      setSavingToggle(false);
+    }
+  };
 
   const toggleCiOnPush = async () => {
     if (!projectId) return;
@@ -909,6 +941,37 @@ export default function CiRunsSection({ project, onProjectsChange, showToast }: 
             <span
               className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
                 ciOnPush ? 'translate-x-4' : 'translate-x-0.5'
+              }`}
+            />
+          </button>
+        </div>
+      )}
+
+      {spotChoiceAvailable && (
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex-1 min-w-0">
+            <span className="text-sm text-gray-200 flex items-center gap-1.5">
+              <Cloud size={14} className="text-gray-400" />
+              Spot runners
+            </span>
+            <p className="text-xs text-gray-500">
+              {ciSpot
+                ? 'CI jobs run on Spot instances. Cheaper, but AWS can reclaim one mid-run.'
+                : 'CI jobs run on on-demand instances. Costs more, never reclaimed mid-run.'}
+            </p>
+          </div>
+          <button
+            onClick={toggleCiSpot}
+            disabled={savingToggle}
+            data-testid="ci-spot-toggle"
+            aria-pressed={ciSpot}
+            className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 disabled:opacity-50 ${
+              ciSpot ? 'bg-emerald-600' : 'bg-gray-600'
+            }`}
+          >
+            <span
+              className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                ciSpot ? 'translate-x-4' : 'translate-x-0.5'
               }`}
             />
           </button>

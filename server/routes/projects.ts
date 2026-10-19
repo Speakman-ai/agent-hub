@@ -2358,6 +2358,23 @@ This workspace has no git repo and no PR automation — your job is planning, or
         project.baseDrift = { ...(project.baseDrift ?? {}), ...parsed.value };
       }
     }
+    if (Object.prototype.hasOwnProperty.call(req.body as object, 'finalizeRunner')) {
+      const rawFr = (req.body as Record<string, unknown>).finalizeRunner;
+      if (rawFr === null) {
+        delete (project as Record<string, unknown>).finalizeRunner;
+      } else if (typeof rawFr !== 'object' || Array.isArray(rawFr)) {
+        return res.status(400).json({ error: 'finalizeRunner must be an object or null' });
+      } else {
+        const spot = (rawFr as Record<string, unknown>).spot;
+        if (spot !== undefined && typeof spot !== 'boolean') {
+          return res.status(400).json({ error: 'finalizeRunner.spot must be a boolean' });
+        }
+        project.finalizeRunner = {
+          ...(project.finalizeRunner ?? {}),
+          ...(spot !== undefined ? { spot } : {}),
+        };
+      }
+    }
     if (Object.prototype.hasOwnProperty.call(req.body as object, 'pushConcurrency')) {
       const rawPc = (req.body as Record<string, unknown>).pushConcurrency;
       if (rawPc === null) {

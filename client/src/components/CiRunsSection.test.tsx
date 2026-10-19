@@ -11,6 +11,7 @@ import { api } from '../utils/api';
   api: {
     getCiRuns: vi.fn(),
     getCiRunStats: vi.fn(),
+    getCiRunnerOptions: vi.fn(),
     getCiRunDetail: vi.fn(),
     getFinalizeStepOutput: vi.fn(),
     getFinalizeRunResources: vi.fn(),
@@ -78,6 +79,7 @@ const runs = [
 beforeEach(() => {
   vi.clearAllMocks();
   (api.getCiRuns as any).mockResolvedValue({ runs });
+  (api.getCiRunnerOptions as any).mockResolvedValue({ spotChoiceAvailable: false, spot: true });
   (api.getCiRunStats as any).mockResolvedValue({
     overall: {
       average_seconds: 90,
@@ -125,6 +127,44 @@ beforeEach(() => {
 });
 
 describe('CiRunsSection', () => {
+  it('hides the Spot toggle when the fleet has no on-demand pool', async () => {
+    render(<CiRunsSection project={hostedProject} />);
+    await screen.findByTestId('ci-run-run-1');
+    expect(api.getCiRunnerOptions).toHaveBeenCalledWith('proj-1');
+    expect(screen.queryByTestId('ci-spot-toggle')).toBeNull();
+  });
+
+  it('keeps the panel rendering when the runner-options probe throws', async () => {
+    (api.getCiRunnerOptions as any).mockImplementation(() => {
+      throw new TypeError('not a function');
+    });
+    render(<CiRunsSection project={hostedProject} />);
+    expect(await screen.findByTestId('ci-run-run-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('ci-spot-toggle')).toBeNull();
+  });
+
+  it('shows the Spot toggle on AWS fleets, on by default, and turns it off', async () => {
+    (api.getCiRunnerOptions as any).mockResolvedValue({ spotChoiceAvailable: true, spot: true });
+    (api.updateProject as any).mockResolvedValue({});
+    const onProjectsChange = vi.fn();
+    render(<CiRunsSection project={hostedProject} onProjectsChange={onProjectsChange} />);
+    const toggle = await screen.findByTestId('ci-spot-toggle');
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(api.updateProject).toHaveBeenCalledWith('proj-1', { finalizeRunner: { spot: false } }),
+    );
+    expect(onProjectsChange).toHaveBeenCalled();
+  });
+
+  it('reflects a project already on on-demand', async () => {
+    (api.getCiRunnerOptions as any).mockResolvedValue({ spotChoiceAvailable: true, spot: false });
+    render(<CiRunsSection project={{ ...hostedProject, finalizeRunner: { spot: false } }} />);
+    const toggle = await screen.findByTestId('ci-spot-toggle');
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByText(/on-demand instances/)).toBeInTheDocument();
+  });
+
   it('lists runs with trigger badges, status, and failure reason', async () => {
     render(<CiRunsSection project={hostedProject} />);
     expect(await screen.findByTestId('ci-run-run-1')).toHaveTextContent('push');

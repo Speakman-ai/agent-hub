@@ -20,6 +20,7 @@ import { matrixKeyFromRow } from '../finalize/ci-config-jobs.js';
 import { DEFAULT_CI_CONFIG_RELATIVE_PATH } from '../finalize/finalize-keys.js';
 import { isInfraFailureReason } from '../finalize/infra-retry.js';
 import { readRepoFile } from '../git-host/repo-read.js';
+import { ciSpotChoiceAvailable, projectCiUsesSpot } from '../finalize/runner-images.js';
 
 const DEFAULT_LIMIT = 30;
 const MAX_LIMIT = 100;
@@ -139,6 +140,23 @@ registerPath({
     },
     404: { description: 'Unknown project.', content: jsonContent(ErrorResponse) },
     500: { description: 'Stats could not be read.', content: jsonContent(ErrorResponse) },
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/ci-runs/runner-options',
+  tags: ['Projects'],
+  summary: 'Finalize CI runner capacity options',
+  description:
+    "Whether this Hub lets the project pick Spot or on-demand capacity for Finalize CI (remote AWS fleet with both pools configured), and the project's current choice. `spot` defaults to true.",
+  request: { params: z.object({ projectId: z.string() }) },
+  responses: {
+    200: {
+      description: 'Runner options.',
+      content: jsonContent(z.object({ spotChoiceAvailable: z.boolean(), spot: z.boolean() })),
+    },
+    404: { description: 'Unknown project.', content: jsonContent(ErrorResponse) },
   },
 });
 
@@ -527,6 +545,12 @@ export default function createCiRunsRoutes(deps: RouteDeps): Router {
         error: err instanceof Error ? err.message : 'Failed to read CI run stats',
       });
     }
+  });
+
+  router.get('/api/projects/:projectId/ci-runs/runner-options', (req: Request, res: Response) => {
+    const project = findProjectOr404(req, res);
+    if (!project) return;
+    res.json({ spotChoiceAvailable: ciSpotChoiceAvailable(), spot: projectCiUsesSpot(project) });
   });
 
   router.get('/api/projects/:projectId/ci-runs/:runId', (req: Request, res: Response) => {

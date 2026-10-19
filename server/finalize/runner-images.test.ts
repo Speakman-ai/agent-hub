@@ -7,6 +7,9 @@ import {
   macosRunnerMismatch,
   runnerClassForRunsOn,
   resolveDeployRunnerClass,
+  ciSpotChoiceAvailable,
+  resolveCiRunnerClass,
+  ONDEMAND_RUNNER_CLASS,
   MACOS_RUNNER_CLASS,
   DEFAULT_RUNNER_CLASS,
   DEFAULT_UBUNTU_24_04_IMAGE,
@@ -217,5 +220,43 @@ describe('resolveDeployRunnerClass', () => {
     expect(resolveDeployRunnerClass({ FINALIZE_DEPLOY_RUNNER_CLASS: 'bad class!' })).toBe(
       'default',
     );
+  });
+});
+
+describe('Finalize CI Spot / on-demand choice', () => {
+  const fleet = {
+    FINALIZE_RUNNER_BACKEND: 'remote',
+    FINALIZE_FLEET_ECS_CLUSTER: 'runners',
+    FINALIZE_FLEET_ECS_SERVICE: 'spot-agents',
+    FINALIZE_FLEET_ONDEMAND_ECS_SERVICE: 'ondemand-agents',
+  };
+
+  it('is available only with the remote backend and both ECS pools', () => {
+    expect(ciSpotChoiceAvailable(fleet)).toBe(true);
+    expect(ciSpotChoiceAvailable({ ...fleet, FINALIZE_RUNNER_BACKEND: 'local' })).toBe(false);
+    expect(ciSpotChoiceAvailable({ ...fleet, FINALIZE_FLEET_ONDEMAND_ECS_SERVICE: '' })).toBe(
+      false,
+    );
+    expect(ciSpotChoiceAvailable({ ...fleet, FINALIZE_FLEET_ECS_SERVICE: undefined })).toBe(false);
+  });
+
+  it('defaults to Spot (no explicit class) when the project has no setting', () => {
+    expect(resolveCiRunnerClass({}, fleet)).toBeUndefined();
+    expect(resolveCiRunnerClass({ finalizeRunner: { spot: true } }, fleet)).toBeUndefined();
+  });
+
+  it('routes every CI job to on-demand when Spot is off', () => {
+    expect(resolveCiRunnerClass({ finalizeRunner: { spot: false } }, fleet)).toBe(
+      ONDEMAND_RUNNER_CLASS,
+    );
+  });
+
+  it('ignores Spot off when no on-demand pool serves the class', () => {
+    expect(
+      resolveCiRunnerClass(
+        { finalizeRunner: { spot: false } },
+        { ...fleet, FINALIZE_FLEET_ONDEMAND_ECS_SERVICE: undefined },
+      ),
+    ).toBeUndefined();
   });
 });
