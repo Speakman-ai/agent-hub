@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useSyncExternalStore } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import { View, Text, TextInput, TouchableOpacity, Switch, StyleSheet } from 'react-native';
 import { createUseOrganizations } from '@shared/hooks/useOrganizations';
 import type {
@@ -12,6 +12,9 @@ import { getApiBaseUrl } from '../utils/config';
 import { getActiveOrg } from '../utils/orgs';
 import { getAuthRecord } from '../utils/auth';
 import { colors } from '../theme/colors';
+import OrganizationAgentsSection, {
+  type OrganizationChatTarget,
+} from './OrganizationAgentsSection';
 
 const useOrganizations = createUseOrganizations({ useEffect, useMemo, useSyncExternalStore });
 const scope = () =>
@@ -19,7 +22,12 @@ const scope = () =>
 const toggle = (ids: string[], id: string) =>
   ids.includes(id) ? ids.filter((value) => value !== id) : [...ids, id];
 const roles: OrganizationRole[] = ['Owner', 'Admin', 'Member'];
-type Props = { state: OrganizationState; controller: OrganizationController };
+type Props = {
+  state: OrganizationState;
+  controller: OrganizationController;
+  onOpenChat?: (target: OrganizationChatTarget) => void;
+  refreshKey?: unknown;
+};
 function Button({
   children,
   onPress,
@@ -91,9 +99,34 @@ function RoleChoices({
     </View>
   );
 }
-export default function OrganizationsPanel({ projectId }: { projectId?: string }) {
+export default function OrganizationsPanel({
+  projectId,
+  initialOrganizationId,
+  onOpenChat,
+  refreshKey,
+}: {
+  projectId?: string;
+  /** Organization to select once the list loads (navigation param). */
+  initialOrganizationId?: string | null;
+  onOpenChat?: (target: OrganizationChatTarget) => void;
+  /** Changes when the screen regains focus so agent rosters and chat history reload. */
+  refreshKey?: unknown;
+}) {
   const { lastOrganizationEvent } = useApp();
   const { state, controller } = useOrganizations(api.organizations, scope, lastOrganizationEvent);
+  // Apply every change of the organization param while mounted, including a change to none
+  // (the plain Organizations route or a link for another Server), which clears the selection.
+  const appliedParam = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (!state.ready || state.busy || projectId) return;
+    const target = initialOrganizationId ?? null;
+    if (appliedParam.current === target) return;
+    appliedParam.current = target;
+    // An unknown or inaccessible organization shows the plain list rather than the old selection.
+    const wanted =
+      target !== null && state.organizations.some((o) => o.id === target) ? target : null;
+    if (state.selectedId !== wanted) void controller.load(wanted);
+  }, [state, initialOrganizationId, controller, projectId]);
   return (
     <View style={styles.section}>
       <Text style={styles.heading}>Organizations</Text>
@@ -121,7 +154,12 @@ export default function OrganizationsPanel({ projectId }: { projectId?: string }
             controller={controller}
           />
         ) : (
-          <Manager state={state} controller={controller} />
+          <Manager
+            state={state}
+            controller={controller}
+            onOpenChat={onOpenChat}
+            refreshKey={refreshKey}
+          />
         ))}
     </View>
   );
@@ -170,7 +208,7 @@ function ProjectOrganizations({ projectId, state, controller }: Props & { projec
     </View>
   );
 }
-function Manager({ state, controller }: Props) {
+function Manager({ state, controller, onOpenChat, refreshKey }: Props) {
   const [newName, setNewName] = useState('');
   const selected = state.organizations.find((o) => o.id === state.selectedId);
   return (
@@ -199,7 +237,13 @@ function Manager({ state, controller }: Props) {
         </Button>
       ))}
       {selected ? (
-        <Details key={selected.id} state={state} controller={controller} />
+        <Details
+          key={selected.id}
+          state={state}
+          controller={controller}
+          onOpenChat={onOpenChat}
+          refreshKey={refreshKey}
+        />
       ) : (
         state.organizations.length > 0 && (
           <Text style={styles.help}>Select an organization to view projects and members.</Text>
@@ -208,7 +252,7 @@ function Manager({ state, controller }: Props) {
     </View>
   );
 }
-function Details({ state, controller }: Props) {
+function Details({ state, controller, onOpenChat, refreshKey }: Props) {
   const organization = state.organizations.find((o) => o.id === state.selectedId)!;
   const [name, setName] = useState(organization.name);
   const [ids, setIds] = useState(() => (state.links[organization.id] || []).map((p) => p.id));
@@ -265,6 +309,13 @@ function Details({ state, controller }: Props) {
           <Button onPress={() => void controller.saveProjects(ids)}>Save project links</Button>
         </>
       )}
+      <OrganizationAgentsSection
+        organization={organization}
+        linkedProjects={state.links[organization.id] || []}
+        scope={scope}
+        onOpenChat={onOpenChat}
+        refreshKey={refreshKey}
+      />
       <Text style={styles.heading}>Members</Text>
       {state.members.map((member) => (
         <View style={styles.section} key={member.userId}>

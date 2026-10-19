@@ -1,4 +1,5 @@
-import { useEffect, useState, useMemo, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useMemo, useSyncExternalStore } from 'react';
+import OrganizationAgentsPanel, { type OrganizationChatTarget } from './OrganizationAgentsPanel';
 import { createUseOrganizations } from '@shared/hooks/useOrganizations';
 import type {
   OrganizationRole,
@@ -19,7 +20,19 @@ const roles: OrganizationRole[] = ['Owner', 'Admin', 'Member'];
 const toggle = (ids: string[], id: string) =>
   ids.includes(id) ? ids.filter((value) => value !== id) : [...ids, id];
 
-export default function OrganizationsPage({ projectId }: { projectId?: string }) {
+type PageProps = {
+  projectId?: string;
+  /** Deep-linked organization to select once the list loads. */
+  initialOrganizationId?: string | null;
+  onSelectOrganization?: (organizationId: string | null) => void;
+  onOpenChat?: (target: OrganizationChatTarget) => void;
+};
+export default function OrganizationsPage({
+  projectId,
+  initialOrganizationId,
+  onSelectOrganization,
+  onOpenChat,
+}: PageProps) {
   const [refresh, setRefresh] = useState(0);
   useEffect(() => {
     const invalidate = () => setRefresh((value) => value + 1);
@@ -27,6 +40,38 @@ export default function OrganizationsPage({ projectId }: { projectId?: string })
     return () => window.removeEventListener('organizations_changed', invalidate);
   }, []);
   const { state, controller } = useOrganizations(api.organizations, scope, refresh);
+  // Follow every change of the routed organization (deep link, Back/Forward), not just the first.
+  // Selections made on this page round-trip through onSelectOrganization and match already.
+  const appliedRoute = useRef<string | null | undefined>(undefined);
+  // While a routed selection is loading, the controller still holds the previous selection.
+  // Reporting it would write the stale value back into the route, so reporting waits.
+  const pendingRoute = useRef<object | null>(null);
+  const [routeSettled, setRouteSettled] = useState(0);
+  useEffect(() => {
+    if (!state.ready || state.busy || projectId) return;
+    const target = initialOrganizationId ?? null;
+    if (appliedRoute.current === target) return;
+    appliedRoute.current = target;
+    // An unknown or inaccessible organization shows the plain list rather than the old selection.
+    const wanted =
+      target !== null && state.organizations.some((o) => o.id === target) ? target : null;
+    if (state.selectedId === wanted) {
+      // Nothing to load, but report so App corrects a route naming an unavailable organization.
+      if (wanted !== target) setRouteSettled((value) => value + 1);
+      return;
+    }
+    const token = {};
+    pendingRoute.current = token;
+    void controller.load(wanted).finally(() => {
+      if (pendingRoute.current !== token) return;
+      pendingRoute.current = null;
+      setRouteSettled((value) => value + 1);
+    });
+  }, [state, initialOrganizationId, controller, projectId]);
+  useEffect(() => {
+    if (pendingRoute.current || !state.ready || state.busy) return;
+    onSelectOrganization?.(state.selectedId);
+  }, [state.ready, state.busy, state.selectedId, onSelectOrganization, routeSettled]);
   return (
     <section
       className={projectId ? 'space-y-3' : 'flex-1 overflow-y-auto p-4 md:p-6 space-y-4'}
@@ -59,13 +104,17 @@ export default function OrganizationsPage({ projectId }: { projectId?: string })
             controller={controller}
           />
         ) : (
-          <OrganizationManager state={state} controller={controller} />
+          <OrganizationManager state={state} controller={controller} onOpenChat={onOpenChat} />
         ))}
     </section>
   );
 }
 
-type Props = { state: OrganizationState; controller: OrganizationController };
+type Props = {
+  state: OrganizationState;
+  controller: OrganizationController;
+  onOpenChat?: (target: OrganizationChatTarget) => void;
+};
 function ProjectOrganizations({ projectId, state, controller }: Props & { projectId: string }) {
   const [ids, setIds] = useState(() =>
     state.organizations
@@ -110,7 +159,7 @@ function ProjectOrganizations({ projectId, state, controller }: Props & { projec
     </div>
   );
 }
-function OrganizationManager({ state, controller }: Props) {
+function OrganizationManager({ state, controller, onOpenChat }: Props) {
   const [newName, setNewName] = useState('');
   const selected = state.organizations.find((o) => o.id === state.selectedId);
   return (
@@ -153,7 +202,12 @@ function OrganizationManager({ state, controller }: Props) {
         ))}
       </nav>
       {selected ? (
-        <OrganizationDetails key={selected.id} state={state} controller={controller} />
+        <OrganizationDetails
+          key={selected.id}
+          state={state}
+          controller={controller}
+          onOpenChat={onOpenChat}
+        />
       ) : (
         state.organizations.length > 0 && (
           <p>Select an organization to view projects and members.</p>
@@ -162,7 +216,7 @@ function OrganizationManager({ state, controller }: Props) {
     </div>
   );
 }
-function OrganizationDetails({ state, controller }: Props) {
+function OrganizationDetails({ state, controller, onOpenChat }: Props) {
   const organization = state.organizations.find((o) => o.id === state.selectedId)!;
   const [name, setName] = useState(organization.name);
   const [ids, setIds] = useState(() => (state.links[organization.id] || []).map((p) => p.id));
@@ -218,6 +272,12 @@ function OrganizationDetails({ state, controller }: Props) {
           </button>
         </>
       )}
+      <OrganizationAgentsPanel
+        organization={organization}
+        linkedProjects={state.links[organization.id] || []}
+        scope={scope}
+        onOpenChat={onOpenChat}
+      />
       <h4 className="font-medium">Members</h4>
       {state.members.map((member) => (
         <div className="flex flex-wrap items-center gap-2" key={member.userId}>

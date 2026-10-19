@@ -1,4 +1,6 @@
 import OrganizationsPage from './components/OrganizationsPage';
+import type { OrganizationChatTarget } from './components/OrganizationAgentsPanel';
+import { isOrganizationAgentId } from '@shared/utils/organization-agents';
 import {
   useState,
   useEffect,
@@ -341,11 +343,15 @@ export default function App({ initialView }: any = {}) {
     // Never restore the hidden Hub assistant as the active agent: it is absent
     // from GET /api/projects, so it can't resolve on reload and would fall
     // through to a project agent's session.
-    return stored && stored !== HUB_ASSISTANT_AGENT_ID ? stored : null;
+    return stored && stored !== HUB_ASSISTANT_AGENT_ID && !isOrganizationAgentId(stored)
+      ? stored
+      : null;
   });
   const setActiveAgentId = useCallback((id: any) => {
-    // Set Hub-assistant focus in memory, but never persist it — see above.
-    if (id && id !== HUB_ASSISTANT_AGENT_ID) localStorage.setItem('activeAgentId', id);
+    // Hidden Hub and organization agents are focused in memory only: they are absent from
+    // GET /api/projects and belong to one Server, so they must not be restored on reload.
+    if (id && id !== HUB_ASSISTANT_AGENT_ID && !isOrganizationAgentId(id))
+      localStorage.setItem('activeAgentId', id);
     _setActiveAgentId(id);
   }, []);
   const [sessions, setSessions] = useState<any[]>([]);
@@ -398,6 +404,14 @@ export default function App({ initialView }: any = {}) {
     parseHubPane(initialNavigation.hubPane || hubPaneFromLegacyView(initialNavigation.view)),
   );
   const [hubAgent, setHubAgent] = useState<any>(null);
+  // The organization agent behind an open organization chat (not in the project agent list).
+  const [organizationChatAgent, setOrganizationChatAgent] = useState<any>(null);
+  // Organization selected on the Organizations page, mirrored into the URL for deep links.
+  const [organizationRouteId, setOrganizationRouteId] = useState<string | null>(() => {
+    const id = initialNavigation.view === 'organizations' ? initialNavigation.organizationId : null;
+    const server = initialNavigation.serverId;
+    return id && (!server || server === getActiveOrg()?.id) ? id : null;
+  });
   // The live per-user Hub assistant session id, resolved from GET /api/me/hub.
   // The Hub composer binds and sends ONLY to this session — never a project row.
   const [hubSessionId, setHubSessionId] = useState<string | null>(null);
@@ -1088,6 +1102,12 @@ export default function App({ initialView }: any = {}) {
     if (view === 'replays') setReplaysProjectId(route?.projectId || null);
     if (view === 'security') setSecurityProjectId(route?.projectId || null);
     if (view === 'design') setActiveDesignId(route?.designId || null);
+    if (view === 'organizations')
+      setOrganizationRouteId(
+        route?.organizationId && (!route.serverId || route.serverId === getActiveOrg()?.id)
+          ? route.organizationId
+          : null,
+      );
     setSidebarOpen(false);
   }, []);
 
@@ -1152,6 +1172,8 @@ export default function App({ initialView }: any = {}) {
       designId: activeDesignId,
       ticketId: currentView === 'support' ? supportTicketId : null,
       hubPane: currentView === 'hub' ? hubPane : null,
+      organizationId: currentView === 'organizations' ? organizationRouteId : null,
+      serverId: getActiveOrg()?.id ?? null,
     });
     if (window.location.hash === hash) {
       routeUrlInitializedRef.current = true;
@@ -1170,6 +1192,7 @@ export default function App({ initialView }: any = {}) {
     routeProjectId,
     supportTicketId,
     hubPane,
+    organizationRouteId,
   ]);
 
   const isWizardView = (v: any) =>
@@ -1441,7 +1464,8 @@ export default function App({ initialView }: any = {}) {
 
   const activeAgent =
     agents.find((a: any) => a.id === activeAgentId) ||
-    (hubAgent && hubAgent.id === activeAgentId ? hubAgent : undefined);
+    (hubAgent && hubAgent.id === activeAgentId ? hubAgent : undefined) ||
+    (organizationChatAgent?.id === activeAgentId ? organizationChatAgent : undefined);
 
   const workflowEditRoute = useMemo(() => parseWorkflowEditView(currentView), [currentView]);
 
@@ -4494,6 +4518,23 @@ export default function App({ initialView }: any = {}) {
     [setActiveAgentId],
   );
 
+  // Organization chats reuse the normal streaming chat view. Their agent lives in a hidden
+  // workspace, so it is supplied here instead of coming from the project agent list.
+  const handleOpenOrganizationChat = useCallback(
+    (target: OrganizationChatTarget) => {
+      setOrganizationChatAgent(
+        target.agent ?? { id: target.agentId, name: 'Organization agent', engine: 'claude-code' },
+      );
+      if (target.session) insertCreatedSession(target.agentId, target.session);
+      pendingSessionIdRef.current = target.sessionId;
+      setActiveAgentId(target.agentId);
+      setActiveSessionId(target.sessionId);
+      setCurrentView('chat');
+      setSidebarOpen(false);
+    },
+    [insertCreatedSession, setActiveAgentId],
+  );
+
   /** Switch to the agent that owns the session, then open chat (used by sidebar, toasts, dashboard). */
   const focusAgentSession = useCallback(
     (agentId: any, sessionId: any) => {
@@ -5856,8 +5897,12 @@ export default function App({ initialView }: any = {}) {
 
   const sessionOwnerAgentId = activeSession?.agent_id ?? activeAgentId;
   const chatAgent = useMemo(
-    () => agents.find((a: any) => a.id === sessionOwnerAgentId) ?? activeAgent ?? null,
-    [agents, sessionOwnerAgentId, activeAgent],
+    () =>
+      agents.find((a: any) => a.id === sessionOwnerAgentId) ??
+      (organizationChatAgent?.id === sessionOwnerAgentId ? organizationChatAgent : null) ??
+      activeAgent ??
+      null,
+    [agents, sessionOwnerAgentId, activeAgent, organizationChatAgent],
   );
 
   const chatAccentColor = useMemo(
@@ -6902,7 +6947,11 @@ export default function App({ initialView }: any = {}) {
               )}
 
               {currentView === 'organizations' ? (
-                <OrganizationsPage />
+                <OrganizationsPage
+                  initialOrganizationId={organizationRouteId}
+                  onSelectOrganization={setOrganizationRouteId}
+                  onOpenChat={handleOpenOrganizationChat}
+                />
               ) : currentView.startsWith('kanban:') ? (
                 <KanbanBoard
                   projectId={currentView.split(':')[1]}

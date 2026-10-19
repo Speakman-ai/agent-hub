@@ -88,6 +88,17 @@ export const OrganizationMemoryBody = z
     content: z.string().trim().min(1).max(2000),
   })
   .strict();
+export const OrganizationSessionHistoryEntry = z.object({
+  id: z.string(),
+  name: z.string(),
+  agentId: z.string(),
+  agentName: z.string().nullable(),
+  agentAvailable: z
+    .boolean()
+    .openapi({ description: 'False when the agent is disabled, archived or removed.' }),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
 const Memory = OrganizationMemoryBody.extend({
   id: z.string(),
   serverId: z.string(),
@@ -190,6 +201,20 @@ registerPath({
     201: {
       description: 'New user-owned session; no Git workspace or background job.',
       content: json(z.object({ session: SessionComponent, agent: OrganizationRuntimeAgent })),
+    },
+    ...errors,
+  },
+});
+registerPath({
+  method: 'get',
+  path: '/api/organizations/{organizationId}/sessions',
+  tags: ['Organizations'],
+  summary: "List the caller's own organization chats, including chats with archived agents",
+  request: { params: OrganizationParams },
+  responses: {
+    200: {
+      description: 'Newest first, at most 200. Only sessions owned by the caller.',
+      content: json(z.object({ sessions: z.array(OrganizationSessionHistoryEntry) })),
     },
     ...errors,
   },

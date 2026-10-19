@@ -1,4 +1,5 @@
 import { createOrganizationApi } from '@shared/utils/organizations';
+import { createOrganizationAgentApi } from '@shared/utils/organization-agents';
 import type { UploadedAttachment } from '@shared/types/uploads';
 import {
   ROUTINE_DRAFT_TIMEOUT_MS,
@@ -683,6 +684,7 @@ function infraQuery(params: Record<string, unknown>): string {
 
 export const api = {
   organizations: createOrganizationApi(fetchJSON),
+  organizationAgents: createOrganizationAgentApi(fetchJSON),
   // Projects
   getProjects: () => fetchJSON<ProjectWire[]>('/projects'),
   getProject: (projectId: string) => fetchJSON<ProjectWire>(`/projects/${projectId}`),

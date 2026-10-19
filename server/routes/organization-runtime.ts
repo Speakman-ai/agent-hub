@@ -14,6 +14,7 @@ import {
 import { ORGANIZATION_AGENT_TEMPLATES } from '../organization-agent-templates.js';
 import { createOrganizationSession, organizationAgentForUser } from '../organization-sessions.js';
 import { userOwnsSession } from '../session-ownership.js';
+import { getDb } from '../db.js';
 import { organizationSessionWorkspace } from '../organization-capabilities.js';
 import { appendOrganizationMemory, readOrganizationMemory } from '../organization-memory.js';
 import {
@@ -23,6 +24,7 @@ import {
   OrganizationRuntimeAgent,
   OrganizationSessionBody,
   OrganizationMemoryBody,
+  OrganizationSessionHistoryEntry,
 } from './organization-runtime.openapi.js';
 import { OrganizationParams } from './organizations.openapi.js';
 
@@ -168,6 +170,42 @@ export default function createOrganizationRuntimeRoutes(
     });
     deps.broadcast({ type: 'session_created', sessionId: session.id, agentId: found.agent.id });
     res.status(201).json({ session, agent: OrganizationRuntimeAgent.parse(found.agent) });
+  });
+  // The caller's own organization chats, including those with since-archived or removed agents,
+  // so history stays reachable after the roster changes. Never lists another user's sessions.
+  router.get('/api/organizations/:organizationId/sessions', (req, res) => {
+    if (!OrganizationParams.safeParse(req.params).success)
+      return res.status(400).json({ error: 'Invalid request' });
+    const context = resolve(req, res);
+    if (!context) return;
+    const rows = getDb()
+      .prepare(
+        `SELECT s.id, s.name, s.agent_id, s.created_at, s.updated_at
+           FROM sessions s JOIN organization_workflow_sessions o ON o.session_id = s.id
+          WHERE o.server_id = ? AND o.organization_id = ? AND s.owner_user_id = ?
+            AND s.deleted_at IS NULL
+          ORDER BY s.updated_at DESC LIMIT 200`,
+      )
+      .all(context.caller.serverId, context.project.organizationId, context.caller.userId) as {
+      id: string;
+      name: string;
+      agent_id: string;
+      created_at: string;
+      updated_at: string;
+    }[];
+    const sessions = rows.map((row) => {
+      const agent = context.project.agents.find((a) => a.id === row.agent_id);
+      return OrganizationSessionHistoryEntry.parse({
+        id: row.id,
+        name: row.name,
+        agentId: row.agent_id,
+        agentName: agent?.name ?? null,
+        agentAvailable: Boolean(agent && usable(agent)),
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      });
+    });
+    res.json({ sessions });
   });
   function memoryAllowed(req: Request, res: Response): boolean {
     const id = String(req.params.sessionId);

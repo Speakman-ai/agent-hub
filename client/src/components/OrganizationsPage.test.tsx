@@ -90,7 +90,17 @@ const request = vi.hoisted(() =>
 );
 vi.mock('../utils/api', async () => {
   const { createOrganizationApi } = await import('@shared/utils/organizations');
-  return { api: { organizations: createOrganizationApi(request) } };
+  return {
+    api: {
+      organizations: createOrganizationApi(request),
+      organizationAgents: {
+        list: async () => ({ agents: [] }),
+        templates: async () => ({ templates: [] }),
+        chats: async () => ({ sessions: [] }),
+      },
+      getModelConfig: async () => ({}),
+    },
+  };
 });
 vi.mock('../utils/orgs', () => ({ getActiveOrg: () => ({ id: fixture.scope }) }));
 vi.mock('../utils/auth', () => ({ getAuthRecord: () => ({ user: { id: 'owner' } }) }));
@@ -263,5 +273,99 @@ describe('web/Electron organization flow', () => {
     await flush();
     expect(container.textContent).not.toContain('Stale organization');
     expect(button('First')).toBeUndefined();
+  });
+
+  it('selects a deep-linked organization and reports selection changes', async () => {
+    seed();
+    const onSelect = vi.fn();
+    flushSync(() =>
+      root.render(<Panel initialOrganizationId="o2" onSelectOrganization={onSelect} />),
+    );
+    await flush();
+    expect(container.querySelector('h3')?.textContent).toBe('Second');
+    expect(onSelect).toHaveBeenLastCalledWith('o2');
+    await click('First');
+    expect(onSelect).toHaveBeenLastCalledWith('o1');
+  });
+
+  it('follows Back/Forward route changes while the page stays mounted', async () => {
+    seed();
+    // Stand-in for App: the route feeds the page and page selections write the route back.
+    let setRoute!: (id: string | null) => void;
+    function Routed() {
+      const [route, set] = React.useState<string | null>('o2');
+      setRoute = set;
+      return <Panel initialOrganizationId={route} onSelectOrganization={set} />;
+    }
+    flushSync(() => root.render(<Routed />));
+    await flush();
+    expect(container.querySelector('h3')?.textContent).toBe('Second');
+    await click('First');
+    expect(container.querySelector('h3')?.textContent).toBe('First');
+    flushSync(() => setRoute('o2')); // Back
+    await flush();
+    expect(container.querySelector('h3')?.textContent).toBe('Second');
+    flushSync(() => setRoute('o1')); // Forward
+    await flush();
+    expect(container.querySelector('h3')?.textContent).toBe('First');
+    flushSync(() => setRoute(null)); // Back to the plain list
+    await flush();
+    expect(container.querySelector('h3')).toBeNull();
+  });
+
+  it('keeps an initial deep link selected once App writes selections back to the route', async () => {
+    seed();
+    const reported: (string | null)[] = [];
+    function Routed() {
+      const [route, setRoute] = React.useState<string | null>('o2');
+      return (
+        <Panel
+          initialOrganizationId={route}
+          onSelectOrganization={(id) => {
+            reported.push(id);
+            setRoute(id);
+          }}
+        />
+      );
+    }
+    flushSync(() => root.render(<Routed />));
+    await flush();
+    await flush();
+    expect(container.querySelector('h3')?.textContent).toBe('Second');
+    // The stale empty selection is never written back over the deep link.
+    expect(reported).toEqual(['o2']);
+    const settled = request.mock.calls.length;
+    await flush();
+    await flush();
+    expect(request.mock.calls.length).toBe(settled);
+    expect(container.querySelector('h3')?.textContent).toBe('Second');
+  });
+
+  it('clears the selection when the route names an unavailable organization', async () => {
+    seed();
+    const reported: (string | null)[] = [];
+    let setRoute!: (id: string | null) => void;
+    function Routed() {
+      const [route, set] = React.useState<string | null>('o1');
+      setRoute = set;
+      return (
+        <Panel
+          initialOrganizationId={route}
+          onSelectOrganization={(id) => {
+            reported.push(id);
+            set(id);
+          }}
+        />
+      );
+    }
+    flushSync(() => root.render(<Routed />));
+    await flush();
+    expect(container.querySelector('h3')?.textContent).toBe('First');
+    flushSync(() => setRoute('missing'));
+    await flush();
+    await flush();
+    expect(container.querySelector('h3')).toBeNull();
+    // App is told, so the URL stops naming the unavailable organization.
+    expect(reported.at(-1)).toBeNull();
   });
 });

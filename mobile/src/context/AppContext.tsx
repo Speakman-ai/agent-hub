@@ -147,6 +147,9 @@ export function AppProvider({ children }: any) {
   const [agents, setAgents] = useState<any[]>([]);
   const [projects, setProjects] = useState<any[]>([]);
   const [activeAgentId, setActiveAgentId] = useState<any>(null);
+  // Organization agents live in a hidden workspace absent from `agents`; the open chat's agent
+  // is supplied by the Organizations screen instead.
+  const [organizationChatAgent, setOrganizationChatAgent] = useState<any>(null);
   const [sessions, setSessions] = useState<any[]>([]);
   // Soft-deleted sessions within the 7-day recovery window for the active
   // agent. Shape: Array<SessionRow & { message_count:number, deleted_at:string }>.
@@ -378,7 +381,9 @@ export function AppProvider({ children }: any) {
     [],
   );
   const [pushPermissionStatus, setPushPermissionStatus] = useState('unknown');
-  const activeAgent = agents.find((a: any) => a.id === activeAgentId);
+  const activeAgent =
+    agents.find((a: any) => a.id === activeAgentId) ??
+    (organizationChatAgent?.id === activeAgentId ? organizationChatAgent : undefined);
   const activeSession =
     sessions.find((s: any) => s.id === activeSessionId) ||
     cronSessions.find((s: any) => s.id === activeSessionId) ||
@@ -1915,6 +1920,21 @@ export function AppProvider({ children }: any) {
     setActiveAgentId(targetAgentId);
     setActiveSessionId(targetSessionId);
   }, []);
+  /** Opens an organization chat in the shared chat screen, owned by the signed-in user. */
+  const openOrganizationChat = useCallback(
+    (target: { agentId: string; sessionId: string; agent?: any; session?: any }) => {
+      if (!target.agentId || !target.sessionId) return;
+      setOrganizationChatAgent(
+        target.agent ?? { id: target.agentId, name: 'Organization agent', engine: 'claude-code' },
+      );
+      if (target.session && target.agentId === activeAgentIdRef.current)
+        setSessions((prev: any) => upsertSessionRow(prev, target.session));
+      pendingSessionIdRef.current = target.sessionId;
+      setActiveAgentId(target.agentId);
+      setActiveSessionId(target.sessionId);
+    },
+    [],
+  );
   // Rehydrate streaming state from activeTasks when switching sessions.
   useEffect(() => {
     if (!activeSessionId) {
@@ -1977,6 +1997,7 @@ export function AppProvider({ children }: any) {
           setProjects([]);
           setSessions([]);
           setActiveAgentId(null);
+          setOrganizationChatAgent(null);
           setActiveSessionId(null);
           setMessages([]);
           setThinking(false);
@@ -2900,6 +2921,8 @@ export function AppProvider({ children }: any) {
     delegations,
     sessionHandoffs,
     handleOpenHandoffSession,
+    openOrganizationChat,
+    organizationChatAgent,
     messageQueues,
     eventsByMessage,
     browserScreensBySession,

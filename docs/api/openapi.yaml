@@ -47747,6 +47747,66 @@ paths:
           description: Organization administrator required.
         "404":
           description: Organization agent or session unavailable.
+  /api/organizations/{organizationId}/sessions:
+    get:
+      tags:
+        - Organizations
+      summary: List the caller's own organization chats, including chats with archived agents
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+      responses:
+        "200":
+          description: Newest first, at most 200. Only sessions owned by the caller.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        agentId:
+                          type: string
+                        agentName:
+                          type: string
+                          nullable: true
+                        agentAvailable:
+                          type: boolean
+                          description: False when the agent is disabled, archived or removed.
+                        createdAt:
+                          type: string
+                        updatedAt:
+                          type: string
+                      required:
+                        - id
+                        - name
+                        - agentId
+                        - agentName
+                        - agentAvailable
+                        - createdAt
+                        - updatedAt
+                required:
+                  - sessions
+        "400":
+          description: Invalid request.
+        "401":
+          description: User identity required.
+        "403":
+          description: Organization administrator required.
+        "404":
+          description: Organization agent or session unavailable.
   /api/sessions/{sessionId}/organization-memory:
     get:
       tags:

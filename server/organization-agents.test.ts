@@ -421,3 +421,20 @@ describe('organization agent lifecycle', () => {
     );
   });
 });
+
+describe('organization chat history', () => {
+  it("lists only the caller's own chats and keeps them after the agent is archived", async () => {
+    const agent = await create({ name: 'Marketing', templateId: 'marketing' });
+    const mine = await openSession(agent.id, 'member');
+    await openSession(agent.id, 'admin');
+    const list = async (userId: string) =>
+      (await request(app(userId)).get(`/api/organizations/${organizationId}/sessions`).expect(200))
+        .body.sessions;
+    expect((await list('member')).map((s: { id: string }) => s.id)).toEqual([mine]);
+    await request(app('owner')).patch(`${url()}/${agent.id}`).send({ archived: true }).expect(200);
+    expect(await list('member')).toEqual([
+      expect.objectContaining({ id: mine, agentName: 'Marketing', agentAvailable: false }),
+    ]);
+    await request(app('outsider')).get(`/api/organizations/${organizationId}/sessions`).expect(404);
+  });
+});

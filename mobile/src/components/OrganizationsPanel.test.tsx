@@ -91,7 +91,17 @@ const request = vi.hoisted(() =>
 );
 vi.mock('../utils/api', async () => {
   const { createOrganizationApi } = await import('@shared/utils/organizations');
-  return { api: { organizations: createOrganizationApi(request) } };
+  return {
+    api: {
+      organizations: createOrganizationApi(request),
+      organizationAgents: {
+        list: async () => ({ agents: [] }),
+        templates: async () => ({ templates: [] }),
+        chats: async () => ({ sessions: [] }),
+      },
+      getModelConfig: async () => ({}),
+    },
+  };
 });
 vi.mock('../utils/orgs', () => ({ getActiveOrg: () => ({ id: fixture.scope }) }));
 vi.mock('../utils/auth', () => ({ getAuthRecord: () => ({ user: { id: 'owner' } }) }));
@@ -304,5 +314,39 @@ describe('mobile organization flow', () => {
     await flush();
     expect(container.textContent).not.toContain('Stale organization');
     expect(button('First')).toBeUndefined();
+  });
+
+  it('selects the organization named by the navigation param', async () => {
+    seed();
+    flushSync(() => root.render(<Panel initialOrganizationId="o2" />));
+    await flush();
+    expect(container.textContent).toContain('Second');
+    expect(button('Save project links')).toBeTruthy();
+  });
+
+  it('applies a new organization param while the screen stays mounted', async () => {
+    seed();
+    flushSync(() => root.render(<Panel initialOrganizationId="o2" />));
+    await flush();
+    expect(
+      (container.querySelector('input[aria-label="Organization name"]') as HTMLInputElement).value,
+    ).toBe('Second');
+    flushSync(() => root.render(<Panel initialOrganizationId="o1" />));
+    await flush();
+    const name = container.querySelector(
+      'input[aria-label="Organization name"]',
+    ) as HTMLInputElement;
+    expect(name.value).toBe('First');
+    // A param naming an unavailable organization clears the selection too.
+    flushSync(() => root.render(<Panel initialOrganizationId="missing" />));
+    await flush();
+    expect(container.querySelector('input[aria-label="Organization name"]')).toBeNull();
+    flushSync(() => root.render(<Panel initialOrganizationId="o1" />));
+    await flush();
+    // The plain Organizations route (or a link for another Server) clears the selection.
+    flushSync(() => root.render(<Panel initialOrganizationId={null} />));
+    await flush();
+    expect(container.querySelector('input[aria-label="Organization name"]')).toBeNull();
+    expect(container.textContent).toContain('Select an organization');
   });
 });
