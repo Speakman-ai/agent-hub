@@ -427,6 +427,73 @@ function addCard(projectId: string, cardId: string, title: string) {
   );
 }
 
+describe('project digests include app log errors', () => {
+  it('lists log error groups seen in the window, with environment and window count', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'hub-chat-digests-logs-'));
+    const { initLogsDb, closeLogsDb, insertLogRecords } = await import('./logs/logs-db.js');
+    const { deriveIssueGrouping } = await import('./logs/log-fingerprint.js');
+    const { SEVERITY_NUMBER } = await import('./logs/logs-schema.js');
+    initLogsDb(dir);
+    try {
+      const record = (body: string, timeMs: number, environment: string, projectId = 'web') => {
+        const grouping = deriveIssueGrouping({
+          projectId,
+          sourceId: 'src1',
+          serviceName: 'api',
+          environment,
+          severityNumber: SEVERITY_NUMBER.ERROR,
+          body,
+          attributes: {},
+          resource: {},
+        });
+        return {
+          projectId,
+          sourceId: 'src1',
+          timeUnixNano: timeMs * 1_000_000,
+          severityNumber: SEVERITY_NUMBER.ERROR,
+          serviceName: 'api',
+          environment,
+          body,
+          fingerprint: grouping?.fingerprint ?? null,
+          grouping,
+        };
+      };
+      const start = Date.parse('2026-10-14T00:00:00.000Z');
+      const end = Date.parse('2026-10-15T00:00:00.000Z');
+      insertLogRecords(
+        [
+          record('Database connection refused', start + 1000, 'production'),
+          record('Database connection refused', start + 2000, 'production'),
+          record('Old timeout before the window', start - 60_000, 'production'),
+          record('Other project failure', start + 1000, 'production', 'api'),
+        ],
+        end,
+      );
+
+      const facts = digests.collectProjectDigestFacts('web', {
+        start: new Date(start).toISOString(),
+        end: new Date(end).toISOString(),
+      });
+      const lines = facts.items.map((i) => i.line);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('Database connection refused');
+      expect(lines[0]).toContain('env production');
+      expect(lines[0]).toContain('2 events in window');
+      expect(digests.isDigestWindowEmpty(facts)).toBe(false);
+    } finally {
+      closeLogsDb();
+    }
+  });
+
+  it('still collects the rest when the logs database is not open', () => {
+    const facts = digests.collectProjectDigestFacts('web', {
+      start: '2026-10-14T00:00:00.000Z',
+      end: '2026-10-15T00:00:00.000Z',
+    });
+    expect(facts.items).toEqual([]);
+  });
+});
+
 describe('custom digest prompt', () => {
   const window = { start: '2026-10-14T00:00:00.000Z', end: '2026-10-14T09:00:00.000Z' };
   const facts = {
@@ -841,6 +908,23 @@ describe('my_work digests', () => {
       scope: 'my_work',
       projectIds: [],
     });
+  });
+
+  it("lists the org's open shared todos alongside personal ones", async () => {
+    const { digest } = summaryDigest();
+    session('s-mine', alice, 'Fix login', '2026-10-15T07:45:00.000Z');
+    const { createOrgTodo } = await import('./org-todos-store.js');
+    createOrgTodo({ orgId: 'acme', title: 'Renew SSL certificate', priority: 'high' });
+    createOrgTodo({ orgId: 'other-org', title: 'Not ours' });
+
+    const { deps, runFailover } = runDeps('Busy morning.');
+    const result = await digests.runChannelDigest(digest, now, deps);
+
+    expect(result.status).toBe('posted');
+    const prompt = runFailover.mock.calls[0]?.[0].prompt as string;
+    expect(prompt).toContain('### Open org todos');
+    expect(prompt).toContain('Org todo "Renew SSL certificate" (high)');
+    expect(prompt).not.toContain('Not ours');
   });
 
   it('skips a window with only open todos, since nothing happened', async () => {

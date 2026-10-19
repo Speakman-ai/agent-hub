@@ -39,6 +39,8 @@ import { appendMessage, getChannel, getMember } from './hub-chat-store.js';
 import { broadcastHubChatMessage } from './hub-chat-broadcast.js';
 import { HUB_CHAT_MESSAGE_EVENT } from './hub-chat-events.js';
 import { getUserById } from './users-store.js';
+import { listOrgTodos } from './org-todos-store.js';
+import { listIssuesSeenBetween } from './logs/log-issues-store.js';
 import { runDigestAgentTurn } from './hub-chat-agent-channels.js';
 import {
   advanceChannelDigestWindow,
@@ -201,8 +203,9 @@ export function collectChannelDigestFacts(channelId: string, window: DigestWindo
 
 /**
  * A project's activity in the window: cards created or changed, native PRs
- * updated, finalize runs that finished, and support tickets opened. Sessions
- * are left out because they are private to their owners.
+ * updated, finalize runs that finished, support tickets opened, and app log
+ * error groups seen. Sessions are left out because they are private to their
+ * owners.
  */
 export function collectProjectDigestFacts(projectId: string, window: DigestWindow): DigestFacts {
   const db = getDb();
@@ -309,7 +312,35 @@ export function collectProjectDigestFacts(projectId: string, window: DigestWindo
     });
   }
 
-  const truncated = [cards, prs, runs, tickets].some((l) => l.length >= MAX_PROJECT_ITEMS);
+  // App logs live in their own database; a project without log ingest (or a
+  // server where logs.db never opened) just contributes nothing.
+  let logIssues: ReturnType<typeof listIssuesSeenBetween> = [];
+  try {
+    logIssues = listIssuesSeenBetween(
+      projectId,
+      startMs * 1_000_000,
+      endMs * 1_000_000,
+      MAX_PROJECT_ITEMS,
+    );
+  } catch {
+    logIssues = [];
+  }
+  for (const issue of logIssues) {
+    const where = [issue.environment && `env ${issue.environment}`, issue.service]
+      .filter(Boolean)
+      .join(', ');
+    const firstSeen = issue.first_seen >= startMs * 1_000_000 ? ', first seen in this window' : '';
+    items.push({
+      line: `Log error "${oneLine(issue.title, 160)}"${where ? ` (${where})` : ''}: ${issue.window_count} event${
+        issue.window_count === 1 ? '' : 's'
+      } in window, issue ${issue.status}${firstSeen}`,
+      ref: null,
+    });
+  }
+
+  const truncated = [cards, prs, runs, tickets, logIssues].some(
+    (l) => l.length >= MAX_PROJECT_ITEMS,
+  );
   return { scope: 'project', items, truncated };
 }
 
@@ -341,6 +372,8 @@ export function collectMyWorkDigestFacts(input: {
   userId: string;
   window: DigestWindow;
   getProjects: () => Project[];
+  /** The Summaries channel's org; its open shared todos are listed as context. */
+  orgId?: string | null;
 }): DigestFacts {
   const work = collectMyWorkWindowFacts({
     userId: input.userId,
@@ -397,6 +430,7 @@ export function collectMyWorkDigestFacts(input: {
   const state: DigestFactSection[] = [
     { heading: 'Open cards assigned to you', items: work.openCards.map(cardItem) },
     { heading: 'Open todos', items: work.openTodos.map(todoItem) },
+    { heading: 'Open org todos', items: openOrgTodoItems(input.orgId) },
   ];
   const sections = [...activity, ...state];
   return {
@@ -406,6 +440,20 @@ export function collectMyWorkDigestFacts(input: {
     activityCount: activity.reduce((n, s) => n + s.items.length, 0),
     truncated: false,
   };
+}
+
+function openOrgTodoItems(orgId: string | null | undefined): DigestFactItem[] {
+  if (!orgId) return [];
+  try {
+    return listOrgTodos(orgId, { status: 'open' })
+      .slice(0, MAX_PROJECT_ITEMS)
+      .map((t) => ({
+        line: `Org todo "${oneLine(t.title, 160)}" (${t.priority}${t.doDate ? `, do ${t.doDate}` : ''})`,
+        ref: null,
+      }));
+  } catch {
+    return [];
+  }
 }
 
 // Fixed framing the custom prompt cannot replace: facts are data, output is
@@ -431,7 +479,7 @@ export function buildDigestPrompt(input: {
   const sections = input.facts.sections;
   const subject =
     input.facts.scope === 'my_work'
-      ? "the reader's own work (their sessions, assigned cards and todos)"
+      ? "the reader's own work (their sessions, assigned cards, personal todos and the org's shared todos)"
       : sections
         ? `activity in ${sections.length === 1 ? 'one project' : `${sections.length} projects`}`
         : `messages in channel "${input.channelName || 'this channel'}"`;
@@ -726,6 +774,7 @@ export async function runChannelDigest(
         userId: row.owner_user_id,
         window,
         getProjects: deps.getProjects ?? getProjects,
+        orgId: channel.org_id,
       });
     } else if (row.scope === 'project') {
       // Checked again at run time: access can change after the save. A hidden
