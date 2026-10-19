@@ -464,6 +464,15 @@ export function organizationCapabilityAllows(
   return false;
 }
 
+const TOOL_PERMISSIONS: Record<string, string> = {
+  wiki: 'projects:read',
+  skill: 'skills',
+  web: 'web',
+  browser: 'browser',
+  computer: 'computer',
+  approval: 'approvals',
+};
+
 /** Host actions run without HTTP, so they must independently enforce the same current scope. */
 export function organizationSessionAllowsTool(sessionId: string, tool: string): boolean {
   try {
@@ -471,15 +480,25 @@ export function organizationSessionAllowsTool(sessionId: string, tool: string): 
     sweepOrganizationCapabilities();
     if (revokedSessions.has(sessionKey(sessionId))) return false;
     const current = authority(sessionId);
-    const permission: Record<string, string> = {
-      wiki: 'projects:read',
-      skill: 'skills',
-      web: 'web',
-      browser: 'browser',
-      computer: 'computer',
-      approval: 'approvals',
-    };
-    return Boolean(permission[tool] && current.tools.includes(permission[tool]));
+    const permission = TOOL_PERMISSIONS[tool];
+    return Boolean(permission && current.tools.includes(permission));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Same scope check for a request the session owner makes from their own login
+ * (live view, input, the session switch). A lapsed CLI credential does not block
+ * it; current membership, archive state and agent tool scope still do.
+ */
+export function organizationSessionOwnerAllowsTool(sessionId: string, tool: string): boolean {
+  try {
+    if (!organizationSessionWorkspace(sessionId)) return true;
+    const permission = TOOL_PERMISSIONS[tool];
+    return Boolean(
+      permission && currentOrganizationAuthority(sessionId)?.tools.includes(permission),
+    );
   } catch {
     return false;
   }

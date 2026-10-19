@@ -2,6 +2,7 @@ import { isOrganizationSystemProject } from '../../shared/utils/hub.js';
 import { canReadOrganizationWorkspaceEvent } from '../business-organizations-access.js';
 import { organizationSessionIdentity } from '../organization-session-identity.js';
 import { canReadOrganizationSession } from '../organization-session-access.js';
+import { ownerComputerAllowed } from '../session-computer-access.js';
 import { v4 as uuidv4 } from 'uuid';
 import { spawn } from 'child_process';
 import { Router, Request, Response } from 'express';
@@ -2789,6 +2790,13 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     if (!parsed) return;
     const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
     if (!session) return res.status(404).json({ error: 'Session not found' });
+    // Turning it off or back to the default is always allowed; turning it on
+    // stays within the organization agent's current tool scope.
+    if (parsed.enabled === true && !ownerComputerAllowed(String(req.params.sessionId))) {
+      return res
+        .status(403)
+        .json({ error: 'Computer is not permitted for this organization agent' });
+    }
     const value = parsed.enabled === null ? null : parsed.enabled ? 1 : 0;
     stmts.updateSessionComputerTool.run(value, req.params.sessionId);
     const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;

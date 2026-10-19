@@ -414,6 +414,7 @@ import { attachBrowserScreencastWebSocket } from './browser-screencast-websocket
 import { browserDemoRecorder, demoRecordingFilename } from './browser-demo-recorder.js';
 import { saveSessionArtifact } from './artifacts/save-session-artifact.js';
 import { createAgentPaneFeedHost } from './agent-pane-screencast.js';
+import { ownerComputerAllowed, sessionDesktopComputerIdentity } from './session-computer-access.js';
 import { createDesktopScreencastHub } from './desktop/desktop-screencast.js';
 import { effectiveBrowserToolsEnabled } from './browser-agent-settings.js';
 import { parsePreviewSubdomainHost } from './preview/preview-subdomain-host.js';
@@ -2703,11 +2704,16 @@ const agentPaneFeedHost = createAgentPaneFeedHost({
     resolveKey: (sessionId) => {
       const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
       const found = session ? findAgent(session.agent_id) : null;
-      const userId = session?.owner_user_id;
       // Same scope as the browser profile: no owner, no computer.
-      if (!session || !found?.project?.id || !userId) return null;
-      return { userId, agentId: session.agent_id, projectId: found.project.id };
+      if (!session || !found || !ownerComputerAllowed(sessionId)) return null;
+      const identity = sessionDesktopComputerIdentity(
+        session.owner_user_id,
+        session.agent_id,
+        found.project,
+      );
+      return identity.ok ? identity.key : null;
     },
+    inputAllowed: ownerComputerAllowed,
   },
 });
 browserDemoRecorder.configure({

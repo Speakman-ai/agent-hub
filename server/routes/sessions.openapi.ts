@@ -1382,7 +1382,7 @@ registerPath({
   tags: ['Sessions'],
   summary: 'Turn the computer tool on or off for one session',
   description:
-    'Overrides the agent `computerToolEnabled` default for this session only, so sessions with the same agent can differ. `enabled: null` clears the override.',
+    "Overrides the agent `computerToolEnabled` default for this session only, so sessions with the same agent can differ. `enabled: null` clears the override. For an organization agent session, turning it on requires the agent's current tool scope to include Computer and the agent and organization to be active; turning it off is always allowed.",
   request: {
     params: sessionIdParams,
     body: { content: jsonContent(SessionComputerToolRequestSchema) },
@@ -1390,6 +1390,7 @@ registerPath({
   responses: {
     200: { description: 'Updated session.', content: jsonContent(SessionComponent) },
     400: errorResponse('Validation failed.'),
+    403: errorResponse('Computer is not permitted for this organization agent.'),
     404: errorResponse('Session not found.'),
   },
 });

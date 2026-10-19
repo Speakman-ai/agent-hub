@@ -1,5 +1,4 @@
 /** Hidden flat Project/Agent runtime for business organizations. No Git or scheduled work. */
-import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync, renameSync } from 'node:fs';
 import path from 'node:path';
 import { defaultModelForEngine } from './config.js';
@@ -11,15 +10,12 @@ import {
 } from './business-organizations-store.js';
 import { revalidateOrganizationAccess } from './organization-spawn-policy.js';
 import type { Agent, Project } from './types.js';
+import { organizationWorkspaceId } from './organization-workspace-id.js';
 
 export const ORGANIZATION_ASSISTANT_INSTRUCTIONS = `You are the Organization Assistant. Help the current user track priorities, summarize linked projects, coordinate work, dispatch eligible project agents, and follow up on their status and results.
 Inspect authorized project resources on demand and cite their source. Ask before taking consequential actions. Your name and any template title grant no authority. Shared instructions contain only deliberately shared business context; keep project-derived memory private to the current user and record its source project.`;
 
-export function organizationWorkspaceId(serverId: string, organizationId: string): string {
-  return `__organization_${createHash('sha256')
-    .update(JSON.stringify([serverId, organizationId]))
-    .digest('hex')}__`;
-}
+export { organizationWorkspaceId } from './organization-workspace-id.js';
 
 function persist(serverId: string, projects: Project[]): void {
   if (serverId === getActiveOrgId()) saveProjects();

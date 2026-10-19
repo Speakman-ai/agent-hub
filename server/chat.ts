@@ -1,4 +1,5 @@
 import { organizationSessionCwd } from './organization-sessions.js';
+import { agentComputerDenial, sessionDesktopComputerIdentity } from './session-computer-access.js';
 import { readOrganizationMemory } from './organization-memory.js';
 import {
   isOrganizationWorkspace,
@@ -438,6 +439,8 @@ interface BuildEnrichedPromptOptions {
   sessionId?: string;
   /** `sessions.computer_tool_enabled`; NULL/absent inherits the agent default. */
   sessionComputerToolEnabled?: number | null;
+  /** False when organization scope refuses Computer; the tool is then never advertised. */
+  computerToolAuthorized?: boolean;
   /** Outer PAV — `sessions.orchestration_phase` / `orchestration_meta`. */
   orchestrationPhase?: string | null;
   orchestrationMetaJson?: string | null;
@@ -1141,9 +1144,11 @@ ${skillsList.join('\n')}`;
   }
 
   const previewEnabledForPrompt = isDevServerConfigured(project.prEnv?.devServer);
-  const computerToolOn = effectiveComputerToolEnabled(agent as Agent, {
-    computer_tool_enabled: options.sessionComputerToolEnabled ?? null,
-  });
+  const computerToolOn =
+    options.computerToolAuthorized !== false &&
+    effectiveComputerToolEnabled(agent as Agent, {
+      computer_tool_enabled: options.sessionComputerToolEnabled ?? null,
+    });
   if (isFirstMessage) {
     const reactExampleJson = browserToolsOn
       ? '{"actions":[{"tool":"wiki","query":"..."},{"tool":"skill","name":"kanban"},{"tool":"web","query":"..."},{"tool":"browser","op":"navigate","url":"https://example.com"}]}'
@@ -3387,6 +3392,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           isFirstMessage: isFirstMessage || !engineResumesAcrossTurns(engine),
           sessionId,
           sessionComputerToolEnabled: session!.computer_tool_enabled ?? null,
+          computerToolAuthorized: agentComputerDenial(sessionId) === null,
           orchestrationPhase: session!.orchestration_phase ?? null,
           orchestrationMetaJson: session!.orchestration_meta ?? null,
           branchPrUrl: resolvedBranchPrUrl,
@@ -6213,16 +6219,23 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             // to this session's preview, which every engine must be able to
             // verify. Only the public-web `browser` tool is gated.
           }
-          if (!effectiveComputerToolEnabled(agent, session)) {
+          const computerOff = !effectiveComputerToolEnabled(agent, session);
+          const computerScopeDenial = computerOff ? null : agentComputerDenial(sessionId);
+          if (computerOff || computerScopeDenial) {
             const removed = boundedActions.filter((a) => a.tool === 'computer').length;
             if (removed > 0) {
               boundedActions = boundedActions.filter((a) => a.tool !== 'computer');
               reactObservations.push(
-                `- ${removed} computer action(s) skipped: the computer tool is off for this session (agent "${agent.id}").`,
+                computerOff
+                  ? `- ${removed} computer action(s) skipped: the computer tool is off for this session (agent "${agent.id}").`
+                  : `- ${removed} computer action(s) skipped: denied by current organization agent scope.`,
               );
-              assistantContextToAppend = assistantContextToAppend
-                ? `${assistantContextToAppend}\n\n${COMPUTER_TOOL_DISABLED_MARKDOWN}`
+              const gateMsg = computerScopeDenial
+                ? `## Computer tool not authorized\n\n${computerScopeDenial}`
                 : COMPUTER_TOOL_DISABLED_MARKDOWN;
+              assistantContextToAppend = assistantContextToAppend
+                ? `${assistantContextToAppend}\n\n${gateMsg}`
+                : gateMsg;
             }
           }
           // Set when an action must stop the rest of the batch: an approval
@@ -6372,6 +6385,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               }
 
               if (action.tool === 'computer' && action.computer) {
+                const identity = sessionDesktopComputerIdentity(
+                  session!.owner_user_id,
+                  agent.id,
+                  project,
+                );
                 const c = await runComputerReActStep(
                   action.computer,
                   {
@@ -6379,9 +6397,12 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                     ownerUserId: session!.owner_user_id ?? null,
                     agentId: agent.id,
                     projectId: project?.id ?? null,
+                    key: identity.ok ? identity.key : null,
+                    ...(identity.ok ? {} : { keyRefusal: identity.reason }),
                   },
                   {
                     resolveRuntime: getActiveDesktopRuntime,
+                    authorize: () => agentComputerDenial(sessionId),
                     gate: createComputerApprovalGate(
                       {
                         sessionId,

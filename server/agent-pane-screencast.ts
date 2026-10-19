@@ -45,6 +45,8 @@ import { DesktopViewerInputTranslator } from './desktop/desktop-viewer-input.js'
 export const DESKTOP_AGENT_BUSY_MESSAGE =
   'The agent is using the desktop right now. Wait for its step to finish.';
 export const DESKTOP_NOT_RUNNING_MESSAGE = 'The desktop is not running.';
+export const DESKTOP_INPUT_NOT_ALLOWED_MESSAGE =
+  'Computer access for this session was revoked or is not permitted.';
 export const DESKTOP_INPUT_STALE_MESSAGE =
   'Input dropped: the pane stopped showing the desktop before it could run.';
 export const DESKTOP_NO_URL_BAR_MESSAGE =
@@ -66,6 +68,11 @@ export interface AgentPaneDesktopSource {
   /** The computer this chat session's agent uses, or null (no owner, unknown agent). */
   resolveKey(chatSessionId: string): DesktopComputerKey | null;
   runtime(): DesktopRuntime | null;
+  /**
+   * Whether the session owner may still drive this computer. Checked before
+   * each human input, since access can be revoked while the pane is open.
+   */
+  inputAllowed?: (chatSessionId: string) => boolean;
   agentOpsInFlight?: (key: DesktopComputerKey) => number;
   subscribeActivity?: (listener: (ev: DesktopAgentActivityEvent) => void) => () => void;
 }
@@ -347,6 +354,13 @@ export function createAgentPaneFeedHost(deps: AgentPaneScreencastDeps): AgentPan
     const runtime = desktop.runtime();
     if (!key || !runtime)
       return { ok: false, code: 'no_desktop', message: DESKTOP_NOT_RUNNING_MESSAGE };
+    const allowed = () => desktop.inputAllowed?.(router.chatSessionId) ?? true;
+    const NOT_ALLOWED: BrowserViewerInputResult = {
+      ok: false,
+      code: 'no_desktop',
+      message: DESKTOP_INPUT_NOT_ALLOWED_MESSAGE,
+    };
+    if (!allowed()) return NOT_ALLOWED;
     if (desktopOps(key) > 0) {
       return { ok: false, code: 'agent_busy', message: DESKTOP_AGENT_BUSY_MESSAGE };
     }
@@ -360,6 +374,7 @@ export function createAgentPaneFeedHost(deps: AgentPaneScreencastDeps): AgentPan
     try {
       for (const ev of translated.events) {
         if (!routeStillValid(route)) return STALE;
+        if (!allowed()) return NOT_ALLOWED;
         if (desktopOps(key) > 0) {
           return { ok: false, code: 'agent_busy', message: DESKTOP_AGENT_BUSY_MESSAGE };
         }

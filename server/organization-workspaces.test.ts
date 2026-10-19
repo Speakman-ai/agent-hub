@@ -350,6 +350,13 @@ describe('Organization workflow lifecycle', () => {
     expect(isInternalSystemProject(project)).toBe(true);
     expect(existsSync(path.join(project.cwd, '.git'))).toBe(false);
     expect(getStmts().getSessions.all(project.agents[0].id)).toEqual([]);
+    // Computer is lazy: creating the organization never provisions a desktop.
+    for (const table of ['desktop_computers', 'desktop_containers'])
+      expect(
+        getOrgsDb()
+          .prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE project_id = ?`)
+          .get(project.id),
+      ).toEqual({ n: 0 });
     expect(() => attachBusinessOrganizationProject('default', organizationId, project.id)).toThrow(
       'Project not found',
     );
