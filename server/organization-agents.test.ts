@@ -32,6 +32,12 @@ import {
 } from './organization-capabilities.js';
 import { ORGANIZATION_AGENT_TEMPLATES } from './organization-agent-templates.js';
 import createRuntimeRoutes from './routes/organization-runtime.js';
+import { resolveProjectIdFromEvent } from './event-project-resolver.js';
+import { shouldDeliverBroadcast } from './broadcast-filter.js';
+import {
+  canReadOrganizationEvent,
+  canReadOrganizationWorkspaceEvent,
+} from './business-organizations-access.js';
 import type { AuthenticatedRequest } from './auth.js';
 import type { Project } from './types.js';
 
@@ -155,6 +161,34 @@ describe('organization agent lifecycle', () => {
       one.id,
       two.id,
     ]);
+  });
+
+  it('delivers emitted agent management events to organization members only', async () => {
+    const agent = await create({ name: 'Planner' });
+    await request(app()).patch(`${url()}/${agent.id}`).send({ name: 'Renamed' }).expect(200);
+    const event = broadcast.mock.calls
+      .map(([payload]) => payload)
+      .find((payload) => payload.action === 'agent_updated');
+    expect(event).toMatchObject({ type: 'organization_updated', agentId: agent.id });
+    // The real resolver maps the agentId onto the organization workspace.
+    expect(resolveProjectIdFromEvent(event)).toBe(workspace().id);
+    const deps = {
+      resolveProjectId: (data: Parameters<typeof resolveProjectIdFromEvent>[0]) =>
+        resolveProjectIdFromEvent(data),
+      findProject: (id: string) => getProjects().find((p) => p.id === id) ?? null,
+      getSessionOwner: () => null,
+      canReadOrganizationWorkspaceEvent,
+      canReadOrganizationEvent,
+    };
+    for (const userId of ['owner', 'admin', 'member'])
+      expect(shouldDeliverBroadcast(event, { userId, serverId: 'default' }, deps)).toBe(true);
+    expect(shouldDeliverBroadcast(event, { userId: 'outsider', serverId: 'default' }, deps)).toBe(
+      false,
+    );
+    expect(shouldDeliverBroadcast(event, { userId: 'member', serverId: 'other' }, deps)).toBe(
+      false,
+    );
+    expect(shouldDeliverBroadcast(event, undefined, deps)).toBe(false);
   });
 
   it('copies template instructions only, never tools, projects or Computer, and keeps role names descriptive', async () => {

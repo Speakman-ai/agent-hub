@@ -182,6 +182,16 @@ export function shouldDeliverBroadcast(
       typeof data.agentId === 'string' ? data.agentId : null,
     );
   }
+  // Management events (roster changes carry an agentId that resolves to the workspace)
+  // have their own rule; the workspace gate below is for session content.
+  if (
+    data.type === 'organization_updated' ||
+    data.type === 'organization_invalidated' ||
+    data.type === 'organization_access_revoked'
+  ) {
+    if (!stamp?.userId || !stamp.serverId || data.serverId !== stamp.serverId) return false;
+    return deps.canReadOrganizationEvent?.(data, stamp.userId, stamp.serverId) === true;
+  }
   const eventProject = eventProjectId ? deps.findProject(eventProjectId) : null;
   if (isOrganizationSystemProject(eventProject)) {
     if (
@@ -194,14 +204,6 @@ export function shouldDeliverBroadcast(
     return (
       deps.canReadOrganizationWorkspaceEvent?.(eventProject!, stamp.userId, stamp.serverId) === true
     );
-  }
-  if (
-    data.type === 'organization_updated' ||
-    data.type === 'organization_invalidated' ||
-    data.type === 'organization_access_revoked'
-  ) {
-    if (!stamp?.userId || !stamp.serverId || data.serverId !== stamp.serverId) return false;
-    return deps.canReadOrganizationEvent?.(data, stamp.userId, stamp.serverId) === true;
   }
   // 1. Recipients with no stamp keep legacy behavior. Test harnesses,
   //    local-bundled callers that didn't get a stamp, and any pre-
