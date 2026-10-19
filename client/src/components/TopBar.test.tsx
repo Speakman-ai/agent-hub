@@ -340,4 +340,30 @@ describe('<TopBar /> computer tool switch', () => {
     renderTopBar();
     expect(screen.queryByTestId('session-computer-tool-toggle')).toBeNull();
   });
+  it('marks an inherited value and offers a reset only for a session override', () => {
+    const onComputerToolChange = vi.fn();
+    const inherited = { enabled: true, overridden: false, agentDefault: true };
+    const { rerender, props } = renderTopBar({
+      computerToolOn: true,
+      computerToolSetting: inherited,
+      onComputerToolChange,
+    });
+    expect(screen.getByTestId('session-computer-tool-source').textContent).toBe('· default');
+    expect(screen.queryByTestId('session-computer-tool-reset')).toBeNull();
+
+    const override = { enabled: false, overridden: true, agentDefault: true };
+    rerender(
+      <TopBar
+        {...props}
+        computerToolOn={false}
+        computerToolSetting={override}
+        onComputerToolChange={onComputerToolChange}
+      />,
+    );
+    expect(screen.getByTestId('session-computer-tool-source').textContent).toBe('· this chat');
+    const reset = screen.getByTestId('session-computer-tool-reset');
+    expect(reset.textContent).toBe('Use agent default (On)');
+    fireEvent.click(reset);
+    expect(onComputerToolChange).toHaveBeenLastCalledWith(null);
+  });
 });

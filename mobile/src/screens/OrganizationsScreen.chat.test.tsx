@@ -144,6 +144,45 @@ describe('mobile organization chat', () => {
     expect(text).not.toContain('live reply');
   });
 
+  it('names the open organization chat Computer owner and swaps it on organization switch', async () => {
+    function OwnerProbe() {
+      const app = useApp();
+      return <Text>{`owner=${app.organizationComputerOwner ?? ''}`}</Text>;
+    }
+    await act(async () => {
+      renderer = TestRenderer.create(
+        <AppProvider>
+          <OrganizationsScreen navigation={navigation} />
+          <OwnerProbe />
+        </AppProvider>,
+      );
+    });
+    const first = agent('one', 'Assistant');
+    await act(async () => {
+      ctl.openChat!({
+        organizationId: 'one',
+        organizationName: 'Acme',
+        agentId: first.id,
+        sessionId: 's1',
+        agent: first,
+      });
+    });
+    expect(probe(renderer)).toContain('owner=Assistant in Acme · private to you');
+    const second = agent('two', 'Finance');
+    await act(async () => {
+      ctl.openChat!({
+        organizationId: 'two',
+        organizationName: 'Globex',
+        agentId: second.id,
+        sessionId: 's2',
+        agent: second,
+      });
+    });
+    const text = probe(renderer);
+    expect(text).toContain('owner=Finance in Globex · private to you');
+    expect(text).not.toContain('Acme');
+  });
+
   it('selects a linked organization only on the Server the link names', async () => {
     for (const [serverId, expected] of [
       ['server-a', 'o1'],

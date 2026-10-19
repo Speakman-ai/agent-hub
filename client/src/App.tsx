@@ -1,4 +1,5 @@
 import OrganizationsPage from './components/OrganizationsPage';
+import OrganizationComputerBar from './components/OrganizationComputerBar';
 import type { OrganizationChatTarget } from './components/OrganizationAgentsPanel';
 import { isOrganizationAgentId } from '@shared/utils/organization-agents';
 import {
@@ -90,7 +91,12 @@ import NewProjectAdaptiveFlow from './components/NewProjectAdaptiveFlow';
 import SetupWizard from './components/SetupWizard';
 import { createUseAiSignInGuide } from '@shared/hooks/useAiSignInGuide';
 import { promoteQueuedMessage } from '@shared/utils/promoteQueuedMessage';
-import { resolveComputerToolEnabled } from '@shared/utils/computerTool';
+import {
+  computerToolErrorMessage,
+  describeComputerToolSetting,
+  resolveComputerToolEnabled,
+} from '@shared/utils/computerTool';
+import { organizationComputerOwnerLabel } from '@shared/utils/organizationComputer';
 import KanbanBoard from './components/KanbanBoard';
 import EpicView from './components/EpicView';
 import KanbanCardTemplatesView from './components/KanbanCardTemplatesView';
@@ -406,6 +412,11 @@ export default function App({ initialView }: any = {}) {
   const [hubAgent, setHubAgent] = useState<any>(null);
   // The organization agent behind an open organization chat (not in the project agent list).
   const [organizationChatAgent, setOrganizationChatAgent] = useState<any>(null);
+  // The organization that chat belongs to, so its Computer can name its owner.
+  const [organizationChatOrganization, setOrganizationChatOrganization] = useState<{
+    id: string;
+    name: string | null;
+  } | null>(null);
   // Organization selected on the Organizations page, mirrored into the URL for deep links.
   const [organizationRouteId, setOrganizationRouteId] = useState<string | null>(() => {
     const id = initialNavigation.view === 'organizations' ? initialNavigation.organizationId : null;
@@ -4525,6 +4536,10 @@ export default function App({ initialView }: any = {}) {
       setOrganizationChatAgent(
         target.agent ?? { id: target.agentId, name: 'Organization agent', engine: 'claude-code' },
       );
+      setOrganizationChatOrganization({
+        id: target.organizationId,
+        name: target.organizationName ?? null,
+      });
       if (target.session) insertCreatedSession(target.agentId, target.session);
       pendingSessionIdRef.current = target.sessionId;
       setActiveAgentId(target.agentId);
@@ -5366,17 +5381,22 @@ export default function App({ initialView }: any = {}) {
     }
   };
 
-  const handleComputerToolChange = async (enabled: boolean) => {
+  // Throws on failure so each surface can report it its own way; `null` drops the override.
+  const persistComputerTool = async (enabled: boolean | null) => {
     if (!activeSessionId) return;
+    const updated = await api.setSessionComputerTool(activeSessionId, enabled);
+    setSessions((prev: any) =>
+      prev.map((s: any) =>
+        s.id === updated.id ? { ...s, computer_tool_enabled: updated.computer_tool_enabled } : s,
+      ),
+    );
+  };
+
+  const handleComputerToolChange = async (enabled: boolean | null) => {
     try {
-      const updated = await api.setSessionComputerTool(activeSessionId, enabled);
-      setSessions((prev: any) =>
-        prev.map((s: any) =>
-          s.id === updated.id ? { ...s, computer_tool_enabled: updated.computer_tool_enabled } : s,
-        ),
-      );
+      await persistComputerTool(enabled);
     } catch (err: any) {
-      showToast(err?.message || 'Could not change the computer tool', 'error', 5000);
+      showToast(computerToolErrorMessage(err), 'error', 5000);
     }
   };
 
@@ -5904,6 +5924,15 @@ export default function App({ initialView }: any = {}) {
       null,
     [agents, sessionOwnerAgentId, activeAgent, organizationChatAgent],
   );
+
+  const organizationComputerChat = isOrganizationAgentId(chatAgent?.id) ? chatAgent : null;
+  const organizationComputerOwner = organizationComputerChat
+    ? organizationComputerOwnerLabel({
+        organizationName: organizationChatOrganization?.name,
+        agentName: organizationComputerChat.name,
+        user: getAuthRecord()?.user,
+      })
+    : undefined;
 
   const chatAccentColor = useMemo(
     () =>
@@ -6885,6 +6914,10 @@ export default function App({ initialView }: any = {}) {
                       chatAgent?.computerToolEnabled,
                       activeSession?.computer_tool_enabled,
                     )}
+                    computerToolSetting={describeComputerToolSetting(
+                      chatAgent?.computerToolEnabled,
+                      activeSession?.computer_tool_enabled,
+                    )}
                     onComputerToolChange={handleComputerToolChange}
                     modelConfig={modelConfig}
                     messages={messages}
@@ -6906,6 +6939,18 @@ export default function App({ initialView }: any = {}) {
                       !!activeSessionId && filterForwardTargets(agents, activeAgent).length > 0
                     }
                   />
+
+                  {organizationComputerChat && (
+                    <OrganizationComputerBar
+                      key={`${organizationChatOrganization?.id ?? ''}:${activeSessionId}`}
+                      agent={chatAgent}
+                      organizationName={organizationChatOrganization?.name}
+                      user={getAuthRecord()?.user}
+                      sessionValue={activeSession?.computer_tool_enabled}
+                      onChange={persistComputerTool}
+                      onOpenViewer={() => openBrowserPaneForSession(activeSessionId)}
+                    />
+                  )}
 
                   <SessionSummarySidebar
                     sessionId={activeSessionId}
@@ -8401,7 +8446,9 @@ export default function App({ initialView }: any = {}) {
                         }
                       >
                         <SessionBrowserPane
+                          key={activeSessionId}
                           sessionId={activeSessionId}
+                          desktopOwnerLabel={organizationComputerOwner}
                           onClose={() =>
                             setBrowserPaneOpenBySession((prev) => ({
                               ...prev,

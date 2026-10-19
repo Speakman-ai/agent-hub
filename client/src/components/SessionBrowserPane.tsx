@@ -58,10 +58,13 @@ export default function SessionBrowserPane({
   sessionId,
   onClose,
   webSocketFactory = defaultWebSocketFactory,
+  desktopOwnerLabel,
 }: {
   sessionId: string;
   onClose?: () => void;
   webSocketFactory?: (url: string) => WebSocket;
+  /** Whose desktop this is (organization agent chats); shown on the desktop surface. */
+  desktopOwnerLabel?: string;
 }) {
   const socketRef = useRef<WebSocket | null>(null);
   const attachedRef = useRef(false);
@@ -155,6 +158,10 @@ export default function SessionBrowserPane({
     surfaceRef.current = null;
     setPageUrl(null);
     setUrlDirty(false);
+    // Nothing from the previous session's surface may linger on this one.
+    setLoginRequest(null);
+    setSavedRecordingId(null);
+    setNotice('');
 
     const scheduleReconnect = () => {
       if (intentionalCloseRef.current || reconnectTimerRef.current) return;
@@ -502,6 +509,15 @@ export default function SessionBrowserPane({
           </button>
         )}
       </div>
+
+      {isDesktop && desktopOwnerLabel ? (
+        <div
+          className="px-3 py-1 border-b border-gray-800 bg-gray-900/40 text-xs text-gray-400 truncate"
+          data-testid="session-browser-desktop-owner"
+        >
+          {desktopOwnerLabel}
+        </div>
+      ) : null}
 
       {browserPaneHasUrlBar(surface) ? (
         <form

@@ -6,6 +6,7 @@ import {
   ORGANIZATION_TOOL_LABELS,
   draftFromAgent,
   newAgentDraft,
+  organizationAgentComputerLabel,
   organizationAgentStatus,
   patchFromDraft,
   rosterAgents,
@@ -14,6 +15,7 @@ import {
   type OrganizationAgentDraft,
   type OrganizationAgentsController,
   type OrganizationAgentTemplate,
+  type OrganizationChatTarget,
   type OrganizationChat,
 } from '@shared/utils/organization-agents';
 import type { Organization, OrganizationProject } from '@shared/utils/organizations';
@@ -26,13 +28,7 @@ const useOrganizationAgents = createUseOrganizationAgents({
   useSyncExternalStore,
 });
 
-export type OrganizationChatTarget = {
-  organizationId: string;
-  agentId: string;
-  sessionId: string;
-  agent?: OrganizationAgent | null;
-  session?: any;
-};
+export type { OrganizationChatTarget };
 type Editing = { agent: OrganizationAgent | null; draft: OrganizationAgentDraft } | null;
 
 function Button({
@@ -128,6 +124,7 @@ export default function OrganizationAgentsSection({
     if (result?.session?.id)
       onOpenChat?.({
         organizationId: organization.id,
+        organizationName: organization.name,
         agentId: result.agent?.id ?? agent.id,
         sessionId: result.session.id,
         agent: result.agent ?? agent,
@@ -161,6 +158,9 @@ export default function OrganizationAgentsSection({
               {agent.isAssistant ? ' · Assistant' : ''}
               {template ? ` · from ${template.label} template` : ''}
               {status === 'disabled' ? ' · Disabled' : ''}
+            </Text>
+            <Text style={styles.help} testID={`organization-agent-computer-${agent.id}`}>
+              {organizationAgentComputerLabel(agent)}
             </Text>
             <Button disabled={status !== 'active'} onPress={() => void openChat(agent)}>
               {`Chat with ${agent.name}`}
@@ -222,6 +222,7 @@ export default function OrganizationAgentsSection({
         onOpen={(chat) =>
           onOpenChat?.({
             organizationId: organization.id,
+            organizationName: organization.name,
             agentId: chat.agentId,
             sessionId: chat.id,
             agent: state.agents.find((a) => a.id === chat.agentId) ?? null,
@@ -337,6 +338,19 @@ function AgentEditor({
           onChange={() => set({ tools: toggleValue(draft.tools, tool) })}
         />
       ))}
+      {draft.tools.includes('computer') && (
+        <>
+          <Choice
+            label="Computer on by default in new chats"
+            value={draft.computerByDefault}
+            onChange={() => set({ computerByDefault: !draft.computerByDefault })}
+          />
+          <Text style={styles.help}>
+            Each person gets a private desktop for this agent. It starts on first use, and each chat
+            can turn it on or off.
+          </Text>
+        </>
+      )}
       <Text style={styles.text}>Project access</Text>
       <Choice
         label="All linked projects"

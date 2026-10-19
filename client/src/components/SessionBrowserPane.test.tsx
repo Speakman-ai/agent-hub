@@ -382,4 +382,94 @@ describe('SessionBrowserPane', () => {
     );
     expect(screen.queryByTestId('session-browser-record')).toBeNull();
   });
+
+  describe('organization agent desktops', () => {
+    const desktopState = {
+      type: 'state',
+      status: 'live',
+      url: null,
+      viewport: { width: 1280, height: 800 },
+      surface: 'desktop',
+    };
+    const desktopFrame = (data: string) => ({
+      type: 'frame',
+      data,
+      mime: 'image/png',
+      width: 1280,
+      height: 800,
+      viewportWidth: 1280,
+      viewportHeight: 800,
+      url: null,
+    });
+
+    it('labels the desktop with its organization, agent and owner', () => {
+      render(
+        <SessionBrowserPane
+          sessionId="org-a-chat"
+          webSocketFactory={factory}
+          desktopOwnerLabel="Organization Assistant in Acme · private to ana@example.com"
+        />,
+      );
+      const socket = FakeSocket.instances[0];
+      act(() => socket.open());
+      // Not shown until the pane is actually on the desktop surface.
+      expect(screen.queryByTestId('session-browser-desktop-owner')).toBeNull();
+      act(() => socket.receive(desktopState));
+      expect(screen.getByTestId('session-browser-desktop-owner').textContent).toBe(
+        'Organization Assistant in Acme · private to ana@example.com',
+      );
+    });
+
+    it('never shows the previous organization desktop after switching chats', () => {
+      const { rerender } = render(
+        <SessionBrowserPane sessionId="org-a-chat" webSocketFactory={factory} />,
+      );
+      const first = FakeSocket.instances[0];
+      act(() => first.open());
+      act(() => {
+        first.receive(desktopState);
+        first.receive(desktopFrame('T1JHLUE='));
+        first.receive({
+          type: 'recording_saved',
+          artifact: { id: 'rec-a', filename: 'demo.json', url: '/x' },
+          steps: 1,
+          stopReason: 'stopped',
+        });
+      });
+      expect(screen.getByTestId('session-browser-frame')).toBeInTheDocument();
+      expect(screen.getByTestId('session-browser-make-routine')).toBeInTheDocument();
+
+      rerender(<SessionBrowserPane sessionId="org-b-chat" webSocketFactory={factory} />);
+      expect(first.closed).toBeGreaterThan(0);
+      const second = FakeSocket.instances[1];
+      expect(second.url).toBe('wss://hub.test/api/sessions/org-b-chat/browser/ws');
+      expect(screen.queryByTestId('session-browser-frame')).toBeNull();
+      expect(screen.queryByTestId('session-browser-make-routine')).toBeNull();
+
+      // A late frame from the old desktop's socket is ignored.
+      act(() => first.receive(desktopFrame('T1JHLUE=')));
+      expect(screen.queryByTestId('session-browser-frame')).toBeNull();
+
+      act(() => second.open());
+      act(() => {
+        second.receive(desktopState);
+        second.receive(desktopFrame('T1JHLUI='));
+      });
+      expect(
+        (screen.getByTestId('session-browser-frame') as HTMLImageElement).getAttribute('src'),
+      ).toBe('data:image/png;base64,T1JHLUI=');
+    });
+
+    it('reattaches to the same session desktop when the chat is reopened', () => {
+      const first = render(
+        <SessionBrowserPane sessionId="org-a-chat" webSocketFactory={factory} />,
+      );
+      first.unmount();
+      render(<SessionBrowserPane sessionId="org-a-chat" webSocketFactory={factory} />);
+      const [a, b] = FakeSocket.instances;
+      expect(b.url).toBe(a.url);
+      act(() => b.open());
+      expect(b.sent[0]).toMatchObject({ type: 'attach' });
+    });
+  });
 });

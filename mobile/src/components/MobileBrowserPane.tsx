@@ -56,9 +56,12 @@ const RECONNECT_DELAYS_MS = [1000, 2000, 4000, 8000, 10000];
 export default function MobileBrowserPane({
   sessionId,
   onClose,
+  desktopOwnerLabel,
 }: {
   sessionId: string;
   onClose?: () => void;
+  /** Whose desktop this is (organization agent chats); shown on the desktop surface. */
+  desktopOwnerLabel?: string;
 }) {
   const socketRef = useRef<WebSocket | null>(null);
   const connectRef = useRef<() => void>(() => {});
@@ -134,6 +137,10 @@ export default function MobileBrowserPane({
     surfaceRef.current = null;
     setPageUrl(null);
     setUrlDirty(false);
+    // Nothing from the previous session's surface may linger on this one.
+    setLoginRequest(null);
+    setSavedRecordingId(null);
+    setNotice('');
 
     const connect = () => {
       if (intentionalCloseRef.current || socketRef.current) return;
@@ -380,6 +387,11 @@ export default function MobileBrowserPane({
           <X size={16} color={colors.gray400} />
         </TouchableOpacity>
       </View>
+      {viewOnly && desktopOwnerLabel ? (
+        <Text style={styles.owner} numberOfLines={1} testID="mobile-browser-desktop-owner">
+          {desktopOwnerLabel}
+        </Text>
+      ) : null}
       {browserPaneHasUrlBar(surface) ? (
         <View style={styles.urlRow}>
           <TextInput
@@ -572,6 +584,7 @@ const styles = StyleSheet.create({
     paddingVertical: 1,
   },
   status: { flex: 1, color: colors.gray500, fontSize: 11 },
+  owner: { color: colors.gray400, fontSize: 11, paddingHorizontal: 10, paddingVertical: 4 },
   recordBtn: {
     flexDirection: 'row',
     alignItems: 'center',

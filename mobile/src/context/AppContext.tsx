@@ -1,5 +1,10 @@
 import { createUseAiSignInGuide } from '@shared/hooks/useAiSignInGuide';
-import { resolveComputerToolEnabled } from '@shared/utils/computerTool';
+import {
+  describeComputerToolSetting,
+  resolveComputerToolEnabled,
+} from '@shared/utils/computerTool';
+import { organizationComputerOwnerLabel } from '@shared/utils/organizationComputer';
+import { isOrganizationAgentId } from '@shared/utils/organization-agents';
 import { promoteQueuedMessage } from '@shared/utils/promoteQueuedMessage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, {
@@ -150,6 +155,11 @@ export function AppProvider({ children }: any) {
   // Organization agents live in a hidden workspace absent from `agents`; the open chat's agent
   // is supplied by the Organizations screen instead.
   const [organizationChatAgent, setOrganizationChatAgent] = useState<any>(null);
+  // The organization that chat belongs to, so its Computer can name its owner.
+  const [organizationChatOrganization, setOrganizationChatOrganization] = useState<{
+    id: string;
+    name: string | null;
+  } | null>(null);
   const [sessions, setSessions] = useState<any[]>([]);
   // Soft-deleted sessions within the 7-day recovery window for the active
   // agent. Shape: Array<SessionRow & { message_count:number, deleted_at:string }>.
@@ -1922,10 +1932,22 @@ export function AppProvider({ children }: any) {
   }, []);
   /** Opens an organization chat in the shared chat screen, owned by the signed-in user. */
   const openOrganizationChat = useCallback(
-    (target: { agentId: string; sessionId: string; agent?: any; session?: any }) => {
+    (target: {
+      organizationId?: string;
+      organizationName?: string;
+      agentId: string;
+      sessionId: string;
+      agent?: any;
+      session?: any;
+    }) => {
       if (!target.agentId || !target.sessionId) return;
       setOrganizationChatAgent(
         target.agent ?? { id: target.agentId, name: 'Organization agent', engine: 'claude-code' },
+      );
+      setOrganizationChatOrganization(
+        target.organizationId
+          ? { id: target.organizationId, name: target.organizationName ?? null }
+          : null,
       );
       if (target.session && target.agentId === activeAgentIdRef.current)
         setSessions((prev: any) => upsertSessionRow(prev, target.session));
@@ -1998,6 +2020,7 @@ export function AppProvider({ children }: any) {
           setSessions([]);
           setActiveAgentId(null);
           setOrganizationChatAgent(null);
+          setOrganizationChatOrganization(null);
           setActiveSessionId(null);
           setMessages([]);
           setThinking(false);
@@ -2308,9 +2331,21 @@ export function AppProvider({ children }: any) {
     activeAgent?.computerToolEnabled,
     activeSession?.computer_tool_enabled,
   );
+  const sessionComputerToolSetting = describeComputerToolSetting(
+    activeAgent?.computerToolEnabled,
+    activeSession?.computer_tool_enabled,
+  );
+  const organizationComputerOwner = isOrganizationAgentId(activeAgent?.id)
+    ? organizationComputerOwnerLabel({
+        organizationName: organizationChatOrganization?.name,
+        agentName: activeAgent?.name,
+        user: getAuthRecord()?.user,
+      })
+    : undefined;
   // Persist the per-session computer tool switch; the server row is the
-  // source of truth, so local state only changes once the PUT succeeds.
-  const handleComputerToolChange = useCallback(async (enabled: boolean) => {
+  // source of truth, so local state only changes once the PUT succeeds. `null`
+  // drops the session override so the agent default applies.
+  const handleComputerToolChange = useCallback(async (enabled: boolean | null) => {
     const sid = activeSessionIdRef.current;
     if (!sid) return;
     const updated = await api.setSessionComputerTool(sid, enabled);
@@ -2887,6 +2922,8 @@ export function AppProvider({ children }: any) {
     sessionReasoningEffort,
     handleReasoningEffortChange,
     sessionComputerToolOn,
+    sessionComputerToolSetting,
+    organizationComputerOwner,
     handleComputerToolChange,
     modelConfig,
     sessionConsultMode,
@@ -2923,6 +2960,7 @@ export function AppProvider({ children }: any) {
     handleOpenHandoffSession,
     openOrganizationChat,
     organizationChatAgent,
+    organizationChatOrganization,
     messageQueues,
     eventsByMessage,
     browserScreensBySession,

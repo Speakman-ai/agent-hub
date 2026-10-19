@@ -68,6 +68,8 @@ export interface OrganizationAgentDraft {
   allLinked: boolean;
   projectIds: string[];
   enabled: boolean;
+  /** Computer on by default in this agent's chats. Only applies with the computer tool. */
+  computerByDefault: boolean;
 }
 
 type Request = (path: string, options?: { method?: string; body?: string }) => Promise<any>;
@@ -94,6 +96,16 @@ export function createOrganizationAgentApi(request: Request) {
   };
 }
 export type OrganizationAgentApi = ReturnType<typeof createOrganizationAgentApi>;
+
+/** Who opened an organization chat and where, so the chat can name the Computer's owner. */
+export interface OrganizationChatTarget {
+  organizationId: string;
+  organizationName?: string;
+  agentId: string;
+  sessionId: string;
+  agent?: OrganizationAgent | null;
+  session?: any;
+}
 
 export type OrganizationAgentStatus = 'active' | 'disabled' | 'archived';
 export function organizationAgentStatus(agent: OrganizationAgent): OrganizationAgentStatus {
@@ -122,6 +134,7 @@ export function newAgentDraft(
     allLinked: true,
     projectIds: [],
     enabled: true,
+    computerByDefault: false,
   };
 }
 
@@ -138,6 +151,7 @@ export function draftFromAgent(agent: OrganizationAgent): OrganizationAgentDraft
     allLinked: projects === 'all-linked',
     projectIds: projects === 'all-linked' ? [] : [...projects],
     enabled: agent.organizationScope.enabled,
+    computerByDefault: agent.computerToolEnabled === true,
   };
 }
 
@@ -149,11 +163,24 @@ function draftBody(draft: OrganizationAgentDraft) {
     tools: [...draft.tools].sort(),
     projects: draft.allLinked ? ('all-linked' as const) : [...draft.projectIds].sort(),
     enabled: draft.enabled,
+    computerToolEnabled: draft.computerByDefault && draft.tools.includes('computer'),
   };
 }
 
+/** Computer stays off on create unless explicitly turned on; a template never turns it on. */
 export function createBodyFromDraft(draft: OrganizationAgentDraft) {
-  return { ...draftBody(draft), ...(draft.templateId ? { templateId: draft.templateId } : {}) };
+  const { computerToolEnabled, ...body } = draftBody(draft);
+  return {
+    ...body,
+    ...(computerToolEnabled ? { computerToolEnabled } : {}),
+    ...(draft.templateId ? { templateId: draft.templateId } : {}),
+  };
+}
+
+/** Roster label for an agent's Computer preference. */
+export function organizationAgentComputerLabel(agent: OrganizationAgent): string {
+  if (!agent.organizationScope.tools.includes('computer')) return 'No Computer';
+  return agent.computerToolEnabled ? 'Computer on by default' : 'Computer off by default';
 }
 
 /** Only changed fields are sent, so an edit never rewrites settings the user did not touch. */

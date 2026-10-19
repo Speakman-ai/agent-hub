@@ -5,6 +5,7 @@ import {
   ORGANIZATION_TOOL_LABELS,
   draftFromAgent,
   newAgentDraft,
+  organizationAgentComputerLabel,
   organizationAgentStatus,
   patchFromDraft,
   rosterAgents,
@@ -13,6 +14,7 @@ import {
   type OrganizationAgentDraft,
   type OrganizationAgentsController,
   type OrganizationAgentTemplate,
+  type OrganizationChatTarget,
 } from '@shared/utils/organization-agents';
 import type { Organization, OrganizationProject } from '@shared/utils/organizations';
 import { api } from '../utils/api';
@@ -26,13 +28,7 @@ const button =
   'rounded-lg border border-gray-700 px-3 py-2 text-sm hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed';
 const input = 'rounded-lg border border-gray-700 bg-gray-900 p-2 text-sm';
 
-export type OrganizationChatTarget = {
-  organizationId: string;
-  agentId: string;
-  sessionId: string;
-  agent?: OrganizationAgent | null;
-  session?: any;
-};
+export type { OrganizationChatTarget };
 type Props = {
   organization: Organization;
   linkedProjects: OrganizationProject[];
@@ -91,6 +87,7 @@ export default function OrganizationAgentsPanel({
     if (result?.session?.id)
       onOpenChat?.({
         organizationId: organization.id,
+        organizationName: organization.name,
         agentId: result.agent?.id ?? agent.id,
         sessionId: result.session.id,
         agent: result.agent ?? agent,
@@ -177,6 +174,7 @@ export default function OrganizationAgentsPanel({
         onOpen={(chat) =>
           onOpenChat?.({
             organizationId: organization.id,
+            organizationName: organization.name,
             agentId: chat.agentId,
             sessionId: chat.id,
             agent: state.agents.find((a) => a.id === chat.agentId) ?? null,
@@ -213,6 +211,12 @@ function AgentRow({
       {agent.isAssistant && <span className="text-xs text-gray-400">Assistant</span>}
       {template && <span className="text-xs text-gray-400">from {template.label} template</span>}
       {status === 'disabled' && <span className="text-xs text-yellow-300">Disabled</span>}
+      <span
+        className="text-xs text-gray-400"
+        data-testid={`organization-agent-computer-${agent.id}`}
+      >
+        {organizationAgentComputerLabel(agent)}
+      </span>
       <button className={button} disabled={status !== 'active'} onClick={onChat}>
         Chat with {agent.name}
       </button>
@@ -343,6 +347,22 @@ function AgentEditor({
             {ORGANIZATION_TOOL_LABELS[tool]}
           </label>
         ))}
+        {draft.tools.includes('computer') && (
+          <label className="ml-6 flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={draft.computerByDefault}
+              onChange={() => set({ computerByDefault: !draft.computerByDefault })}
+            />
+            Computer on by default in new chats
+          </label>
+        )}
+        {draft.tools.includes('computer') && (
+          <p className="ml-6 text-sm text-gray-400">
+            Each person gets a private desktop for this agent. It starts on first use, and each chat
+            can turn it on or off.
+          </p>
+        )}
       </fieldset>
       <fieldset className="space-y-1">
         <legend className="text-sm">Project access</legend>

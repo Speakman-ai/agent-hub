@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  createBodyFromDraft,
   createOrganizationAgentApi,
   draftFromAgent,
   newAgentDraft,
   OrganizationAgentsController,
   patchFromDraft,
+  organizationAgentComputerLabel,
   rosterAgents,
   type OrganizationAgent,
 } from './organization-agents';
@@ -60,6 +62,58 @@ describe('organization agent drafts', () => {
       tools: ['projects:read'],
       computerToolEnabled: false,
     });
+  });
+
+  it('keeps Computer off on create unless explicitly enabled with the computer tool', () => {
+    const draft = newAgentDraft(template, 'm1');
+    expect(draft.computerByDefault).toBe(false);
+    expect(createBodyFromDraft(draft)).not.toHaveProperty('computerToolEnabled');
+    draft.computerByDefault = true;
+    // The preference alone does nothing without the tool.
+    expect(createBodyFromDraft(draft)).not.toHaveProperty('computerToolEnabled');
+    draft.tools = ['computer', 'projects:read'];
+    expect(createBodyFromDraft(draft)).toMatchObject({
+      computerToolEnabled: true,
+      tools: ['computer', 'projects:read'],
+    });
+  });
+
+  it('round-trips the Computer default and patches it on its own', () => {
+    const assistant = agent('assistant', {
+      isAssistant: true,
+      computerToolEnabled: true,
+      organizationScope: {
+        enabled: true,
+        archivedAt: null,
+        projects: 'all-linked',
+        tools: ['computer'],
+      },
+    });
+    const draft = draftFromAgent(assistant);
+    expect(draft.computerByDefault).toBe(true);
+    draft.computerByDefault = false;
+    expect(patchFromDraft(assistant, draft)).toEqual({ computerToolEnabled: false });
+
+    const custom = agent('custom', {
+      organizationScope: { enabled: true, archivedAt: null, projects: [], tools: ['computer'] },
+    });
+    const enable = draftFromAgent(custom);
+    expect(enable.computerByDefault).toBe(false);
+    enable.computerByDefault = true;
+    expect(patchFromDraft(custom, enable)).toEqual({ computerToolEnabled: true });
+  });
+
+  it('labels each agent Computer preference for the roster', () => {
+    expect(organizationAgentComputerLabel(agent('none'))).toBe('No Computer');
+    const scope = { enabled: true, archivedAt: null, projects: [], tools: ['computer'] };
+    expect(organizationAgentComputerLabel(agent('off', { organizationScope: scope }))).toBe(
+      'Computer off by default',
+    );
+    expect(
+      organizationAgentComputerLabel(
+        agent('on', { organizationScope: scope, computerToolEnabled: true }),
+      ),
+    ).toBe('Computer on by default');
   });
 
   it('keeps the Assistant first and drops archived agents from the roster', () => {

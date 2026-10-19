@@ -79,6 +79,7 @@ const request = vi.hoisted(() =>
         engine: 'claude-code',
         model: body.model,
         systemPrompt: body.systemPrompt,
+        computerToolEnabled: body.computerToolEnabled ?? false,
         organizationScope: {
           enabled: body.enabled,
           archivedAt: null,
@@ -297,5 +298,56 @@ describe('organization agent management (mobile)', () => {
     expect(onOpenChat).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: 's1', agentId: '__organization_x__assistant' }),
     );
+  });
+
+  describe('Computer preference', () => {
+    const computerAssistant = () => ({
+      ...assistant(),
+      computerToolEnabled: true,
+      organizationScope: { ...assistant().organizationScope, tools: ['computer', 'projects:read'] },
+    });
+
+    it('shows the Assistant Computer on by default and lets an admin turn the default off', async () => {
+      fake.agents = [computerAssistant()];
+      await render();
+      expect(container.textContent).toContain('Computer on by default');
+      await click('Edit Organization Assistant');
+      await toggle('Computer on by default in new chats');
+      await click('Save agent');
+      expect(fake.patches).toEqual([
+        { agentId: '__organization_x__assistant', body: { computerToolEnabled: false } },
+      ]);
+      expect(container.textContent).toContain('Computer off by default');
+    });
+
+    it('creates custom agents with Computer off unless explicitly enabled', async () => {
+      await render();
+      await click('Add agent');
+      await click('Start from scratch');
+      await type('Agent name', 'Ops');
+      await toggle('Computer');
+      await click('Create agent');
+      expect(fake.creates[0]).not.toHaveProperty('computerToolEnabled');
+
+      await click('Add agent');
+      await click('Use Finance template');
+      expect(container.textContent).not.toContain('Computer on by default in new chats');
+      await toggle('Computer');
+      await toggle('Computer on by default in new chats');
+      await click('Create agent');
+      expect(fake.creates[1]).toMatchObject({
+        templateId: 'finance',
+        tools: ['computer', 'projects:read'],
+        computerToolEnabled: true,
+      });
+    });
+
+    it('passes the organization name with an opened chat', async () => {
+      await render();
+      await click('Chat with Organization Assistant');
+      expect(onOpenChat).toHaveBeenCalledWith(
+        expect.objectContaining({ organizationId: 'org', organizationName: 'Org' }),
+      );
+    });
   });
 });

@@ -23,6 +23,9 @@ import SessionChatDraftsPanel from '../components/SessionChatDraftsPanel';
 import SessionTimelinePanel from '../components/SessionTimelinePanel';
 import MobileTerminalPane from '../components/MobileTerminalPane';
 import MobileBrowserPane from '../components/MobileBrowserPane';
+import OrganizationComputerBar from '../components/OrganizationComputerBar';
+import { isOrganizationAgentId } from '@shared/utils/organization-agents';
+import { getAuthRecord } from '../utils/auth';
 import MobilePreviewPane from '../components/MobilePreviewPane';
 import PreviewChatLayout from '../components/PreviewChatLayout';
 import MobileContextUsagePanel from '../components/MobileContextUsagePanel';
@@ -116,6 +119,9 @@ export default function ChatScreen({
     acknowledgePresentedArtifact,
     hubSessionId,
     browserPaneRequest,
+    organizationChatOrganization,
+    organizationComputerOwner,
+    handleComputerToolChange,
   } = useApp();
   // NOTE: `activeSession` is declared once below (useMemo) — a duplicate
   // plain declaration here previously made this module fail to parse.
@@ -429,6 +435,17 @@ export default function ChatScreen({
           <Text style={styles.clearLabel}>Clear chat</Text>
         </TouchableOpacity>
       ) : null}
+      {activeSessionId && isOrganizationAgentId(activeAgent?.id) ? (
+        <OrganizationComputerBar
+          key={`${organizationChatOrganization?.id ?? ''}:${activeSessionId}`}
+          agent={activeAgent}
+          organizationName={organizationChatOrganization?.name}
+          user={getAuthRecord()?.user}
+          sessionValue={activeSession?.computer_tool_enabled}
+          onChange={handleComputerToolChange}
+          onOpenViewer={() => setShowBrowser(true)}
+        />
+      ) : null}
       {activeSessionId && !hubSession ? (
         <FinalizeBar
           projectId={activeProject?.id}
@@ -613,7 +630,12 @@ export default function ChatScreen({
             />
           ) : null}
           {showBrowser ? (
-            <MobileBrowserPane sessionId={activeSessionId} onClose={() => setShowBrowser(false)} />
+            <MobileBrowserPane
+              key={activeSessionId}
+              sessionId={activeSessionId}
+              desktopOwnerLabel={organizationComputerOwner}
+              onClose={() => setShowBrowser(false)}
+            />
           ) : null}
           {showContextUsage ? (
             <MobileContextUsagePanel

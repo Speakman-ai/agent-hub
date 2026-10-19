@@ -2634,6 +2634,9 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
+  /** Which desktop backend this Server runs agent Computers on, and whether it is usable. */
+  getDesktopRuntime: (): Promise<{ available: boolean; reason?: string }> =>
+    fetchJSON('/desktop/runtime'),
   /** Per-session computer tool switch; `null` returns to the agent default. */
   setSessionComputerTool: (sessionId: string, enabled: boolean | null) =>
     fetchJSON(`/sessions/${sessionId}/computer-tool`, {

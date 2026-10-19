@@ -1,6 +1,11 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, Modal, Pressable, StyleSheet, Alert } from 'react-native';
 import { colors } from '../theme/colors';
+import {
+  computerToolErrorMessage,
+  computerToolResetLabel,
+  computerToolSourceLabel,
+} from '@shared/utils/computerTool';
 import { engineOptionsFromConfig, modelsForEngine } from '../utils/engineOptions';
 /**
  * Per-session engine / model picker sheet, anchored under the chat
@@ -15,7 +20,8 @@ import { engineOptionsFromConfig, modelsForEngine } from '../utils/engineOptions
  *  - engine / model          — current session values
  *  - onSelectEngine(engineId) — async; persists engine (+ default model)
  *  - onSelectModel(modelId)   — async; persists model
- *  - computerToolOn / onToggleComputerTool(enabled) — per-session computer tool switch
+ *  - computerToolOn / onToggleComputerTool(enabled) — per-session computer tool switch;
+ *    `computerToolSetting` adds whether it is inherited, and `null` resets to the default
  */
 const REASONING_OPTIONS = [
   { id: 'high', label: 'High', desc: 'Default reasoning effort' },
@@ -32,6 +38,7 @@ export default function SessionEngineModelSheet({
   onSelectModel,
   onSelectReasoningEffort,
   computerToolOn = false,
+  computerToolSetting,
   onToggleComputerTool,
 }: any) {
   const engineOptions = engineOptionsFromConfig(modelConfig);
@@ -45,7 +52,12 @@ export default function SessionEngineModelSheet({
     Promise.resolve()
       .then(() => fn?.(value))
       .catch((err: any) => {
-        Alert.alert(`${label} change failed`, err?.message || 'Unknown error');
+        Alert.alert(
+          `${label} change failed`,
+          label === 'Computer tool'
+            ? computerToolErrorMessage(err)
+            : err?.message || 'Unknown error',
+        );
       });
   };
   return (
@@ -105,10 +117,26 @@ export default function SessionEngineModelSheet({
                   <Text style={[styles.itemLabel, computerToolOn && styles.itemLabelActive]}>
                     {computerToolOn ? 'On' : 'Off'}
                   </Text>
-                  <Text style={styles.itemDesc}>Let the agent drive its Linux desktop</Text>
+                  <Text style={styles.itemDesc}>
+                    {computerToolSetting
+                      ? `${computerToolSourceLabel(computerToolSetting)} · Let the agent drive its Linux desktop`
+                      : 'Let the agent drive its Linux desktop'}
+                  </Text>
                 </View>
                 {computerToolOn && <Text style={styles.check}>✓</Text>}
               </TouchableOpacity>
+              {computerToolSetting?.overridden && (
+                <TouchableOpacity
+                  testID="session-computer-tool-reset"
+                  style={styles.item}
+                  accessibilityRole="button"
+                  onPress={() => run('Computer tool', onToggleComputerTool, null)}
+                >
+                  <Text style={styles.itemLabel}>
+                    {computerToolResetLabel(computerToolSetting)}
+                  </Text>
+                </TouchableOpacity>
+              )}
             </>
           )}
 

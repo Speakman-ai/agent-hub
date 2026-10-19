@@ -275,6 +275,9 @@ export const api = {
     }),
   // Codex reasoning ("thinking") level: 'high' (default) or 'pro' (→ xhigh).
   // Returns the updated session row so callers can hydrate `reasoning_effort`.
+  /** Which desktop backend this Server runs agent Computers on, and whether it is usable. */
+  getDesktopRuntime: (): Promise<{ available: boolean; reason?: string }> =>
+    fetchJSON('/desktop/runtime'),
   // Per-session computer tool switch; `null` returns to the agent default.
   setSessionComputerTool: (sessionId: string, enabled: boolean | null) =>
     fetchJSON(`/sessions/${sessionId}/computer-tool`, {

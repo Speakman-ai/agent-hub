@@ -77,6 +77,7 @@ const request = vi.hoisted(() =>
         engine: 'claude-code',
         model: body.model,
         systemPrompt: body.systemPrompt,
+        computerToolEnabled: body.computerToolEnabled ?? false,
         organizationScope: {
           enabled: body.enabled,
           archivedAt: null,
@@ -342,5 +343,88 @@ describe('organization agent management (web/Electron)', () => {
     finish();
     await flush();
     expect(onOpenChat).not.toHaveBeenCalled();
+  });
+
+  describe('Computer preference', () => {
+    const computerAssistant = () => ({
+      ...assistant(),
+      computerToolEnabled: true,
+      organizationScope: { ...assistant().organizationScope, tools: ['computer', 'projects:read'] },
+    });
+    const computerLabel = (id: string) =>
+      container.querySelector(`[data-testid="organization-agent-computer-${id}"]`)?.textContent;
+
+    it('shows the Assistant Computer on by default and lets an admin turn the default off', async () => {
+      fake.agents = [computerAssistant()];
+      await render();
+      expect(computerLabel('__organization_x__assistant')).toBe('Computer on by default');
+      await click('Edit Organization Assistant');
+      const box = [...container.querySelectorAll<HTMLInputElement>('input')].find(
+        (i) => i.closest('label')?.textContent === 'Computer on by default in new chats',
+      )!;
+      expect(box.checked).toBe(true);
+      await toggle('Computer on by default in new chats');
+      await click('Save agent');
+      expect(fake.patches).toEqual([
+        { agentId: '__organization_x__assistant', body: { computerToolEnabled: false } },
+      ]);
+      expect(computerLabel('__organization_x__assistant')).toBe('Computer off by default');
+    });
+
+    it('creates custom agents with Computer off unless it is explicitly enabled', async () => {
+      await render();
+      await click('Add agent');
+      await click('Start from scratch');
+      setValue(field('Agent name'), 'Ops');
+      await flush();
+      await toggle('Computer');
+      // The tool alone grants access; the default stays off.
+      await click('Create agent');
+      expect(fake.creates[0]).not.toHaveProperty('computerToolEnabled');
+      expect(computerLabel(fake.agents[1].id)).toBe('Computer off by default');
+
+      await click('Add agent');
+      await click('Start from scratch');
+      setValue(field('Agent name'), 'Research');
+      await flush();
+      await toggle('Computer');
+      await toggle('Computer on by default in new chats');
+      await click('Create agent');
+      expect(fake.creates[1]).toMatchObject({
+        name: 'Research',
+        tools: ['computer', 'projects:read'],
+        computerToolEnabled: true,
+      });
+      expect(computerLabel(fake.agents[2].id)).toBe('Computer on by default');
+    });
+
+    it('never enables Computer from a template', async () => {
+      await render();
+      await click('Add agent');
+      await click('Use Finance template');
+      expect(container.textContent).not.toContain('Computer on by default in new chats');
+      await click('Create agent');
+      expect(fake.creates[0]).not.toHaveProperty('computerToolEnabled');
+      expect(fake.creates[0].tools).not.toContain('computer');
+    });
+
+    it('passes the organization name with an opened chat so its Computer names the owner', async () => {
+      fake.agents = [computerAssistant()];
+      await render();
+      await click('Chat with Organization Assistant');
+      expect(onOpenChat).toHaveBeenCalledWith(
+        expect.objectContaining({ organizationId: 'org', organizationName: 'Org' }),
+      );
+    });
+
+    it('archives a Computer-enabled agent out of the roster', async () => {
+      fake.agents = [computerAssistant()];
+      await render();
+      await click('Edit Organization Assistant');
+      await click('Archive agent');
+      await click('Confirm archive of Organization Assistant');
+      expect(computerLabel('__organization_x__assistant')).toBeUndefined();
+      expect(button('Chat with Organization Assistant')).toBeUndefined();
+    });
   });
 });
