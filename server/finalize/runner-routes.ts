@@ -129,6 +129,32 @@ export function parseResourceSummary(raw: unknown): JobResourceSummary | null {
   };
 }
 
+/**
+ * Express 4 does not catch a rejected async handler, and Node treats an
+ * unhandled rejection as fatal, so one throw (e.g. SQLITE_BUSY on orgs.db)
+ * would take down the whole Hub. Answer the request instead: 503 for a busy
+ * database so the agent retries, 500 otherwise.
+ */
+export function guardAsyncRoute<Req extends Request>(
+  label: string,
+  handler: (req: Req, res: Response) => Promise<void>,
+): (req: Req, res: Response) => void {
+  return (req, res) => {
+    handler(req, res).catch((err: unknown) => {
+      const code = (err as { code?: unknown })?.code;
+      const busy = typeof code === 'string' && code.startsWith('SQLITE_BUSY');
+      console.error(`[runner-routes] ${label} failed:`, err);
+      if (res.headersSent) {
+        res.destroy();
+        return;
+      }
+      res
+        .status(busy ? 503 : 500)
+        .json({ error: busy ? 'database busy, retry' : `${label} failed` });
+    });
+  };
+}
+
 export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Router {
   const router = Router();
   const claimWaitMs = opts.claimWaitMs ?? 25_000;
@@ -263,64 +289,70 @@ export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Rout
     });
   });
 
-  router.post('/api/runners/claim', requireAgent, async (req: RunnerReq, res: Response) => {
-    const agent = req.agent!;
-    const orgId = agent.orgScope === 'shared' ? null : agent.orgScope;
-    touchAgent(agent.agentId);
-    const deadline = Date.now() + claimWaitMs;
-    for (;;) {
-      const job = claimRunnerJob({
-        agentId: agent.agentId,
-        orgId,
-        runnerClass: agent.runnerClass ?? 'default',
-        canRunEnvironments: agent.capabilities?.includes(ENVIRONMENT_CAPABILITY) ?? false,
-        canRunDesktops: agent.capabilities?.includes(DESKTOP_CAPABILITY) ?? false,
-        leaseMs,
-        now: Date.now(),
-      });
-      if (job) {
-        getOrgsDb()
-          .prepare(
-            "UPDATE runner_agents SET state='busy', current_job_id=?, last_seen_at=? WHERE id=?",
-          )
-          .run(job.id, Date.now(), agent.agentId);
-        // Arm scale-in protection BEFORE handing the job to the agent (force past
-        // the throttle). AWAIT it — not fire-and-forget — so the task is actually
-        // confirmed protected (or skipped off-ECS) before it becomes visible to
-        // the agent; otherwise a concurrent dynamic scale-in could pick this
-        // newly-busy task in the window before UpdateTaskProtection returns. The
-        // call never throws (off-ECS / unknown ARN → instant 'skipped'; an ECS
-        // failure → 'error', which the per-heartbeat re-arm then retries), so
-        // awaiting it can't break the claim handshake.
-        await armHubTaskProtection(agentTaskArn(agent.agentId), taskProtectionCfg, { force: true });
-        // Attach as soon as a live agent owns the job — do NOT wait for the first
-        // directive poll. The agent still materializes the worktree + starts DinD
-        // *after* claim; if acquire only resolved on that first poll, a hung
-        // bring-up kept heartbeats alive while Hub steps sat `queued` forever
-        // (electron shard stranded while siblings passed; fleet scaled to 1).
-        // Claim-time attach lets the Hub mark steps running and queue `run_step`
-        // directives; the agent drains them once bring-up finishes.
-        getJobChannel(job.id)?.attach();
-        res.json({
-          jobId: job.id,
-          spec: JSON.parse(job.specJson),
-          secretsRef: job.secretsRef,
-          leaseExpiresAt: job.leaseExpiresAt,
+  router.post(
+    '/api/runners/claim',
+    requireAgent,
+    guardAsyncRoute('claim', async (req: RunnerReq, res: Response) => {
+      const agent = req.agent!;
+      const orgId = agent.orgScope === 'shared' ? null : agent.orgScope;
+      touchAgent(agent.agentId);
+      const deadline = Date.now() + claimWaitMs;
+      for (;;) {
+        const job = claimRunnerJob({
+          agentId: agent.agentId,
+          orgId,
+          runnerClass: agent.runnerClass ?? 'default',
+          canRunEnvironments: agent.capabilities?.includes(ENVIRONMENT_CAPABILITY) ?? false,
+          canRunDesktops: agent.capabilities?.includes(DESKTOP_CAPABILITY) ?? false,
+          leaseMs,
+          now: Date.now(),
         });
-        return;
+        if (job) {
+          getOrgsDb()
+            .prepare(
+              "UPDATE runner_agents SET state='busy', current_job_id=?, last_seen_at=? WHERE id=?",
+            )
+            .run(job.id, Date.now(), agent.agentId);
+          // Arm scale-in protection BEFORE handing the job to the agent (force past
+          // the throttle). AWAIT it — not fire-and-forget — so the task is actually
+          // confirmed protected (or skipped off-ECS) before it becomes visible to
+          // the agent; otherwise a concurrent dynamic scale-in could pick this
+          // newly-busy task in the window before UpdateTaskProtection returns. The
+          // call never throws (off-ECS / unknown ARN → instant 'skipped'; an ECS
+          // failure → 'error', which the per-heartbeat re-arm then retries), so
+          // awaiting it can't break the claim handshake.
+          await armHubTaskProtection(agentTaskArn(agent.agentId), taskProtectionCfg, {
+            force: true,
+          });
+          // Attach as soon as a live agent owns the job — do NOT wait for the first
+          // directive poll. The agent still materializes the worktree + starts DinD
+          // *after* claim; if acquire only resolved on that first poll, a hung
+          // bring-up kept heartbeats alive while Hub steps sat `queued` forever
+          // (electron shard stranded while siblings passed; fleet scaled to 1).
+          // Claim-time attach lets the Hub mark steps running and queue `run_step`
+          // directives; the agent drains them once bring-up finishes.
+          getJobChannel(job.id)?.attach();
+          res.json({
+            jobId: job.id,
+            spec: JSON.parse(job.specJson),
+            secretsRef: job.secretsRef,
+            leaseExpiresAt: job.leaseExpiresAt,
+          });
+          return;
+        }
+        if (Date.now() >= deadline || res.writableEnded) {
+          res.status(204).end();
+          return;
+        }
+        await sleep(Math.min(500, deadline - Date.now()));
       }
-      if (Date.now() >= deadline || res.writableEnded) {
-        res.status(204).end();
-        return;
-      }
-      await sleep(Math.min(500, deadline - Date.now()));
-    }
-  });
+    }),
+  );
 
   router.post(
     '/api/runners/jobs/:jobId/poll',
     requireAgent,
-    async (req: RunnerReq, res: Response) => {
+    guardAsyncRoute('poll', async (req: RunnerReq, res: Response) => {
       const jobId = req.params.jobId as string;
       if (!authorizeJob(req.agent!, jobId, res)) return;
       const channel = getJobChannel(jobId);
@@ -332,7 +364,7 @@ export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Rout
       const directive = await channel.nextDirective(pollWaitMs);
       if (directive?.type === 'run_step') markRunnerJobRunning(jobId, Date.now());
       res.json(directive ?? { type: 'idle' });
-    },
+    }),
   );
 
   router.post('/api/runners/jobs/:jobId/logs', requireAgent, (req: RunnerReq, res: Response) => {

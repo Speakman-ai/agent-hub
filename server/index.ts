@@ -180,6 +180,7 @@ import {
 } from './worktree.js';
 import { handleWorktreeFailure } from './worktree-failure.js';
 import { installShutdownHandlers, registerShutdownTask } from './process-groups.js';
+import { installUnhandledRejectionLogger } from './unhandled-rejection.js';
 import { closeAllBrowserSessions } from './browser.js';
 import { markSessionTermination } from './process-termination.js';
 import { cancelSessionChatRun } from './session-chat-cancel.js';
@@ -3113,6 +3114,7 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
   // Closing browser sessions writes their saved profiles back before exit.
   registerShutdownTask(() => closeAllBrowserSessions());
   installShutdownHandlers();
+  installUnhandledRejectionLogger();
 
   // Close the adapter-selection gate before accept() — early HTTP must wait
   // for the probe rather than caching the host fallback.
