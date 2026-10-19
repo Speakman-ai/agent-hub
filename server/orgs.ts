@@ -84,6 +84,8 @@ export function orgDataDir(orgId: string): string {
   return path.join(HOME, '.agent-hub', 'orgs', orgId);
 }
 
+export const ORGS_DB_BUSY_TIMEOUT_MS = 5000;
+
 export function initOrgsDb(): void {
   const dbPath = orgsDbPathOverride || path.join(config.dataDir, 'orgs.db');
   mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -92,6 +94,10 @@ export function initOrgsDb(): void {
   // Foreign keys are required for the ON DELETE CASCADE semantics on
   // memberships/invites — SQLite disables them by default.
   orgsDb.pragma('foreign_keys = ON');
+  // The checkpoint worker runs TRUNCATE checkpoints on its own connection to
+  // this file. Without a busy timeout, a write that lands during one throws
+  // SQLITE_BUSY immediately instead of waiting it out.
+  orgsDb.pragma(`busy_timeout = ${ORGS_DB_BUSY_TIMEOUT_MS}`);
   // Bound WAL cadence + enroll in the background checkpoint sweep. orgs.db was
   // the file that grew a 147 MB WAL in the incident; keep its checkpoints small
   // and frequent so no single one stalls requests. See server/db-checkpoint.ts.

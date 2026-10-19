@@ -2,7 +2,6 @@ import React, { useState, useRef, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
-  TextInput,
   TouchableOpacity,
   StyleSheet,
   Platform,
@@ -17,6 +16,13 @@ import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import { colors } from '../theme/colors';
 import { useVoiceTranscription } from '../hooks/useVoiceTranscription';
+import { HubChatComposer } from './HubChatRefs';
+import { locateChatMarkdownCode } from '../utils/hubChatInstance';
+import {
+  encodeComposerMentions,
+  reconcileComposerMentions,
+  type ComposerMention,
+} from '@shared/utils/hubChatRefs';
 // Map a picked asset / document → attachment shape used by handleSend
 // and ChatMessage. Keeps the kind ('image' | 'video' | 'file') explicit
 // so the upload branch can route to base64 vs. binary endpoints without
@@ -52,10 +58,21 @@ export default function MessageInput({
   toolbarStart,
 }: any) {
   const [value, setValue] = useState('');
+  // `#` tags (cards, sessions, tickets, PRs) picked in the composer, tracked by
+  // offset and swapped for `@[label](kind:id)` tokens on send.
+  // `mentionsTextRef` is the text those offsets belong to; other writes to
+  // `value` (voice, slash insert) are reconciled in an effect.
+  const [mentions, setMentions] = useState<ComposerMention[]>([]);
+  const mentionsTextRef = useRef('');
+  useEffect(() => {
+    if (value === mentionsTextRef.current) return;
+    const prev = mentionsTextRef.current;
+    mentionsTextRef.current = value;
+    setMentions((ms) => reconcileComposerMentions(prev, value, ms));
+  }, [value]);
   // Attachments: [{id, uri, name, kind, dataUrl?, mimeType?, sizeBytes?}]
   // kind ∈ 'image' | 'video' | 'file'
   const [images, setImages] = useState<any[]>([]);
-  const inputRef = useRef<any>(null);
   // Slash-command autocomplete state
   const [slashQuery, setSlashQuery] = useState<any>(null); // null = closed, string = filter
   const [slashStart, setSlashStart] = useState<any>(null); // position of the '/'
@@ -224,8 +241,9 @@ export default function MessageInput({
     setImages((prev: any) => prev.filter((img: any) => img.id !== id));
   };
   const handleSubmit = () => {
-    const trimmed = value.trim();
-    if ((!trimmed && images.length === 0) || disabled) return;
+    if ((!value.trim() && images.length === 0) || disabled) return;
+    // Encode before trimming: mention offsets index the untrimmed text.
+    const trimmed = encodeComposerMentions(value, mentions, locateChatMarkdownCode).trim();
     onSend(trimmed || '(attachment)', images);
     setValue('');
     setImages([]);
@@ -387,10 +405,16 @@ export default function MessageInput({
           )}
         </TouchableOpacity>
 
-        <TextInput
-          ref={inputRef}
+        <HubChatComposer
+          containerStyle={styles.composer}
+          triggers={['#']}
           value={value}
-          onChangeText={handleChangeText}
+          mentions={mentions}
+          onChange={(text, carried) => {
+            mentionsTextRef.current = text;
+            setMentions(carried);
+            if (text !== value) handleChangeText(text);
+          }}
           onSelectionChange={handleSelectionChange}
           placeholder={
             disabled ? 'Waiting...' : consultMode ? 'Consult on Agent Hub…' : 'Message...'
@@ -580,8 +604,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  composer: { flex: 1 },
   input: {
-    flex: 1,
     backgroundColor: colors.gray800,
     borderWidth: 1,
     borderColor: colors.gray700,

@@ -470,6 +470,39 @@ jobs:
     expect(result.status).toBe('success');
   });
 
+  it('passes the project runner class (Spot off -> ondemand) to acquire', async () => {
+    const classes: Array<string | undefined> = [];
+    const fakeBackend = {
+      kind: 'fake',
+      acquire: async (spec: { runnerClass?: string }) => {
+        classes.push(spec.runnerClass);
+        return { spawnStep: makeFakeSpawnStep(), release: async () => {} };
+      },
+    };
+    const parsed = parseCiConfig(`
+version: 2
+on: [finalize]
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: unit-cmd
+`);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.config.version !== 2) return;
+    const deps = { ...makeDeps(vi.fn()), runnerBackend: fakeBackend } as StepRunnerDeps;
+    const base = {
+      config: parsed.config,
+      worktreePath: '/tmp/wt',
+      sessionId: 'sess',
+      branch: 'main',
+      headSha: 'abc',
+    };
+    await runJobPhase(deps, { ...base, runId: 'od-run', runnerClass: 'ondemand' });
+    await runJobPhase(deps, { ...base, runId: 'spot-run' });
+    expect(classes).toEqual(['ondemand', undefined]);
+  });
+
   it('passes the remaining run budget as the runner acquire timeout cap', async () => {
     const acquired: Array<{ acquireTimeoutMs?: number }> = [];
     const fakeBackend = {

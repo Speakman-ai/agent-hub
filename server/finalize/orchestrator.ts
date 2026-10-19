@@ -74,6 +74,7 @@ import type {
 } from './reviewer-dispatch.js';
 import type { StepRunResult } from './step-runner.js';
 import { runJobPhase } from './job-runner.js';
+import { resolveCiRunnerClass } from './runner-images.js';
 import { reconcileFinalizeRunTerminalSteps } from './reconcile-terminal-steps.js';
 import type { FinalizeStepLogStore } from './finalize-log-store.js';
 import {
@@ -1898,6 +1899,7 @@ export async function runFinalize(
             carryOverKeys && carryOverKeys.size > 0
               ? { fromRunId: retryOfRunId as string, instances: carryOverKeys }
               : undefined;
+          const ciRunnerClass = resolveCiRunnerClass(opts.project);
           lastStepOutcome = await runJobs(
             {
               stmts: deps.stmts,
@@ -1914,6 +1916,7 @@ export async function runFinalize(
               env: spawnEnv,
               orgId,
               projectId: opts.project.id,
+              ...(ciRunnerClass ? { runnerClass: ciRunnerClass } : {}),
               ...(opts.signal ? { signal: opts.signal } : {}),
               ...(reuseInstances ? { reuseInstances } : {}),
               ...(carryOver ? { carryOver } : {}),

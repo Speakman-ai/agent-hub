@@ -3523,6 +3523,12 @@ export interface Project {
    */
   pushConcurrency?: { ci?: PushConcurrencyMode; review?: PushConcurrencyMode };
   /**
+   * Finalize CI capacity on the AWS runner fleet. `spot` true (default) runs
+   * every CI job on the Spot pool; false runs every CI job on the on-demand
+   * pool. Ignored unless both pools are configured (`ciSpotChoiceAvailable`).
+   */
+  finalizeRunner?: { spot?: boolean };
+  /**
    * Feature-request voting / approval system. When `enabled`, submitted
    * `feature_request` support tickets require an Admin to approve them before
    * they appear in the main support queue: new requests start

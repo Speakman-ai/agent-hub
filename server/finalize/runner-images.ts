@@ -133,6 +133,40 @@ export function resolveDeployRunnerClass(env: NodeJS.ProcessEnv = process.env): 
 }
 
 /**
+ * True when a project can choose between Spot and on-demand capacity for its
+ * Finalize CI jobs: the Hub dispatches to the remote fleet and both the Spot ECS
+ * pool and the on-demand ECS pool are configured. Without both pools the choice
+ * means nothing, so the setting stays hidden and is ignored.
+ */
+export function ciSpotChoiceAvailable(env: NodeJS.ProcessEnv = process.env): boolean {
+  if ((env.FINALIZE_RUNNER_BACKEND ?? 'local').trim().toLowerCase() !== 'remote') return false;
+  const cluster = env.FINALIZE_FLEET_ECS_CLUSTER?.trim();
+  const service = env.FINALIZE_FLEET_ECS_SERVICE?.trim();
+  const odCluster = env.FINALIZE_FLEET_ONDEMAND_ECS_CLUSTER?.trim() || cluster;
+  const odService = env.FINALIZE_FLEET_ONDEMAND_ECS_SERVICE?.trim();
+  return Boolean(cluster && service && odCluster && odService);
+}
+
+/** Whether a project's CI runs on Spot. Defaults to Spot when unset. */
+export function projectCiUsesSpot(project: { finalizeRunner?: { spot?: boolean } }): boolean {
+  return project.finalizeRunner?.spot !== false;
+}
+
+/**
+ * Explicit queue class for a project's Linux CI jobs, or `undefined` to keep the
+ * class derived from `runs-on` (the Spot fleet). Returns `ondemand` only when the
+ * project turned Spot off AND an on-demand pool exists, so a job never waits on
+ * a class no agent serves.
+ */
+export function resolveCiRunnerClass(
+  project: { finalizeRunner?: { spot?: boolean } },
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  if (projectCiUsesSpot(project)) return undefined;
+  return ciSpotChoiceAvailable(env) ? ONDEMAND_RUNNER_CLASS : undefined;
+}
+
+/**
  * Map a `runs-on` label to the runner queue class that may claim it.
  *
  * The fleet is class-partitioned so a Linux DinD agent never claims a macOS job

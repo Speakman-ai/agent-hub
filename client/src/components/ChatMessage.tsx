@@ -28,6 +28,7 @@ import FinalizeRunSummaryBlock from './finalize/blocks/FinalizeRunSummaryBlock';
 import TurnChangeSummaryBlock from './finalize/blocks/TurnChangeSummaryBlock';
 import { parseTurnChangeSummaryMetadata } from '../utils/turnChangeSummary';
 import WikiConsultedChip from './WikiConsultedChip';
+import { HubChatMessageBody, HubChatPlainTextWithRefs, hasHubChatRefTokens } from './HubChatRefs';
 import FinalizeTerminalBlock from './finalize/blocks/FinalizeTerminalBlock';
 import FinalizeReviewNoticeBlock from './finalize/blocks/FinalizeReviewNoticeBlock';
 import FinalizeFixDispatchBlock from './finalize/blocks/FinalizeFixDispatchBlock';
@@ -663,8 +664,20 @@ function ChatMessage({
           <div className={isUser ? 'text-white' : 'markdown-content text-gray-200'}>
             {isUser ? (
               displayContent ? (
-                <p className="whitespace-pre-wrap">{displayContent}</p>
+                <p className="whitespace-pre-wrap">
+                  {hasHubChatRefTokens(displayContent) ? (
+                    <HubChatPlainTextWithRefs text={displayContent} />
+                  ) : (
+                    displayContent
+                  )}
+                </p>
               ) : null
+            ) : hasHubChatRefTokens(displayContent) ? (
+              <HubChatMessageBody
+                body={displayContent}
+                baseComponents={components}
+                rehypePlugins={[rehypeHighlight]}
+              />
             ) : (
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}

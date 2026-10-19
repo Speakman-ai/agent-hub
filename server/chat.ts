@@ -257,7 +257,10 @@ import {
   detectNoConversationFoundError,
   buildNoConversationFoundRecoveryMessage,
 } from './claude-session-id-conflict.js';
-import { allAgents, findProject } from './project-model.js';
+import { allAgents, findProject, getProjects } from './project-model.js';
+import { appendSessionRefContext } from './session-chat-refs.js';
+import { getActiveOrgId } from './orgs.js';
+import { isLocalBundledServer } from './auth.js';
 import { setSessionOwner, getWsAuthUserId, type AuthStampedWs } from './session-ownership.js';
 import { shouldResetResumeAttemptsOnTurnStart } from './resume-attempts.js';
 import { broadcastAwaitingInputForSession } from './awaiting-input.js';
@@ -3228,6 +3231,16 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       });
       const slashSkillSuffix = slashAug.slashSkillSuffix;
       cliContent = slashAug.cliContent;
+      if (!isAutoContinuation) {
+        cliContent = appendSessionRefContext({
+          cliContent,
+          content,
+          senderUserId: ownerUserIdForChatSpawn(ws) ?? sessOwnerUid ?? null,
+          orgId: getActiveOrgId,
+          localBypass: isLocalBundledServer(),
+          lookups: { findProject, getProjects },
+        });
+      }
 
       let routedSkillSuffix = '';
       const loadedRoutedSkillIds = new Set<string>();

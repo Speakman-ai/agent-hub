@@ -1,4 +1,5 @@
 import React, { memo, useCallback, useMemo, useState } from 'react';
+import { HubChatMessageBody, HubChatPlainTextWithRefs, hasHubChatRefTokens } from './HubChatRefs';
 import {
   View,
   Text,
@@ -636,7 +637,11 @@ function ChatMessage({
               </View>
             ) : displayContent ? (
               <Text style={styles.userText} selectable>
-                {displayContent}
+                {hasHubChatRefTokens(displayContent) ? (
+                  <HubChatPlainTextWithRefs text={displayContent} />
+                ) : (
+                  displayContent
+                )}
               </Text>
             ) : null}
             {isQueued && !editing && (
@@ -657,7 +662,9 @@ function ChatMessage({
           </>
         ) : (
           <>
-            {assistantBlocks.stripped ? (
+            {assistantBlocks.stripped && hasHubChatRefTokens(assistantBlocks.stripped) ? (
+              <HubChatMessageBody body={assistantBlocks.stripped} style={markdownStyles} />
+            ) : assistantBlocks.stripped ? (
               <Markdown style={markdownStyles as any} rules={selectableMarkdownRules}>
                 {assistantBlocks.stripped}
               </Markdown>

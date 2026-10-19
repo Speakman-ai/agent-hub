@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Agent Hub REST API
-  version: 2.31.203
+  version: 2.31.204
   description: |-
     REST API for **Agent Hub** — a full-stack platform for managing AI
     agent sessions, kanban boards, per-project wikis, heartbeats, and
@@ -27817,6 +27817,44 @@ paths:
                   - error
         "500":
           description: Stats could not be read.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/ci-runs/runner-options:
+    get:
+      tags:
+        - Projects
+      summary: Finalize CI runner capacity options
+      description: Whether this Hub lets the project pick Spot or on-demand capacity for Finalize CI (remote AWS fleet with both pools configured), and the project's current choice. `spot` defaults to true.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Runner options.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  spotChoiceAvailable:
+                    type: boolean
+                  spot:
+                    type: boolean
+                required:
+                  - spotChoiceAvailable
+                  - spot
+        "404":
+          description: Unknown project.
           content:
             application/json:
               schema:

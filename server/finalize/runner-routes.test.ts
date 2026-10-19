@@ -4,7 +4,8 @@ import os from 'os';
 import path from 'path';
 import express, { type Express } from 'express';
 import request from 'supertest';
-import { getOrgsDb, initOrgsDb, setOrgsDbPathForTests } from '../orgs.js';
+import Database from 'better-sqlite3';
+import { getOrgsDb, initOrgsDb, ORGS_DB_BUSY_TIMEOUT_MS, setOrgsDbPathForTests } from '../orgs.js';
 import {
   cancelRunnerJob,
   enqueueRunnerJob,
@@ -258,6 +259,36 @@ describe('runner-routes (HTTP control plane)', () => {
         detail: 'the environment container stopped',
       });
     });
+  });
+
+  it('orgs.db waits out a locked writer instead of failing fast', () => {
+    expect(getOrgsDb().pragma('busy_timeout', { simple: true })).toBe(ORGS_DB_BUSY_TIMEOUT_MS);
+  });
+
+  it('claim answers 503 on SQLITE_BUSY instead of an unhandled rejection that kills the Hub', async () => {
+    const token = await register();
+    // Fail fast so the test doesn't sit out the real 5s wait, then hold the
+    // write lock from a second connection the way the checkpoint worker does.
+    getOrgsDb().pragma('busy_timeout = 0');
+    const holder = new Database(getOrgsDb().name);
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => rejections.push(reason);
+    process.on('unhandledRejection', onRejection);
+    try {
+      holder.exec('BEGIN IMMEDIATE');
+      const res = await request(app)
+        .post('/api/runners/claim')
+        .set('authorization', `Bearer ${token}`)
+        .send({});
+      expect(res.status).toBe(503);
+      expect(res.body.error).toMatch(/busy/);
+      await tick();
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onRejection);
+      holder.exec('ROLLBACK');
+      holder.close();
+    }
   });
 
   it('claim AWAITS task protection before returning the job (closes the claim→protect race)', async () => {

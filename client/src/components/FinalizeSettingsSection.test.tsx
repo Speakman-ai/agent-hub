@@ -8,6 +8,7 @@ import { api } from '../utils/api';
     startFinalizeWizard: vi.fn(),
     getFinalizeEnvironmentDraft: vi.fn().mockResolvedValue({ draft: null }),
     getProjectSecrets: vi.fn().mockResolvedValue({ secrets: [] }),
+    getCiRunnerOptions: vi.fn().mockResolvedValue({ spotChoiceAvailable: false, spot: true }),
   },
 }));
 

@@ -46,6 +46,7 @@ import type { BroadcastFn, FinalizeRunRow, Project, PullRequestRow, Stmts } from
 import { gitHostRepoPath, hostedRepoDefaultBranch, hostedRepoExists } from './repo-store.js';
 import { loadCiConfigFromFile } from '../finalize/ci-config.js';
 import { runJobPhase } from '../finalize/job-runner.js';
+import { resolveCiRunnerClass } from '../finalize/runner-images.js';
 import { mergeProjectSecretsSpawnEnv } from '../project-secrets-spawn.js';
 import {
   createFinalizeRunSignal,
@@ -668,6 +669,7 @@ async function runCiForSha(
       overwriteExisting: true,
     });
 
+    const ciRunnerClass = resolveCiRunnerClass(project);
     const result = await (deps.runJobPhase ?? runJobPhase)(
       { stmts: deps.stmts, broadcast: deps.broadcast },
       {
@@ -679,6 +681,7 @@ async function runCiForSha(
         headSha,
         env,
         projectId: project.id,
+        ...(ciRunnerClass ? { runnerClass: ciRunnerClass } : {}),
         ...(signal ? { signal } : {}),
         onInstanceFailed: ({ jobId, matrixKey }) =>
           firePrChecksFailed(

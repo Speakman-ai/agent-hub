@@ -246,6 +246,39 @@ export function listIssues(query: IssueListQuery): IssueListPage {
   return { issues: rows, nextCursor };
 }
 
+export interface IssueSeenInWindow extends LogIssueRow {
+  /** Raw records for this issue inside the window (pruned records are not counted). */
+  window_count: number;
+}
+
+/**
+ * Issues with an occurrence in `[startNs, endNs)` (record wall-clock, ns),
+ * newest first. Ignored issues are left out. Backs scheduled digests.
+ */
+export function listIssuesSeenBetween(
+  projectId: string,
+  startNs: number,
+  endNs: number,
+  limit: number,
+): IssueSeenInWindow[] {
+  return getLogsDb()
+    .prepare(
+      `SELECT * FROM (
+         SELECT i.*,
+                (SELECT COUNT(*) FROM log_records r
+                  WHERE r.project_id = i.project_id AND r.fingerprint = i.fingerprint
+                    AND r.time_unix_nano >= ? AND r.time_unix_nano < ?) AS window_count
+           FROM log_issues i
+          WHERE i.project_id = ? AND i.status != 'ignored'
+            AND i.last_seen >= ? AND i.first_seen < ?
+       )
+        WHERE window_count > 0
+        ORDER BY last_seen DESC, id DESC
+        LIMIT ?`,
+    )
+    .all(startNs, endNs, projectId, startNs, endNs, clampIssueLimit(limit)) as IssueSeenInWindow[];
+}
+
 /** Fetch one issue scoped to its project. Returns null on miss or cross-project id. */
 export function getIssue(projectId: string, issueId: string): LogIssueRow | null {
   const row = getLogsDb()

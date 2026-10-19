@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  type ReactNode,
   type TextareaHTMLAttributes,
 } from 'react';
 import { AtSign, Bot, GitPullRequest, LifeBuoy, MessageSquare, SquareKanban } from 'lucide-react';
@@ -59,33 +60,43 @@ function queryKey(q: MentionQuery): string {
   return `${q.start}:${q.trigger}${q.query}`;
 }
 
-export interface HubChatMentionInputProps extends Omit<
-  TextareaHTMLAttributes<HTMLTextAreaElement>,
-  'value' | 'onChange'
-> {
+export interface HubChatRefPickerOptions {
   value: string;
   /** Mentions currently in `value`, each tracked by its offset. */
   mentions: ComposerMention[];
   /** Every edit reports the new text and the mentions carried through it. */
   onChange: (value: string, mentions: ComposerMention[]) => void;
-  wrapperClassName?: string;
+  textareaRef: { current: HTMLTextAreaElement | null };
+  /** Triggers this picker answers. Defaults to both `@` and `#`. */
+  triggers?: readonly ('@' | '#')[];
+}
+
+export interface HubChatRefPicker {
+  /** Call from the textarea's onChange with the new text and caret. */
+  handleChange: (text: string, caret: number | null) => void;
+  /** Call from onSelect so moving the caret opens or closes the picker. */
+  refresh: (text: string, caret: number | null) => void;
+  /** Returns true when the key belonged to the picker (the caller must stop). */
+  handleKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => boolean;
+  close: () => void;
+  open: boolean;
+  /** The suggestion list, positioned above the textarea's relative wrapper. */
+  popup: ReactNode;
 }
 
 /**
- * A textarea with `@` (people, agents) and `#` (cards, sessions, tickets, PRs)
- * autocomplete. The picked item is inserted as readable text (`@alice`,
+ * `@` (people, agents) and `#` (cards, sessions, tickets, PRs) autocomplete
+ * for any textarea. The picked item is inserted as readable text (`@alice`,
  * `#WEB-12`) and tracked in `mentions` by position, so the caller can swap
- * each one for its token when sending.
+ * each one for its token when sending (`encodeComposerMentions`).
  */
-export function HubChatMentionInput({
+export function useHubChatRefPicker({
   value,
   mentions,
   onChange,
-  onKeyDown,
-  wrapperClassName,
-  ...textareaProps
-}: HubChatMentionInputProps) {
-  const ref = useRef<HTMLTextAreaElement | null>(null);
+  textareaRef,
+  triggers,
+}: HubChatRefPickerOptions): HubChatRefPicker {
   const [query, setQuery] = useState<MentionQuery | null>(null);
   // Results remember the query that produced them. They are offered only while
   // that exact query (trigger, text and position) is still the one at the
@@ -96,14 +107,12 @@ export function HubChatMentionInput({
   const [index, setIndex] = useState(0);
   const requestRef = useRef(0);
 
-  const refreshQuery = (
-    text: string,
-    caret: number | null,
-    tracked: ComposerMention[] = mentions,
-  ) => {
+  const allowed = (q: MentionQuery | null) => !!q && (!triggers || triggers.includes(q.trigger));
+
+  const refresh = (text: string, caret: number | null, tracked: ComposerMention[] = mentions) => {
     const found = caret == null ? null : findMentionQuery(text, caret, locateChatMarkdownCode);
     // Text that is already a picked mention is not a new query.
-    const next = found && tracked.some((m) => m.at === found.start) ? null : found;
+    const next = allowed(found) && !tracked.some((m) => m.at === found!.start) ? found : null;
     setQuery((cur) => (cur && next && queryKey(cur) === queryKey(next) ? cur : next));
   };
 
@@ -138,13 +147,13 @@ export function HubChatMentionInput({
   };
 
   const pick = (s: HubChatRefSuggestion) => {
-    const el = ref.current;
+    const el = textareaRef.current;
     if (!el || !results) return;
     const caret = el.selectionStart ?? value.length;
     // Re-derive the query from the live text: the list must belong to it.
     const live = findMentionQuery(value, caret, locateChatMarkdownCode);
     if (!live || queryKey(live) !== results.key) {
-      refreshQuery(value, caret);
+      refresh(value, caret);
       return;
     }
     const token = formatHubChatRefToken(s.label, s.kind, s.targetId);
@@ -168,99 +177,125 @@ export function HubChatMentionInput({
   // old list nor send the half-typed `@al`.
   const pending = !!query && (!results || results.key !== currentKey);
 
-  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>): boolean => {
     // Keys that confirm or navigate an IME composition belong to the IME, not
     // the picker; the caller's own guards (isSubmitEnter) see them unchanged.
-    if (isImeComposing(e)) {
-      onKeyDown?.(e);
-      return;
-    }
+    if (isImeComposing(e)) return false;
     if (open) {
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault();
         const step = e.key === 'ArrowDown' ? 1 : -1;
         setIndex((i) => (i + step + suggestions.length) % suggestions.length);
-        return;
+        return true;
       }
       if ((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') {
         e.preventDefault();
         pick(suggestions[index] ?? suggestions[0]);
-        return;
+        return true;
       }
       if (e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
         close();
-        return;
+        return true;
       }
     }
     if (pending && ((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab')) {
       e.preventDefault();
-      return;
+      return true;
     }
-    onKeyDown?.(e);
+    return false;
   };
+
+  const handleChange = (text: string, caret: number | null) => {
+    const carried = reconcileComposerMentions(value, text, mentions, caret);
+    onChange(text, carried);
+    refresh(text, caret, carried);
+  };
+
+  const popup = open ? (
+    <ul
+      role="listbox"
+      aria-label="Mention suggestions"
+      data-testid="hub-chat-mention-popup"
+      className="absolute bottom-full left-0 z-20 mb-1 max-h-64 w-full min-w-[16rem] overflow-y-auto rounded-lg border border-gray-700 bg-gray-900 py-1 shadow-xl"
+    >
+      {suggestions.map((s, i) => {
+        const Icon = KIND_ICON[s.kind];
+        return (
+          <li
+            key={`${s.kind}:${s.targetId}`}
+            role="option"
+            aria-selected={i === index}
+            onMouseDown={(e) => {
+              e.preventDefault();
+              pick(s);
+            }}
+            onMouseEnter={() => setIndex(i)}
+            className={`flex cursor-pointer items-center gap-2 px-3 py-1.5 text-sm ${
+              i === index ? 'bg-blue-600/30 text-white' : 'text-gray-200'
+            }`}
+          >
+            <Icon size={14} className="shrink-0 text-gray-400" aria-hidden />
+            <span className="truncate font-medium">{s.label}</span>
+            {s.detail && s.detail !== s.label && (
+              <span className="truncate text-xs text-gray-500">{s.detail}</span>
+            )}
+            <span className="ml-auto shrink-0 text-[10px] uppercase tracking-wide text-gray-500">
+              {KIND_LABEL[s.kind]}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  ) : null;
+
+  return { handleChange, refresh, handleKeyDown, close, open, popup };
+}
+
+export interface HubChatMentionInputProps extends Omit<
+  TextareaHTMLAttributes<HTMLTextAreaElement>,
+  'value' | 'onChange'
+> {
+  value: string;
+  /** Mentions currently in `value`, each tracked by its offset. */
+  mentions: ComposerMention[];
+  /** Every edit reports the new text and the mentions carried through it. */
+  onChange: (value: string, mentions: ComposerMention[]) => void;
+  wrapperClassName?: string;
+}
+
+/** A textarea with `@` / `#` autocomplete (see `useHubChatRefPicker`). */
+export function HubChatMentionInput({
+  value,
+  mentions,
+  onChange,
+  onKeyDown,
+  wrapperClassName,
+  ...textareaProps
+}: HubChatMentionInputProps) {
+  const ref = useRef<HTMLTextAreaElement | null>(null);
+  const picker = useHubChatRefPicker({ value, mentions, onChange, textareaRef: ref });
 
   return (
     <div className={`relative ${wrapperClassName ?? ''}`}>
-      {open && (
-        <ul
-          role="listbox"
-          aria-label="Mention suggestions"
-          data-testid="hub-chat-mention-popup"
-          className="absolute bottom-full left-0 z-20 mb-1 max-h-64 w-full min-w-[16rem] overflow-y-auto rounded-lg border border-gray-700 bg-gray-900 py-1 shadow-xl"
-        >
-          {suggestions.map((s, i) => {
-            const Icon = KIND_ICON[s.kind];
-            return (
-              <li
-                key={`${s.kind}:${s.targetId}`}
-                role="option"
-                aria-selected={i === index}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  pick(s);
-                }}
-                onMouseEnter={() => setIndex(i)}
-                className={`flex cursor-pointer items-center gap-2 px-3 py-1.5 text-sm ${
-                  i === index ? 'bg-blue-600/30 text-white' : 'text-gray-200'
-                }`}
-              >
-                <Icon size={14} className="shrink-0 text-gray-400" aria-hidden />
-                <span className="truncate font-medium">{s.label}</span>
-                {s.detail && s.detail !== s.label && (
-                  <span className="truncate text-xs text-gray-500">{s.detail}</span>
-                )}
-                <span className="ml-auto shrink-0 text-[10px] uppercase tracking-wide text-gray-500">
-                  {KIND_LABEL[s.kind]}
-                </span>
-              </li>
-            );
-          })}
-        </ul>
-      )}
+      {picker.popup}
       <textarea
         {...textareaProps}
         ref={ref}
         value={value}
-        onChange={(e) => {
-          const carried = reconcileComposerMentions(
-            value,
-            e.target.value,
-            mentions,
-            e.target.selectionStart,
-          );
-          onChange(e.target.value, carried);
-          refreshQuery(e.target.value, e.target.selectionStart, carried);
-        }}
-        onSelect={(e) => refreshQuery(e.currentTarget.value, e.currentTarget.selectionStart)}
+        onChange={(e) => picker.handleChange(e.target.value, e.target.selectionStart)}
+        onSelect={(e) => picker.refresh(e.currentTarget.value, e.currentTarget.selectionStart)}
         onBlur={(e) => {
           textareaProps.onBlur?.(e);
-          close();
+          picker.close();
         }}
-        onKeyDown={handleKeyDown}
+        onKeyDown={(e) => {
+          if (picker.handleKeyDown(e)) return;
+          onKeyDown?.(e);
+        }}
         aria-autocomplete="list"
-        aria-expanded={open}
+        aria-expanded={picker.open}
       />
     </div>
   );
@@ -422,4 +457,27 @@ export function HubChatMessageBody({
 /** True when `text` holds at least one ref token outside code. */
 export function hasHubChatRefTokens(text: string): boolean {
   return text.includes('@[') && parseHubChatRefTokens(text, locateChatMarkdownCode).length > 0;
+}
+
+/**
+ * Plain text (no Markdown) with live ref tokens shown as chips, for bubbles
+ * that render the user's text verbatim. Line breaks are kept by the caller's
+ * `whitespace-pre-wrap`.
+ */
+export function HubChatPlainTextWithRefs({ text }: { text: string }) {
+  const tokens = useMemo(() => parseHubChatRefTokens(text, locateChatMarkdownCode), [text]);
+  // Re-renders the chips when resolved detail lands.
+  useHubChatRefs(tokens);
+  if (tokens.length === 0) return <>{text}</>;
+  const parts: ReactNode[] = [];
+  let cursor = 0;
+  tokens.forEach((t, i) => {
+    if (t.index > cursor) parts.push(text.slice(cursor, t.index));
+    parts.push(
+      <HubChatRefChip key={`ref-${i}`} token={t} resolved={getHubChatRef(t.kind, t.targetId)} />,
+    );
+    cursor = t.index + t.raw.length;
+  });
+  if (cursor < text.length) parts.push(text.slice(cursor));
+  return <>{parts}</>;
 }

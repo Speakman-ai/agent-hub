@@ -46,8 +46,15 @@ const KIND_LABEL: Record<HubChatRefKind, string> = {
 
 const SEARCH_DEBOUNCE_MS = 120;
 
-/** The chat renderer's markdown-it, with the ref `@` pass installed. */
-const chatMarkdownIt = MarkdownIt({ typographer: true }).use(hubChatRefAtPlugin);
+/**
+ * The chat renderer's markdown-it, with the ref `@` pass installed. Built on
+ * first render, so screens that only import the composer never construct it.
+ */
+let chatMarkdownIt: ReturnType<typeof MarkdownIt> | null = null;
+function getChatMarkdownIt() {
+  chatMarkdownIt ??= MarkdownIt({ typographer: true }).use(hubChatRefAtPlugin);
+  return chatMarkdownIt;
+}
 
 export type HubChatRefOpenHandler = (ref: HubChatResolvedRef) => void;
 
@@ -159,10 +166,52 @@ export function HubChatMessageBody({
     [tokens, onOpenRef, version],
   );
   return (
-    <Markdown markdownit={chatMarkdownIt} rules={rules} style={style ?? markdownStyles}>
+    <Markdown markdownit={getChatMarkdownIt()} rules={rules} style={style ?? markdownStyles}>
       {source}
     </Markdown>
   );
+}
+
+/** True when `text` holds at least one ref token outside code. */
+export function hasHubChatRefTokens(text: string): boolean {
+  return (
+    typeof text === 'string' &&
+    text.includes('@[') &&
+    parseHubChatRefTokens(text, locateChatMarkdownCode).length > 0
+  );
+}
+
+/**
+ * Plain text (no Markdown) with live ref tokens as chips, for bubbles that
+ * show the user's text verbatim. Render inside a `<Text>`.
+ */
+export function HubChatPlainTextWithRefs({
+  text,
+  onOpenRef,
+}: {
+  text: string;
+  onOpenRef?: HubChatRefOpenHandler;
+}) {
+  const tokens = useMemo(() => parseHubChatRefTokens(text, locateChatMarkdownCode), [text]);
+  // Re-renders the chips when resolved detail lands.
+  hubChatRefCache.useRefs(tokens);
+  if (tokens.length === 0) return <>{text}</>;
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+  tokens.forEach((t, i) => {
+    if (t.index > cursor) parts.push(text.slice(cursor, t.index));
+    parts.push(
+      <HubChatRefChip
+        key={`ref-${i}`}
+        token={t}
+        resolved={hubChatRefCache.get(t.kind, t.targetId)}
+        onOpen={onOpenRef}
+      />,
+    );
+    cursor = t.index + t.raw.length;
+  });
+  if (cursor < text.length) parts.push(text.slice(cursor));
+  return <>{parts}</>;
 }
 
 type MentionQuery = NonNullable<ReturnType<typeof findMentionQuery>>;
@@ -176,10 +225,12 @@ export function mentionQueryAt(
   value: string,
   caretAt: { text: string; caret: number } | null,
   mentions: ComposerMention[],
+  triggers?: readonly ('@' | '#')[],
 ): MentionQuery | null {
   if (!caretAt || caretAt.text !== value) return null;
   const found = findMentionQuery(value, caretAt.caret, locateChatMarkdownCode);
-  return found && !mentions.some((m) => m.at === found.start) ? found : null;
+  if (!found || (triggers && !triggers.includes(found.trigger))) return null;
+  return !mentions.some((m) => m.at === found.start) ? found : null;
 }
 
 function queryKey(q: MentionQuery): string {
@@ -193,6 +244,10 @@ export interface HubChatComposerProps extends Omit<
   value: string;
   mentions: ComposerMention[];
   onChange: (value: string, mentions: ComposerMention[]) => void;
+  /** Triggers this composer answers. Defaults to both `@` and `#`. */
+  triggers?: readonly ('@' | '#')[];
+  /** Style for the wrapper around the popup and the input. */
+  containerStyle?: any;
 }
 
 /**
@@ -204,6 +259,8 @@ export function HubChatComposer({
   value,
   mentions,
   onChange,
+  triggers,
+  containerStyle,
   ...inputProps
 }: HubChatComposerProps) {
   // The caret, and the text it was measured on. The mention query is derived
@@ -232,7 +289,11 @@ export function HubChatComposer({
 
   const refreshQuery = (text: string, caret: number) => setCaretAt({ text, caret });
 
-  const query = useMemo(() => mentionQueryAt(value, caretAt, mentions), [value, caretAt, mentions]);
+  const query = useMemo(
+    () => mentionQueryAt(value, caretAt, mentions, triggers),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [value, caretAt, mentions, triggers?.join('')],
+  );
   const currentKey = query ? queryKey(query) : null;
   const suggestions = results && results.key === currentKey ? results.items : [];
 
@@ -262,7 +323,7 @@ export function HubChatComposer({
   const pick = (s: HubChatRefSuggestion) => {
     // Re-derive against the text on screen now; a list for any other query
     // (or another draft) is never applied.
-    const live = mentionQueryAt(latest.current.value, caretAt, mentions);
+    const live = mentionQueryAt(latest.current.value, caretAt, mentions, triggers);
     if (!live || !results || results.key !== queryKey(live)) {
       close();
       return;
@@ -290,7 +351,7 @@ export function HubChatComposer({
   };
 
   return (
-    <View>
+    <View style={containerStyle}>
       {suggestions.length > 0 ? (
         <ScrollView
           testID="hub-chat-mention-popup"
@@ -330,6 +391,7 @@ export function HubChatComposer({
           refreshQuery(text, caret);
         }}
         onSelectionChange={(e) => {
+          inputProps.onSelectionChange?.(e);
           const { start, end } = e.nativeEvent.selection;
           const fix = tracker.onSelection({ start, end }, latest.current.value);
           if (fix) {

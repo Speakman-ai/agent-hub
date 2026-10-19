@@ -68,6 +68,11 @@ export interface JobRunnerOptions {
   orgId?: string;
   projectId?: string;
   /**
+   * Explicit runner queue class for Linux container jobs (e.g. `ondemand` when
+   * the project turned Spot off). Unset keeps the class derived from `runs-on`.
+   */
+  runnerClass?: string;
+  /**
    * Run-level cancellation signal (the orchestrator's Stop-Finalize signal).
    * When it trips, in-flight step children are killed (see runStepsSequence),
    * no not-yet-started instance is launched, and no cancelled instance is
@@ -706,6 +711,7 @@ async function runJobInstance(
         // and here — the window is never sub-floor.
         acquireTimeoutMs: Math.max(minAcquireMs, budgetMs - (now() - budgetStartedAt)),
         visibility,
+        ...(opts.runnerClass ? { runnerClass: opts.runnerClass } : {}),
       });
     } catch (err) {
       const endedAt = now();
