@@ -13126,6 +13126,93 @@ components:
         - projectId
         - projectName
         - record
+    OrganizationDispatch:
+      type: object
+      properties:
+        requestId:
+          type: string
+        status:
+          type: string
+          enum:
+            - queued
+            - starting
+            - accepted
+            - rejected
+            - failed
+            - revoked
+            - expired
+          description: "`queued` waits for a busy target and is re-authorized when it runs; `starting` has a reserved session id and is settled by the queue if the Hub stopped mid-start; `accepted` started a session; `rejected` failed authorization or target validation; `failed` could not start (or its first turn failed); `revoked` lost access while queued; `expired` stayed queued too long."
+        code:
+          type: string
+          nullable: true
+        message:
+          type: string
+          nullable: true
+        serverId:
+          type: string
+        organizationId:
+          type: string
+        organizationAgentId:
+          type: string
+        initiatingSessionId:
+          type: string
+        actingUserId:
+          type: string
+        projectId:
+          type: string
+        agentId:
+          type: string
+        idempotencyKey:
+          type: string
+        name:
+          type: string
+        sessionId:
+          type: string
+          nullable: true
+        ref:
+          type: string
+          nullable: true
+          description: Chat ref token for the target session; renders as a live session chip.
+        sessionState:
+          type: string
+          nullable: true
+        statusPath:
+          type: string
+        resultPath:
+          type: string
+          nullable: true
+          description: Organization context path for the target session status and latest result.
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+        acceptedAt:
+          type: string
+          nullable: true
+        replayed:
+          type: boolean
+      required:
+        - requestId
+        - status
+        - code
+        - message
+        - serverId
+        - organizationId
+        - organizationAgentId
+        - initiatingSessionId
+        - actingUserId
+        - projectId
+        - agentId
+        - idempotencyKey
+        - name
+        - sessionId
+        - ref
+        - sessionState
+        - statusPath
+        - resultPath
+        - createdAt
+        - updatedAt
+        - acceptedAt
     BusinessOrganization:
       type: object
       properties:
@@ -18415,6 +18502,40 @@ components:
         - agentId
         - importedMessages
         - reused
+    OrganizationDispatchRequest:
+      type: object
+      properties:
+        projectId:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Linked project that owns the target agent.
+        agentId:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Target project agent.
+        prompt:
+          type: string
+          minLength: 1
+          maxLength: 50000
+          description: Task sent as the first message of the target session.
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        idempotencyKey:
+          type: string
+          minLength: 1
+          maxLength: 200
+          pattern: ^[\w.:-]+$
+          description: Scoped to the initiating organization session. An identical retry returns the same request and target session; reuse with a different payload fails with 409.
+      required:
+        - projectId
+        - agentId
+        - prompt
+        - idempotencyKey
+      additionalProperties: false
     DispatchSessionRequest:
       type: object
       properties:
@@ -46892,6 +47013,298 @@ paths:
                     type: string
                 required:
                   - error
+  /api/organizations/{organizationId}/dispatches:
+    post:
+      tags:
+        - Organizations
+      summary: Dispatch a linked project agent from an organization agent session
+      description: Organization capability only. The target session is owned by the acting user and starts at the project default (manual) Finalize level. Every outcome is recorded with provenance.
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: organizationId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrganizationDispatchRequest"
+      responses:
+        "200":
+          description: "Identical retry of an accepted request: the same target session."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationDispatch"
+        "201":
+          description: Target session created and first turn started.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationDispatch"
+        "202":
+          description: Target busy; the request is queued and re-authorized when it runs.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationDispatch"
+        "400":
+          description: Invalid body.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+        "401":
+          description: Capability missing or revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+        "403":
+          description: Dispatch tool not configured for this agent.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+        "404":
+          description: Organization, project or agent not found or outside the current scope.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+        "409":
+          description: Idempotency key reused with a different payload.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+        "422":
+          description: Target agent disabled, ineligible or failed to start.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+        "503":
+          description: Session dispatch is not ready.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+    get:
+      tags:
+        - Organizations
+      summary: List dispatch requests visible to the caller
+      description: A capability sees its own session's requests; a member login sees their own requests. Requests for projects outside current access are omitted.
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: organizationId
+          in: path
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+          required: false
+          name: limit
+          in: query
+        - schema:
+            type: integer
+            nullable: true
+            minimum: 0
+            default: 0
+          required: false
+          name: offset
+          in: query
+      responses:
+        "200":
+          description: Newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dispatches:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/OrganizationDispatch"
+                  offset:
+                    type: number
+                  nextOffset:
+                    type: number
+                    nullable: true
+                required:
+                  - dispatches
+                  - offset
+                  - nextOffset
+        "400":
+          description: Invalid pagination.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+        "404":
+          description: Organization not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+  /api/organizations/{organizationId}/dispatches/{requestId}:
+    get:
+      tags:
+        - Organizations
+      summary: Status of one dispatch request
+      description: A capability reads only requests from its own initiating session; a member login reads their own requests. Requests for projects outside current access return 404.
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: organizationId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: requestId
+          in: path
+      responses:
+        "200":
+          description: Current status, target session reference and result link.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationDispatch"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+        "404":
+          description: Not found or no longer authorized.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
   /api/organizations:
     get:
       tags:
@@ -58485,18 +58898,29 @@ paths:
           required: true
           name: projectId
           in: path
+        - schema:
+            type: string
+            description: "Organization capabilities only: retries with the same key and payload return the same request (see POST /api/organizations/{organizationId}/dispatches)."
+          required: false
+          description: "Organization capabilities only: retries with the same key and payload return the same request (see POST /api/organizations/{organizationId}/dispatches)."
+          name: Idempotency-Key
+          in: header
       requestBody:
         content:
           application/json:
             schema:
               $ref: "#/components/schemas/DispatchSessionRequest"
       responses:
+        "200":
+          description: "Organization capability retry of an accepted request: the same target session (OrganizationDispatch body)."
         "201":
           description: Session created and first turn started.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/DispatchSessionResponse"
+        "202":
+          description: Organization capability request queued behind a busy target (OrganizationDispatch body).
         "400":
           description: Invalid body, agent or mode.
           content:
@@ -58538,6 +58962,32 @@ paths:
                   - error
         "404":
           description: Project not found or not visible.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: Organization capability reused an Idempotency-Key with a different payload.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                required:
+                  - error
+        "422":
+          description: Organization capability target agent disabled, ineligible or failed to start.
           content:
             application/json:
               schema:

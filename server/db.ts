@@ -52,6 +52,7 @@ import { collapseReviewColumn } from './migrations/collapse-review-column.js';
 import { backfillPhaseAutonomousDefaults } from './migrations/backfill-phase-autonomous-defaults.js';
 import { backfillEpicStates } from './migrations/backfill-epic-states.js';
 import { ensureUserNotificationPrefsSchema } from './migrations/user-notification-prefs.js';
+import { ensureOrganizationDispatchSchema } from './organization-dispatch-schema.js';
 import { repairCardSessionLinks } from './migrations/repair-card-session-links.js';
 import {
   deriveCardPrefix,
@@ -3373,6 +3374,7 @@ function initDb(dataDir: string): void {
   );
   CREATE INDEX IF NOT EXISTS idx_organization_workflow_sessions_agent
     ON organization_workflow_sessions(agent_id);`);
+  ensureOrganizationDispatchSchema(db);
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS review_logs (

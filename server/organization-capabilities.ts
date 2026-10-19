@@ -421,6 +421,11 @@ export function organizationCapabilityAllows(
     (suffix === 'context' || suffix.startsWith('context/'))
   )
     return read;
+  // Dispatch facade: the handler re-resolves tool and project scope per request.
+  if (resource === 'organizations' && id === grant.organizationId) {
+    if (suffix === 'dispatches') return method === 'POST' || read;
+    if (/^dispatches\/[^/]+$/.test(suffix)) return read;
+  }
   if (resource === 'projects' && id && method === 'POST' && suffix === 'sessions/dispatch')
     return organizationCapabilityCanReadProject(grant, id, 'dispatch');
   if (resource === 'projects' && id && organizationCapabilityCanReadProject(grant, id)) {
@@ -530,7 +535,7 @@ export function organizationSessionPrompt(sessionId: string): string {
   return `\n\nOrganization: ${current.organizationId}; Server: ${current.serverId}; session: ${current.sessionId}.
 Use ah-api.sh with the injected capability. Discover authorized projects and agent IDs at GET /api/organizations/${current.organizationId}/capability-context?limit=25&offset=0.
 Configured tools: ${current.tools.join(', ') || 'none'}. Project membership and tools are checked for every request.
-Read linked-project context on demand, a page at a time: GET /api/organizations/${current.organizationId}/context?limit=20 (overview), /context/search?q=<terms> (follow nextCursor via &cursor= until it is null; a partial page can be empty), /context/projects/<projectId>/<agents|cards|epics|phases|wiki|sessions> (cards and wiki accept q=<terms>, paged by nextCursor) and /context/projects/<projectId>/<cards|epics|wiki|sessions>/<id or slug> for detail. Cite each result's source (server, organization, project, record) and timestamp. Dispatch requires an explicit project and agent, using POST /api/projects/<projectId>/sessions/dispatch with {"agentId":"<id>","prompt":"<task>"}; automation overrides are forbidden.
+Read linked-project context on demand, a page at a time: GET /api/organizations/${current.organizationId}/context?limit=20 (overview), /context/search?q=<terms> (follow nextCursor via &cursor= until it is null; a partial page can be empty), /context/projects/<projectId>/<agents|cards|epics|phases|wiki|sessions> (cards and wiki accept q=<terms>, paged by nextCursor) and /context/projects/<projectId>/<cards|epics|wiki|sessions>/<id or slug> for detail. Cite each result's source (server, organization, project, record) and timestamp. Dispatch requires an explicit linked project and agent: POST /api/organizations/${current.organizationId}/dispatches with {"projectId":"<id>","agentId":"<id>","prompt":"<task>","idempotencyKey":"<unique per task>"}. Retry with the same key and payload after an error or timeout; it never starts a second session. 202 means the target is busy and the request is queued. Check status at the returned statusPath, read the result at resultPath, and link the session with the returned ref. Automation overrides are forbidden; the target starts at the project's manual Finalize level.
 Your capability expires after 15 minutes. Before expiry, POST /api/sessions/${current.sessionId}/organization-capability/renew and replace AGENT_HUB_API_KEY with the returned token. Do not print tokens. If access is revoked, stop and request a fresh user turn.
 Host actions use <agenthub:react>{"actions":[{"tool":"<configured-tool>","op":"<operation>"}]}</agenthub:react>. Only configured tools are permitted.
 Save private project-derived memory with POST /api/sessions/${current.sessionId}/organization-memory using {"projectId":"<authorized project>","sourceRecord":"<source record>","content":"<brief note>"}. Read it with GET at the same path. Each read rechecks current project access. Never save project-derived information into shared organization instructions.

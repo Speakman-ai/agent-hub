@@ -24,6 +24,8 @@ import {
 } from '../background-agent-session.js';
 import { isInternalSystemProject } from '../../shared/utils/hub.js';
 import { formatHubChatRefToken } from '../../shared/utils/hubChatRefTokens.js';
+import { requestOrganizationDispatch } from '../organization-dispatch.js';
+import { sendDispatchOutcome } from './organization-dispatch.js';
 
 const MAX_PROMPT_CHARS = 50_000;
 const MAX_NAME_CHARS = 120;
@@ -81,12 +83,26 @@ registerPath({
     'Creates the session as the acting user (or the calling session owner on the global key), sends the prompt, and returns once the session exists. The turn runs in the background.',
   request: {
     params: z.object({ projectId: z.string() }),
+    headers: z.object({
+      'Idempotency-Key': z.string().optional().openapi({
+        description:
+          'Organization capabilities only: retries with the same key and payload return the same request (see POST /api/organizations/{organizationId}/dispatches).',
+      }),
+    }),
     body: { content: { 'application/json': { schema: DispatchSessionRequestSchema } } },
   },
   responses: {
     201: {
       description: 'Session created and first turn started.',
       content: { 'application/json': { schema: DispatchSessionResponse } },
+    },
+    200: {
+      description:
+        'Organization capability retry of an accepted request: the same target session (OrganizationDispatch body).',
+    },
+    202: {
+      description:
+        'Organization capability request queued behind a busy target (OrganizationDispatch body).',
     },
     400: { description: 'Invalid body, agent or mode.', content: errorContent },
     401: { description: 'No user identity to own the session.', content: errorContent },
@@ -95,6 +111,14 @@ registerPath({
       content: errorContent,
     },
     404: { description: 'Project not found or not visible.', content: errorContent },
+    409: {
+      description: 'Organization capability reused an Idempotency-Key with a different payload.',
+      content: errorContent,
+    },
+    422: {
+      description: 'Organization capability target agent disabled, ineligible or failed to start.',
+      content: errorContent,
+    },
     503: { description: 'Session dispatch is not ready.', content: errorContent },
   },
 });
@@ -113,6 +137,14 @@ export default function createSessionDispatchRoutes(
 
   router.post('/api/projects/:projectId/sessions/dispatch', (req: Request, res: Response) => {
     const capability = (req as AuthenticatedRequest).authOrganizationCapability;
+    const organizationBody = z
+      .object({
+        prompt: z.string().trim().min(1).max(MAX_PROMPT_CHARS),
+        agentId: z.string().min(1),
+        name: z.string().trim().min(1).max(MAX_NAME_CHARS).optional(),
+      })
+      .strict()
+      .safeParse(req.body);
     if (
       capability &&
       (!organizationCapabilityCanReadProject(
@@ -120,15 +152,31 @@ export default function createSessionDispatchRoutes(
         String(req.params.projectId),
         'dispatch',
       ) ||
-        !z
-          .object({ prompt: z.string(), agentId: z.string().min(1), name: z.string().optional() })
-          .strict()
-          .safeParse(req.body).success)
+        !organizationBody.success)
     ) {
       res.status(403).json({
         error:
           'Organization dispatch requires a scoped project and explicit agent; automation overrides are forbidden',
       });
+      return;
+    }
+    if (capability && organizationBody.success) {
+      // Same facade as /api/organizations/:id/dispatches, so provenance is always recorded.
+      // Without an Idempotency-Key header every call is a new request.
+      const header = req.get('Idempotency-Key')?.trim();
+      if (header && !/^[\w.:-]{1,200}$/.test(header)) {
+        res.status(400).json({ error: 'Invalid Idempotency-Key header', code: 'invalid_request' });
+        return;
+      }
+      sendDispatchOutcome(res, () =>
+        requestOrganizationDispatch(capability, capability.organizationId, {
+          projectId: String(req.params.projectId),
+          agentId: organizationBody.data.agentId,
+          prompt: organizationBody.data.prompt,
+          name: organizationBody.data.name ?? null,
+          idempotencyKey: header || randomUUID(),
+        }),
+      );
       return;
     }
     const project = deps.findProject(String(req.params.projectId));

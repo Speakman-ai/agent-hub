@@ -207,6 +207,8 @@ import { resolveGlobalSkillsDir } from './global-skills-dir.js';
 import createSkillEvalRoutes from './routes/skill-evals.js';
 import createBackgroundAgentRoutes from './routes/background-agents.js';
 import createSessionDispatchRoutes from './routes/session-dispatch.js';
+import createOrganizationDispatchRoutes from './routes/organization-dispatch.js';
+import { ensureOrganizationDispatchQueue } from './organization-dispatch.js';
 import { initBackgroundAgentSessionHook } from './background-agent-session.js';
 import { initAgentChannels, observeBroadcastForAgentChannels } from './hub-chat-agent-channels.js';
 import createBoardRoutes from './routes/board.js';
@@ -2507,6 +2509,7 @@ app.use(createSkillRoutes(routeDeps));
 app.use(createSkillEvalRoutes(routeDeps));
 app.use(createBackgroundAgentRoutes(routeDeps));
 app.use(createSessionDispatchRoutes(routeDeps));
+app.use(createOrganizationDispatchRoutes());
 app.use(createBoardRoutes(routeDeps));
 app.use(createConfigRoutes(routeDeps));
 app.use(createSessionRoutes(routeDeps));
@@ -2886,6 +2889,8 @@ initBackgroundAgentSessionHook({
   handleChat: (ws, msg) => handleChat!(ws, msg),
   broadcast,
 });
+// Queued organization dispatches survive restarts; they are re-authorized when they run.
+ensureOrganizationDispatchQueue();
 initAgentChannels({
   stmts: stmts!,
   broadcast,
