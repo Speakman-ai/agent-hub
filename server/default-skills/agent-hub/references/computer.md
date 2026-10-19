@@ -17,9 +17,11 @@ Cursor, Codex, Gemini, Grok) uses the same `<agenthub:react>` shape:
 
 ## The desktop
 
-- One computer per (session owner, agent, project), shared by all of that
-  user's sessions with the agent. Files, downloads and app logins in the home
-  directory survive between sessions.
+- One computer per (Server, session owner, agent, project), shared by all of
+  that user's sessions with the agent. Files, downloads and app logins in the
+  home directory survive between sessions. A project with the same id on two
+  Servers gets two separate computers and browser logins. Computers and
+  logins saved before Servers were separated stay with the default Server.
 - Organization agents get their own computer per (Server, session owner,
   organization, agent). The organization's hidden workspace stands in for
   the project, so two users, two organizations, two agents or the same

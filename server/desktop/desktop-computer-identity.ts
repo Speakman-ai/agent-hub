@@ -3,7 +3,8 @@
  * session into a DesktopComputerKey (the `computer` tool, the live view and
  * human input) goes through here so they can never disagree.
  *
- * Regular projects keep their (user, agent, project) identity. An
+ * Regular projects use (user, agent, Server-scoped project): see
+ * server-profile-scope.ts, which keeps the default Server's ids unchanged. An
  * organization agent's project id is its hidden workspace id, a hash of
  * (Server, organization) in a namespace user project ids cannot enter, so the
  * key resolves to (Server, user, organization, agent) and the backend kind is
@@ -16,6 +17,10 @@ import {
   organizationWorkspaceId,
 } from '../organization-workspace-id.js';
 import type { DesktopComputerKey } from './desktop-runtime.js';
+import {
+  isServerScopedProfileProjectId,
+  serverScopedProfileProjectId,
+} from './server-profile-scope.js';
 
 export interface DesktopIdentityProject {
   id: string;
@@ -61,5 +66,11 @@ export function resolveDesktopComputerIdentity(input: DesktopIdentityInput): Des
     )
       return { ok: false, reason: DESKTOP_ORG_IDENTITY_REASON };
   }
-  return { ok: true, key: { userId: ownerUserId, agentId, projectId: project.id } };
+  // A real project id never carries the Server tag; refuse one rather than alias another key.
+  if (!organizationMarked && isServerScopedProfileProjectId(project.id))
+    return { ok: false, reason: DESKTOP_NO_OWNER_REASON };
+  const projectId = organizationMarked
+    ? project.id
+    : serverScopedProfileProjectId(input.serverId, project.id);
+  return { ok: true, key: { userId: ownerUserId, agentId, projectId } };
 }

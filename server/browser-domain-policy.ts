@@ -26,6 +26,7 @@ import {
   type ApprovalDeps,
 } from './approval-requests.js';
 import { getOrgsDb } from './orgs.js';
+import { activeServerProfileKey } from './desktop/server-profile-scope.js';
 
 export const BROWSER_DOMAIN_POLICIES = ['allow', 'ask', 'block'] as const;
 export type BrowserDomainPolicy = (typeof BROWSER_DOMAIN_POLICIES)[number];
@@ -249,7 +250,11 @@ export function createBrowserDomainGate(
   deps: ApprovalDeps = {},
 ): BrowserDomainGate | undefined {
   if (!ctx.ownerUserId || !ctx.projectId) return undefined;
-  const key = { userId: ctx.ownerUserId, agentId: ctx.agentId, projectId: ctx.projectId };
+  const key = activeServerProfileKey({
+    userId: ctx.ownerUserId,
+    agentId: ctx.agentId,
+    projectId: ctx.projectId,
+  });
 
   const blockedBy = (url: string): string | null => {
     const host = normalizeBrowserLoginDomain(url);

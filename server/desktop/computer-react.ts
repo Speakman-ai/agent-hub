@@ -27,6 +27,7 @@ import {
   saveBrowserScreenshot,
 } from '../browser-screenshot-store.js';
 import { DESKTOP_NO_OWNER_REASON } from './desktop-computer-identity.js';
+import { activeServerProfileKey } from './server-profile-scope.js';
 
 export const COMPUTER_REACT_OPS = [
   'screenshot',
@@ -266,7 +267,11 @@ export async function runComputerReActStep(
     key = ctx.key;
   } else {
     if (!ctx.ownerUserId || !ctx.projectId) return done(op.op, [DESKTOP_NO_OWNER_REASON], 2);
-    key = { userId: ctx.ownerUserId, agentId: ctx.agentId, projectId: ctx.projectId };
+    key = activeServerProfileKey({
+      userId: ctx.ownerUserId,
+      agentId: ctx.agentId,
+      projectId: ctx.projectId,
+    });
   }
   try {
     // Before the runtime is resolved, so a revoked session never boots a desktop.
