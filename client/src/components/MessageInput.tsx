@@ -3,6 +3,14 @@ import { partitionAttachmentFiles } from '../utils/attachmentValidation';
 import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
 import { formatShortcut, getPlatform } from '../utils/shortcuts';
 import { isImeComposing } from '../utils/keyboard';
+import { useHubChatRefPicker } from './HubChatRefs';
+import { locateChatMarkdownCode } from '../utils/hubChatMarkdown';
+import {
+  decodeToComposer,
+  encodeComposerMentions,
+  reconcileComposerMentions,
+  type ComposerMention,
+} from '@shared/utils/hubChatRefs';
 
 // Keep in sync with the `toggle-microphone` entry in utils/shortcuts.js.
 const MIC_TOGGLE_BINDING = 'Mod+Alt+M';
@@ -56,6 +64,13 @@ function MessageInput(
   const [images, setImages] = useState<any[]>([]); // [{id, name, dataUrl, file?, type?}]
   const [dragOver, setDragOver] = useState(false);
   const textareaRef = useRef<any>(null);
+  // `#` tags (cards, sessions, tickets, PRs) inserted from the picker, tracked
+  // by offset and swapped for `@[label](kind:id)` tokens on send.
+  // `mentionsTextRef` is the text those offsets belong to; any other write to
+  // `value` (voice, slash insert, prefill) is reconciled in an effect.
+  const [refMentions, setRefMentions] = useState<ComposerMention[]>([]);
+  const mentionsTextRef = useRef('');
+  const mentionDraftsRef = useRef<Map<any, ComposerMention[]>>(new Map());
   const fileInputRef = useRef<any>(null);
 
   // Caret position captured the moment the user clicks the mic. The
@@ -80,7 +95,11 @@ function MessageInput(
   // Swap draft when draftKey changes (during render, before any effects run)
   if (activeKey !== draftKey) {
     draftsRef.current.set(activeKey, value);
-    setValue(draftsRef.current.get(draftKey) ?? '');
+    mentionDraftsRef.current.set(activeKey, refMentions);
+    const nextDraft = draftsRef.current.get(draftKey) ?? '';
+    setValue(nextDraft);
+    setRefMentions(mentionDraftsRef.current.get(draftKey) ?? []);
+    mentionsTextRef.current = nextDraft;
     setActiveKey(draftKey);
     // Reset transient slash-autocomplete state when switching sessions
     setSlashQuery(null);
@@ -102,6 +121,26 @@ function MessageInput(
       setImages([]);
     }
   }
+
+  const refPicker = useHubChatRefPicker({
+    value,
+    mentions: refMentions,
+    onChange: (text, mentions) => {
+      mentionsTextRef.current = text;
+      setValue(text);
+      setRefMentions(mentions);
+    },
+    textareaRef,
+    // `@` stays the multi-agent addressing picker below.
+    triggers: ['#'],
+  });
+
+  useEffect(() => {
+    if (value === mentionsTextRef.current) return;
+    const prev = mentionsTextRef.current;
+    mentionsTextRef.current = value;
+    setRefMentions((ms) => reconcileComposerMentions(prev, value, ms));
+  }, [value]);
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -383,7 +422,7 @@ function MessageInput(
   const handleInputChange = (e: any) => {
     const val = e.target.value;
     const cursor = e.target.selectionStart;
-    setValue(val);
+    refPicker.handleChange(val, cursor);
 
     // Detect / trigger at start of input or after a newline
     const textBeforeCursor = val.slice(0, cursor);
@@ -394,6 +433,7 @@ function MessageInput(
       setSlashQuery(query);
       setSlashStart(slashPos);
       closeMention();
+      refPicker.close();
     } else {
       closeSlash();
       if (mentionsEnabled) {
@@ -416,7 +456,10 @@ function MessageInput(
 
   useEffect(() => {
     if (!composerPrefill?.content) return;
-    setValue(composerPrefill.content);
+    const decoded = decodeToComposer(composerPrefill.content, locateChatMarkdownCode);
+    mentionsTextRef.current = decoded.text;
+    setValue(decoded.text);
+    setRefMentions(decoded.mentions);
     if (images.length > 0) {
       images.forEach((img: any) => {
         if ((img.type === 'video' || img.type === 'file') && img.dataUrl?.startsWith('blob:')) {
@@ -427,14 +470,15 @@ function MessageInput(
     }
     requestAnimationFrame(() => {
       textareaRef.current?.focus();
-      const len = composerPrefill.content.length;
+      const len = textareaRef.current?.value?.length ?? 0;
       textareaRef.current?.setSelectionRange?.(len, len);
     });
   }, [composerPrefill?.messageId, composerPrefill?.content]);
 
   const handleSubmit = ({ interrupt = false }: any = {}) => {
-    const trimmed = value.trim();
-    if ((!trimmed && images.length === 0) || disabled) return;
+    if ((!value.trim() && images.length === 0) || disabled) return;
+    // Encode before trimming: mention offsets index the untrimmed text.
+    const trimmed = encodeComposerMentions(value, refMentions, locateChatMarkdownCode).trim();
 
     if (composerPrefill?.messageId && onReplaceQueuedMessage) {
       if (images.length > 0) {
@@ -477,6 +521,7 @@ function MessageInput(
     // During IME composition Enter, arrows, and Escape belong to the IME: they
     // must not send, pick an autocomplete row, or cancel.
     if (isImeComposing(e)) return;
+    if (refPicker.handleKeyDown(e)) return;
     if (mentionQuery !== null && mentionAgents.length > 0) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
@@ -741,6 +786,7 @@ function MessageInput(
       ) : null}
 
       <div className="flex items-end gap-2 md:gap-3 mx-auto relative">
+        {refPicker.popup}
         {/* Slash-command autocomplete popup */}
         {slashQuery !== null && filteredSkills.length > 0 && (
           <div
@@ -935,7 +981,13 @@ function MessageInput(
           onChange={handleInputChange}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
-          onBlur={() => setTimeout(closeSlash, 150)}
+          onSelect={(e: any) =>
+            refPicker.refresh(e.currentTarget.value, e.currentTarget.selectionStart)
+          }
+          onBlur={() => {
+            setTimeout(closeSlash, 150);
+            refPicker.close();
+          }}
           placeholder={
             disabled
               ? 'Waiting...'
@@ -945,7 +997,7 @@ function MessageInput(
                   : 'Consult on Agent Hub — board, wiki, workflows…'
                 : window.innerWidth < 640
                   ? 'Message...'
-                  : 'Type a message... (paste or drop files)'
+                  : 'Type a message... (# to tag a card or PR, paste or drop files)'
           }
           disabled={disabled && !isProcessing}
           rows={1}
