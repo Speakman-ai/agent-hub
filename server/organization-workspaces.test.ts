@@ -262,6 +262,23 @@ describe('Organization workflow lifecycle', () => {
     expect(userOwnsSession({ authUserId: 'member', authOrgId: 'default' }, row.id)).toBe(false);
     expect(userCanReadSession({ authUserId: 'member', authOrgId: 'default' }, row.id)).toBe(false);
   });
+  it('keeps earlier removals revoked when the organization is later archived', async () => {
+    const removed = session('member');
+    const retained = session('owner');
+    removeBusinessOrganizationMember('default', organizationId, 'member');
+    await request(app('member')).get(`/api/sessions/${removed.id}`).expect(404);
+    archiveBusinessOrganization('default', organizationId);
+    await request(app('member')).get(`/api/sessions/${removed.id}`).expect(404);
+    await request(app('member'))
+      .get(`/api/sessions/${removed.id}/messages?paginated=1`)
+      .expect(404);
+    expect(userCanReadSession({ authUserId: 'member', authOrgId: 'default' }, removed.id)).toBe(
+      false,
+    );
+    // Members on the roster at archive time keep their own history.
+    await request(app('owner')).get(`/api/sessions/${retained.id}`).expect(200);
+    await request(app('owner')).get(`/api/sessions/${removed.id}`).expect(404);
+  });
   it('runs a mocked CLI in the owner context without Git worktrees or shared memory', async () => {
     const row = session('member');
     const output = path.join(config.dataDir, 'organization-spawn-record.txt');

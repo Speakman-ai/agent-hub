@@ -42,4 +42,17 @@ export const BUSINESS_ORGANIZATIONS_SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS idx_business_organization_members_user
     ON business_organization_members(server_id, user_id, organization_id);
+
+  -- Roster snapshot taken when an organization is archived: the members who
+  -- keep read access to their own history. Earlier removals are never in it.
+  CREATE TABLE IF NOT EXISTS business_organization_archived_members (
+    server_id TEXT NOT NULL,
+    organization_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    PRIMARY KEY (server_id, organization_id, user_id),
+    FOREIGN KEY (server_id, organization_id)
+      REFERENCES business_organizations(server_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id, server_id)
+      REFERENCES memberships(user_id, org_id) ON DELETE CASCADE
+  );
 `;

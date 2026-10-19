@@ -115,6 +115,11 @@ export function archiveBusinessOrganization(serverId: string, organizationId: st
       'DELETE FROM business_organization_projects WHERE server_id = ? AND organization_id = ?',
     ).run(serverId, organizationId);
     db.prepare(
+      `INSERT OR IGNORE INTO business_organization_archived_members (server_id, organization_id, user_id)
+       SELECT server_id, organization_id, user_id FROM business_organization_members
+        WHERE server_id = ? AND organization_id = ?`,
+    ).run(serverId, organizationId);
+    db.prepare(
       'DELETE FROM business_organization_members WHERE server_id = ? AND organization_id = ?',
     ).run(serverId, organizationId);
     return true;
@@ -275,6 +280,22 @@ export function getBusinessOrganizationRole(
     )
     .get(serverId, organizationId, userId) as { role: BusinessOrganizationRole } | undefined;
   return row?.role ?? null;
+}
+
+/** True when the user was a member at the moment the organization was archived. */
+export function wasBusinessOrganizationMemberAtArchive(
+  serverId: string,
+  organizationId: string,
+  userId: string,
+): boolean {
+  return !!getOrgsDb()
+    .prepare(
+      `SELECT 1 FROM business_organization_archived_members a
+        JOIN business_organizations o ON o.server_id = a.server_id AND o.id = a.organization_id
+       WHERE a.server_id = ? AND a.organization_id = ? AND a.user_id = ?
+         AND o.archived_at IS NOT NULL`,
+    )
+    .get(serverId, organizationId, userId);
 }
 
 export function listBusinessOrganizationMembers(

@@ -2,6 +2,7 @@
 import {
   getBusinessOrganization,
   getBusinessOrganizationRole,
+  wasBusinessOrganizationMemberAtArchive,
 } from './business-organizations-store.js';
 import { getMembershipRole } from './memberships-store.js';
 import { getAllOrgs, getOrg } from './orgs.js';
@@ -39,7 +40,8 @@ export function canReadOrganizationWorkspaceEvent(
 
 /** Access to a session owner's own organization history. Requires current Server
  * membership plus current organization membership. Archiving an organization stops
- * running access and clears its roster, but owners keep read access to their history.
+ * running access and clears its roster; members on the roster at archive time keep
+ * read access to their own history, while earlier removals stay revoked.
  */
 export function canAccessOrganizationHistory(
   project: Project,
@@ -50,8 +52,7 @@ export function canAccessOrganizationHistory(
     if (project.serverId !== serverId || !project.organizationId) return false;
     if (!resolveOrganizationCaller(serverId, userId)) return false;
     if (getBusinessOrganizationRole(serverId, project.organizationId, userId)) return true;
-    return !!getBusinessOrganization(serverId, project.organizationId, { includeArchived: true })
-      ?.archived_at;
+    return wasBusinessOrganizationMemberAtArchive(serverId, project.organizationId, userId);
   } catch {
     return false;
   }
