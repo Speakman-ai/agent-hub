@@ -8,15 +8,59 @@ export const OrganizationAgentParams = OrganizationParams.extend({
 export const OrganizationSessionBody = z
   .object({ name: z.string().trim().min(1).max(200).optional() })
   .strict();
+const OrganizationTool = z.enum([
+  'projects:read',
+  'dispatch',
+  'artifacts',
+  'credentials',
+  'skills',
+  'web',
+  'browser',
+  'computer',
+  'approvals',
+]);
+const ProjectScope = z.union([
+  z.literal('all-linked'),
+  z.array(z.string().min(1).max(200)).max(500),
+]);
+const AgentConfigFields = {
+  name: z.string().trim().min(1).max(200).optional(),
+  systemPrompt: z.string().max(32000).optional(),
+  model: z.string().trim().min(1).max(200).optional(),
+  tools: z
+    .array(OrganizationTool)
+    .max(OrganizationTool.options.length * 2)
+    .optional(),
+  projects: ProjectScope.optional().openapi({
+    description:
+      "'all-linked' or an explicit subset (empty allowed). Explicit IDs must be linked and visible to the caller. Effective scope is always intersected with each session owner's current access.",
+  }),
+  computerToolEnabled: z.boolean().optional().openapi({
+    description: 'Computer preference; requires the computer tool. Never provisions a desktop.',
+  }),
+  enabled: z.boolean().optional(),
+};
 export const OrganizationAgentPatch = z
+  .object({ ...AgentConfigFields, archived: z.boolean().optional() })
+  .strict();
+export const OrganizationAgentCreate = z
   .object({
-    name: z.string().trim().min(1).max(200).optional(),
-    systemPrompt: z.string().max(32000).optional(),
-    model: z.string().trim().min(1).max(200).optional(),
-    enabled: z.boolean().optional(),
-    archived: z.boolean().optional(),
+    ...AgentConfigFields,
+    engine: z.string().trim().min(1).max(100).optional(),
+    templateId: z.string().min(1).max(100).optional().openapi({
+      description:
+        'Optional starter template. Copies name and instructions only; grants no tools or projects.',
+    }),
   })
   .strict();
+export const OrganizationAgentTemplateSchema = z.object({
+  id: z.string(),
+  version: z.number().int(),
+  label: z.string(),
+  name: z.string(),
+  description: z.string(),
+  instructions: z.string(),
+});
 export const OrganizationRuntimeAgent = z.object({
   id: z.string(),
   name: z.string(),
@@ -30,6 +74,12 @@ export const OrganizationRuntimeAgent = z.object({
     projects: z.union([z.literal('all-linked'), z.array(z.string())]),
     tools: z.array(z.string()),
   }),
+  organizationTemplate: z.object({ id: z.string(), version: z.number().int() }).optional(),
+  isAssistant: z.boolean().optional(),
+  effectiveProjectIds: z
+    .array(z.string())
+    .optional()
+    .openapi({ description: 'Linked projects this agent can reach for the calling user now.' }),
 });
 export const OrganizationMemoryBody = z
   .object({
@@ -78,6 +128,51 @@ registerPath({
     200: {
       description: 'Updated agent; history retained.',
       content: json(z.object({ agent: OrganizationRuntimeAgent })),
+    },
+    ...errors,
+  },
+});
+registerPath({
+  method: 'post',
+  path: '/api/organizations/{organizationId}/agents',
+  tags: ['Organizations'],
+  summary: 'Create an organization agent from scratch or from an optional starter template',
+  request: {
+    params: OrganizationParams,
+    body: { required: true, content: json(OrganizationAgentCreate) },
+  },
+  responses: {
+    201: {
+      description: 'New agent with a stable ID. Computer is off unless explicitly enabled.',
+      content: json(z.object({ agent: OrganizationRuntimeAgent })),
+    },
+    ...errors,
+  },
+});
+registerPath({
+  method: 'get',
+  path: '/api/organizations/{organizationId}/agents/{agentId}',
+  tags: ['Organizations'],
+  summary: 'Read one organization agent with its effective project scope for the caller',
+  request: { params: OrganizationAgentParams },
+  responses: {
+    200: {
+      description: 'Agent configuration. Members only see enabled, unarchived agents.',
+      content: json(z.object({ agent: OrganizationRuntimeAgent })),
+    },
+    ...errors,
+  },
+});
+registerPath({
+  method: 'get',
+  path: '/api/organizations/{organizationId}/agent-templates',
+  tags: ['Organizations'],
+  summary: 'List optional organization-agent starter templates',
+  request: { params: OrganizationParams },
+  responses: {
+    200: {
+      description: 'Versioned starter instructions. Templates carry no permissions.',
+      content: json(z.object({ templates: z.array(OrganizationAgentTemplateSchema) })),
     },
     ...errors,
   },

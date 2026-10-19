@@ -47145,6 +47145,23 @@ paths:
                             - enabled
                             - projects
                             - tools
+                        organizationTemplate:
+                          type: object
+                          properties:
+                            id:
+                              type: string
+                            version:
+                              type: integer
+                          required:
+                            - id
+                            - version
+                        isAssistant:
+                          type: boolean
+                        effectiveProjectIds:
+                          type: array
+                          items:
+                            type: string
+                          description: Linked projects this agent can reach for the calling user now.
                       required:
                         - id
                         - name
@@ -47152,6 +47169,157 @@ paths:
                         - organizationScope
                 required:
                   - agents
+        "400":
+          description: Invalid request.
+        "401":
+          description: User identity required.
+        "403":
+          description: Organization administrator required.
+        "404":
+          description: Organization agent or session unavailable.
+    post:
+      tags:
+        - Organizations
+      summary: Create an organization agent from scratch or from an optional starter template
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                systemPrompt:
+                  type: string
+                  maxLength: 32000
+                model:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                tools:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                      - projects:read
+                      - dispatch
+                      - artifacts
+                      - credentials
+                      - skills
+                      - web
+                      - browser
+                      - computer
+                      - approvals
+                  maxItems: 18
+                projects:
+                  anyOf:
+                    - type: string
+                      enum:
+                        - all-linked
+                    - type: array
+                      items:
+                        type: string
+                        minLength: 1
+                        maxLength: 200
+                      maxItems: 500
+                  description: "'all-linked' or an explicit subset (empty allowed). Explicit IDs must be linked and visible to the caller. Effective scope is always intersected with each session owner's current access."
+                computerToolEnabled:
+                  type: boolean
+                  description: Computer preference; requires the computer tool. Never provisions a desktop.
+                enabled:
+                  type: boolean
+                engine:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+                templateId:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+                  description: Optional starter template. Copies name and instructions only; grants no tools or projects.
+              additionalProperties: false
+      responses:
+        "201":
+          description: New agent with a stable ID. Computer is off unless explicitly enabled.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      engine:
+                        type: string
+                      model:
+                        type: string
+                      systemPrompt:
+                        type: string
+                      computerToolEnabled:
+                        type: boolean
+                      organizationScope:
+                        type: object
+                        properties:
+                          enabled:
+                            type: boolean
+                          archivedAt:
+                            type: string
+                            nullable: true
+                          projects:
+                            anyOf:
+                              - type: string
+                                enum:
+                                  - all-linked
+                              - type: array
+                                items:
+                                  type: string
+                          tools:
+                            type: array
+                            items:
+                              type: string
+                        required:
+                          - enabled
+                          - projects
+                          - tools
+                      organizationTemplate:
+                        type: object
+                        properties:
+                          id:
+                            type: string
+                          version:
+                            type: integer
+                        required:
+                          - id
+                          - version
+                      isAssistant:
+                        type: boolean
+                      effectiveProjectIds:
+                        type: array
+                        items:
+                          type: string
+                        description: Linked projects this agent can reach for the calling user now.
+                    required:
+                      - id
+                      - name
+                      - engine
+                      - organizationScope
+                required:
+                  - agent
         "400":
           description: Invalid request.
         "401":
@@ -47198,6 +47366,36 @@ paths:
                   type: string
                   minLength: 1
                   maxLength: 200
+                tools:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                      - projects:read
+                      - dispatch
+                      - artifacts
+                      - credentials
+                      - skills
+                      - web
+                      - browser
+                      - computer
+                      - approvals
+                  maxItems: 18
+                projects:
+                  anyOf:
+                    - type: string
+                      enum:
+                        - all-linked
+                    - type: array
+                      items:
+                        type: string
+                        minLength: 1
+                        maxLength: 200
+                      maxItems: 500
+                  description: "'all-linked' or an explicit subset (empty allowed). Explicit IDs must be linked and visible to the caller. Effective scope is always intersected with each session owner's current access."
+                computerToolEnabled:
+                  type: boolean
+                  description: Computer preference; requires the computer tool. Never provisions a desktop.
                 enabled:
                   type: boolean
                 archived:
@@ -47250,6 +47448,23 @@ paths:
                           - enabled
                           - projects
                           - tools
+                      organizationTemplate:
+                        type: object
+                        properties:
+                          id:
+                            type: string
+                          version:
+                            type: integer
+                        required:
+                          - id
+                          - version
+                      isAssistant:
+                        type: boolean
+                      effectiveProjectIds:
+                        type: array
+                        items:
+                          type: string
+                        description: Linked projects this agent can reach for the calling user now.
                     required:
                       - id
                       - name
@@ -47257,6 +47472,159 @@ paths:
                       - organizationScope
                 required:
                   - agent
+        "400":
+          description: Invalid request.
+        "401":
+          description: User identity required.
+        "403":
+          description: Organization administrator required.
+        "404":
+          description: Organization agent or session unavailable.
+    get:
+      tags:
+        - Organizations
+      summary: Read one organization agent with its effective project scope for the caller
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: agentId
+          in: path
+      responses:
+        "200":
+          description: Agent configuration. Members only see enabled, unarchived agents.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      engine:
+                        type: string
+                      model:
+                        type: string
+                      systemPrompt:
+                        type: string
+                      computerToolEnabled:
+                        type: boolean
+                      organizationScope:
+                        type: object
+                        properties:
+                          enabled:
+                            type: boolean
+                          archivedAt:
+                            type: string
+                            nullable: true
+                          projects:
+                            anyOf:
+                              - type: string
+                                enum:
+                                  - all-linked
+                              - type: array
+                                items:
+                                  type: string
+                          tools:
+                            type: array
+                            items:
+                              type: string
+                        required:
+                          - enabled
+                          - projects
+                          - tools
+                      organizationTemplate:
+                        type: object
+                        properties:
+                          id:
+                            type: string
+                          version:
+                            type: integer
+                        required:
+                          - id
+                          - version
+                      isAssistant:
+                        type: boolean
+                      effectiveProjectIds:
+                        type: array
+                        items:
+                          type: string
+                        description: Linked projects this agent can reach for the calling user now.
+                    required:
+                      - id
+                      - name
+                      - engine
+                      - organizationScope
+                required:
+                  - agent
+        "400":
+          description: Invalid request.
+        "401":
+          description: User identity required.
+        "403":
+          description: Organization administrator required.
+        "404":
+          description: Organization agent or session unavailable.
+  /api/organizations/{organizationId}/agent-templates:
+    get:
+      tags:
+        - Organizations
+      summary: List optional organization-agent starter templates
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+      responses:
+        "200":
+          description: Versioned starter instructions. Templates carry no permissions.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  templates:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        version:
+                          type: integer
+                        label:
+                          type: string
+                        name:
+                          type: string
+                        description:
+                          type: string
+                        instructions:
+                          type: string
+                      required:
+                        - id
+                        - version
+                        - label
+                        - name
+                        - description
+                        - instructions
+                required:
+                  - templates
         "400":
           description: Invalid request.
         "401":
@@ -47346,6 +47714,23 @@ paths:
                           - enabled
                           - projects
                           - tools
+                      organizationTemplate:
+                        type: object
+                        properties:
+                          id:
+                            type: string
+                          version:
+                            type: integer
+                        required:
+                          - id
+                          - version
+                      isAssistant:
+                        type: boolean
+                      effectiveProjectIds:
+                        type: array
+                        items:
+                          type: string
+                        description: Linked projects this agent can reach for the calling user now.
                     required:
                       - id
                       - name

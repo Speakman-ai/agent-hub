@@ -3173,6 +3173,8 @@ export interface OrganizationAgentScope {
 export interface Agent {
   /** Server-enforced organization permissions; names and role templates carry no authority. */
   organizationScope?: OrganizationAgentScope;
+  /** Starter template copied at creation. Provenance only; never re-applied. */
+  organizationTemplate?: { id: string; version: number };
   id: string;
   name: string;
   engine: string;

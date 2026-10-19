@@ -1,11 +1,17 @@
 import { Router, type Request, type Response } from 'express';
 import type { AuthenticatedRequest } from '../auth.js';
-import type { RouteDeps } from '../types.js';
+import type { Agent, RouteDeps } from '../types.js';
 import { getActiveOrgId } from '../orgs.js';
 import { getBusinessOrganization } from '../business-organizations-store.js';
 import { organizationAccess, resolveOrganizationCaller } from '../business-organizations-access.js';
 import { ensureOrganizationWorkspace } from '../organization-workspaces.js';
-import { saveProjects } from '../project-model.js';
+import {
+  createOrganizationAgent,
+  organizationAgentView,
+  updateOrganizationAgent,
+  OrganizationAgentError,
+} from '../organization-agents.js';
+import { ORGANIZATION_AGENT_TEMPLATES } from '../organization-agent-templates.js';
 import { createOrganizationSession, organizationAgentForUser } from '../organization-sessions.js';
 import { userOwnsSession } from '../session-ownership.js';
 import { organizationSessionWorkspace } from '../organization-capabilities.js';
@@ -13,6 +19,7 @@ import { appendOrganizationMemory, readOrganizationMemory } from '../organizatio
 import {
   OrganizationAgentParams,
   OrganizationAgentPatch,
+  OrganizationAgentCreate,
   OrganizationRuntimeAgent,
   OrganizationSessionBody,
   OrganizationMemoryBody,
@@ -46,17 +53,75 @@ export default function createOrganizationRuntimeRoutes(
       project: ensureOrganizationWorkspace(caller.serverId, id),
     };
   }
+  type Context = NonNullable<ReturnType<typeof resolve>>;
+  const usable = (agent: Agent) =>
+    Boolean(agent.organizationScope?.enabled && !agent.organizationScope.archivedAt);
+  const view = (context: Context, agent: Agent) =>
+    OrganizationRuntimeAgent.parse(organizationAgentView(context.caller, context.project, agent));
+  function fail(res: Response, err: unknown) {
+    if (err instanceof OrganizationAgentError)
+      return res.status(err.status).json({ error: err.message });
+    throw err;
+  }
+  function changed(context: Context, action: string, agentId: string) {
+    deps.broadcast({
+      type: 'organization_updated',
+      serverId: context.caller.serverId,
+      organizationId: context.project.organizationId,
+      action,
+      agentId,
+    });
+  }
+  router.get('/api/organizations/:organizationId/agent-templates', (req, res) => {
+    if (!OrganizationParams.safeParse(req.params).success)
+      return res.status(400).json({ error: 'Invalid request' });
+    if (!resolve(req, res)) return;
+    res.json({ templates: ORGANIZATION_AGENT_TEMPLATES });
+  });
   router.get('/api/organizations/:organizationId/agents', (req, res) => {
     if (!OrganizationParams.safeParse(req.params).success)
       return res.status(400).json({ error: 'Invalid request' });
     const context = resolve(req, res);
     if (!context) return;
     const agents = context.project.agents.filter(
-      (a) =>
-        context.access.canManage ||
-        (a.organizationScope?.enabled && !a.organizationScope.archivedAt),
+      (a) => a.organizationScope && (context.access.canManage || usable(a)),
     );
-    res.json({ agents: agents.map((agent) => OrganizationRuntimeAgent.parse(agent)) });
+    res.json({ agents: agents.map((agent) => view(context, agent)) });
+  });
+  router.post('/api/organizations/:organizationId/agents', (req, res) => {
+    const body = OrganizationAgentCreate.safeParse(req.body);
+    if (!OrganizationParams.safeParse(req.params).success || !body.success)
+      return res.status(400).json({ error: 'Invalid request' });
+    const context = resolve(req, res);
+    if (!context) return;
+    if (!context.access.canManage)
+      return res.status(403).json({ error: 'Organization administrator required' });
+    try {
+      const agent = createOrganizationAgent(
+        context.caller,
+        context.project,
+        deps.config,
+        body.data,
+      );
+      changed(context, 'agent_created', agent.id);
+      res.status(201).json({ agent: view(context, agent) });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+  function findOrganizationAgent(context: Context, agentId: string) {
+    const agent = context.project.agents.find((a) => a.id === agentId);
+    if (!agent?.organizationScope) return null;
+    return context.access.canManage || usable(agent) ? agent : null;
+  }
+  router.get('/api/organizations/:organizationId/agents/:agentId', (req, res) => {
+    if (!OrganizationAgentParams.safeParse(req.params).success)
+      return res.status(400).json({ error: 'Invalid request' });
+    const context = resolve(req, res);
+    if (!context) return;
+    const agent = findOrganizationAgent(context, String(req.params.agentId));
+    if (!agent) return res.status(404).json({ error: 'Agent not found' });
+    res.json({ agent: view(context, agent) });
   });
   router.patch('/api/organizations/:organizationId/agents/:agentId', (req, res) => {
     const body = OrganizationAgentPatch.safeParse(req.body);
@@ -66,26 +131,15 @@ export default function createOrganizationRuntimeRoutes(
     if (!context) return;
     if (!context.access.canManage)
       return res.status(403).json({ error: 'Organization administrator required' });
-    const agent = context.project.agents.find((a) => a.id === req.params.agentId);
-    if (!agent?.organizationScope) return res.status(404).json({ error: 'Agent not found' });
-    if (
-      body.data.model &&
-      !deps.config.engineValidModels?.[agent.engine]?.includes(body.data.model)
-    )
-      return res.status(400).json({ error: 'Invalid model for agent engine' });
-    const { enabled, archived, ...fields } = body.data;
-    Object.assign(agent, fields);
-    if (enabled !== undefined) agent.organizationScope.enabled = enabled;
-    if (archived !== undefined)
-      agent.organizationScope.archivedAt = archived ? new Date().toISOString() : null;
-    saveProjects();
-    deps.broadcast({
-      type: 'organization_updated',
-      serverId: context.caller.serverId,
-      organizationId: context.project.organizationId,
-      action: 'agent_updated',
-    });
-    res.json({ agent: OrganizationRuntimeAgent.parse(agent) });
+    const agent = findOrganizationAgent(context, String(req.params.agentId));
+    if (!agent) return res.status(404).json({ error: 'Agent not found' });
+    try {
+      updateOrganizationAgent(context.caller, context.project, agent, deps.config, body.data);
+      changed(context, 'agent_updated', agent.id);
+      res.json({ agent: view(context, agent) });
+    } catch (err) {
+      fail(res, err);
+    }
   });
   router.post('/api/organizations/:organizationId/agents/:agentId/sessions', (req, res) => {
     const body = OrganizationSessionBody.safeParse(req.body);
