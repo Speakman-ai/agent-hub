@@ -18,6 +18,7 @@ import {
   resetOrganizationCapabilitiesForTests,
   verifyOrganizationCapability,
   setOrganizationRevocationHandler,
+  revokeOrganizationSession,
 } from './organization-capabilities.js';
 import {
   initBackgroundAgentSessionHook,
@@ -572,5 +573,86 @@ describe('interrupted starts', () => {
     drainOrganizationDispatchQueue();
     expect(rows()[0]).toMatchObject({ status: 'revoked', target_session_id: null });
     expect(targetSessions()).toHaveLength(0);
+  });
+});
+
+describe('dispatch from the signed-in member', () => {
+  const memberPost = (user: string, body: Record<string, unknown>, session = 'org-session') =>
+    request(makeApp())
+      .post(`/api/organizations/${organizationId}/sessions/${session}/dispatches`)
+      .set('x-test-user', user)
+      .send(body);
+
+  it('dispatches from the caller’s own organization chat, once per idempotency key', async () => {
+    const first = await memberPost('person', task('ui-1')).expect(201);
+    expect(first.body).toMatchObject({
+      status: 'accepted',
+      initiatingSessionId: 'org-session',
+      organizationAgentId: 'org-agent',
+      actingUserId: 'person',
+      projectId: 'linked',
+      agentId: 'target',
+    });
+    // A double tap or network retry sends the same key: same request, no second session.
+    const retry = await memberPost('person', task('ui-1')).expect(200);
+    expect(retry.body).toMatchObject({
+      requestId: first.body.requestId,
+      sessionId: first.body.sessionId,
+      replayed: true,
+    });
+    expect(targetSessions()).toHaveLength(1);
+    expect(handleChat).toHaveBeenCalledTimes(1);
+    const list = await request(makeApp())
+      .get(`/api/organizations/${organizationId}/dispatches`)
+      .set('x-test-user', 'person')
+      .expect(200);
+    expect(list.body.dispatches.map((d: { requestId: string }) => d.requestId)).toEqual([
+      first.body.requestId,
+    ]);
+  });
+
+  it('is not blocked by a lapsed agent CLI credential', async () => {
+    const token = mint();
+    revokeOrganizationSession('org-session');
+    expect(verifyOrganizationCapability(token)).toBeNull();
+    await memberPost('person', task('after-revoke')).expect(201);
+  });
+
+  it('hides chats the caller does not own and other organizations', async () => {
+    const other = await memberPost('another', task('stolen')).expect(404);
+    expect(other.body.code).toBe('session_not_found');
+    await memberPost('person', task('missing'), 'no-such-session').expect(404);
+    await request(makeApp())
+      .post(`/api/organizations/not-this-org/sessions/org-session/dispatches`)
+      .set('x-test-user', 'person')
+      .send(task('wrong-org'))
+      .expect(404);
+    expect(handleChat).not.toHaveBeenCalled();
+  });
+
+  it('applies the agent’s tools and project scope and current links', async () => {
+    const scope = workspace.agents[0].organizationScope!;
+    scope.tools = ['projects:read'];
+    const noTool = await memberPost('person', task('m1')).expect(403);
+    expect(noTool.body.code).toBe('dispatch_not_permitted');
+    scope.tools = ['projects:read', 'dispatch'];
+    detachBusinessOrganizationProject('default', organizationId, 'linked');
+    const unlinked = await memberPost('person', task('m2')).expect(404);
+    expect(unlinked.body.code).toBe('target_not_found');
+    await memberPost('person', task('m3', { projectId: 'private', agentId: 'hidden' })).expect(404);
+    scope.archivedAt = '2026-10-19T00:00:00Z';
+    await memberPost('person', task('m4', { projectId: 'second', agentId: 'second-dev' })).expect(
+      404,
+    );
+    expect(handleChat).not.toHaveBeenCalled();
+  });
+
+  it('refuses organization capabilities on the member route', async () => {
+    await request(makeApp())
+      .post(`/api/organizations/${organizationId}/sessions/org-session/dispatches`)
+      .set('X-API-Key', mint())
+      .send(task('cap'))
+      .expect((res) => expect([401, 403]).toContain(res.status));
+    expect(handleChat).not.toHaveBeenCalled();
   });
 });

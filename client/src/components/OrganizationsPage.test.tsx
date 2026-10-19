@@ -10,6 +10,7 @@ const fixture = vi.hoisted(() => ({
   members: {} as Record<string, any[]>,
   failure: '',
   deferred: null as null | (() => Promise<any>),
+  overviews: [] as string[],
 }));
 const request = vi.hoisted(() =>
   vi.fn(async (path: string, options: any = {}) => {
@@ -97,6 +98,31 @@ vi.mock('../utils/api', async () => {
         list: async () => ({ agents: [] }),
         templates: async () => ({ templates: [] }),
         chats: async () => ({ sessions: [] }),
+      },
+      organizationPortfolio: {
+        overview: async (id: string) => {
+          fixture.overviews.push(id);
+          return {
+            nextOffset: null,
+            retrievedAt: null,
+            projects: [
+              {
+                id: 'p',
+                name: 'Shared project',
+                source: { projectName: 'Shared project', record: 'project:p' },
+                timestamp: null,
+                agents: [],
+                agentCount: 0,
+                agentsTruncated: false,
+                board: { columns: [], openCards: 0, totalCards: 0, epics: 0, phases: 0 },
+                wiki: { pages: 0, updatedAt: null },
+                sessions: { own: 0, updatedAt: null },
+              },
+            ],
+          };
+        },
+        dispatches: async () => ({ dispatches: [], nextOffset: null }),
+        dispatch: async () => ({}),
       },
       getModelConfig: async () => ({}),
     },
@@ -286,6 +312,20 @@ describe('web/Electron organization flow', () => {
     expect(onSelect).toHaveBeenLastCalledWith('o2');
     await click('First');
     expect(onSelect).toHaveBeenLastCalledWith('o1');
+  });
+
+  it('shows the deep-linked organization portfolio and routes project drill-down', async () => {
+    seed();
+    fixture.overviews = [];
+    const onOpenProject = vi.fn();
+    flushSync(() =>
+      root.render(<Panel initialOrganizationId="o2" onOpenProject={onOpenProject} />),
+    );
+    await flush();
+    expect(fixture.overviews).toEqual(['o2']);
+    expect(container.querySelector('[aria-label="Organization portfolio"]')).toBeTruthy();
+    await click('Open Shared project');
+    expect(onOpenProject).toHaveBeenCalledWith('p');
   });
 
   it('follows Back/Forward route changes while the page stays mounted', async () => {

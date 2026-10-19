@@ -8,7 +8,11 @@ import { Router, type Request, type Response } from 'express';
 import type { AuthenticatedRequest } from '../auth.js';
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
 import { resolveOrganizationCaller } from '../business-organizations-access.js';
-import { organizationCapabilityCanReadProject } from '../organization-capabilities.js';
+import {
+  organizationCapabilityCanReadProject,
+  organizationMemberDispatchGrant,
+} from '../organization-capabilities.js';
+import { userOwnsSession } from '../session-ownership.js';
 import { scopeForMember } from '../organization-context.js';
 import {
   ORGANIZATION_DISPATCH_STATUSES,
@@ -90,6 +94,7 @@ const ErrorResponse = z.object({
 const errorContent = { 'application/json': { schema: ErrorResponse } };
 const OrgParams = z.object({ organizationId: z.string().min(1) });
 const DispatchParams = OrgParams.extend({ requestId: z.string().min(1) });
+const SessionDispatchParams = OrgParams.extend({ sessionId: z.string().min(1) });
 const ListQuery = z
   .object({
     limit: z.coerce.number().int().min(1).max(50).default(20),
@@ -131,6 +136,46 @@ registerPath({
     403: { description: 'Dispatch tool not configured for this agent.', content: errorContent },
     404: {
       description: 'Organization, project or agent not found or outside the current scope.',
+      content: errorContent,
+    },
+    409: { description: 'Idempotency key reused with a different payload.', content: errorContent },
+    422: {
+      description: 'Target agent disabled, ineligible or failed to start.',
+      content: errorContent,
+    },
+    503: { description: 'Session dispatch is not ready.', content: errorContent },
+  },
+});
+registerPath({
+  method: 'post',
+  path: '/api/organizations/{organizationId}/sessions/{sessionId}/dispatches',
+  tags: ['Organizations'],
+  summary: 'Dispatch a linked project agent from your own organization chat',
+  description:
+    "Signed-in member only. The chat must be the caller's own organization session in this organization; the request is attributed to that chat's organization agent and checked against its current tools and project scope, exactly like the agent's own dispatch. A lapsed agent CLI credential does not block it.",
+  request: {
+    params: SessionDispatchParams,
+    body: { content: { 'application/json': { schema: OrganizationDispatchRequestSchema } } },
+  },
+  responses: {
+    200: {
+      description: 'Identical retry of an accepted request: the same target session.',
+      content: { 'application/json': { schema: OrganizationDispatchView } },
+    },
+    201: {
+      description: 'Target session created and first turn started.',
+      content: { 'application/json': { schema: OrganizationDispatchView } },
+    },
+    202: {
+      description: 'Target busy; the request is queued and re-authorized when it runs.',
+      content: { 'application/json': { schema: OrganizationDispatchView } },
+    },
+    400: { description: 'Invalid body.', content: errorContent },
+    401: { description: 'Authentication required.', content: errorContent },
+    403: { description: 'Dispatch tool not configured for this agent.', content: errorContent },
+    404: {
+      description:
+        'Organization, chat, project or agent not found, not yours, or outside the current scope.',
       content: errorContent,
     },
     409: { description: 'Idempotency key reused with a different payload.', content: errorContent },
@@ -241,6 +286,49 @@ export default function createOrganizationDispatchRoutes(): Router {
     }
     sendDispatchOutcome(res, () =>
       requestOrganizationDispatch(grant, String(req.params.organizationId), parsed.data),
+    );
+  });
+
+  router.post('/api/organizations/:organizationId/sessions/:sessionId/dispatches', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const authenticated = req as AuthenticatedRequest;
+    if (authenticated.authOrganizationCapability) {
+      res.status(403).json({
+        error: 'Organization agents dispatch through /dispatches',
+        code: 'login_required',
+      });
+      return;
+    }
+    if (!authenticated.authUserId || !authenticated.authOrgId) {
+      res.status(401).json({ error: 'An authenticated user identity is required' });
+      return;
+    }
+    const parsed = OrganizationDispatchRequestSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({
+        error: parsed.error.issues[0]?.message || 'Invalid request',
+        code: 'invalid_request',
+      });
+      return;
+    }
+    const organizationId = String(req.params.organizationId);
+    const sessionId = String(req.params.sessionId);
+    let grant: ReturnType<typeof organizationMemberDispatchGrant> = null;
+    try {
+      grant = userOwnsSession(authenticated, sessionId)
+        ? organizationMemberDispatchGrant(sessionId, authenticated.authUserId)
+        : null;
+    } catch {
+      grant = null;
+    }
+    // One answer for unknown, foreign, archived and other users' chats: no existence oracle.
+    if (!grant || grant.organizationId !== organizationId) {
+      res.status(404).json({ error: 'Organization chat not found', code: 'session_not_found' });
+      return;
+    }
+    const memberGrant = grant;
+    sendDispatchOutcome(res, () =>
+      requestOrganizationDispatch(memberGrant, organizationId, parsed.data, { viaLogin: true }),
     );
   });
 

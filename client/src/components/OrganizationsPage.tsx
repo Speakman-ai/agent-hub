@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useMemo, useSyncExternalStore } from 'react';
 import OrganizationAgentsPanel, { type OrganizationChatTarget } from './OrganizationAgentsPanel';
+import OrganizationPortfolioPanel from './OrganizationPortfolioPanel';
 import { createUseOrganizations } from '@shared/hooks/useOrganizations';
 import type {
   OrganizationRole,
@@ -26,12 +27,16 @@ type PageProps = {
   initialOrganizationId?: string | null;
   onSelectOrganization?: (organizationId: string | null) => void;
   onOpenChat?: (target: OrganizationChatTarget) => void;
+  onOpenProject?: (projectId: string) => void;
+  onOpenSession?: (agentId: string, sessionId: string) => void;
 };
 export default function OrganizationsPage({
   projectId,
   initialOrganizationId,
   onSelectOrganization,
   onOpenChat,
+  onOpenProject,
+  onOpenSession,
 }: PageProps) {
   const [refresh, setRefresh] = useState(0);
   useEffect(() => {
@@ -104,7 +109,13 @@ export default function OrganizationsPage({
             controller={controller}
           />
         ) : (
-          <OrganizationManager state={state} controller={controller} onOpenChat={onOpenChat} />
+          <OrganizationManager
+            state={state}
+            controller={controller}
+            onOpenChat={onOpenChat}
+            onOpenProject={onOpenProject}
+            onOpenSession={onOpenSession}
+          />
         ))}
     </section>
   );
@@ -114,6 +125,8 @@ type Props = {
   state: OrganizationState;
   controller: OrganizationController;
   onOpenChat?: (target: OrganizationChatTarget) => void;
+  onOpenProject?: (projectId: string) => void;
+  onOpenSession?: (agentId: string, sessionId: string) => void;
 };
 function ProjectOrganizations({ projectId, state, controller }: Props & { projectId: string }) {
   const [ids, setIds] = useState(() =>
@@ -159,7 +172,13 @@ function ProjectOrganizations({ projectId, state, controller }: Props & { projec
     </div>
   );
 }
-function OrganizationManager({ state, controller, onOpenChat }: Props) {
+function OrganizationManager({
+  state,
+  controller,
+  onOpenChat,
+  onOpenProject,
+  onOpenSession,
+}: Props) {
   const [newName, setNewName] = useState('');
   const selected = state.organizations.find((o) => o.id === state.selectedId);
   return (
@@ -207,6 +226,8 @@ function OrganizationManager({ state, controller, onOpenChat }: Props) {
           state={state}
           controller={controller}
           onOpenChat={onOpenChat}
+          onOpenProject={onOpenProject}
+          onOpenSession={onOpenSession}
         />
       ) : (
         state.organizations.length > 0 && (
@@ -216,7 +237,13 @@ function OrganizationManager({ state, controller, onOpenChat }: Props) {
     </div>
   );
 }
-function OrganizationDetails({ state, controller, onOpenChat }: Props) {
+function OrganizationDetails({
+  state,
+  controller,
+  onOpenChat,
+  onOpenProject,
+  onOpenSession,
+}: Props) {
   const organization = state.organizations.find((o) => o.id === state.selectedId)!;
   const [name, setName] = useState(organization.name);
   const [ids, setIds] = useState(() => (state.links[organization.id] || []).map((p) => p.id));
@@ -272,6 +299,13 @@ function OrganizationDetails({ state, controller, onOpenChat }: Props) {
           </button>
         </>
       )}
+      <OrganizationPortfolioPanel
+        organization={organization}
+        scope={scope}
+        onOpenProject={onOpenProject}
+        onOpenSession={onOpenSession}
+        onOpenChat={onOpenChat}
+      />
       <OrganizationAgentsPanel
         organization={organization}
         linkedProjects={state.links[organization.id] || []}

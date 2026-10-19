@@ -47249,6 +47249,154 @@ paths:
                     $ref: "#/components/schemas/OrganizationDispatch"
                 required:
                   - error
+  /api/organizations/{organizationId}/sessions/{sessionId}/dispatches:
+    post:
+      tags:
+        - Organizations
+      summary: Dispatch a linked project agent from your own organization chat
+      description: Signed-in member only. The chat must be the caller's own organization session in this organization; the request is attributed to that chat's organization agent and checked against its current tools and project scope, exactly like the agent's own dispatch. A lapsed agent CLI credential does not block it.
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: organizationId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrganizationDispatchRequest"
+      responses:
+        "200":
+          description: "Identical retry of an accepted request: the same target session."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationDispatch"
+        "201":
+          description: Target session created and first turn started.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationDispatch"
+        "202":
+          description: Target busy; the request is queued and re-authorized when it runs.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationDispatch"
+        "400":
+          description: Invalid body.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+        "403":
+          description: Dispatch tool not configured for this agent.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+        "404":
+          description: Organization, chat, project or agent not found, not yours, or outside the current scope.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+        "409":
+          description: Idempotency key reused with a different payload.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+        "422":
+          description: Target agent disabled, ineligible or failed to start.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+        "503":
+          description: Session dispatch is not ready.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
   /api/organizations/{organizationId}/dispatches/{requestId}:
     get:
       tags:

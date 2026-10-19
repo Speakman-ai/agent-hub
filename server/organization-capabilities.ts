@@ -364,6 +364,36 @@ export function organizationCapabilityCanReadProject(
   }
 }
 
+/**
+ * Authority for a dispatch the session owner starts from their own login rather than from the
+ * agent's CLI. The login is the fresh authorization, so a lapsed CLI credential does not block
+ * it; current membership, scope, tools and project access still do.
+ */
+export function organizationMemberDispatchGrant(
+  sessionId: string,
+  userId: string,
+): OrganizationCapability | null {
+  const current = currentOrganizationAuthority(sessionId);
+  if (!current || !userId || current.userId !== userId) return null;
+  return { ...current, expiresAt: Date.now() + ORGANIZATION_CAPABILITY_TTL_MS };
+}
+
+/** Same checks as organizationCapabilityCanReadProject minus CLI revocation state. */
+export function organizationAuthorityCanUseProject(
+  grant: OrganizationCapability,
+  projectId: string,
+  permission: string,
+): boolean {
+  const current = currentOrganizationAuthority(grant.sessionId);
+  return Boolean(
+    current &&
+    current.fingerprint === grant.fingerprint &&
+    current.projectIds.includes(projectId) &&
+    current.tools.includes(permission) &&
+    !isOrganizationWorkspace(findProjectForServer(grant.serverId, projectId)),
+  );
+}
+
 /** Exact method/path allowlist. New endpoints do not inherit organization CLI authority. */
 export function organizationCapabilityAllows(
   grant: OrganizationCapability,

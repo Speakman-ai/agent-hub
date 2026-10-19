@@ -1,5 +1,6 @@
 import { createOrganizationApi } from '@shared/utils/organizations';
 import { createOrganizationAgentApi } from '@shared/utils/organization-agents';
+import { createOrganizationPortfolioApi } from '@shared/utils/organization-portfolio';
 import type {
   CreateReminderBody,
   ReminderStatus,
@@ -114,6 +115,7 @@ export function infraQuery(params: Record<string, any>): string {
 export const api = {
   organizations: createOrganizationApi(fetchJSON),
   organizationAgents: createOrganizationAgentApi(fetchJSON),
+  organizationPortfolio: createOrganizationPortfolioApi(fetchJSON),
   // Agents & Sessions
   getAgents: () => fetchJSON('/agents'),
   getSessions: (agentId: any) => fetchJSON(`/agents/${agentId}/sessions`),

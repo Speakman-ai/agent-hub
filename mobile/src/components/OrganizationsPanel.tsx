@@ -15,6 +15,7 @@ import { colors } from '../theme/colors';
 import OrganizationAgentsSection, {
   type OrganizationChatTarget,
 } from './OrganizationAgentsSection';
+import OrganizationPortfolioSection from './OrganizationPortfolioSection';
 
 const useOrganizations = createUseOrganizations({ useEffect, useMemo, useSyncExternalStore });
 const scope = () =>
@@ -26,6 +27,8 @@ type Props = {
   state: OrganizationState;
   controller: OrganizationController;
   onOpenChat?: (target: OrganizationChatTarget) => void;
+  onOpenProject?: (projectId: string) => void;
+  onOpenSession?: (agentId: string, sessionId: string) => void;
   refreshKey?: unknown;
 };
 function Button({
@@ -103,12 +106,16 @@ export default function OrganizationsPanel({
   projectId,
   initialOrganizationId,
   onOpenChat,
+  onOpenProject,
+  onOpenSession,
   refreshKey,
 }: {
   projectId?: string;
   /** Organization to select once the list loads (navigation param). */
   initialOrganizationId?: string | null;
   onOpenChat?: (target: OrganizationChatTarget) => void;
+  onOpenProject?: (projectId: string) => void;
+  onOpenSession?: (agentId: string, sessionId: string) => void;
   /** Changes when the screen regains focus so agent rosters and chat history reload. */
   refreshKey?: unknown;
 }) {
@@ -158,6 +165,8 @@ export default function OrganizationsPanel({
             state={state}
             controller={controller}
             onOpenChat={onOpenChat}
+            onOpenProject={onOpenProject}
+            onOpenSession={onOpenSession}
             refreshKey={refreshKey}
           />
         ))}
@@ -208,7 +217,14 @@ function ProjectOrganizations({ projectId, state, controller }: Props & { projec
     </View>
   );
 }
-function Manager({ state, controller, onOpenChat, refreshKey }: Props) {
+function Manager({
+  state,
+  controller,
+  onOpenChat,
+  onOpenProject,
+  onOpenSession,
+  refreshKey,
+}: Props) {
   const [newName, setNewName] = useState('');
   const selected = state.organizations.find((o) => o.id === state.selectedId);
   return (
@@ -242,6 +258,8 @@ function Manager({ state, controller, onOpenChat, refreshKey }: Props) {
           state={state}
           controller={controller}
           onOpenChat={onOpenChat}
+          onOpenProject={onOpenProject}
+          onOpenSession={onOpenSession}
           refreshKey={refreshKey}
         />
       ) : (
@@ -252,7 +270,14 @@ function Manager({ state, controller, onOpenChat, refreshKey }: Props) {
     </View>
   );
 }
-function Details({ state, controller, onOpenChat, refreshKey }: Props) {
+function Details({
+  state,
+  controller,
+  onOpenChat,
+  onOpenProject,
+  onOpenSession,
+  refreshKey,
+}: Props) {
   const organization = state.organizations.find((o) => o.id === state.selectedId)!;
   const [name, setName] = useState(organization.name);
   const [ids, setIds] = useState(() => (state.links[organization.id] || []).map((p) => p.id));
@@ -309,6 +334,14 @@ function Details({ state, controller, onOpenChat, refreshKey }: Props) {
           <Button onPress={() => void controller.saveProjects(ids)}>Save project links</Button>
         </>
       )}
+      <OrganizationPortfolioSection
+        organization={organization}
+        scope={scope}
+        refreshKey={refreshKey}
+        onOpenProject={onOpenProject}
+        onOpenSession={onOpenSession}
+        onOpenChat={onOpenChat}
+      />
       <OrganizationAgentsSection
         organization={organization}
         linkedProjects={state.links[organization.id] || []}

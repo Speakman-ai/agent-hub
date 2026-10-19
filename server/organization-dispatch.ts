@@ -19,6 +19,7 @@ import { listBusinessOrganizationProjectLinks } from './business-organizations-s
 import {
   currentOrganizationAuthority,
   isOrganizationWorkspace,
+  organizationAuthorityCanUseProject,
   organizationCapabilityCanReadProject,
   type OrganizationCapability,
 } from './organization-capabilities.js';
@@ -249,6 +250,7 @@ function checkTarget(serverId: string, projectId: string, agentId: string): Targ
 function checkCapability(
   grant: OrganizationCapability,
   input: OrganizationDispatchInput,
+  viaLogin: boolean,
 ): TargetCheck {
   if (!grant.tools.includes('dispatch')) {
     return {
@@ -258,7 +260,10 @@ function checkCapability(
       message: 'This organization agent is not configured to dispatch project agents',
     };
   }
-  if (!organizationCapabilityCanReadProject(grant, input.projectId, 'dispatch')) {
+  const allowed = viaLogin
+    ? organizationAuthorityCanUseProject(grant, input.projectId, 'dispatch')
+    : organizationCapabilityCanReadProject(grant, input.projectId, 'dispatch');
+  if (!allowed) {
     return {
       ok: false,
       httpStatus: 404,
@@ -446,12 +451,14 @@ function httpStatusFor(row: OrganizationDispatchRow, replayed: boolean): number 
 
 /**
  * Handle one dispatch request from an organization capability. `organizationId` is the
- * route's organization; it must match the capability.
+ * route's organization; it must match the capability. `viaLogin` marks a request the session
+ * owner made from their own login (see organizationMemberDispatchGrant).
  */
 export function requestOrganizationDispatch(
   grant: OrganizationCapability,
   organizationId: string,
   input: OrganizationDispatchInput,
+  options: { viaLogin?: boolean } = {},
 ): OrganizationDispatchOutcome {
   if (grant.organizationId !== organizationId || grant.serverId !== getActiveOrgId()) {
     throw new OrganizationDispatchError(404, 'organization_not_found', 'Organization not found');
@@ -478,7 +485,7 @@ export function requestOrganizationDispatch(
     );
   }
 
-  const check = checkCapability(grant, input);
+  const check = checkCapability(grant, input, options.viaLogin === true);
   if (existing && (existing.target_session_id || existing.status === 'queued')) {
     // Replays are re-authorized: after an unlink the session stays the user's, but the
     // organization no longer gets to see it.

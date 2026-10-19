@@ -6951,6 +6951,11 @@ export default function App({ initialView }: any = {}) {
                   initialOrganizationId={organizationRouteId}
                   onSelectOrganization={setOrganizationRouteId}
                   onOpenChat={handleOpenOrganizationChat}
+                  onOpenProject={(id) => {
+                    setCurrentView(`kanban:${id}`);
+                    setSidebarOpen(false);
+                  }}
+                  onOpenSession={focusAgentSession}
                 />
               ) : currentView.startsWith('kanban:') ? (
                 <KanbanBoard

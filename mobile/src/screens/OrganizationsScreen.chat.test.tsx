@@ -164,6 +164,25 @@ describe('mobile organization chat', () => {
     }
   });
 
+  it('routes portfolio drill-downs to the project board and the dispatched session', async () => {
+    await act(async () => {
+      renderer = TestRenderer.create(
+        <AppProvider>
+          <OrganizationsScreen navigation={navigation} />
+          <Probe />
+        </AppProvider>,
+      );
+    });
+    await act(async () => ctl.panelProps.onOpenProject('alpha'));
+    expect(navigation.navigate).toHaveBeenCalledWith('Kanban', {
+      projectId: 'alpha',
+      project: undefined,
+    });
+    await act(async () => ctl.panelProps.onOpenSession('alpha-dev', 'target-1'));
+    expect(navigation.navigate).toHaveBeenLastCalledWith('Chat');
+    expect(probe(renderer)).toContain('session=target-1;');
+  });
+
   function focusableNavigation() {
     const handlers: Record<string, () => void> = {};
     return {

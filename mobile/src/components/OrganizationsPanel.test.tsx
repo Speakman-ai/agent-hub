@@ -99,6 +99,11 @@ vi.mock('../utils/api', async () => {
         templates: async () => ({ templates: [] }),
         chats: async () => ({ sessions: [] }),
       },
+      organizationPortfolio: {
+        overview: async () => ({ projects: [], nextOffset: null, retrievedAt: null }),
+        dispatches: async () => ({ dispatches: [], nextOffset: null }),
+        dispatch: async () => ({}),
+      },
       getModelConfig: async () => ({}),
     },
   };
@@ -151,6 +156,7 @@ vi.mock('react-native', () => ({
   ),
   StyleSheet: { create: (styles: any) => styles },
 }));
+vi.mock('./HubChatRefs', () => ({ HubChatPlainTextWithRefs: () => null }));
 vi.mock('../context/AppContext', () => ({ useApp: () => ({ lastOrganizationEvent: 0 }) }));
 
 import Panel from './OrganizationsPanel';

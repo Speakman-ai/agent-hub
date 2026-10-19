@@ -8,7 +8,7 @@ import { useApp } from '../context/AppContext';
 import { getActiveOrg } from '../utils/orgs';
 
 export default function OrganizationsScreen({ navigation, route }: any) {
-  const { openOrganizationChat } = useApp();
+  const { openOrganizationChat, handleOpenHandoffSession, projects } = useApp();
   // Chat opens on top of this screen, so it stays mounted; reload agents and history on return.
   // Keyed on leaving the screen rather than on its first focus, which may already have happened
   // before this effect subscribes.
@@ -43,6 +43,16 @@ export default function OrganizationsScreen({ navigation, route }: any) {
           refreshKey={focusKey}
           onOpenChat={(target) => {
             openOrganizationChat(target);
+            navigation.navigate('Chat');
+          }}
+          onOpenProject={(projectId) =>
+            navigation.navigate('Kanban', {
+              projectId,
+              project: (projects ?? []).find((p: any) => p.id === projectId),
+            })
+          }
+          onOpenSession={(agentId, sessionId) => {
+            handleOpenHandoffSession(agentId, sessionId);
             navigation.navigate('Chat');
           }}
         />
