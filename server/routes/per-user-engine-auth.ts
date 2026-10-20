@@ -77,6 +77,7 @@ import {
 import type { AuthenticatedRequest } from '../auth.js';
 import { registerPath, z } from '../openapi/registry.js';
 import { ErrorResponse } from '../openapi/schemas/auth.js';
+import { cursorOAuthExpiredAt, cursorOAuthExpiredMessage } from '../cursor-oauth-expiry.js';
 
 // OpenAPI registrations
 const PerUserCursorStatus = z.object({
@@ -964,7 +965,10 @@ export default function createPerUserEngineAuthRoutes(deps: RouteDeps): Router {
       home,
     });
     const parsed = parseCursorStatusJson(stdout, stderr);
-    const isAuthenticated = parsed.ok && parsed.isAuthenticated;
+    // `status` still says authenticated once the refresh token has expired;
+    // the CLI then fails every spawn with "Authentication required".
+    const expiredAt = cursorOAuthExpiredAt(home);
+    const isAuthenticated = parsed.ok && parsed.isAuthenticated && expiredAt === null;
     const uiStatus = computeCursorUiStatus({
       binaryPresent: true,
       loginInProgress: false,
@@ -978,9 +982,11 @@ export default function createPerUserEngineAuthRoutes(deps: RouteDeps): Router {
       loginInProgress: false,
       activeMethod: isAuthenticated ? ('oauth' as const) : ('none' as const),
       statusError:
-        code !== 0 || !parsed.ok
-          ? parsed.error || stderr.trim() || stdout.trim() || `cursor-agent status exited ${code}`
-          : null,
+        expiredAt !== null
+          ? cursorOAuthExpiredMessage(expiredAt)
+          : code !== 0 || !parsed.ok
+            ? parsed.error || stderr.trim() || stdout.trim() || `cursor-agent status exited ${code}`
+            : null,
     });
   });
 

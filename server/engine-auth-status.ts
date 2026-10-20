@@ -20,6 +20,7 @@ import os from 'os';
 import { detectCodexAuthMode } from './codex-auth.js';
 import { getCursorAuthenticatedCached } from './cursor-auth-cache.js';
 import { parseCursorStatusJson } from './cursor-auth-parse.js';
+import { cursorOAuthExpiredAt } from './cursor-oauth-expiry.js';
 import { getUserClaudeAuth, getUserCursorAuth, getUserCodexAuth } from './users-store.js';
 import { ensurePerUserHome, perUserHomeHasClaudeCache } from './per-user-home.js';
 import {
@@ -52,6 +53,9 @@ export function probeCursorStatus(binPath: string, opts?: ProbeCursorStatusOpts)
     if (!existsSync(binPath)) return resolve(false);
     const env = opts?.env ? { ...process.env, ...opts.env } : process.env;
     const cwd = typeof env.HOME === 'string' && env.HOME.length > 0 ? env.HOME : os.homedir();
+    // `status` reports tokens that are merely present as authenticated, even
+    // after the refresh token has expired and the CLI can no longer sign in.
+    if (cursorOAuthExpiredAt(cwd) !== null) return resolve(false);
     const proc = execFile(
       binPath,
       ['status', '--format', 'json'],

@@ -19,10 +19,13 @@ import { hasPopulatedCodexDeviceAuth } from './per-user-codex-device-login.js';
 import { detectCodexAuthMode } from './codex-auth.js';
 import { detectGrokAuthMode } from './grok-device-auth-parse.js';
 import { homeHasMuseCredential } from './muse-cli.js';
+import { cursorOAuthExpiredAt, cursorOAuthExpiredMessage } from './cursor-oauth-expiry.js';
 
 function perUserHomeHasCursorCache(userId: string, dataDir: string): boolean {
   try {
-    const cursorDir = path.join(perUserHomePath(userId, dataDir), '.cursor');
+    const home = perUserHomePath(userId, dataDir);
+    if (cursorOAuthExpiredAt(home) !== null) return false;
+    const cursorDir = path.join(home, '.cursor');
     if (!existsSync(cursorDir)) return false;
     return readdirSync(cursorDir).length > 0;
   } catch {
@@ -113,11 +116,13 @@ const PER_ACCOUNT_ENGINES = new Set([
 export class EngineAuthRequiredError extends Error {
   readonly engine: string;
   readonly userId: string | null;
-  constructor(engine: string, userId: string | null) {
+  constructor(engine: string, userId: string | null, detail?: string) {
     super(
-      userId
-        ? `No ${engine} credentials for this account. Add your own ${engine} login under Account settings — Agent Hub spawns use your own credentials only, with no host or org-owner fallback.`
-        : `Cannot spawn ${engine}: no acting user. AI credentials are strictly per-account, so this action needs an authenticated owner with their own ${engine} login.`,
+      detail
+        ? detail
+        : userId
+          ? `No ${engine} credentials for this account. Add your own ${engine} login under Account settings — Agent Hub spawns use your own credentials only, with no host or org-owner fallback.`
+          : `Cannot spawn ${engine}: no acting user. AI credentials are strictly per-account, so this action needs an authenticated owner with their own ${engine} login.`,
     );
     this.name = 'EngineAuthRequiredError';
     this.engine = engine;
@@ -183,7 +188,26 @@ export function assertEngineCredsOrThrow(
 ): void {
   if (!engine || !PER_ACCOUNT_ENGINES.has(engine)) return;
   if (!userId || !userHasEngineCreds(engine, userId, dataDir)) {
-    throw new EngineAuthRequiredError(engine, userId ?? null);
+    throw new EngineAuthRequiredError(
+      engine,
+      userId ?? null,
+      expiredLoginDetail(engine, userId, dataDir),
+    );
+  }
+}
+
+/** Actionable message when the only Cursor credential is an expired OAuth login. */
+function expiredLoginDetail(
+  engine: string,
+  userId: string | null,
+  dataDir: string,
+): string | undefined {
+  if (engine !== 'cursor-agent' || !userId?.trim() || !dataDir?.trim()) return undefined;
+  try {
+    const expiredAt = cursorOAuthExpiredAt(perUserHomePath(userId, dataDir));
+    return expiredAt === null ? undefined : cursorOAuthExpiredMessage(expiredAt);
+  } catch {
+    return undefined;
   }
 }
 

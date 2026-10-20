@@ -109,3 +109,51 @@ describe('userHasEngineCreds — muse-code', () => {
     expect(userHasEngineCreds('muse-code', 'u2', dataDir)).toBe(false);
   });
 });
+
+describe('cursor-agent creds with an expired OAuth login', () => {
+  beforeEach(() => {
+    freshSandbox();
+  });
+
+  function jwt(expMs: number): string {
+    const enc = (o: object) => Buffer.from(JSON.stringify(o)).toString('base64url');
+    return `${enc({ alg: 'none' })}.${enc({ exp: Math.floor(expMs / 1000) })}.sig`;
+  }
+
+  // Mirrors the reported state: `.cursor/` holds CLI config and chats, while
+  // auth.json carries access + refresh tokens that both expired. `agent status`
+  // still says authenticated, so the advisor spawn ran and died with
+  // "Authentication required".
+  function seedExpiredLogin(userId: string): void {
+    const home = ensurePerUserHome(userId, dataDir);
+    mkdirSync(path.join(home, '.cursor'), { recursive: true });
+    writeFileSync(path.join(home, '.cursor', 'cli-config.json'), '{}');
+    mkdirSync(path.join(home, '.config', 'cursor'), { recursive: true });
+    const past = Date.now() - 2 * 24 * 60 * 60 * 1000;
+    writeFileSync(
+      path.join(home, '.config', 'cursor', 'auth.json'),
+      JSON.stringify({ accessToken: jwt(past), refreshToken: jwt(past) }),
+    );
+  }
+
+  it('treats the expired login as no credentials', () => {
+    const user = createUser({ username: 'cursor-expired-user', passwordHash: 'x' });
+    seedExpiredLogin(user.id);
+    expect(userHasEngineCreds('cursor-agent', user.id, dataDir)).toBe(false);
+  });
+
+  it('refuses the spawn with a sign-in-again message', () => {
+    const user = createUser({ username: 'cursor-expired-user2', passwordHash: 'x' });
+    seedExpiredLogin(user.id);
+    expect(() => assertEngineCredsOrThrow('cursor-agent', user.id, dataDir)).toThrow(
+      /Cursor login expired on .*Sign in to Cursor again under Account settings/,
+    );
+  });
+
+  it('still accepts a stored Cursor API key alongside the dead login', () => {
+    const user = createUser({ username: 'cursor-expired-key-user', passwordHash: 'x' });
+    seedExpiredLogin(user.id);
+    setUserCursorAuth(user.id, { apiKey: 'cur-test' });
+    expect(() => assertEngineCredsOrThrow('cursor-agent', user.id, dataDir)).not.toThrow();
+  });
+});
