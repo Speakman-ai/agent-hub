@@ -5,6 +5,8 @@ import {
   BellOff,
   Bot,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   ListTodo,
   CornerDownRight,
   ExternalLink,
@@ -47,6 +49,10 @@ import {
   chatSpaceLabel,
   chatSeedContext,
   sortSpacesByActivity,
+  groupSpaces,
+  visibleGroupSpaces,
+  SPACE_GROUP_LIMIT,
+  type SpaceGroupKey,
   bumpSpaceActivity,
   filterSpaces,
   reconcileRange,
@@ -332,6 +338,15 @@ type PendingDispatch = {
 
 export { LINKS_UNKNOWN_WARNING };
 
+function toggleSetMember<T>(set: (fn: (prev: Set<T>) => Set<T>) => void, key: T) {
+  set((prev) => {
+    const next = new Set(prev);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    return next;
+  });
+}
+
 export default function GoogleChatPage({
   onOpenAccountSettings,
   onSessionStarted,
@@ -349,6 +364,8 @@ export default function GoogleChatPage({
   const [spaces, setSpaces] = useState<ChatSpace[]>([]);
   const [spacesLoading, setSpacesLoading] = useState(false);
   const [spaceFilter, setSpaceFilter] = useState('');
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<SpaceGroupKey>>(() => new Set());
+  const [expandedGroups, setExpandedGroups] = useState<Set<SpaceGroupKey>>(() => new Set());
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [views, setViews] = useState<Record<string, SpaceView>>({});
   // Loaders read the range bounds from here at call time, not from a stale
@@ -1504,6 +1521,66 @@ export default function GoogleChatPage({
     };
   }
 
+  const renderSpaceRow = (space: ChatSpace) => {
+    const muted = !!space.id && mutes.spaceIds.has(space.id);
+    // Muted spaces never call for attention, and none do until the
+    // mute list loads.
+    const quiet = !space.id || isSpaceQuiet(mutes, space.id);
+    const unreadCount = quiet ? 0 : (push.unread[`spaces/${space.id}`]?.count ?? 0);
+    // The open space is being read, so it never shows a dot.
+    const hasDot =
+      !quiet &&
+      !unreadCount &&
+      space.id !== selectedId &&
+      isSpaceUnread(space, { google: googleRead, seen, useGoogle: canReadState });
+    return (
+      <button
+        key={space.id}
+        type="button"
+        onClick={() => setSelectedId(space.id)}
+        data-testid={`chat-space-${space.id}`}
+        className={`block w-full truncate px-4 py-2 text-left text-sm ${
+          space.id === selectedId ? 'bg-gray-800 text-white' : 'text-gray-300 hover:bg-gray-800/50'
+        }`}
+      >
+        <span className="flex items-center gap-2">
+          <span
+            className={`min-w-0 flex-1 truncate ${
+              unreadCount || hasDot ? 'font-semibold text-white' : ''
+            }`}
+          >
+            {chatSpaceLabel(space)}
+          </span>
+          {muted && (
+            <BellOff
+              size={12}
+              data-testid={`chat-space-muted-${space.id}`}
+              aria-label="Muted"
+              className="shrink-0 text-gray-500"
+            />
+          )}
+          {!!unreadCount && (
+            <span
+              data-testid={`chat-space-unread-${space.id}`}
+              aria-label={`${unreadCount} unread`}
+              className="shrink-0 rounded-full bg-blue-600 px-1.5 text-[10px] font-semibold leading-4 text-white"
+            >
+              {formatUnreadCount(unreadCount)}
+            </span>
+          )}
+          {hasDot && (
+            <span
+              data-testid={`chat-unread-dot-${space.id}`}
+              role="img"
+              aria-label="Unread"
+              className="h-2 w-2 shrink-0 rounded-full bg-blue-500"
+            />
+          )}
+        </span>
+      </button>
+    );
+  };
+
   return (
     <div className="flex flex-1 min-h-0 flex-col bg-gray-950" data-testid="google-chat-page">
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-gray-800 px-4 py-3">
@@ -1643,65 +1720,52 @@ export default function GoogleChatPage({
                 className="m-2 w-[calc(100%-1rem)] rounded border border-gray-700 bg-gray-950 px-2 py-1 text-sm text-white outline-none focus:border-blue-500"
               />
             )}
-            {filterSpaces(spaces, spaceFilter).map((space) => {
-              const muted = !!space.id && mutes.spaceIds.has(space.id);
-              // Muted spaces never call for attention, and none do until the
-              // mute list loads.
-              const quiet = !space.id || isSpaceQuiet(mutes, space.id);
-              const unreadCount = quiet ? 0 : (push.unread[`spaces/${space.id}`]?.count ?? 0);
-              // The open space is being read, so it never shows a dot.
-              const hasDot =
-                !quiet &&
-                !unreadCount &&
-                space.id !== selectedId &&
-                isSpaceUnread(space, { google: googleRead, seen, useGoogle: canReadState });
+            {groupSpaces(filterSpaces(spaces, spaceFilter)).map((group) => {
+              const collapsed = collapsedGroups.has(group.key);
+              // A filter shows every match; otherwise the group stops at the top ten.
+              const expanded = !!spaceFilter.trim() || expandedGroups.has(group.key);
+              const rows = visibleGroupSpaces(group.spaces, { expanded, selectedId });
+              const hidden = group.spaces.length - rows.length;
               return (
-                <button
-                  key={space.id}
-                  type="button"
-                  onClick={() => setSelectedId(space.id)}
-                  data-testid={`chat-space-${space.id}`}
-                  className={`block w-full truncate px-4 py-2 text-left text-sm ${
-                    space.id === selectedId
-                      ? 'bg-gray-800 text-white'
-                      : 'text-gray-300 hover:bg-gray-800/50'
-                  }`}
-                >
-                  <span className="flex items-center gap-2">
-                    <span
-                      className={`min-w-0 flex-1 truncate ${
-                        unreadCount || hasDot ? 'font-semibold text-white' : ''
-                      }`}
-                    >
-                      {chatSpaceLabel(space)}
+                <div key={group.key} data-testid={`chat-group-${group.key}`}>
+                  <button
+                    type="button"
+                    onClick={() => toggleSetMember(setCollapsedGroups, group.key)}
+                    aria-expanded={!collapsed}
+                    data-testid={`chat-group-toggle-${group.key}`}
+                    className="flex w-full items-center gap-1 px-3 pb-1 pt-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500 hover:text-gray-300"
+                  >
+                    {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+                    <span className="flex-1">{group.label}</span>
+                    <span className="font-normal normal-case text-gray-600">
+                      {group.spaces.length}
                     </span>
-                    {muted && (
-                      <BellOff
-                        size={12}
-                        data-testid={`chat-space-muted-${space.id}`}
-                        aria-label="Muted"
-                        className="shrink-0 text-gray-500"
-                      />
-                    )}
-                    {!!unreadCount && (
-                      <span
-                        data-testid={`chat-space-unread-${space.id}`}
-                        aria-label={`${unreadCount} unread`}
-                        className="shrink-0 rounded-full bg-blue-600 px-1.5 text-[10px] font-semibold leading-4 text-white"
+                  </button>
+                  {!collapsed && rows.map((space) => renderSpaceRow(space))}
+                  {!collapsed && !spaceFilter.trim() && hidden > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => toggleSetMember(setExpandedGroups, group.key)}
+                      data-testid={`chat-group-more-${group.key}`}
+                      className="block w-full px-4 py-1.5 text-left text-xs text-blue-300 hover:text-blue-200"
+                    >
+                      Show {hidden} more
+                    </button>
+                  )}
+                  {!collapsed &&
+                    !spaceFilter.trim() &&
+                    expanded &&
+                    group.spaces.length > SPACE_GROUP_LIMIT && (
+                      <button
+                        type="button"
+                        onClick={() => toggleSetMember(setExpandedGroups, group.key)}
+                        data-testid={`chat-group-less-${group.key}`}
+                        className="block w-full px-4 py-1.5 text-left text-xs text-blue-300 hover:text-blue-200"
                       >
-                        {formatUnreadCount(unreadCount)}
-                      </span>
+                        Show less
+                      </button>
                     )}
-                    {hasDot && (
-                      <span
-                        data-testid={`chat-unread-dot-${space.id}`}
-                        role="img"
-                        aria-label="Unread"
-                        className="h-2 w-2 shrink-0 rounded-full bg-blue-500"
-                      />
-                    )}
-                  </span>
-                </button>
+                </div>
               );
             })}
           </nav>

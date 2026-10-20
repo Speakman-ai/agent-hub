@@ -330,6 +330,56 @@ export function filterSpaces<T extends SpaceLabelInput>(spaces: T[], query: stri
   );
 }
 
+export type SpaceGroupKey = 'direct' | 'spaces';
+
+export type SpaceGroup<T> = {
+  key: SpaceGroupKey;
+  label: string;
+  /** Every space in the group, most recently active first. */
+  spaces: T[];
+};
+
+/** Rows a collapsed-to-the-top group shows before "Show more". */
+export const SPACE_GROUP_LIMIT = 10;
+
+/** DMs (bot DMs included) and unnamed group chats, as opposed to named spaces. */
+export function isDirectConversation(space: Pick<ChatSpace, 'spaceType'>): boolean {
+  return space.spaceType === 'DIRECT_MESSAGE' || space.spaceType === 'GROUP_CHAT';
+}
+
+/**
+ * Split the conversation list the way Google Chat does: direct messages and
+ * group chats first, named spaces below, each sorted by recent activity.
+ * Empty groups are dropped.
+ */
+export function groupSpaces<T extends Pick<ChatSpace, 'spaceType' | 'lastActiveTime'>>(
+  spaces: T[],
+): SpaceGroup<T>[] {
+  const sorted = sortSpacesByActivity(spaces);
+  const groups: SpaceGroup<T>[] = [
+    { key: 'direct', label: 'Direct messages', spaces: sorted.filter(isDirectConversation) },
+    { key: 'spaces', label: 'Spaces', spaces: sorted.filter((s) => !isDirectConversation(s)) },
+  ];
+  return groups.filter((g) => g.spaces.length > 0);
+}
+
+/**
+ * The rows a group shows: all of them when expanded, otherwise the first
+ * `limit`. The open space stays listed even when it falls past the cut, so the
+ * selection never disappears from the sidebar.
+ */
+export function visibleGroupSpaces<T extends Pick<ChatSpace, 'id'>>(
+  spaces: T[],
+  opts: { expanded: boolean; limit?: number; selectedId?: string | null },
+): T[] {
+  const limit = opts.limit ?? SPACE_GROUP_LIMIT;
+  if (opts.expanded || spaces.length <= limit) return spaces;
+  const head = spaces.slice(0, limit);
+  if (!opts.selectedId || head.some((s) => s.id === opts.selectedId)) return head;
+  const selected = spaces.find((s) => s.id === opts.selectedId);
+  return selected ? [...head, selected] : head;
+}
+
 /** One copy per message name (last wins), oldest first. */
 export function uniqueMessages(messages: ChatMessage[]): ChatMessage[] {
   return sortChatMessages([...byName(messages).values()]);

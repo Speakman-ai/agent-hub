@@ -1323,7 +1323,49 @@ describe('GoogleChatPage', () => {
     expect(calls.length).toBe(16);
     expect(maxInFlight).toBeLessThanOrEqual(4);
     expect(calls).not.toContain('S15');
+    // S14 sits past the group's top ten, so it shows once the group expands.
+    expect(screen.queryByTestId('chat-space-S14')).toBeNull();
+    fireEvent.click(screen.getByTestId('chat-group-more-spaces'));
     await waitFor(() => expect(screen.getByTestId('chat-unread-dot-S14')).toBeInTheDocument());
+  });
+
+  it('lists direct messages above spaces, newest first, in collapsible groups', async () => {
+    connectedAll();
+    const at = (d: number) => `2026-10-${String(d).padStart(2, '0')}T00:00:00Z`;
+    mockApi.listGoogleChatSpaces.mockResolvedValue({
+      spaces: [
+        { ...SPACE, name: 'spaces/R1', id: 'R1', displayName: 'Old room', lastActiveTime: at(1) },
+        {
+          ...SPACE,
+          name: 'spaces/D1',
+          id: 'D1',
+          displayName: 'Dana',
+          spaceType: 'DIRECT_MESSAGE',
+          lastActiveTime: at(2),
+        },
+        { ...SPACE, name: 'spaces/R2', id: 'R2', displayName: 'New room', lastActiveTime: at(5) },
+      ],
+      nextPageToken: null,
+    });
+    mockApi.listGoogleChatMessages.mockResolvedValue({ messages: [], nextPageToken: null });
+
+    render(<GoogleChatPage />);
+    await screen.findByTestId('chat-space-D1');
+    expect(
+      screen
+        .getAllByTestId(/^chat-(space|group)-(D|R)\d$|^chat-group-(direct|spaces)$/)
+        .map((el) => el.dataset.testid),
+    ).toEqual([
+      'chat-group-direct',
+      'chat-space-D1',
+      'chat-group-spaces',
+      'chat-space-R2',
+      'chat-space-R1',
+    ]);
+
+    fireEvent.click(screen.getByTestId('chat-group-toggle-spaces'));
+    expect(screen.queryByTestId('chat-space-R1')).toBeNull();
+    expect(screen.getByTestId('chat-space-D1')).toBeInTheDocument();
   });
 
   it('dots conversations with activity past the Google read position, without push', async () => {

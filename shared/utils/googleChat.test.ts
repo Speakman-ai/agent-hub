@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
+  groupSpaces,
+  visibleGroupSpaces,
+  SPACE_GROUP_LIMIT,
   bumpSpaceActivity,
   attachmentViewKind,
   viewerMimeType,
@@ -375,5 +378,40 @@ describe('attachmentViewKind', () => {
   it('re-types the bytes with a type matching the view kind', () => {
     expect(viewerMimeType(att('a.pdf', 'application/octet-stream'), 'pdf')).toBe('application/pdf');
     expect(viewerMimeType(att('a.webm', 'video/webm'), 'video')).toBe('video/webm');
+  });
+});
+
+describe('space grouping', () => {
+  const sp = (id: string, spaceType: string | null, lastActiveTime: string | null) => ({
+    id,
+    spaceType,
+    lastActiveTime,
+  });
+
+  it('puts DMs and group chats before named spaces, each newest first', () => {
+    const groups = groupSpaces([
+      sp('room-old', 'SPACE', '2026-10-01T00:00:00Z'),
+      sp('dm-old', 'DIRECT_MESSAGE', '2026-10-02T00:00:00Z'),
+      sp('room-new', 'SPACE', '2026-10-05T00:00:00Z'),
+      sp('group', 'GROUP_CHAT', '2026-10-04T00:00:00Z'),
+      sp('unknown', null, '2026-10-06T00:00:00Z'),
+    ]);
+    expect(groups.map((g) => g.key)).toEqual(['direct', 'spaces']);
+    expect(groups[0].spaces.map((s) => s.id)).toEqual(['group', 'dm-old']);
+    expect(groups[1].spaces.map((s) => s.id)).toEqual(['unknown', 'room-new', 'room-old']);
+  });
+
+  it('drops an empty group', () => {
+    const groups = groupSpaces([sp('room', 'SPACE', null)]);
+    expect(groups.map((g) => g.label)).toEqual(['Spaces']);
+  });
+
+  it('caps a collapsed group at ten and keeps the open space listed', () => {
+    const list = Array.from({ length: 14 }, (_, i) => ({ id: `s${i}` }));
+    expect(visibleGroupSpaces(list, { expanded: false })).toHaveLength(SPACE_GROUP_LIMIT);
+    expect(visibleGroupSpaces(list, { expanded: true })).toHaveLength(14);
+    const withSelected = visibleGroupSpaces(list, { expanded: false, selectedId: 's12' });
+    expect(withSelected.map((s) => s.id)).toEqual([...list.slice(0, 10).map((s) => s.id), 's12']);
+    expect(visibleGroupSpaces(list, { expanded: false, selectedId: 's3' })).toHaveLength(10);
   });
 });
