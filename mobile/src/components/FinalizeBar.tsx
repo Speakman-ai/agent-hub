@@ -35,6 +35,8 @@ import { useApp } from '../context/AppContext';
 import { discardBlockedReason } from '@shared/utils/discardChanges';
 import { isResolvePrSessionTitle } from '@shared/utils/sessionTitlePr';
 import DiscardChangesButton from './DiscardChangesButton';
+import { useNavigation } from '@react-navigation/native';
+import { readInheritedFailures, inheritedFailuresLabel } from '@shared/utils/inheritedFailures';
 const PURPLE = '#7C3AED';
 
 function resolveSessionModeFromRow(session: any) {
@@ -136,6 +138,12 @@ export default function FinalizeBar({
   });
   const fullyValidated = isFullyValidated(phases);
   const btn = deriveFinalizeButton({ status, fullyValidated, hasChanges });
+  const navigation = useNavigation<any>();
+  // Only failures already red on the default branch: passed without a fix
+  // turn. Tapping opens the breakage card.
+  const runPassed = run?.status === 'ready_to_push' || run?.status === 'pushed';
+  const inheritedLabel = !btn.inFlight && runPassed ? inheritedFailuresLabel(run) : null;
+  const inheritedCardId = inheritedLabel ? readInheritedFailures(run)?.cardId : null;
   const pushEnabled = canPush({ status, hasChanges }) && !!run?.id;
   const pushLabel = 'Push changes';
   const selectedValue = sessionControlValueForProject(project, {
@@ -402,6 +410,20 @@ export default function FinalizeBar({
         !consultActive &&
         mode !== 'autopilot' &&
         btn.inFlight && <Text style={styles.statusLine}>{describeRunPhase(status, phase)}…</Text>}
+
+      {showFinalize && inheritedLabel ? (
+        <Text
+          style={styles.statusLine}
+          testID="finalize-inherited-failures"
+          onPress={
+            inheritedCardId
+              ? () => navigation.navigate('Kanban', { projectId, project, cardId: inheritedCardId })
+              : undefined
+          }
+        >
+          {inheritedLabel}
+        </Text>
+      ) : null}
 
       <SessionSummarySheet
         visible={showSummary}

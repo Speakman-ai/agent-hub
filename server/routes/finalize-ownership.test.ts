@@ -87,6 +87,7 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest ownership gate', () 
       stale: false,
       flakeRecovered: [],
       flakeGate: { status: 'clean', reason: null },
+      inheritedFailures: null,
       phases: { checks: null, review: null },
     });
     expect(stmts.getLatestFinalizeRunForSession.get).toHaveBeenCalledWith('my-own-session');
@@ -122,6 +123,7 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest ownership gate', () 
       stale: false,
       flakeRecovered: [],
       flakeGate: { status: 'clean', reason: null },
+      inheritedFailures: null,
       phases: { checks: null, review: null },
     });
   });

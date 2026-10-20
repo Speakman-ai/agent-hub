@@ -205,6 +205,43 @@ describe('push CI engine', () => {
     });
   });
 
+  it('records red default-branch instances and opens a breakage card; infra errors record nothing', async () => {
+    const { project, headSha } = await seedHostedProject();
+    await maybeRunPushCi(project, ['refs/heads/main'], {
+      stmts,
+      broadcast: () => {},
+      runJobPhase: vi.fn(async (_deps: unknown, opts: { runId: string }) => {
+        stmts.upsertFinalizeRunJob.run(opts.runId, 'unit', '', 'failed', 1, 1, 2, null);
+        return { status: 'failure' as const, stepResults: [], activeSecondsBilled: 1 };
+      }) as never,
+      mergeSecrets: () => {},
+    });
+    const failing = stmts.listDefaultBranchFailures.all(project.id) as Array<{
+      job_id: string;
+      first_failing_sha: string;
+      breakage_id: string;
+    }>;
+    expect(failing).toMatchObject([{ job_id: 'unit', first_failing_sha: headSha }]);
+    const breakage = stmts.getOpenDefaultBranchBreakage.get(project.id) as {
+      id: string;
+      card_id: string | null;
+    };
+    expect(breakage.id).toBe(failing[0].breakage_id);
+    expect(breakage.card_id).toBeTruthy();
+
+    const other = await seedHostedProject();
+    await maybeRunPushCi(other.project, ['refs/heads/main'], {
+      stmts,
+      broadcast: () => {},
+      runJobPhase: vi.fn(async (_deps: unknown, opts: { runId: string }) => {
+        stmts.upsertFinalizeRunJob.run(opts.runId, 'unit', '', 'failed', null, 1, 2, null);
+        return { status: 'infra_error' as const, stepResults: [], activeSecondsBilled: 1 };
+      }) as never,
+      mergeSecrets: () => {},
+    });
+    expect(stmts.listDefaultBranchFailures.all(other.project.id)).toEqual([]);
+  });
+
   it('dedupes by (project, sha): a replayed push does not re-run', async () => {
     const { project, headSha } = await seedHostedProject();
     const runJobPhase = vi.fn(async () => ({

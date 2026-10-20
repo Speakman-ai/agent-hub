@@ -134,6 +134,31 @@ export const FinalizePhaseSummaryComponent = registerComponent(
     }),
 );
 
+export const InheritedFailuresComponent = registerComponent(
+  'FinalizeInheritedFailures',
+  z
+    .object({
+      count: z.number().int().openapi({ description: 'Failed instances that were inherited.' }),
+      instances: z.array(
+        z.object({
+          jobId: z.string(),
+          matrixKey: z.string(),
+          firstFailingSha: z.string().openapi({
+            description: 'Default-branch commit where the instance first failed.',
+          }),
+        }),
+      ),
+      breakageId: z.string().nullable(),
+      cardId: z.string().nullable().openapi({
+        description: 'Kanban card tracking the default-branch breakage, when one was opened.',
+      }),
+    })
+    .openapi({
+      description:
+        "The run's only failures were instances already failing on the default branch at its base. The run skipped its fix turn and those instances do not block push/merge.",
+    }),
+);
+
 export const LatestFinalizeRunResponseSchema = registerComponent(
   'LatestFinalizeRunForSessionResponse',
   z
@@ -151,6 +176,10 @@ export const LatestFinalizeRunResponseSchema = registerComponent(
       stale: z.boolean().openapi({
         description:
           "True when the latest run's `head_sha` no longer matches the worktree's current HEAD — i.e. the agent committed new work after this run finished, so the run's results predate the current code. Clients (and `finalize.sh latest`) should surface this and trigger a fresh run rather than acting on the stale results. Fail-safe `false` when HEAD cannot be resolved.",
+      }),
+      inheritedFailures: InheritedFailuresComponent.nullable().openapi({
+        description:
+          'Set when the latest run passed with inherited default-branch failures (shown as `Tested (inherited failures: N)`); `null` otherwise.',
       }),
       phases: z
         .object({

@@ -1798,6 +1798,64 @@ function initDb(dataDir: string): void {
       ON finalize_quarantine(project_id);
   `);
 
+  // Default-branch CI health: the full push-CI run on every default-branch
+  // merge is the backstop for selected Finalize runs. Failing instances are
+  // recorded per project until a later run passes them; a breakage groups one
+  // red streak (keyed on its first failing sha) and owns one kanban card; the
+  // state row remembers the last sha CI reported on so a coalesced run knows
+  // the range of merges it covers. See server/finalize/default-branch-health.ts.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS default_branch_ci_state (
+      project_id TEXT PRIMARY KEY,
+      branch TEXT NOT NULL,
+      last_sha TEXT NOT NULL,
+      range_from_sha TEXT,
+      last_status TEXT NOT NULL,
+      last_run_id TEXT,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS default_branch_breakages (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      branch TEXT NOT NULL,
+      first_failing_sha TEXT NOT NULL,
+      last_failing_sha TEXT NOT NULL,
+      range_from_sha TEXT,
+      status TEXT NOT NULL,
+      card_id TEXT,
+      opened_run_id TEXT,
+      last_run_id TEXT,
+      fixed_sha TEXT,
+      fixed_run_id TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      UNIQUE (project_id, first_failing_sha)
+    );
+    CREATE INDEX IF NOT EXISTS default_branch_breakages_open
+      ON default_branch_breakages(project_id, status);
+    CREATE TABLE IF NOT EXISTS default_branch_failures (
+      project_id TEXT NOT NULL,
+      job_id TEXT NOT NULL,
+      matrix_key TEXT NOT NULL DEFAULT '',
+      branch TEXT NOT NULL,
+      first_failing_sha TEXT NOT NULL,
+      last_failing_sha TEXT NOT NULL,
+      last_run_id TEXT,
+      breakage_id TEXT,
+      recorded_at INTEGER NOT NULL,
+      PRIMARY KEY (project_id, job_id, matrix_key)
+    );
+  `);
+
+  // inherited_failures: JSON summary when a session run's only failures were
+  // instances already red on the default branch at its base (no fix turn, not
+  // blocking push/merge). NULL otherwise.
+  try {
+    db.prepare('SELECT inherited_failures FROM finalize_runs LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE finalize_runs ADD COLUMN inherited_failures TEXT');
+  }
+
   try {
     db.prepare('SELECT next_run_at FROM crons LIMIT 1').get();
   } catch {
@@ -7767,6 +7825,79 @@ function initDb(dataDir: string): void {
          FROM finalize_test_history
         WHERE project_id = ? AND recorded_at >= ?
         ORDER BY recorded_at DESC`,
+    ),
+
+    setFinalizeRunInheritedFailures: db.prepare(
+      `UPDATE finalize_runs SET inherited_failures = ? WHERE id = ?`,
+    ),
+
+    // Default-branch CI health (see default-branch-health.ts).
+    getDefaultBranchCiState: db.prepare(
+      `SELECT * FROM default_branch_ci_state WHERE project_id = ?`,
+    ),
+    upsertDefaultBranchCiState: db.prepare(
+      `INSERT INTO default_branch_ci_state (
+        project_id, branch, last_sha, range_from_sha, last_status, last_run_id, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(project_id) DO UPDATE SET
+        branch = excluded.branch,
+        last_sha = excluded.last_sha,
+        range_from_sha = excluded.range_from_sha,
+        last_status = excluded.last_status,
+        last_run_id = excluded.last_run_id,
+        updated_at = excluded.updated_at`,
+    ),
+    listDefaultBranchFailures: db.prepare(
+      `SELECT * FROM default_branch_failures WHERE project_id = ? ORDER BY job_id, matrix_key`,
+    ),
+    upsertDefaultBranchFailure: db.prepare(
+      `INSERT INTO default_branch_failures (
+        project_id, job_id, matrix_key, branch, first_failing_sha, last_failing_sha,
+        last_run_id, breakage_id, recorded_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(project_id, job_id, matrix_key) DO UPDATE SET
+        branch = excluded.branch,
+        last_failing_sha = excluded.last_failing_sha,
+        last_run_id = excluded.last_run_id,
+        breakage_id = excluded.breakage_id,
+        recorded_at = excluded.recorded_at`,
+    ),
+    deleteDefaultBranchFailure: db.prepare(
+      `DELETE FROM default_branch_failures WHERE project_id = ? AND job_id = ? AND matrix_key = ?`,
+    ),
+    getOpenDefaultBranchBreakage: db.prepare(
+      `SELECT * FROM default_branch_breakages
+        WHERE project_id = ? AND status = 'open'
+        ORDER BY created_at DESC LIMIT 1`,
+    ),
+    getDefaultBranchBreakage: db.prepare(`SELECT * FROM default_branch_breakages WHERE id = ?`),
+    getDefaultBranchBreakageByFirstSha: db.prepare(
+      `SELECT * FROM default_branch_breakages WHERE project_id = ? AND first_failing_sha = ?`,
+    ),
+    insertDefaultBranchBreakage: db.prepare(
+      `INSERT OR IGNORE INTO default_branch_breakages (
+        id, project_id, branch, first_failing_sha, last_failing_sha, range_from_sha, status,
+        card_id, opened_run_id, last_run_id, fixed_sha, fixed_run_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'open', NULL, ?, ?, NULL, NULL, ?, ?)`,
+    ),
+    setDefaultBranchBreakageCard: db.prepare(
+      `UPDATE default_branch_breakages SET card_id = ?, updated_at = ? WHERE id = ?`,
+    ),
+    touchDefaultBranchBreakage: db.prepare(
+      `UPDATE default_branch_breakages
+          SET status = 'open', last_failing_sha = ?, last_run_id = ?,
+              fixed_sha = NULL, fixed_run_id = NULL, updated_at = ?
+        WHERE id = ?`,
+    ),
+    fixDefaultBranchBreakage: db.prepare(
+      `UPDATE default_branch_breakages
+          SET status = 'fixed', fixed_sha = ?, fixed_run_id = ?, updated_at = ?
+        WHERE id = ?`,
+    ),
+    getMergedPullRequestByMergedSha: db.prepare(
+      `SELECT * FROM pull_requests
+        WHERE project_id = ? AND merged_sha = ? AND status = 'merged'
+        ORDER BY merged_at DESC LIMIT 1`,
     ),
 
     // finalize_quarantine — flaky-test quarantine lane.

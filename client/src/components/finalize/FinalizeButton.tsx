@@ -14,6 +14,7 @@ import {
   noCommittableChangesTooltip,
 } from '../../utils/committableChanges';
 import { SESSION_ACTION_MENU_ITEM_CLASS } from '../../utils/sessionActionMenu';
+import { inheritedFailuresCardPath, inheritedFailuresLabel } from '@shared/utils/inheritedFailures';
 
 const OPTIMISTIC_BLOCK_MS = 1500;
 const WORKTREE_POLL_MS = 15_000;
@@ -328,6 +329,11 @@ export default function FinalizeButton({
   // GitHub-backed projects still need a connected GitHub account.
   const showPush = !!sessionId && (hosted || githubConnected);
 
+  // A run whose only failures were already red on the default branch passed
+  // without a fix turn; say so and link the breakage card.
+  const inheritedLabel = !inFlight && phasePassed(run) ? inheritedFailuresLabel(run) : null;
+  const inheritedHref = inheritedLabel ? inheritedFailuresCardPath(projectId, run) : null;
+
   return (
     <div
       className={
@@ -371,6 +377,24 @@ export default function FinalizeButton({
         )}
         {finalizeLabel}
       </button>
+      {inheritedLabel ? (
+        inheritedHref ? (
+          <a
+            href={inheritedHref}
+            target="_blank"
+            rel="noreferrer"
+            data-testid="finalize-inherited-failures"
+            title="These failures were already failing on the default branch; open the breakage card"
+            className="text-[11px] text-amber-300 underline decoration-dotted hover:text-amber-200"
+          >
+            {inheritedLabel}
+          </a>
+        ) : (
+          <span data-testid="finalize-inherited-failures" className="text-[11px] text-amber-300">
+            {inheritedLabel}
+          </span>
+        )
+      ) : null}
       {showPush ? (
         <button
           type="button"

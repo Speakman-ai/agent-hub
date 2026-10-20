@@ -4413,3 +4413,89 @@ describe('runFinalize — base drift policy', () => {
     expect(deps.runRebasePhase).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('runFinalize — inherited default-branch failures', () => {
+  const FAILED_CHECKS: StepRunResult = {
+    status: 'failure',
+    stepResults: [],
+    activeSecondsBilled: 5,
+    failedStep: { index: 0, name: 'test', run: 'npm test', exitCode: 1, outputTail: ['red'] },
+  };
+
+  beforeEach(async () => {
+    const drift = await import('./base-drift.js');
+    vi.mocked(drift.resolveBaseSha).mockResolvedValue('base-sha');
+  });
+
+  afterEach(async () => {
+    const drift = await import('./base-drift.js');
+    const actual = await vi.importActual<typeof import('./base-drift.js')>('./base-drift.js');
+    vi.mocked(drift.resolveBaseSha).mockReset();
+    vi.mocked(drift.resolveBaseSha).mockImplementation(actual.resolveBaseSha);
+  });
+
+  function redDefaultBranch(isAncestor: boolean) {
+    const setInherited = vi.fn();
+    const harness = makeDeps({
+      runJobPhase: vi
+        .fn<(...args: unknown[]) => Promise<StepRunResult>>()
+        .mockResolvedValueOnce(FAILED_CHECKS)
+        .mockResolvedValue(STEPS_OK) as never,
+      // A fix turn lands a commit (HEAD advances); an inherited run has none.
+      resolveHeadSha: isAncestor
+        ? vi.fn().mockResolvedValue('sha-pre-fix')
+        : vi
+            .fn<(...args: unknown[]) => Promise<string>>()
+            .mockResolvedValueOnce('sha-pre-fix')
+            .mockResolvedValue('sha-post-fix'),
+      isAncestor: vi.fn().mockResolvedValue(isAncestor),
+    });
+    const s = harness.stmts.stmts;
+    (s.listFinalizeRunJobsForRun.all as ReturnType<typeof vi.fn>).mockReturnValue([
+      { run_id: 'run-1', job_id: 'checks', matrix_key: '', state: 'failed' },
+    ]);
+    Object.assign(s, {
+      listDefaultBranchFailures: {
+        all: vi.fn(() => [
+          {
+            project_id: 'proj-1',
+            job_id: 'checks',
+            matrix_key: '',
+            first_failing_sha: 'red-sha',
+            breakage_id: 'brk-1',
+          },
+        ]),
+      },
+      getDefaultBranchBreakage: { get: vi.fn(() => ({ id: 'brk-1', card_id: 'card-red' })) },
+      getOpenDefaultBranchBreakage: { get: vi.fn(() => ({ id: 'brk-1', card_id: 'card-red' })) },
+      setFinalizeRunInheritedFailures: { run: setInherited },
+    });
+    return { ...harness, setInherited };
+  }
+
+  it('skips the fix turn and parks ready_to_push when every failure is already red at the base', async () => {
+    const { deps, setInherited } = redDefaultBranch(true);
+    const result = await runFinalize(deps, baseOpts());
+
+    expect(result.kind).toBe('ready_to_push');
+    expect(deps.dispatchFixMessage).not.toHaveBeenCalled();
+    expect(deps.runJobPhase).toHaveBeenCalledTimes(1);
+    const [json] = setInherited.mock.calls.at(-1) as [string, string];
+    expect(JSON.parse(json)).toEqual({
+      count: 1,
+      instances: [{ jobId: 'checks', matrixKey: '', firstFailingSha: 'red-sha' }],
+      breakageId: 'brk-1',
+      cardId: 'card-red',
+    });
+  });
+
+  it('dispatches a fix turn when the failure postdates the session base', async () => {
+    const { deps, setInherited } = redDefaultBranch(false);
+    const result = await runFinalize(deps, baseOpts());
+
+    expect(result.kind).toBe('ready_to_push');
+    expect(deps.dispatchFixMessage).toHaveBeenCalledTimes(1);
+    // The green second round leaves no inherited summary on the run.
+    expect(setInherited.mock.calls.at(-1)?.[0]).toBeNull();
+  });
+});

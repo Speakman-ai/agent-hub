@@ -1851,6 +1851,12 @@ export interface FinalizeRunRow {
    * acknowledge.
    */
   flake_recovered_jobs: string | null;
+  /**
+   * JSON {@link import('./finalize/default-branch-health.js').InheritedFailures}
+   * when the run's only failures were instances already failing on the default
+   * branch at its base. NULL otherwise (absent on rows read before the column).
+   */
+  inherited_failures?: string | null;
 }
 
 /**
@@ -2992,6 +2998,21 @@ export interface Stmts {
   // finalize_test_history — cross-run per-instance flake history.
   upsertFinalizeTestHistory: Stmt;
   listFinalizeTestHistoryForProject: Stmt;
+  setFinalizeRunInheritedFailures: Stmt;
+  // Default-branch CI health (server/finalize/default-branch-health.ts).
+  getDefaultBranchCiState: Stmt;
+  upsertDefaultBranchCiState: Stmt;
+  listDefaultBranchFailures: Stmt;
+  upsertDefaultBranchFailure: Stmt;
+  deleteDefaultBranchFailure: Stmt;
+  getOpenDefaultBranchBreakage: Stmt;
+  getDefaultBranchBreakage: Stmt;
+  getDefaultBranchBreakageByFirstSha: Stmt;
+  insertDefaultBranchBreakage: Stmt;
+  setDefaultBranchBreakageCard: Stmt;
+  touchDefaultBranchBreakage: Stmt;
+  fixDefaultBranchBreakage: Stmt;
+  getMergedPullRequestByMergedSha: Stmt;
   // finalize_quarantine — flaky-test quarantine lane.
   upsertFinalizeQuarantine: Stmt;
   listFinalizeQuarantineForProject: Stmt;

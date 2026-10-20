@@ -151,6 +151,11 @@ import { computeIdempotencyKey, DEFAULT_CI_CONFIG_RELATIVE_PATH } from './finali
 import { inspectBaseDrift, resolveBaseSha } from './base-drift.js';
 import { inheritFinalizeRunAbort } from './run-abort-registry.js';
 import {
+  classifyInheritedFailures,
+  type InheritedFailures,
+  type IsAncestorFn,
+} from './default-branch-health.js';
+import {
   decideBaseDriftAction,
   fastFallbackNote,
   jobInstanceKey,
@@ -429,7 +434,18 @@ export interface OrchestratorDeps {
     | 'getFinalizeServerCi'
     // Rewrites a round's rebase timeline row once base-drift job reuse is confirmed.
     | 'updateMessageContentAndMetadata'
-  >;
+  > &
+    // Inherited-failure classification (default-branch-health.ts). Optional so
+    // a deps object without them simply never classifies a failure as inherited.
+    Partial<
+      Pick<
+        Stmts,
+        | 'listDefaultBranchFailures'
+        | 'getDefaultBranchBreakage'
+        | 'getOpenDefaultBranchBreakage'
+        | 'setFinalizeRunInheritedFailures'
+      >
+    >;
   broadcast: BroadcastFn;
   /**
    * Store for per-step CI output blobs (S3 or local dir). Forwarded into the
@@ -468,6 +484,11 @@ export interface OrchestratorDeps {
    * push (the session committed an extra fix mid-window).
    */
   resolveHeadSha?: (worktreePath: string, env?: NodeJS.ProcessEnv) => Promise<string>;
+  /**
+   * Ancestry check for inherited-failure classification. Defaults to
+   * `git merge-base --is-ancestor` in the worktree; tests inject a stub.
+   */
+  isAncestor?: IsAncestorFn;
   /**
    * Detect uncommitted work in the worktree. Used by the §6 no-progress guard
    * to pick the nudge wording for a stuck HEAD: a dirty worktree gets the
@@ -2039,6 +2060,45 @@ export async function runFinalize(
             headSha: headValidatedAgainst,
           },
         );
+        // Inherited failures: when every failed instance is already failing on
+        // the default branch at this round's base, the session didn't break
+        // it. Skip the fix turn and let the run reach the push gate; the run
+        // records the summary so it shows "Tested (inherited failures: N)".
+        if (lastStepOutcome.status === 'failure') {
+          const inherited = await classifyRoundInheritedFailures(deps, {
+            projectId: opts.project.id,
+            runId,
+            baseSha: baseValidatedAgainst,
+            worktreePath,
+            env: spawnEnv,
+            log,
+          });
+          if (inherited) {
+            trace('inherited_failures', {
+              round: loopCount,
+              count: inherited.count,
+              cardId: inherited.cardId,
+              instances: inherited.instances.map((i) => ({
+                jobId: i.jobId,
+                matrixKey: i.matrixKey,
+              })),
+            });
+            log(
+              `[finalize-orchestrator] run=${runId} ${inherited.count} failed instance(s) already ` +
+                `failing on the default branch at base ${baseValidatedAgainst?.slice(0, 8) ?? '?'}; ` +
+                `inherited, no fix turn`,
+            );
+            const {
+              failedStep: _f,
+              failedSteps: _fs,
+              failureReason: _r,
+              ...rest
+            } = lastStepOutcome;
+            lastStepOutcome = { ...rest, status: 'success' };
+          }
+        } else if (lastStepOutcome.status === 'success') {
+          writeInheritedFailures(deps, runId, null, log);
+        }
         // Step terminal classes: the runner already wrote `failed` /
         // `timed_out` to the row for those classes, but NOT for `infra_error`
         // (§10 leaves that to the orchestrator).
@@ -3421,6 +3481,92 @@ function isBranchFullyValidated(
  * True when the run row already carries a terminal status (a sub-phase stamped
  * it). Such a run cannot loop again; a lookup failure reads as not terminal.
  */
+/**
+ * Classify a failed checks round against the default branch's red instances
+ * and persist the result. Returns the summary when the round's failures are
+ * all inherited, else null (and clears any earlier round's summary). Never
+ * throws: a classification error means "not inherited", the safe direction.
+ */
+async function classifyRoundInheritedFailures(
+  deps: OrchestratorDeps,
+  args: {
+    projectId: string;
+    runId: string;
+    baseSha: string | null;
+    worktreePath: string;
+    env: NodeJS.ProcessEnv;
+    log: (msg: string) => void;
+  },
+): Promise<InheritedFailures | null> {
+  const { stmts } = deps;
+  if (
+    !stmts.listDefaultBranchFailures ||
+    !stmts.getDefaultBranchBreakage ||
+    !stmts.getOpenDefaultBranchBreakage
+  ) {
+    return null;
+  }
+  let summary: InheritedFailures | null = null;
+  try {
+    const verdict = await classifyInheritedFailures(
+      {
+        stmts: {
+          listDefaultBranchFailures: stmts.listDefaultBranchFailures,
+          listFinalizeRunJobsForRun: stmts.listFinalizeRunJobsForRun,
+          getDefaultBranchBreakage: stmts.getDefaultBranchBreakage,
+          getOpenDefaultBranchBreakage: stmts.getOpenDefaultBranchBreakage,
+        },
+        ...(deps.isAncestor ? { isAncestor: deps.isAncestor } : {}),
+      },
+      {
+        projectId: args.projectId,
+        runId: args.runId,
+        baseSha: args.baseSha,
+        repoDir: args.worktreePath,
+        env: args.env,
+      },
+    );
+    if (verdict.kind === 'inherited') summary = verdict.summary;
+    else if (verdict.reason !== 'default branch is green') {
+      args.log(
+        `[finalize-orchestrator] run=${args.runId} failures not inherited: ${verdict.reason}`,
+      );
+    }
+  } catch (err) {
+    args.log(
+      `[finalize-orchestrator] inherited-failure classification failed run=${args.runId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    summary = null;
+  }
+  // An inherited verdict that can't be recorded would show a plain "Tested"
+  // for a run with red instances; treat it as not inherited instead.
+  if (!writeInheritedFailures(deps, args.runId, summary, args.log)) return null;
+  return summary;
+}
+
+function writeInheritedFailures(
+  deps: OrchestratorDeps,
+  runId: string,
+  summary: InheritedFailures | null,
+  log: (msg: string) => void,
+): boolean {
+  const stmt = deps.stmts.setFinalizeRunInheritedFailures;
+  if (!stmt) return summary === null;
+  try {
+    stmt.run(summary ? JSON.stringify(summary) : null, runId);
+    return true;
+  } catch (err) {
+    log(
+      `[finalize-orchestrator] inherited_failures write failed run=${runId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return summary === null;
+  }
+}
+
 function runRowIsTerminal(deps: OrchestratorDeps, runId: string): boolean {
   try {
     const row = deps.stmts.getFinalizeRun.get(runId) as FinalizeRunRow | undefined;

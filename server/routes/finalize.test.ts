@@ -238,6 +238,7 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest', () => {
       stale: false,
       flakeRecovered: [],
       flakeGate: { status: 'clean', reason: null },
+      inheritedFailures: null,
       phases: { checks: null, review: null },
     });
   });
@@ -357,6 +358,7 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest', () => {
       stale: false,
       flakeRecovered: [],
       flakeGate: { status: 'clean', reason: null },
+      inheritedFailures: null,
       phases: { checks: null, review: null },
     });
   });

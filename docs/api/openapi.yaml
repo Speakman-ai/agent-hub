@@ -1235,6 +1235,41 @@ components:
         - validated_head_sha
         - ended_at
       description: Done-state for one Finalize phase (checks or review). Resolved from the latest run that exercised that phase — either a phase-scoped run or a combined `full` run.
+    FinalizeInheritedFailures:
+      type: object
+      properties:
+        count:
+          type: integer
+          description: Failed instances that were inherited.
+        instances:
+          type: array
+          items:
+            type: object
+            properties:
+              jobId:
+                type: string
+              matrixKey:
+                type: string
+              firstFailingSha:
+                type: string
+                description: Default-branch commit where the instance first failed.
+            required:
+              - jobId
+              - matrixKey
+              - firstFailingSha
+        breakageId:
+          type: string
+          nullable: true
+        cardId:
+          type: string
+          nullable: true
+          description: Kanban card tracking the default-branch breakage, when one was opened.
+      required:
+        - count
+        - instances
+        - breakageId
+        - cardId
+      description: The run's only failures were instances already failing on the default branch at its base. The run skipped its fix turn and those instances do not block push/merge.
     LatestFinalizeRunForSessionResponse:
       type: object
       properties:
@@ -1255,6 +1290,11 @@ components:
         stale:
           type: boolean
           description: True when the latest run's `head_sha` no longer matches the worktree's current HEAD — i.e. the agent committed new work after this run finished, so the run's results predate the current code. Clients (and `finalize.sh latest`) should surface this and trigger a fresh run rather than acting on the stale results. Fail-safe `false` when HEAD cannot be resolved.
+        inheritedFailures:
+          allOf:
+            - $ref: "#/components/schemas/FinalizeInheritedFailures"
+            - nullable: true
+              description: "Set when the latest run passed with inherited default-branch failures (shown as `Tested (inherited failures: N)`); `null` otherwise."
         phases:
           type: object
           properties:
@@ -1275,6 +1315,7 @@ components:
         - steps
         - currentHeadSha
         - stale
+        - inheritedFailures
         - phases
       description: Latest Finalize run for a given session.
     FinalizeErrorResponse:

@@ -71,6 +71,7 @@ import {
 } from '../finalize/step-output.js';
 import { createFinalizeStepLogStore } from '../finalize/finalize-log-store.js';
 import { parseFlakeGate } from '../finalize/flake-recovery.js';
+import { parseInheritedFailures } from '../finalize/default-branch-health.js';
 import {
   sessionIsLockedAfterFinalizePush,
   POST_FINALIZE_PUSH_LOCK_ERROR,
@@ -297,6 +298,7 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
       // the gate could not verify the run is clean. Parsed off
       // run.flake_recovered_jobs for client convenience.
       const flakeGate = parseFlakeGate(run?.flake_recovered_jobs);
+      const inheritedFailures = parseInheritedFailures(run?.inherited_failures);
       return res.json({
         run: run ?? null,
         steps,
@@ -304,6 +306,7 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
         stale,
         flakeRecovered: flakeGate.jobs,
         flakeGate: { status: flakeGate.status, reason: flakeGate.reason ?? null },
+        inheritedFailures,
         phases: {
           checks: summarizeFinalizePhase(checksRun),
           review: summarizeFinalizePhase(reviewRun),

@@ -26,6 +26,9 @@
  * Deliberate differences from a Finalize run: no reviewer, no
  * fix-dispatch loop, no push step — report-only. One run per
  * (project, sha) across BOTH triggers via the shared idempotency key.
+ * Default-branch results feed `finalize/default-branch-health.ts`, which
+ * tracks red instances, opens the breakage card, and lets session runs
+ * classify failures already red on the default branch as inherited.
  *
  * Concurrency: every branch is its own group (see push-concurrency.ts).
  * Pushes are admitted one at a time per branch (`admitPush`): each reads the
@@ -55,6 +58,7 @@ import {
 } from '../finalize/run-abort-registry.js';
 import type { CancelSignal } from '../finalize/fix-dispatch.js';
 import { resolvePushConcurrency } from './push-concurrency.js';
+import { recordDefaultBranchCiResult } from '../finalize/default-branch-health.js';
 
 const execFileP = promisify(execFile);
 
@@ -75,6 +79,8 @@ export interface PushCiDeps {
   mergeSecrets?: typeof mergeProjectSecretsSpawnEnv;
   /** Test seam: awaited during admission, after the head sha is resolved. */
   onAdmissionHead?: (headSha: string) => Promise<void>;
+  /** Test seam — defaults to {@link recordDefaultBranchCiResult}. */
+  recordDefaultBranch?: typeof recordDefaultBranchCiResult;
 }
 
 /**
@@ -694,6 +700,34 @@ async function runCiForSha(
       },
     );
 
+    // Default-branch runs are the full-CI backstop: record which instances
+    // are red (or cleared) and open/advance the breakage card. Infra errors
+    // say nothing about the tests, so only real results are recorded.
+    const recordDefaultBranch = async (outcome: 'succeeded' | 'failed'): Promise<void> => {
+      if (trigger !== 'git_push') return;
+      try {
+        await (deps.recordDefaultBranch ?? recordDefaultBranchCiResult)(
+          { stmts: deps.stmts, broadcast: deps.broadcast },
+          {
+            projectId: project.id,
+            branch,
+            headSha,
+            runId,
+            logSessionId: sessionId,
+            outcome,
+            fullRun: !args.jobFilter,
+            repoDir: bare,
+          },
+        );
+      } catch (err: unknown) {
+        console.warn(
+          `[push-ci] run=${runId} default-branch health record failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    };
+
     if (signal?.aborted) {
       cancelled();
     } else if (result.status === 'success') {
@@ -706,6 +740,7 @@ async function runCiForSha(
         status: 'succeeded',
       });
       console.log(`[push-ci] run=${runId} succeeded ${branch}@${shortSha}`);
+      await recordDefaultBranch('succeeded');
       // Checks for this head just went green — let a deferred native
       // Auto-Merge complete. Never let a hook error fail the CI run.
       try {
@@ -727,6 +762,7 @@ async function runCiForSha(
             ? 'timeout'
             : 'checks_failed';
       fail(reason, result.infraErrorDetail ?? 'one or more jobs failed');
+      if (reason !== 'infra_error') await recordDefaultBranch('failed');
     }
   } catch (err: unknown) {
     if (signal?.aborted) cancelled();
