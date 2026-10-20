@@ -8,7 +8,6 @@ import {
   ActivityIndicator,
   RefreshControl,
   Linking,
-  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
@@ -30,11 +29,9 @@ import {
   filterSessionsByOwner,
 } from '@shared/utils/sessionOwnerFilter';
 import { getAuthRecord } from '../utils/auth';
-import { api } from '../utils/api';
 import { createRequestGenerationState, beginRequest } from '@shared/utils/requestGeneration';
 import { useVisibleIntervalRefresh } from '../hooks/useVisibleIntervalRefresh';
 import { openPrDashboardStatusBadge } from '../utils/prFormatting';
-import { hasCalendarScope } from '../utils/googleSurface';
 import {
   activityLabel,
   filterActivity,
@@ -46,15 +43,7 @@ import {
   resolveOpenPrTarget,
   openPrIsActionable,
 } from '../utils/dashboard';
-import {
-  defaultCalendarRange,
-  eventTimeLabel,
-  localTimeZone,
-  sortCalendarEvents,
-} from '@shared/utils/calendarEvents';
-import { buildCalendarTodoDraft } from '@shared/utils/captureTodo';
-import { buildCalendarCardDraft, type CaptureCardDraft } from '@shared/utils/captureCard';
-import CaptureToTicketModal from '../components/CaptureToTicketModal';
+import { eventTimeLabel } from '@shared/utils/calendarEvents';
 /** How often the dashboard silently re-polls while the app is foregrounded. */
 const DASHBOARD_REFRESH_MS = 5000;
 const ACTIVITY_DOT: Record<string, any> = {
@@ -73,16 +62,6 @@ export default function DashboardScreen() {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [sessionsView, changeSessionsView] = useSessionsViewMode();
-  const [calendarStatus, setCalendarStatus] = useState<any>(null);
-  const [calendarEvents, setCalendarEvents] = useState<any[]>([]);
-  const [calendarLoading, setCalendarLoading] = useState(true);
-  const [calendarError, setCalendarError] = useState<any>(null);
-  // Per-event capture state, mirroring CalendarScreen: the event key being
-  // captured to todos, the key just captured (transient "Added" flag), and the
-  // draft that seeds the create-ticket picker.
-  const [capturingId, setCapturingId] = useState<string | null>(null);
-  const [capturedId, setCapturedId] = useState<string | null>(null);
-  const [ticketDraft, setTicketDraft] = useState<CaptureCardDraft | null>(null);
   const [activeTypes, setActiveTypes] = useState(() => new Set());
   const currentUser = getAuthRecord()?.user || null;
   const accountName = currentUser?.email || currentUser?.username || 'Account';
@@ -96,7 +75,6 @@ export default function DashboardScreen() {
   // refresh that later succeeds.
   const mountedRef = useRef(true);
   const dashGenRef = useRef(createRequestGenerationState());
-  const calendarGenRef = useRef(createRequestGenerationState());
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -247,71 +225,10 @@ export default function DashboardScreen() {
       }
     }
   }, []);
-  const loadCalendar = useCallback(async ({ silent }: any = {}) => {
-    const req = beginRequest(calendarGenRef.current, { silent });
-    if (!silent) {
-      setCalendarLoading(true);
-      setCalendarError(null);
-    }
-    let committed = false;
-    try {
-      const nextStatus = await api.getGoogleStatus();
-      let nextEvents: any[] = [];
-      if (nextStatus?.connected && hasCalendarScope(nextStatus)) {
-        const body = await api.listGoogleCalendarEvents({
-          ...defaultCalendarRange(),
-          timeZone: localTimeZone(),
-          maxResults: 20,
-        });
-        nextEvents = sortCalendarEvents(Array.isArray(body?.events) ? body.events : []);
-      }
-      if (mountedRef.current && req.canCommit()) {
-        req.commit();
-        committed = true;
-        setCalendarStatus(nextStatus);
-        setCalendarEvents(nextEvents);
-        setCalendarError(null);
-      }
-    } catch (err: any) {
-      if (!silent && mountedRef.current && req.canCommit()) {
-        req.commit();
-        committed = true;
-        setCalendarError(err.message || String(err));
-        setCalendarEvents([]);
-      }
-    } finally {
-      if (mountedRef.current && (committed || req.ownsLoading())) setCalendarLoading(false);
-    }
-  }, []);
   useEffect(() => {
     load();
   }, [load]);
-  useEffect(() => {
-    loadCalendar();
-  }, [loadCalendar]);
-  // `key` is the row's stable key (folds in the list index) so two same-titled
-  // events without an `id` don't share capture/captured state.
-  const captureEvent = useCallback(async (event: any, key: string) => {
-    setCapturingId(key);
-    try {
-      await api.createTodo(buildCalendarTodoDraft(event));
-      if (!mountedRef.current) return;
-      setCapturedId(key);
-      setTimeout(() => {
-        if (mountedRef.current) setCapturedId((cur) => (cur === key ? null : cur));
-      }, 2000);
-    } catch (err: any) {
-      Alert.alert('Todos', err.message || 'Failed to add to todos');
-    } finally {
-      if (mountedRef.current) setCapturingId((cur) => (cur === key ? null : cur));
-    }
-  }, []);
-  // Return the combined promise so the hook's in-flight guard waits for both
-  // requests — a slow poll then skips the next 5s tick instead of stacking.
-  useVisibleIntervalRefresh(
-    () => Promise.all([load({ silent: true }), loadCalendar({ silent: true })]),
-    DASHBOARD_REFRESH_MS,
-  );
+  useVisibleIntervalRefresh(() => load({ silent: true }), DASHBOARD_REFRESH_MS);
   const allActivity = data?.recentActivity || [];
   const activity = filterActivity(allActivity, activeTypes);
   const activityCounts = countByType(allActivity);
@@ -322,7 +239,7 @@ export default function DashboardScreen() {
         <TouchableOpacity onPress={openSidebar} style={styles.menuButton}>
           <Text style={styles.menuIcon}>{'\u2630'}</Text>
         </TouchableOpacity>
-        <Text style={styles.title}>Dashboard</Text>
+        <View style={{ flex: 1 }} />
         <TouchableOpacity
           onPress={() => navigation.navigate('Settings', { tab: 'account' })}
           style={styles.accountButton}
@@ -333,12 +250,6 @@ export default function DashboardScreen() {
           </Text>
         </TouchableOpacity>
       </View>
-      {data?.orgName ? (
-        <Text style={styles.orgSubtitle} numberOfLines={1}>
-          {data.orgName}
-        </Text>
-      ) : null}
-
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
@@ -347,7 +258,6 @@ export default function DashboardScreen() {
             refreshing={refreshing}
             onRefresh={() => {
               load({ asRefresh: true });
-              loadCalendar();
             }}
             tintColor={colors.gray400}
           />
@@ -367,63 +277,6 @@ export default function DashboardScreen() {
 
         {data ? (
           <>
-            <SectionHeader title="This week" />
-            <View style={styles.card} testID="dashboard-calendar">
-              {calendarError ? (
-                <Text style={styles.errorInline}>Failed to load Calendar: {calendarError}</Text>
-              ) : calendarLoading ? (
-                <Text style={styles.muted}>Loading Calendar...</Text>
-              ) : !calendarStatus?.connected ? (
-                <DashboardCalendarEmpty
-                  title={
-                    calendarStatus?.serverConfigured === false
-                      ? 'Google is not configured'
-                      : 'Connect Google to show Calendar'
-                  }
-                  body={
-                    calendarStatus?.serverConfigured === false
-                      ? 'An Admin needs to add the Google OAuth app before Calendar can connect.'
-                      : 'Link your Google account in Account settings to show this week on the dashboard.'
-                  }
-                  action="Account settings"
-                  onPress={() => navigation.navigate('Settings', { tab: 'account' })}
-                />
-              ) : !hasCalendarScope(calendarStatus) ? (
-                <DashboardCalendarEmpty
-                  title="Enable Calendar access"
-                  body={`Connected as ${calendarStatus?.email || 'Google account'}, but Calendar access has not been granted yet.`}
-                  action="Open Calendar"
-                  onPress={() => navigation.navigate('Calendar')}
-                />
-              ) : calendarEvents.length === 0 ? (
-                <DashboardCalendarEmpty
-                  title="No events this week"
-                  body="Your primary Google Calendar has no events in the next seven days."
-                  action="Open Calendar"
-                  onPress={() => navigation.navigate('Calendar')}
-                />
-              ) : (
-                calendarEvents.slice(0, 6).map((event: any, index: number) => {
-                  const rowKey = event.id || `${event.summary}-${index}`;
-                  return (
-                    <DashboardCalendarRow
-                      key={rowKey}
-                      rowKey={rowKey}
-                      event={event}
-                      capturingId={capturingId}
-                      capturedId={capturedId}
-                      onOpen={() => navigation.navigate('Calendar')}
-                      onCapture={captureEvent}
-                      onTicket={(e: any) => setTicketDraft(buildCalendarCardDraft(e))}
-                    />
-                  );
-                })
-              )}
-            </View>
-            {ticketDraft ? (
-              <CaptureToTicketModal draft={ticketDraft} onClose={() => setTicketDraft(null)} />
-            ) : null}
-
             {(() => {
               const allSessions = data.activeSessions || [];
               const ownerOptions = buildOwnerOptions(allSessions, {
@@ -782,20 +635,8 @@ function SectionHeader({ title, subtitle }: any) {
     </View>
   );
 }
-function DashboardCalendarEmpty({ title, body, action, onPress }: any) {
-  return (
-    <View style={styles.calendarEmpty}>
-      <Text style={styles.calendarEmptyTitle}>{title}</Text>
-      <Text style={styles.calendarEmptyBody}>{body}</Text>
-      {action ? (
-        <TouchableOpacity onPress={onPress} style={styles.calendarAction}>
-          <Text style={styles.calendarActionText}>{action}</Text>
-        </TouchableOpacity>
-      ) : null}
-    </View>
-  );
-}
-// A single "This week" event row with the same Todo / Ticket capture
+// Kept for the capture-button tests. The Server page no longer mounts this row.
+// A single event row with the same Todo / Ticket capture
 // affordances as the full Calendar screen (spec CAPTURE-PROVENANCE parity).
 export function DashboardCalendarRow({
   event,

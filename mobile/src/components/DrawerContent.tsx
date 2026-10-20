@@ -52,6 +52,7 @@ import BugReportButton from './BugReportButton';
 import NotificationBell from './NotificationBell';
 import BrandLogo from './BrandLogo';
 import { useHubChatBadge } from '../hooks/useHubChat';
+import { parseHubPane, type HubWorkspacePane } from '@shared/utils/hub';
 
 /**
  * The one API call the collapsed-project saver makes. Module scope so every
@@ -875,7 +876,24 @@ export default function DrawerContent({ navigation }: any) {
   const ungroupedCronSessions = (cronSessions || []).filter(
     (cs: any) => !cs.project_id || !scheduledTaskHomeIds.has(cs.project_id),
   );
-  const routeName = navigation.getCurrentRoute?.()?.name;
+  const currentRoute = navigation.getCurrentRoute?.();
+  const routeName = currentRoute?.name;
+  const requestedPane = currentRoute?.params?.pane || currentRoute?.params?.tab;
+  const activeHubPane: HubWorkspacePane | null =
+    routeName === 'Hub'
+      ? requestedPane === 'assistant'
+        ? 'chat'
+        : parseHubPane(requestedPane)
+      : null;
+  const homeLinks: { pane: HubWorkspacePane; label: string; icon: string; testID: string }[] = [
+    { pane: 'today', label: 'Dashboard', icon: 'LayoutGrid', testID: 'drawer-home-dashboard' },
+    { pane: 'chat', label: 'Chat', icon: 'MessageSquare', testID: 'drawer-chat' },
+    { pane: 'todos', label: 'Todos', icon: 'ListTodo', testID: 'drawer-home-todos' },
+    { pane: 'reminders', label: 'Reminders', icon: 'Clock', testID: 'drawer-home-reminders' },
+    { pane: 'calendar', label: 'Calendar', icon: 'CalendarDays', testID: 'drawer-home-calendar' },
+    { pane: 'mail', label: 'Mail', icon: 'Mail', testID: 'drawer-home-mail' },
+    { pane: 'org', label: 'Server', icon: 'BarChart3', testID: 'drawer-home-server' },
+  ];
   const hubActive = [
     'Hub',
     'Home',
@@ -1003,6 +1021,30 @@ export default function DrawerContent({ navigation }: any) {
             buttonStyle={styles.bugReportButton}
           />
         </View>
+
+        <Text style={styles.sectionLabel}>HOME</Text>
+        {homeLinks.map((item) => (
+          <TouchableOpacity
+            key={item.pane}
+            testID={item.testID}
+            style={[styles.navButton, activeHubPane === item.pane && styles.navButtonActive]}
+            onPress={() => {
+              navigation.navigate('Hub', { pane: item.pane, tab: undefined });
+              navigation.closeDrawer();
+            }}
+            accessibilityLabel={
+              item.pane === 'chat' && chatBadge > 0 ? `Chat, ${chatBadge} unread` : item.label
+            }
+          >
+            <HubIcon name={item.icon} size={16} color={colors.gray400} />
+            <Text style={[styles.navButtonText, { flex: 1 }]}>{item.label}</Text>
+            {item.pane === 'chat' && chatBadge > 0 ? (
+              <View style={[styles.unreadBadge, styles.countBadge]} testID="drawer-chat-badge">
+                <Text style={styles.unreadBadgeText}>{chatBadge > 99 ? '99+' : chatBadge}</Text>
+              </View>
+            ) : null}
+          </TouchableOpacity>
+        ))}
 
         {renderCronSection(ungroupedCronSessions, 'drawer-ungrouped-scheduled-tasks')}
 
@@ -1152,8 +1194,8 @@ export default function DrawerContent({ navigation }: any) {
         )}
       </ScrollView>
 
-      {/* Footer matches the web sidebar: Settings, Chat, then the version
-          line (tap opens What's new). */}
+      {/* Footer matches the web sidebar: Settings, then the version line
+          (tap opens What's new). Chat lives in Home. */}
       <View style={styles.bottomNav}>
         {showAiSignInGuide && <AiSignInHint target="Settings" onDismiss={dismissAiSignInGuide} />}
         <TouchableOpacity
@@ -1165,23 +1207,6 @@ export default function DrawerContent({ navigation }: any) {
         >
           <HubIcon name="Settings" size={16} style={styles.navButtonIcon} />
           <Text style={styles.navButtonText}>Settings</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          testID="drawer-chat"
-          style={[styles.navButton, routeName === 'Chat' && styles.navButtonActive]}
-          onPress={() => {
-            navigation.navigate('Hub', { tab: 'chat' });
-            navigation.closeDrawer();
-          }}
-          accessibilityLabel={chatBadge > 0 ? `Chat, ${chatBadge} unread` : 'Chat'}
-        >
-          <HubIcon name="MessageSquare" size={16} color={colors.gray400} />
-          <Text style={styles.navButtonText}>Chat</Text>
-          {chatBadge > 0 ? (
-            <View style={[styles.unreadBadge, styles.countBadge]} testID="drawer-chat-badge">
-              <Text style={styles.unreadBadgeText}>{chatBadge > 99 ? '99+' : chatBadge}</Text>
-            </View>
-          ) : null}
         </TouchableOpacity>
         {health?.version && (
           <TouchableOpacity

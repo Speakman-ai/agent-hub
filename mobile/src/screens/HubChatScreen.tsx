@@ -72,6 +72,7 @@ import type { HubChatSearchResult } from '@shared/utils/hubChatSearch';
 import { readChatTriggerCard } from '@shared/utils/chatTriggers';
 import { colors } from '../theme/colors';
 import GoogleChatPane from './GoogleChatScreen';
+import ChatScreen from './ChatScreen';
 
 type Side = 'hub' | 'google';
 
@@ -117,19 +118,22 @@ function useUsernames(account: number): ReadonlyMap<string, string> & { list: Hu
 export default function HubChatScreen({
   initialChannelId,
   openRequest,
-  onOpenAssistant,
+  initialAssistant = false,
   onChannelChange,
   navigation,
 }: {
   initialChannelId?: string | null;
   /** Bumped by the Hub screen when a push or link asks for a channel again. */
   openRequest?: number;
-  onOpenAssistant?: () => void;
+  /** Open the Hub assistant inside this chat, instead of a separate pane. */
+  initialAssistant?: boolean;
   /** Reports the open channel so the Hub can restore it after a tab switch. */
   onChannelChange?: (channelId: string | null) => void;
   navigation?: any;
 }) {
   const [side, setSide] = useState<Side>('hub');
+  const [assistantOpen, setAssistantOpen] = useState(initialAssistant);
+  const { handleOpenHandoffSession, clearHubChat } = useApp();
   // The open channel belongs to the account it was opened under.
   const [channelId, setChannelIdState] = useAccountScoped<string>(initialChannelId ?? null);
   const changeRef = useRef(onChannelChange);
@@ -144,7 +148,6 @@ export default function HubChatScreen({
   const badge = useHubChatBadge();
   const { account } = useHubChatSnapshot();
   const usernames = useUsernames(account);
-  const { handleOpenHandoffSession } = useApp();
   const [focus, setFocus] = useState<HubChatFocus | null>(null);
   const focusTokenRef = useRef(0);
   const showMessage = useCallback(
@@ -155,12 +158,32 @@ export default function HubChatScreen({
     [setChannelId],
   );
 
+  // A channel request is the channel plus the open counter, so a push for the
+  // channel already shown still re-opens it.
+  const channelRequest = initialChannelId ? `${initialChannelId}:${openRequest}` : null;
+  const channelRequestRef = useRef(channelRequest);
+  channelRequestRef.current = channelRequest;
+  const handledChannelRequestRef = useRef<string | null>(null);
+
   useEffect(() => {
-    if (initialChannelId) {
+    if (initialAssistant) {
       setSide('hub');
-      setChannelIdState(initialChannelId);
+      setAssistantOpen(true);
+      // A channel retained from an earlier visit arrives with the assistant
+      // request. The assistant wins; only a later channel request opens one.
+      handledChannelRequestRef.current = channelRequestRef.current;
+      setChannelId(null);
     }
-  }, [initialChannelId, openRequest, setChannelIdState]);
+  }, [initialAssistant, setChannelId]);
+
+  useEffect(() => {
+    if (!initialChannelId || !channelRequest) return;
+    if (handledChannelRequestRef.current === channelRequest) return;
+    handledChannelRequestRef.current = channelRequest;
+    setSide('hub');
+    setAssistantOpen(false);
+    setChannelIdState(initialChannelId);
+  }, [channelRequest, initialChannelId, setChannelIdState]);
 
   const openRef = useCallback(
     (ref: HubChatResolvedRef) => {
@@ -196,6 +219,24 @@ export default function HubChatScreen({
       </View>
       {side === 'google' ? (
         <GoogleChatPane />
+      ) : assistantOpen ? (
+        <View style={styles.flex}>
+          <TouchableOpacity
+            testID="hub-chat-assistant-back"
+            onPress={() => setAssistantOpen(false)}
+            style={styles.assistantBack}
+            accessibilityRole="button"
+            accessibilityLabel="Back to conversations"
+          >
+            <Text style={styles.assistantBackLabel}>Conversations</Text>
+          </TouchableOpacity>
+          <ChatScreen
+            embedded
+            onClearChat={() => {
+              void clearHubChat();
+            }}
+          />
+        </View>
       ) : channelId ? (
         <ChannelView
           key={`${account}:${channelId}`}
@@ -214,8 +255,14 @@ export default function HubChatScreen({
           // Remount per account so open dialogs drop lists fetched for the last one.
           key={account}
           usernames={usernames}
-          onOpen={setChannelId}
-          onOpenAssistant={onOpenAssistant}
+          onOpen={(id) => {
+            setAssistantOpen(false);
+            setChannelId(id);
+          }}
+          onOpenAssistant={() => {
+            setChannelId(null);
+            setAssistantOpen(true);
+          }}
           onPickResult={(r) => showMessage(r.channel.id, r.message.id)}
         />
       )}
@@ -1742,6 +1789,13 @@ function ChannelSettingsDialog({
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.gray950 },
   flex: { flex: 1, minHeight: 0 },
+  assistantBack: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.gray800,
+  },
+  assistantBackLabel: { color: colors.blue400, fontSize: 14, fontWeight: '600' },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
   muted: { color: colors.gray400, fontSize: 12 },
   error: { color: colors.red400, fontSize: 13 },

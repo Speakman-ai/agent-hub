@@ -49,6 +49,7 @@ vi.mock('../utils/hubChatInstance', async () => {
   return { hubChatStore: createHubChatStore(api.hubChat) };
 });
 vi.mock('../context/AppContext', () => ({ useApp: () => ({ handleOpenHandoffSession: vi.fn() }) }));
+vi.mock('./ChatScreen', () => ({ default: () => null }));
 vi.mock('../components/HubChatRefs', () => ({
   HubChatComposer: () => null,
   HubChatMessageBody: () => null,
@@ -121,6 +122,60 @@ async function mount() {
   });
   return mounted;
 }
+
+// Mimics HubScreen: it keeps the last open channel and hands it back in.
+function RetainingHost({ assistant, request }: { assistant: boolean; request: number }) {
+  const [retained, setRetained] = React.useState<string | null>('c1');
+  // A push names the channel again along with the bumped counter.
+  React.useEffect(() => {
+    if (request > 0) setRetained('c1');
+  }, [request]);
+  return React.createElement(HubChatScreen, {
+    initialAssistant: assistant,
+    initialChannelId: retained,
+    openRequest: request,
+    onChannelChange: setRetained,
+  });
+}
+const shows = (r: any, testID: string) =>
+  r.root.findAll((n: any) => n.props?.testID === testID).length > 0;
+
+describe('HubChatScreen assistant request vs retained channel', () => {
+  beforeEach(async () => {
+    for (const fn of Object.values(api.hubChat)) fn.mockReset();
+    api.hubChat.members.mockResolvedValue({ members: [] });
+    api.hubChat.channel.mockResolvedValue({ channel: channel() });
+    api.hubChat.messages.mockResolvedValue({ messages: [], hasMore: false });
+    api.hubChat.markRead.mockResolvedValue({});
+    api.hubChat.pins.mockResolvedValue({ pins: [] });
+    api.hubChat.channels.mockResolvedValue({ channels: [channel()], viewerUserId: 'u1' });
+    await hubChatStore.reset(true, 'u1');
+  });
+  afterEach(() => {
+    act(() => mounted?.unmount());
+    mounted = null;
+    hubChatStore.setViewing(null);
+  });
+
+  it('opens the assistant over a retained channel, and a later channel request still opens', async () => {
+    await act(async () => {
+      mounted = TestRenderer.create(
+        React.createElement(RetainingHost, { assistant: true, request: 0 }),
+      );
+    });
+    await flush();
+    expect(shows(mounted, 'hub-chat-assistant-back')).toBe(true);
+    expect(mounted.root.findAllByType('FlatList')).toHaveLength(0);
+
+    // A push for the same channel bumps the counter and must open it.
+    await act(async () => {
+      mounted.update(React.createElement(RetainingHost, { assistant: true, request: 1 }));
+    });
+    await flush();
+    expect(shows(mounted, 'hub-chat-assistant-back')).toBe(false);
+    expect(mounted.root.findAllByType('FlatList')).toHaveLength(1);
+  });
+});
 
 describe('HubChatScreen channel view (mounted)', () => {
   beforeEach(async () => {

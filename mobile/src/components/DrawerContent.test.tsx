@@ -112,6 +112,7 @@ vi.mock('./BugReportButton', () => ({ default: nativeHost('BugReportButton') }))
 vi.mock('./NotificationBell', () => ({ default: nativeHost('NotificationBell') }));
 vi.mock('./BrandLogo', () => ({ default: nativeHost('BrandLogo') }));
 vi.mock('./HubIcon', () => ({ default: nativeHost('HubIcon') }));
+vi.mock('./ProjectIcon', () => ({ default: nativeHost('ProjectIcon') }));
 vi.mock('./SessionStateIcon', () => ({ default: nativeHost('SessionStateIcon') }));
 vi.mock('@shared/utils/humanCron', () => ({ default: () => '' }));
 
@@ -371,19 +372,29 @@ describe('mobile DrawerContent — web sidebar order', () => {
     expect(collectText(renderer.toJSON())).toContain('PROJECTS');
   });
 
-  it('puts New Project under Projects and Chat in the footer', async () => {
+  it('puts Home destinations above Projects and keeps Chat out of the footer', async () => {
     const renderer = await renderDrawer(navigation());
     const texts = collectText(renderer.toJSON());
+    const homeAt = texts.indexOf('HOME');
+    const chatAt = texts.indexOf('Chat');
+    const calendarAt = texts.indexOf('Calendar');
+    const mailAt = texts.indexOf('Mail');
+    const serverAt = texts.indexOf('Server');
     const projectsAt = texts.indexOf('PROJECTS');
     const newProjectAt = texts.indexOf('New Project');
     const importAt = texts.indexOf('Import existing project');
     const settingsAt = texts.indexOf('Settings');
-    const chatAt = texts.indexOf('Chat');
-    expect(projectsAt).toBeGreaterThanOrEqual(0);
+    expect(homeAt).toBeGreaterThanOrEqual(0);
+    expect(chatAt).toBeGreaterThan(homeAt);
+    expect(calendarAt).toBeGreaterThan(chatAt);
+    expect(mailAt).toBeGreaterThan(calendarAt);
+    expect(serverAt).toBeGreaterThan(mailAt);
+    expect(projectsAt).toBeGreaterThan(serverAt);
     expect(newProjectAt).toBeGreaterThan(projectsAt);
     expect(importAt).toBeGreaterThan(newProjectAt);
     expect(settingsAt).toBeGreaterThan(importAt);
-    expect(chatAt).toBeGreaterThan(settingsAt);
+    expect(texts.indexOf('Chat', settingsAt)).toBe(-1);
+    expect(texts).not.toContain('Support');
     expect(texts).not.toContain("What's new");
     expect(texts.filter((text) => text === 'Skills')).toHaveLength(0);
   });

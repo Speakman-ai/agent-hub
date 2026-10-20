@@ -58,6 +58,7 @@ vi.mock('../utils/hubChatInstance', async () => {
   };
 });
 vi.mock('../context/AppContext', () => ({ useApp: () => ({ handleOpenHandoffSession: vi.fn() }) }));
+vi.mock('./ChatScreen', () => ({ default: () => null }));
 vi.mock('../components/HubChatRefs', () => ({
   HubChatComposer: () => null,
   HubChatMessageBody: () => null,

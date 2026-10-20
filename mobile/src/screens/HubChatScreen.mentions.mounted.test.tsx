@@ -56,6 +56,7 @@ vi.mock('../utils/hubChatInstance', async (importOriginal) => {
   return { ...actual, hubChatStore: createHubChatStore(api.hubChat) };
 });
 vi.mock('../context/AppContext', () => ({ useApp: () => ({ handleOpenHandoffSession: vi.fn() }) }));
+vi.mock('./ChatScreen', () => ({ default: () => null }));
 const composer = vi.hoisted(() => ({ onChange: null as null | ((t: string, m: any[]) => void) }));
 vi.mock('../components/HubChatRefs', () => ({
   HubChatComposer: (props: any) => {

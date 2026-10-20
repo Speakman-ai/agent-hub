@@ -36,15 +36,18 @@ vi.mock('../utils/hubChatInstance', async () => {
 });
 vi.mock('../components/HubIcon', () => ({ default: () => null }));
 vi.mock('../components/BrandLogo', () => ({ default: () => null }));
-for (const m of [
-  './DashboardHomeScreen',
-  './DashboardScreen',
-  './TodosScreen',
-  './CalendarScreen',
-  './GmailScreen',
-  './SupportOverviewScreen',
-  './ChatScreen',
-]) {
+// Dashboard surfaces its shortcut navigation so tests can tap one.
+const dashboard = vi.hoisted(() => ({ navigation: null as any }));
+vi.mock('./DashboardHomeScreen', () => ({
+  default: (props: any) => {
+    dashboard.navigation = props.navigation;
+    return 'pane:dashboard';
+  },
+}));
+vi.mock('./TodosScreen', () => ({ default: () => 'pane:todos' }));
+vi.mock('./CalendarScreen', () => ({ default: () => 'pane:calendar' }));
+vi.mock('./GmailScreen', () => ({ default: () => 'pane:mail' }));
+for (const m of ['./DashboardScreen', './SupportOverviewScreen', './ChatScreen']) {
   vi.doMock(m, () => ({ default: () => null }));
 }
 // The chat screen stub surfaces the channel the Hub hands it.
@@ -63,14 +66,19 @@ const { hubChatStore } = await import('../utils/hubChatInstance');
 process.env.NODE_ENV = originalNodeEnv;
 
 const channel = { id: 'c1' } as HubChatChannel;
-const tab = (r: any, id: string) =>
+const showPane = (r: any, navigation: any, pane: string) =>
   act(async () => {
-    r.root.find((n: any) => n.props?.testID === `hub-tab-${id}`).props.onPress();
+    r.update(
+      React.createElement(HubScreen, {
+        navigation,
+        route: { params: { pane } },
+      }),
+    );
   });
 const shownChat = (r: any) => JSON.stringify(r.toJSON()).match(/chat:([^"]+)/)?.[1] ?? null;
 
-describe('HubScreen tab row', () => {
-  it('keeps the pane tabs at chip height instead of stretching down the screen', async () => {
+describe('HubScreen panes', () => {
+  it('does not render a tab strip', async () => {
     let r: any;
     await act(async () => {
       r = TestRenderer.create(
@@ -80,9 +88,49 @@ describe('HubScreen tab row', () => {
         }),
       );
     });
-    const bar = r.root.find((n: any) => n.props?.testID === 'hub-tabs');
-    expect(bar.props.style).toMatchObject({ flexGrow: 0, flexShrink: 0 });
-    expect(bar.props.contentContainerStyle).toMatchObject({ alignItems: 'center' });
+    expect(r.root.findAll((n: any) => n.props?.testID === 'hub-tabs')).toHaveLength(0);
+    expect(r.root.findAll((n: any) => n.props?.testID === 'hub-tab-assistant')).toHaveLength(0);
+    expect(r.root.findAll((n: any) => n.props?.testID === 'hub-tab-support')).toHaveLength(0);
+  });
+});
+
+// Mimics the native stack: navigate() to the current screen and setParams()
+// both merge into the same route's params instead of pushing a new screen.
+function StackHost({ initialParams }: { initialParams: any }) {
+  const [params, setParams] = React.useState<any>(initialParams);
+  const navigation = React.useMemo(
+    () => ({
+      setParams: (p: any) => setParams((prev: any) => ({ ...prev, ...p })),
+      navigate: (_name: string, p?: any) => setParams((prev: any) => ({ ...prev, ...p })),
+    }),
+    [],
+  );
+  (StackHost as any).navigation = navigation;
+  return React.createElement(HubScreen, { navigation, route: { params } });
+}
+const shownPane = (r: any) => JSON.stringify(r.toJSON()).match(/pane:([a-z]+)/)?.[1] ?? null;
+
+describe('HubScreen route stays in sync with the shown pane', () => {
+  it.each([
+    ['Todos', 'todos'],
+    ['Calendar', 'calendar'],
+    ['Gmail', 'mail'],
+  ])('reopens Dashboard from the drawer after the %s shortcut', async (target, pane) => {
+    let r: any;
+    await act(async () => {
+      r = TestRenderer.create(React.createElement(StackHost, { initialParams: { pane: 'today' } }));
+    });
+    expect(shownPane(r)).toBe('dashboard');
+    await act(async () => {
+      dashboard.navigation.navigate(target);
+    });
+    expect(shownPane(r)).toBe(pane);
+    // The drawer's Dashboard row.
+    await act(async () => {
+      (StackHost as any).navigation.navigate('Hub', { pane: 'today', tab: undefined });
+    });
+    expect(shownPane(r)).toBe('dashboard');
+    act(() => r.unmount());
   });
 });
 
@@ -98,12 +146,12 @@ describe('HubScreen retained chat channel', () => {
       );
     });
     expect(shownChat(r)).toBe('c1');
-    await tab(r, 'today'); // Chat unmounts
+    await showPane(r, navigation, 'today'); // Chat unmounts
     api.hubChat.channels.mockResolvedValue({ channels: [], viewerUserId: 'u2' });
     await act(async () => {
       await hubChatStore.reset(true, 'u2');
     });
-    await tab(r, 'chat');
+    await showPane(r, navigation, 'chat');
     expect(shownChat(r)).toBe('none');
     act(() => r.unmount());
   });

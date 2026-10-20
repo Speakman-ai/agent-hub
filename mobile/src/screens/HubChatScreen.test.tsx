@@ -32,6 +32,7 @@ vi.mock('../utils/api', () => ({ api: { hubChat: {} } }));
 vi.mock('../components/HubIcon', () => ({
   default: ({ name }: any) => <span data-name={name} />,
 }));
+vi.mock('./ChatScreen', () => ({ default: () => null }));
 
 import { ChannelRow, MessageRow } from './HubChatScreen';
 import { shouldFollowTail } from '../utils/followTail';

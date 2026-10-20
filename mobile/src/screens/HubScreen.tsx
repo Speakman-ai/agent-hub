@@ -1,12 +1,11 @@
 import React, { useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { View, Text, TouchableOpacity, ScrollView, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { SidebarContext } from '../context/SidebarContext';
 import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
-import HubIcon from '../components/HubIcon';
 import BrandLogo from '../components/BrandLogo';
 import DashboardHomeScreen from './DashboardHomeScreen';
 import DashboardScreen from './DashboardScreen';
@@ -15,9 +14,8 @@ import RemindersScreen from './RemindersScreen';
 import CalendarScreen from './CalendarScreen';
 import GmailScreen from './GmailScreen';
 import SupportOverviewScreen from './SupportOverviewScreen';
-import ChatScreen from './ChatScreen';
-import HubChatScreen, { CountBadge } from './HubChatScreen';
-import { useAccountScoped, useHubChatBadge } from '../hooks/useHubChat';
+import HubChatScreen from './HubChatScreen';
+import { useAccountScoped } from '../hooks/useHubChat';
 import {
   DEFAULT_HUB_PANE,
   isSummariesPaneAlias,
@@ -25,26 +23,11 @@ import {
   type HubWorkspacePane,
 } from '@shared/utils/hub';
 
-type HubTab = 'assistant' | HubWorkspacePane;
-
-function parseHubTab(value: unknown): HubTab {
-  if (value === 'assistant') return 'assistant';
-  // Links to the removed Daily Summary tab open the Summaries channel in Chat.
-  if (isSummariesPaneAlias(value)) return 'chat';
+function parseHubTab(value: unknown): HubWorkspacePane {
+  // The assistant and the old Daily Summary tab both open inside Chat.
+  if (value === 'assistant' || isSummariesPaneAlias(value)) return 'chat';
   return parseHubPane(value);
 }
-
-const TABS: { id: HubTab; label: string; icon: string }[] = [
-  { id: 'assistant', label: 'Assistant', icon: 'Bot' },
-  { id: 'today', label: 'Dashboard', icon: 'LayoutGrid' },
-  { id: 'org', label: 'Server', icon: 'BarChart3' },
-  { id: 'todos', label: 'Todos', icon: 'ListTodo' },
-  { id: 'reminders', label: 'Reminders', icon: 'BellRing' },
-  { id: 'calendar', label: 'Calendar', icon: 'CalendarDays' },
-  { id: 'mail', label: 'Mail', icon: 'Mail' },
-  { id: 'chat', label: 'Chat', icon: 'MessageSquare' },
-  { id: 'support', label: 'Support', icon: 'LifeBuoy' },
-];
 
 function HubBody({
   tab,
@@ -52,26 +35,18 @@ function HubBody({
   setTab,
   chatChannelId,
   chatOpenRequest,
+  initialAssistant,
   onChatChannelChange,
 }: {
-  tab: HubTab;
+  tab: HubWorkspacePane;
   navigation: any;
-  setTab: (tab: HubTab) => void;
+  setTab: (tab: HubWorkspacePane) => void;
   chatChannelId: string | null;
   chatOpenRequest: number;
+  initialAssistant: boolean;
   onChatChannelChange: (channelId: string | null) => void;
 }) {
-  const { clearHubChat } = useApp();
   switch (tab) {
-    case 'assistant':
-      return (
-        <ChatScreen
-          embedded
-          onClearChat={() => {
-            void clearHubChat();
-          }}
-        />
-      );
     case 'today':
       return (
         <DashboardHomeScreen
@@ -111,7 +86,7 @@ function HubBody({
         <HubChatScreen
           initialChannelId={chatChannelId}
           openRequest={chatOpenRequest}
-          onOpenAssistant={() => setTab('assistant')}
+          initialAssistant={initialAssistant}
           onChannelChange={onChatChannelChange}
           navigation={navigation}
         />
@@ -126,9 +101,8 @@ function HubBody({
 }
 
 /**
- * Hub — mobile peer of the web Hub page. One drawer entry; assistant +
- * Dashboard / Org / Todos / Reminders / Calendar / Mail / Chat / Support live as tabs
- * here.
+ * Hub — mobile peer of the web Hub page. The drawer picks the pane. The
+ * assistant opens inside Chat.
  */
 export default function HubScreen({ navigation, route }: any) {
   const sidebar = useContext(SidebarContext);
@@ -141,8 +115,7 @@ export default function HubScreen({ navigation, route }: any) {
     setHubFocused,
   } = useApp();
   const initial = parseHubTab(route?.params?.tab || route?.params?.pane || DEFAULT_HUB_PANE);
-  const [tab, setTab] = useState<HubTab>(initial);
-  const chatBadge = useHubChatBadge();
+  const [tab, setTab] = useState<HubWorkspacePane>(initial);
   // A push tap or link that names a channel opens it, even when it is the
   // channel already requested (the counter re-fires the open).
   // The retained channel belongs to the account it was opened under, so a
@@ -195,13 +168,25 @@ export default function HubScreen({ navigation, route }: any) {
 
   const onChatChannelChange = setChatChannelId;
 
+  // Pane changes made inside the Hub (Dashboard shortcuts, channel opens)
+  // must also land in the route params. The drawer navigates with
+  // `{ pane }`, and navigating to the current pane is a no-op param update,
+  // so a stale route pane would keep the drawer from switching back.
+  const selectPane = useCallback(
+    (next: HubWorkspacePane) => {
+      setTab(next);
+      navigation?.setParams?.({ pane: next, tab: undefined });
+    },
+    [navigation],
+  );
+
   const openChatChannel = useCallback(
     (channelId: string) => {
-      setTab('chat');
+      selectPane('chat');
       setChatChannelId(channelId);
       setChatOpenRequest((n) => n + 1);
     },
-    [setChatChannelId],
+    [selectPane, setChatChannelId],
   );
 
   useEffect(() => {
@@ -248,42 +233,16 @@ export default function HubScreen({ navigation, route }: any) {
         </TouchableOpacity>
         <BrandLogo size="sm" />
       </View>
-      <ScrollView
-        horizontal
-        testID="hub-tabs"
-        showsHorizontalScrollIndicator={false}
-        style={styles.tabBar}
-        contentContainerStyle={styles.tabs}
-      >
-        {TABS.map((item) => {
-          const active = tab === item.id;
-          return (
-            <TouchableOpacity
-              key={item.id}
-              testID={`hub-tab-${item.id}`}
-              onPress={() => setTab(item.id)}
-              style={[styles.tab, active && styles.tabActive]}
-            >
-              <HubIcon
-                name={item.icon as any}
-                size={13}
-                color={active ? colors.white : colors.gray400}
-              />
-              <Text style={[styles.tabLabel, active && styles.tabLabelActive]}>{item.label}</Text>
-              {item.id === 'chat' && chatBadge > 0 ? (
-                <CountBadge count={chatBadge} testID="hub-tab-chat-badge" />
-              ) : null}
-            </TouchableOpacity>
-          );
-        })}
-      </ScrollView>
       <View style={styles.body}>
         <HubBody
           tab={tab}
           navigation={navigation}
-          setTab={setTab}
+          setTab={selectPane}
           chatChannelId={chatChannelId}
           chatOpenRequest={chatOpenRequest}
+          initialAssistant={
+            route?.params?.tab === 'assistant' || route?.params?.pane === 'assistant'
+          }
           onChatChannelChange={onChatChannelChange}
         />
       </View>
@@ -303,27 +262,5 @@ const styles = StyleSheet.create({
   },
   menuButton: { padding: 6 },
   menuIcon: { color: colors.gray300, fontSize: 22 },
-  // A horizontal ScrollView defaults to flexGrow: 1, so this row was
-  // stretching to fill the screen and the chips became tall columns.
-  tabBar: { flexGrow: 0, flexShrink: 0 },
-  tabs: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    gap: 6,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  tab: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-    backgroundColor: colors.gray900,
-  },
-  tabActive: { backgroundColor: colors.gray800 },
-  tabLabel: { color: colors.gray400, fontSize: 12, fontWeight: '500' },
-  tabLabelActive: { color: colors.white },
   body: { flex: 1, minHeight: 0 },
 });
