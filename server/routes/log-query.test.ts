@@ -89,6 +89,37 @@ describe('GET /api/projects/:projectId/logs', () => {
     expect(JSON.stringify(res.body)).not.toContain('secret other-project failure');
   });
 
+  it('accepts real Unix-nano time bounds above Number.MAX_SAFE_INTEGER', async () => {
+    const project = (await createProject({ cwd: '/tmp' })).id as string;
+    const t = 1_792_467_767_396_000_000;
+    insertLogRecords(
+      [
+        {
+          projectId: project,
+          sourceId: 's',
+          timeUnixNano: t - 1e12,
+          severityNumber: 17,
+          body: 'old',
+        },
+        {
+          projectId: project,
+          sourceId: 's',
+          timeUnixNano: t,
+          severityNumber: 17,
+          body: 'in window',
+        },
+      ],
+      Date.now(),
+    );
+    const res = await request
+      .get(
+        `/api/projects/${project}/logs?startTimeUnixNano=${t - 1e9}&endTimeUnixNano=${t + 1e9}&cursorTimeUnixNano=${t + 2e9}&cursor=999999999`,
+      )
+      .expect(200);
+    expect(res.body.records.map((r: { body: string }) => r.body)).toEqual(['in window']);
+    await request.get(`/api/projects/${project}/logs?startTimeUnixNano=1.5`).expect(400);
+  });
+
   it('rejects invalid bounded query parameters', async () => {
     await request.get(`/api/projects/${projectA}/logs?limit=999999`).expect(400);
     await request.get(`/api/projects/${projectA}/logs?text=%22unterminated`).expect(400);

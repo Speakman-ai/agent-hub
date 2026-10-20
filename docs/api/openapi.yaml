@@ -43214,14 +43214,14 @@ paths:
           name: projectId
           in: path
         - schema:
-            type: integer
+            type: number
             nullable: true
             minimum: 0
           required: false
           name: startTimeUnixNano
           in: query
         - schema:
-            type: integer
+            type: number
             nullable: true
             minimum: 0
           required: false
@@ -43285,7 +43285,7 @@ paths:
           name: cursor
           in: query
         - schema:
-            type: integer
+            type: number
             nullable: true
             minimum: 0
           required: false

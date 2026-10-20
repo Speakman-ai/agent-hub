@@ -3,10 +3,18 @@ import { z, registerComponent, registerPath } from '../openapi/registry.js';
 import { MAX_QUERY_LIMIT } from '../logs/logs-schema.js';
 
 const finiteInt = z.coerce.number().int().finite();
+// Real Unix-nano timestamps (~1.8e18) exceed Number.MAX_SAFE_INTEGER, which
+// Zod's `.int()` rejects. Accept any integral double instead; SQLite compares
+// it against the INTEGER column numerically.
+const unixNano = z.coerce
+  .number()
+  .finite()
+  .nonnegative()
+  .refine(Number.isInteger, { message: 'Expected an integer' });
 
 export const LogQueryParamsSchema = z.object({
-  startTimeUnixNano: finiteInt.nonnegative().optional(),
-  endTimeUnixNano: finiteInt.nonnegative().optional(),
+  startTimeUnixNano: unixNano.optional(),
+  endTimeUnixNano: unixNano.optional(),
   sourceId: z.string().min(1).max(200).optional(),
   serviceName: z.string().min(1).max(200).optional(),
   environment: z.string().min(1).max(200).optional(),
@@ -18,7 +26,7 @@ export const LogQueryParamsSchema = z.object({
   // Event-time half of the keyset cursor. Paging is chronological, so a cursor
   // that carries only `cursor` (the pre-keyset shape) makes the server look the
   // row's event time up instead; sending both skips that lookup.
-  cursorTimeUnixNano: finiteInt.nonnegative().optional(),
+  cursorTimeUnixNano: unixNano.optional(),
   limit: finiteInt.min(1).max(MAX_QUERY_LIMIT).optional(),
 });
 
