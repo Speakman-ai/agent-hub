@@ -49,7 +49,7 @@
     "node-cron": "^4.2.1",
     "nodemailer": "^10.0.12",
     "playwright": "^1.59.1",
-    "sanitize-html": "^2.17.7",
+    "sanitize-html": "^2.18.1",
     "swagger-ui-express": "^5.0.1",
     "tsx": "^4.21.0",
     "unpdf": "^1.8.1",

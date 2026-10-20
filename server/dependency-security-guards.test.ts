@@ -332,8 +332,16 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // `^1.19.9` even at its newest release, so 2.x is reachable only through
     // the server `@hono/node-server` override asserted below.
     { pkg: '@hono/node-server', min: '2.0.5', advisory: 'GHSA-frvp-7c67-39w9' },
-    // GHSA-r4q5-vmmm-2653: Authorization header leaked across a cross-domain redirect.
-    { pkg: 'follow-redirects', min: '1.16.0', advisory: 'GHSA-r4q5-vmmm-2653' },
+    // GHSA-r4q5-vmmm-2653 (1.16.0): Authorization header leaked across a
+    // cross-domain redirect. 1.16.1 closed two more stripping gaps: array-form
+    // headers skipped the cross-origin strip (GHSA-q3jh-wrc6-jgq8), and an
+    // unescaped sensitiveHeaders regex let credential headers through
+    // (GHSA-8r9p-f939-6h3c). Server only, via axios under @slack/bolt.
+    {
+      pkg: 'follow-redirects',
+      min: '1.16.1',
+      advisory: ['GHSA-r4q5-vmmm-2653', 'GHSA-q3jh-wrc6-jgq8', 'GHSA-8r9p-f939-6h3c'],
+    },
     // GHSA-v2v4-37r5-5v8g (10.1.1): XSS in the Address6 HTML-emitting methods.
     // 10.5.1 then fixed two classifier gaps that let an address slip past an
     // SSRF / trust-boundary check: GHSA-2vr4-cq9g-pvrc (NAT64 local-use
@@ -376,10 +384,12 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // surface is guarded by mobile/src/utils/markdownItRendererContract.test.ts.
     // GHSA-253c-mchw-3w2r (14.3.1): two quadratic paths under `linkify: true`;
     // the mobile override floor was raised to ^14.3.1 to match.
+    // GHSA-vfgh-jcmw-g37q (14.3.3): quadratic inline-HTML parsing with
+    // `html: true`; the override floor moved to ^14.3.3.
     {
       pkg: 'markdown-it',
-      min: '14.3.1',
-      advisory: ['GHSA-6v5v-wf23-fmfq', 'GHSA-253c-mchw-3w2r'],
+      min: '14.3.3',
+      advisory: ['GHSA-6v5v-wf23-fmfq', 'GHSA-253c-mchw-3w2r', 'GHSA-vfgh-jcmw-g37q'],
     },
     // GHSA-g7r4-m6w7-qqqr: arbitrary file read from the Windows dev server.
     // Scoped to `server`: the advisory covers the 0.27.x line that tsx pulled in,
@@ -657,6 +667,34 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // viewer; the 6.x getDocument/getPage/render surface PdfPages uses is
     // unchanged, and the asset dirs pdfjsAssetsPlugin copies still ship.
     { pkg: 'pdfjs-dist', min: '6.2.108', advisory: 'GHSA-hq66-cqwq-w95j', only: ['client'] },
+    // launch-editor flaws reached through the dev server's open-in-editor
+    // endpoint: a Windows existsSync bypass, missing `%` escaping in
+    // escapeCmdArgs(), and editor CLI flag injection. Patched per line; client
+    // stays on vite 6 for @vitejs/plugin-react 4, everything else gets vite 8
+    // through vitest. Dev-only everywhere.
+    {
+      pkg: 'vite',
+      min: '8.2.4',
+      advisory: ['GHSA-587h-7wmj-h5pm', 'GHSA-698v-4r3x-3vcv', 'GHSA-r825-w8mm-5pxw'],
+      line: '8.x',
+    },
+    {
+      pkg: 'vite',
+      min: '6.4.4',
+      advisory: ['GHSA-587h-7wmj-h5pm', 'GHSA-698v-4r3x-3vcv', 'GHSA-r825-w8mm-5pxw'],
+      line: '6.x',
+    },
+    // A meta-refresh `content` carrying javascript:/data: URLs
+    // (GHSA-cv27-6wvh-8x7j), a nonTextTags discard region closed early by an
+    // implied end tag so <noscript> content rendered (GHSA-x3q4-9hxx-gx8m), and
+    // a SMIL namespace-prefix bypass for javascript: URIs (GHSA-374f-7chj-9948).
+    // Direct server dependency.
+    {
+      pkg: 'sanitize-html',
+      min: '2.18.0',
+      advisory: ['GHSA-cv27-6wvh-8x7j', 'GHSA-x3q4-9hxx-gx8m', 'GHSA-374f-7chj-9948'],
+      only: ['server'],
+    },
   ];
 
   for (const { pkg, min, advisory, line, only } of FLOORS) {
