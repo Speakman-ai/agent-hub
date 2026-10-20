@@ -1061,13 +1061,23 @@ export class BackgroundShellRuntime {
     command: string,
     pidStartTime: string | null,
   ): Promise<OrphanReapResult> {
+    // A dead group needs no identity check: nothing can be signalled, and the
+    // row must still go terminal or it pins `running` forever (blocking
+    // Finalize, which waits for the session's shells to settle). This is the
+    // common case after a container restart, where every prior pid is gone.
+    if (!this.probeGroupAlive(pid)) return 'already-gone';
+    if (pidStartTime !== null) {
+      const liveStartTime = this.readProcStartTime(pid);
+      // A different start time means the pid now belongs to another process.
+      // The kernel never reuses a pid still held as a pgid, so our group is gone.
+      if (liveStartTime !== null && liveStartTime !== pidStartTime) return 'already-gone';
+    }
     if (!this.matchesProcessIdentity(pid, command, pidStartTime)) {
       this.logger.warn(
         `[bg-shell] boot reconcile: pid ${pid} identity is unverified or reused; not signalling`,
       );
       return 'unverified';
     }
-    if (!this.probeGroupAlive(pid)) return 'already-gone';
     this.trySignalGroup(pid, 'SIGTERM');
     await this.sleep(this.killGraceMs);
     if (this.probeGroupAlive(pid)) {

@@ -658,6 +658,7 @@ describe('BackgroundShellRuntime boot-orphan process reaping', () => {
     readProcArgv: (pid: number) => string[] | null,
     probeGroupAlive: (pid: number) => boolean = () => false,
     pidStartTime: string | null = null,
+    liveStartTime: (pid: number) => string | null = () => pidStartTime,
   ) {
     const db = new Database(':memory:');
     db.exec(SCHEMA);
@@ -669,7 +670,7 @@ describe('BackgroundShellRuntime boot-orphan process reaping', () => {
       logSink: noopSink,
       kill: (target, signal) => killCalls.push({ target, signal }),
       readProcArgv,
-      readProcStartTime: () => pidStartTime,
+      readProcStartTime: liveStartTime,
       probeGroupAlive,
       config: { killGraceMs: 1 },
     });
@@ -757,6 +758,54 @@ describe('BackgroundShellRuntime boot-orphan process reaping', () => {
     await runtime.bootReconcile;
     expect(killCalls).toContainEqual({ target: -4242, signal: 'SIGTERM' });
     expect(runtime.getById('orphan')!.status).toBe('failed');
+  });
+
+  it('marks a dead start-time-tracked orphan failed instead of pinning it running', async () => {
+    // Container restart: /proc has no entry for the old pid and its group is gone.
+    const { runtime, killCalls } = build(
+      4242,
+      'sleep 999',
+      () => null,
+      () => false,
+      'instance-1',
+      () => null,
+    );
+    await runtime.bootReconcile;
+    expect(killCalls).toHaveLength(0);
+    expect(runtime.getById('orphan')!.status).toBe('failed');
+  });
+
+  it('marks failed without signalling when the pid now has a different start time', async () => {
+    const { runtime, killCalls } = build(
+      4242,
+      'sleep 999',
+      () => ['python3', 'app.py'],
+      () => true,
+      'instance-1',
+      () => 'instance-2',
+    );
+    await runtime.bootReconcile;
+    expect(killCalls).toHaveLength(0);
+    expect(runtime.getById('orphan')!.status).toBe('failed');
+  });
+
+  it('lets stop() clear an unverifiable orphan once its group is gone', async () => {
+    let groupAlive = true;
+    const { runtime, killCalls } = build(
+      4242,
+      'sleep 999',
+      () => null,
+      () => groupAlive,
+      'instance-1',
+      () => null,
+    );
+    await runtime.bootReconcile;
+    expect(runtime.getById('orphan')!.status).toBe('running');
+
+    groupAlive = false;
+    const row = await runtime.stop('orphan');
+    expect(row!.status).toBe('stopped');
+    expect(killCalls).toHaveLength(0);
   });
 
   it('does not signal when the orphan row has no recorded pid', async () => {
