@@ -270,7 +270,7 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
       .prepare(
         `SELECT id, agent_id, name, engine, model, owner_user_id, updated_at
          FROM sessions
-         WHERE deleted_at IS NULL
+         WHERE deleted_at IS NULL AND hidden = 0
          ORDER BY updated_at DESC`,
       )
       .all() as Array<{
@@ -570,6 +570,7 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
     const recentSessions = db
       .prepare(
         `SELECT id, name, agent_id, created_at FROM sessions
+         WHERE hidden = 0
          ORDER BY created_at DESC
          LIMIT ?`,
       )

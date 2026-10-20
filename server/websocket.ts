@@ -26,6 +26,7 @@ import {
   canReadOrganizationWorkspaceEvent,
 } from './business-organizations-access.js';
 import { createSidebarBroadcastTagger } from './session-sidebar.js';
+import { createHiddenSessionCheck } from './hidden-sessions.js';
 import { buildBackgroundShellSnapshot } from './background-shells/background-shell-snapshot.js';
 import type { WebSocketDeps, BroadcastFn, MessageQueueRow } from './types.js';
 import { buildActiveTasksSnapshotLenient } from './active-tasks.js';
@@ -459,6 +460,10 @@ export default function createWebSocket(
       | undefined;
     return row?.sidebar_parent_id ?? null;
   });
+  const isHiddenSessionBroadcast = createHiddenSessionCheck((sessionId) => {
+    const row = stmts?.getSession.get(sessionId) as { hidden?: number | null } | undefined;
+    return row?.hidden === 1;
+  });
 
   function broadcast(rawData: Record<string, unknown>): void {
     const data = tagSidebarBroadcast(rawData);
@@ -492,6 +497,8 @@ export default function createWebSocket(
     // A SideBar is answered in its panel; a phone push would deep-link to a
     // session no list shows.
     if (typeof data.sidebarParentId === 'string') return;
+    // A digest's session is plumbing; its result is the channel post.
+    if (isHiddenSessionBroadcast(data)) return;
     // Inbox rows, targeted `notification_created` events and Expo push all
     // come from this one step (notification-fanout.ts).
     void handleBroadcastForNotifications(data, { broadcast }).catch((err: unknown) => {

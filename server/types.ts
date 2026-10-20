@@ -65,6 +65,8 @@ export interface SessionRow {
   discarded_at?: string | null;
   /** Set on a SideBar child: the parent session it was forked from. */
   sidebar_parent_id?: string | null;
+  /** 1 = run by the system for output posted elsewhere; kept out of session lists. */
+  hidden?: number;
   /** Claude Code session id the SideBar's first turn forks (`--fork-session`). */
   fork_from_engine_session_id?: string | null;
   /** Per-parent SideBar creation order (1, 2, …). */
@@ -2220,6 +2222,7 @@ export interface Stmts {
   createSession: Stmt;
   getSessions: Stmt;
   getSession: Stmt;
+  markSessionHidden: Stmt;
   getRecentLiveSessions: Stmt;
   updateSessionName: Stmt;
   updateSessionNameWithTitleSource: Stmt;

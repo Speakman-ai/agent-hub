@@ -189,6 +189,12 @@ export function dispatchBackgroundAgentSession(
      * fires (routine runs persist their tracking row first). Defaults to a uuid.
      */
     sessionId?: string;
+    /**
+     * Keep the session out of every session list: no sidebar row, no
+     * `session_created`, no notifications. For runs whose output is posted
+     * somewhere else.
+     */
+    hidden?: boolean;
   } = {},
 ): BackgroundSessionDispatchResult {
   const deps = hook;
@@ -238,6 +244,9 @@ export function dispatchBackgroundAgentSession(
     0,
     1,
   );
+  // Before anything broadcasts about the session: the broadcast filter
+  // caches whether a session is hidden on first sight.
+  if (opts.hidden) stmts.markSessionHidden.run(sessionId);
   setSessionOwner(sessionId, ownerUserId);
   if (sessionMode !== 'chat') stmts.updateSessionMode.run(sessionMode, sessionId);
   stmts.updateSessionFinalizeAutomation.run(finalizeAutomation, sessionId);
@@ -291,6 +300,7 @@ export function dispatchBackgroundAgentSession(
     });
 
   const session = stmts.getSession.get(sessionId) as SessionRow | undefined;
-  if (session) broadcastSessionCreated(deps.broadcast, agent.id, session, stmts, project);
+  if (session && !opts.hidden)
+    broadcastSessionCreated(deps.broadcast, agent.id, session, stmts, project);
   return { sessionId, agentId: agent.id, skippedSkills };
 }

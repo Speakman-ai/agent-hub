@@ -3338,6 +3338,15 @@ function initDb(dataDir: string): void {
     'CREATE INDEX IF NOT EXISTS idx_sessions_sidebar_parent ON sessions(sidebar_parent_id) WHERE sidebar_parent_id IS NOT NULL',
   );
 
+  // Sessions the system runs on the user's behalf whose output lands
+  // elsewhere (channel digests). Kept out of every session list; still
+  // readable by id.
+  try {
+    db.prepare('SELECT hidden FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0');
+  }
+
   try {
     db.prepare('SELECT card_kind FROM kanban_cards LIMIT 1').get();
   } catch {
@@ -5057,9 +5066,10 @@ function initDb(dataDir: string): void {
     // paths (WebSocket, checkpoint lookups, active-process cleanup) legitimately
     // need to look up a row regardless of archive status.
     getSessions: db.prepare(
-      'SELECT * FROM sessions WHERE agent_id = ? AND deleted_at IS NULL AND sidebar_parent_id IS NULL ORDER BY updated_at DESC',
+      'SELECT * FROM sessions WHERE agent_id = ? AND deleted_at IS NULL AND sidebar_parent_id IS NULL AND hidden = 0 ORDER BY updated_at DESC',
     ),
     getSession: db.prepare('SELECT * FROM sessions WHERE id = ?'),
+    markSessionHidden: db.prepare('UPDATE sessions SET hidden = 1 WHERE id = ?'),
     // Used by the awaiting-input snapshot to bound the scan: only sessions a
     // user has plausibly touched in the last week can be "blocked waiting for
     // a reply." The LIMIT keeps the worst-case bootstrap O(few hundred) row
@@ -5068,6 +5078,7 @@ function initDb(dataDir: string): void {
       `SELECT * FROM sessions
        WHERE deleted_at IS NULL
          AND sidebar_parent_id IS NULL
+         AND hidden = 0
          AND updated_at >= datetime('now', '-7 days')
        ORDER BY updated_at DESC
        LIMIT 200`,
@@ -5121,6 +5132,7 @@ function initDb(dataDir: string): void {
        WHERE agent_id = ?
          AND deleted_at IS NOT NULL
          AND sidebar_parent_id IS NULL
+         AND hidden = 0
          AND deleted_at >= datetime('now', '-1 day')
        ORDER BY deleted_at DESC`,
     ),

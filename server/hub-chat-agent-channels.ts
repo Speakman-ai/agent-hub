@@ -85,7 +85,7 @@ export const MENTION_CONTEXT_MESSAGES = 20;
 const MAX_CONTEXT_CHARS = 2000;
 
 export interface AgentChannelDeps {
-  stmts: Pick<Stmts, 'getSession' | 'getActiveTask' | 'countQueuedMessages'>;
+  stmts: Pick<Stmts, 'getSession' | 'getActiveTask' | 'countQueuedMessages' | 'softDeleteSession'>;
   broadcast: BroadcastFn;
   findProject: (projectId: string) => Project | null;
   handleChat: (ws: unknown, msg: ChatMessage) => Promise<void>;
@@ -199,6 +199,12 @@ function liveSession(sessionId: string | null): SessionRow | null {
     | undefined;
   if (!row || row.deleted_at) return null;
   return row;
+}
+
+function isHiddenSession(sessionId: string): boolean {
+  if (!deps) return false;
+  const row = deps.stmts.getSession.get(sessionId) as { hidden?: number | null } | undefined;
+  return row?.hidden === 1;
 }
 
 function sessionBusy(sessionId: string): boolean {
@@ -599,6 +605,8 @@ export function runDigestAgentTurn(args: {
         sessionName: args.sessionName,
         userMessageId: turnId,
         onKickoffError: (msg) => turnFailed(channel.id, turnId, msg),
+        // The channel post is the result; the session behind it stays out of view.
+        hidden: true,
       },
     );
   } catch (err) {
@@ -658,6 +666,7 @@ function scheduleSettle(sessionId: string, delayMs?: number): void {
  */
 function flushReplies(sessionId: string, out: Outbox, exceptTurnId: string | null = null): void {
   const session = liveSession(sessionId);
+  const hidden = isHiddenSession(sessionId);
   for (const turn of listAgentTurnsForSession(sessionId)) {
     if (turn.turn_id === exceptTurnId || turn.reply_content == null) continue;
     const channel = getChannel(turn.channel_id);
@@ -669,6 +678,7 @@ function flushReplies(sessionId: string, out: Outbox, exceptTurnId: string | nul
         session?.name ?? sessionTitle(channel),
         { messageId: turn.reply_message_id ?? '', content: turn.reply_content },
         out,
+        hidden,
       );
       out.push(() => emitAgentState(channel.id));
     }
@@ -700,6 +710,11 @@ function settle(sessionId: string): void {
         out.push(() => emitAgentState(channel.id));
       }
       for (const channelId of mentionChannels) out.push(() => emitAgentState(channelId));
+      // A hidden session ran for one channel post; once that is out it is
+      // done, so archive it and let the purge reclaim it.
+      if (isHiddenSession(sessionId) && listAgentTurnsForSession(sessionId).length === 0) {
+        deps?.stmts.softDeleteSession.run(sessionId);
+      }
     });
   } catch (err) {
     // Nothing was written; the turns and their replies are intact. Retry.
@@ -735,9 +750,13 @@ function onTurnStart(sessionId: string, turnId: string): void {
 }
 
 /** Body of the relayed reply: the agent's text plus a chip for its session. */
+function agentReplyText(content: string): string {
+  const text = content.trim();
+  return text.length > MAX_REPLY_CHARS ? `${text.slice(0, MAX_REPLY_CHARS).trimEnd()}\n\n…` : text;
+}
+
 export function agentReplyBody(content: string, sessionName: string, sessionId: string): string {
-  let text = content.trim();
-  if (text.length > MAX_REPLY_CHARS) text = `${text.slice(0, MAX_REPLY_CHARS).trimEnd()}\n\n…`;
+  const text = agentReplyText(content);
   const chip = formatHubChatRefToken(sessionName, 'session', sessionId);
   if (!chip) return text;
   return text ? `${text}\n\n${chip}` : chip;
@@ -750,16 +769,23 @@ function postAgentReply(
   sessionName: string,
   reply: { messageId: string; content: string },
   out: Outbox,
+  hidden = false,
 ): void {
   // A mention turn names its agent; an agent channel's turn answers as the channel's.
   const agentId = turn.agent_id ?? channel.agent_id;
   const projectId = turn.project_id ?? channel.project_id;
+  // A hidden session (a digest run) posts just its result, with no chip
+  // linking to a session the user never sees.
+  const body = hidden
+    ? agentReplyText(reply.content)
+    : agentReplyBody(reply.content, sessionName, sessionId);
+  if (!body) return;
   const message = appendMessage({
     channelId: channel.id,
     authorKind: 'agent',
     authorAgentId: agentId,
-    body: agentReplyBody(reply.content, sessionName, sessionId),
-    refs: [{ kind: 'session', targetId: sessionId, projectId }],
+    body,
+    refs: hidden ? [] : [{ kind: 'session', targetId: sessionId, projectId }],
     payload: { sessionId, sessionMessageId: reply.messageId },
   });
   out.push(() => sendMessage(channel, message));

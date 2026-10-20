@@ -21,7 +21,8 @@ vi.mock('./project-skill-paths.js', () => ({
   resolveProjectSkillsDir: () => '/tmp/project-skills/p1',
 }));
 vi.mock('./session-ownership.js', () => ({ setSessionOwner: mocks.setSessionOwner }));
-vi.mock('./session-checkpoint-rewind.js', () => ({ broadcastSessionCreated: vi.fn() }));
+const broadcastSessionCreated = vi.hoisted(() => vi.fn());
+vi.mock('./session-checkpoint-rewind.js', () => ({ broadcastSessionCreated }));
 vi.mock('./effective-model.js', () => ({
   resolveEffectiveEngineAndModel: () => ({ engine: 'claude-code', model: 'claude-opus-5-5' }),
 }));
@@ -43,6 +44,7 @@ function fakeStmts() {
     updateSessionFinalizeAutomation: { run: vi.fn() },
     updateSessionPendingSkillContext: { run: vi.fn() },
     getSession: { get: vi.fn(() => ({ id: 's' })) },
+    markSessionHidden: { run: vi.fn() },
   };
 }
 
@@ -114,6 +116,30 @@ describe('dispatchBackgroundAgentSession', () => {
       { sessionName: 'Fix login redirect' },
     );
     expect(stmts.createSession.run.mock.calls[0]![2]).toBe('Fix login redirect');
+  });
+
+  it('marks a hidden session before its kickoff and announces no session_created', () => {
+    const { sessionId } = dispatchBackgroundAgentSession(
+      proj(),
+      { id: 'a1', name: 'Digest', prompt: 'Summarise', runAsSession: true },
+      { hidden: true },
+    );
+    expect(stmts.markSessionHidden.run).toHaveBeenCalledWith(sessionId);
+    expect(stmts.markSessionHidden.run.mock.invocationCallOrder[0]!).toBeLessThan(
+      handleChat.mock.invocationCallOrder[0]!,
+    );
+    expect(broadcastSessionCreated).not.toHaveBeenCalled();
+  });
+
+  it('announces a normal session and leaves it visible', () => {
+    dispatchBackgroundAgentSession(proj(), {
+      id: 'a1',
+      name: 'Triage',
+      prompt: 'Go',
+      runAsSession: true,
+    });
+    expect(stmts.markSessionHidden.run).not.toHaveBeenCalled();
+    expect(broadcastSessionCreated).toHaveBeenCalledTimes(1);
   });
 
   it('creates the session in the chosen mode with skills staged and the prompt sent', () => {

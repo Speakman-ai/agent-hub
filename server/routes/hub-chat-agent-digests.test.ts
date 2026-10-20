@@ -110,10 +110,11 @@ beforeEach(() => {
     (
       _project: Project,
       cfg: { sessionAgentId?: string | null; ownerUserId?: string | null; name: string },
-      opts: { userMessageId?: string },
+      opts: { userMessageId?: string; hidden?: boolean },
     ) => {
       const sessionId = `sess-${++n}`;
       stmts.createSession.run(sessionId, cfg.sessionAgentId, cfg.name, 'claude-code', 'm', 0, 0, 1);
+      if (opts.hidden) stmts.markSessionHidden.run(sessionId);
       getDb()
         .prepare('UPDATE sessions SET owner_user_id = ? WHERE id = ?')
         .run(cfg.ownerUserId ?? null, sessionId);
@@ -236,6 +237,30 @@ describe('agent digests', () => {
     expect(replies).toHaveLength(1);
     expect(replies[0]!.author_agent_id).toBe('web-dev');
     expect(replies[0]!.body).toContain('Two 500s from /api/orders');
+  });
+
+  it('runs out of view: no session list row, no session chip, archived after posting', async () => {
+    const ch = channel();
+    const created = await request(as(alice))
+      .post(`/api/chat/channels/${ch.id}/digests`)
+      .send(base)
+      .expect(201);
+    await request(as(alice))
+      .post(`/api/chat/channels/${ch.id}/digests/${created.body.digest.id}/run`)
+      .expect(200);
+    expect(dispatch.mock.calls[0]![2]).toMatchObject({ hidden: true });
+    const stmts = getStmts();
+    expect(stmts.getSessions.all('web-dev')).toEqual([]);
+
+    turnDone('sess-1', 'All quiet.');
+    await vi.advanceTimersByTimeAsync(20);
+    const reply = store.listMessages(ch.id).find((m) => m.author_kind === 'agent')!;
+    expect(reply.body).toBe('All quiet.');
+    expect(reply.body).not.toContain('session:');
+    const row = stmts.getSession.get('sess-1') as { deleted_at: string | null; hidden: number };
+    expect(row.hidden).toBe(1);
+    expect(row.deleted_at).not.toBeNull();
+    expect(stmts.getArchivedSessionsByAgent.all('web-dev')).toEqual([]);
   });
 
   it('posts a notice when the first turn fails to start', async () => {
