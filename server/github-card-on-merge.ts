@@ -6,6 +6,7 @@
  * own `/api/pr/merge` route or Finalize auto-merge. It mirrors the native path:
  * resolve/link the card, move it to a Done-ish column, write an audit comment,
  * and emit the legacy `webhook_pr_merged` broadcast used by push notifications.
+ * It also asks the default-branch watcher to poll, so CI on push starts now.
  */
 import { randomUUID } from 'crypto';
 import type { BroadcastFn, KanbanCardRow, KanbanColumnRow, Stmts } from './types.js';
@@ -14,6 +15,7 @@ import { findKanbanCardForIncomingPr, linkKanbanCardPrUrl } from './kanban-pr-li
 import { getOrCreateBoard } from './routes/board.js';
 import { maybeDispatchWikiDocOnMerge } from './wiki-doc-session.js';
 import { closeResolvePrCardsOnMerge } from './resolve-card-on-merge.js';
+import { requestDefaultBranchPoll } from './git-host/default-branch-poll-request.js';
 
 export interface GithubCardOnMergeDeps {
   stmts: Stmts;
@@ -36,6 +38,10 @@ export function handleGithubCardOnMerge(
 ): void {
   const { stmts, broadcast } = deps;
   const { projectId, prUrl } = args;
+
+  // The merge moved a branch on GitHub; if it was the default branch, start
+  // its CI on push run now rather than on the watcher's next poll.
+  requestDefaultBranchPoll(projectId);
 
   let card: KanbanCardRow | undefined;
   let cols: KanbanColumnRow[] = [];

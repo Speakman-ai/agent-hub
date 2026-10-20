@@ -40,6 +40,7 @@ import {
   setChecksPassedHook,
   setPrChecksFailedHook,
 } from './git-host/push-ci.js';
+import { startDefaultBranchWatcher } from './git-host/default-branch-watcher.js';
 import { maybeRunPushSecurityScan } from './security-audit/on-push.js';
 import { startScheduledSecurityScanner } from './security-audit/scheduled-scan.js';
 import type { SecurityAutofixDeps } from './security-audit/autofix.js';
@@ -2948,6 +2949,13 @@ setChecksPassedHook(({ project, branch }) => {
 setPrChecksFailedHook(({ project, branch, headSha, reason }) => {
   void autoResolveOnChecksFailed(project, { branch, headSha, reason }, autoResolveDeps());
 });
+
+// CI on push for GitHub-hosted projects: poll each origin's default branch
+// and run full CI on every new head. Vitest disables push CI, so the watcher
+// (which shells out to `git ls-remote`) never starts there.
+if (process.env.AGENT_HUB_DISABLE_PUSH_CI !== '1') {
+  startDefaultBranchWatcher({ stmts: stmts!, broadcast, getProjects });
+}
 
 function handleCancel(sessionId: string): void {
   cancelSessionChatRun({ sessionId, activeProcesses });

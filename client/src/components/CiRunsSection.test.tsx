@@ -521,10 +521,11 @@ describe('CiRunsSection', () => {
     );
   });
 
-  it('hides the toggle for GitHub-hosted projects but still shows history', async () => {
+  it('shows the polling toggle for GitHub-hosted projects alongside history', async () => {
     render(<CiRunsSection project={{ id: 'proj-2', name: 'P2', gitHost: 'github' }} />);
     expect(await screen.findByTestId('ci-run-run-1')).toBeInTheDocument();
-    expect(screen.queryByTestId('ci-on-push-toggle')).toBeNull();
+    expect(screen.getByTestId('ci-on-push-toggle')).toBeInTheDocument();
+    expect(screen.getByText(/checks GitHub about once a minute/i)).toBeInTheDocument();
     expect(screen.queryByTestId('push-concurrency-settings')).toBeNull();
   });
 

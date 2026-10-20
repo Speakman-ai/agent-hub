@@ -1,11 +1,11 @@
 /**
- * GitHub-Actions-style CI for Agent Hub-hosted repos, two
- * triggers sharing one engine:
+ * GitHub-Actions-style CI for project repos, two triggers sharing one engine:
  *
  *   1. **CI on push** (`trigger_source: 'git_push'`, opt-in via
  *      `Project.ciOnPush.enabled`): the default branch moved (smart-HTTP
- *      push or native PR merge) → run `.agent-hub/ci.yaml` against the
- *      new commit. Missing/invalid config records a failed run (the
+ *      push or native PR merge on a Hub-hosted repo, or a new head the
+ *      default-branch watcher saw on a GitHub-hosted origin) → run
+ *      `.agent-hub/ci.yaml` against the new commit. Missing/invalid config records a failed run (the
  *      operator opted in, so silence would be a lie).
  *
  *   2. **PR-level CI fallback** (`trigger_source: 'pr_push'`, automatic):
@@ -59,6 +59,7 @@ import {
 import type { CancelSignal } from '../finalize/fix-dispatch.js';
 import { resolvePushConcurrency } from './push-concurrency.js';
 import { recordDefaultBranchCiResult } from '../finalize/default-branch-health.js';
+import { originMirrorExists, originMirrorPath } from './origin-mirror.js';
 
 const execFileP = promisify(execFile);
 
@@ -203,21 +204,40 @@ function admitPush(
   mode: 'queue' | 'cancel',
   preflight: () => Promise<AdmissionPlan | null>,
 ): Promise<void> {
+  const { admission, done } = admitPushTracked(key, mode, preflight);
+  return admission.then(() => done());
+}
+
+/** How a push's admission ended: a run joined (or was already queued), nothing to run, or the preflight threw. */
+export type AdmissionOutcome = 'admitted' | 'nothing' | 'error';
+
+/**
+ * {@link admitPush}, but the caller can tell when admission finished apart
+ * from when the run finished. `done()` is only meaningful once `admission`
+ * has resolved.
+ */
+function admitPushTracked(
+  key: string,
+  mode: 'queue' | 'cancel',
+  preflight: () => Promise<AdmissionPlan | null>,
+): { admission: Promise<AdmissionOutcome>; done: () => Promise<void> } {
   const g = getGroup(key);
   let runDone: Promise<void> = Promise.resolve();
-  const admitted = g.admission
-    .then(async () => {
+  const admission = g.admission.then(async (): Promise<AdmissionOutcome> => {
+    try {
       const plan = await preflight();
-      if (!plan) return;
+      if (!plan) return 'nothing';
       runDone = enqueueInGroup(key, { supersede: true, mode, headSha: plan.headSha }, plan.work);
-    })
-    .catch((err: unknown) => {
+      return 'admitted';
+    } catch (err: unknown) {
       console.error(
         `[push-ci] admission failed for ${key}: ${err instanceof Error ? err.message : String(err)}`,
       );
-    });
-  g.admission = admitted;
-  return admitted.then(() => runDone);
+      return 'error';
+    }
+  });
+  g.admission = admission.then(() => undefined);
+  return { admission, done: () => runDone };
 }
 
 /**
@@ -276,8 +296,13 @@ function enqueueInGroup(
   return next;
 }
 
+/**
+ * True when the project wants a full CI run on every default-branch head.
+ * Hub-hosted repos trigger from the push/merge itself; other hosts are
+ * polled by `default-branch-watcher.ts`.
+ */
 export function ciOnPushEnabled(project: Project): boolean {
-  return project.gitHost === 'agenthub' && project.ciOnPush?.enabled === true;
+  return project.ciOnPush?.enabled === true;
 }
 
 export function isFeatureIntegrationBranch(
@@ -336,7 +361,7 @@ export function maybeRunPushCi(
   updatedRefs: string[],
   deps: PushCiDeps,
 ): Promise<void> {
-  if (!ciOnPushEnabled(project)) return Promise.resolve();
+  if (project.gitHost !== 'agenthub' || !ciOnPushEnabled(project)) return Promise.resolve();
   if (realRunnerDisabled(deps)) return Promise.resolve();
   const dataDir = deps.dataDir ?? config.dataDir;
   if (!hostedRepoExists(project.id, dataDir)) return Promise.resolve();
@@ -365,6 +390,7 @@ export function maybeRunPushCi(
         headSha,
         work: (signal) =>
           runCiForSha(project, deps, dataDir, {
+            repoDir: bare,
             branch: defaultBranch,
             headSha,
             trigger: 'git_push',
@@ -442,6 +468,7 @@ export function maybeRunPrCi(
         headSha,
         work: (signal) =>
           runCiForSha(project, deps, dataDir, {
+            repoDir: bare,
             branch: pr.head_branch,
             headSha,
             trigger: 'pr_push',
@@ -456,6 +483,55 @@ export function maybeRunPrCi(
         err instanceof Error ? err.message : String(err)
       }`,
     );
+  });
+}
+
+/**
+ * A default branch that lives on another host (GitHub), as seen by the
+ * default-branch watcher.
+ */
+export interface MirroredDefaultBranch {
+  branch: string;
+  /** The live head of `branch` on origin, read inside the admission lane. */
+  readHead: () => Promise<string | null>;
+  /** Make `headSha` available in a local repo and return that repo's path. */
+  materialize: (headSha: string) => Promise<string>;
+}
+
+/**
+ * "CI on push" for a default branch hosted elsewhere. Same group, dedupe and
+ * engine as {@link maybeRunPushCi}; only where the head and objects come
+ * from differs. `admission` settles once the head was checked (and fetched
+ * when it needs a run); `done()` settles when that run finishes.
+ */
+export function runMirroredDefaultBranchCi(
+  project: Project,
+  source: MirroredDefaultBranch,
+  deps: PushCiDeps,
+): { admission: Promise<AdmissionOutcome>; done: () => Promise<void> } {
+  if (!ciOnPushEnabled(project) || realRunnerDisabled(deps)) {
+    return { admission: Promise.resolve('nothing'), done: () => Promise.resolve() };
+  }
+  const dataDir = deps.dataDir ?? config.dataDir;
+  const mode = resolvePushConcurrency(project, 'ci');
+  return admitPushTracked(ciGroupKey(project.id, source.branch), mode, async () => {
+    const headSha = await source.readHead();
+    if (!headSha) return null;
+    await deps.onAdmissionHead?.(headSha);
+    if (shaHasCiRun(deps.stmts, project.id, headSha)) return null;
+    const repoDir = await source.materialize(headSha);
+    return {
+      headSha,
+      work: (signal) =>
+        runCiForSha(project, deps, dataDir, {
+          repoDir,
+          branch: source.branch,
+          headSha,
+          trigger: 'git_push',
+          skipWhenNoConfig: false,
+          signal,
+        }),
+    };
   });
 }
 
@@ -492,16 +568,24 @@ export function rerunCiRun(
   deps: PushCiDeps,
   opts: { jobId?: string } = {},
 ): Promise<void> {
-  if (project.gitHost !== 'agenthub') return Promise.resolve();
   if (realRunnerDisabled(deps)) return Promise.resolve();
   const dataDir = deps.dataDir ?? config.dataDir;
-  if (!hostedRepoExists(project.id, dataDir)) return Promise.resolve();
+  let repoDir: string;
+  if (project.gitHost === 'agenthub') {
+    if (!hostedRepoExists(project.id, dataDir)) return Promise.resolve();
+    repoDir = gitHostRepoPath(project.id, dataDir);
+  } else {
+    // Another host: the watcher's mirror already holds every sha it ran.
+    if (!originMirrorExists(project.id, dataDir)) return Promise.resolve();
+    repoDir = originMirrorPath(project.id, dataDir);
+  }
   const trigger = original.trigger_source === 'git_push' ? 'git_push' : 'pr_push';
 
   const key = ciGroupKey(project.id, original.branch);
   const mode = resolvePushConcurrency(project, 'ci');
   return enqueueInGroup(key, { supersede: false, mode, headSha: original.head_sha }, (signal) =>
     runCiForSha(project, deps, dataDir, {
+      repoDir,
       branch: original.branch,
       headSha: original.head_sha,
       trigger,
@@ -519,6 +603,8 @@ async function runCiForSha(
   deps: PushCiDeps,
   dataDir: string,
   args: {
+    /** Local repo holding `headSha`: the hosted bare repo or an origin mirror. */
+    repoDir: string;
     branch: string;
     headSha: string;
     trigger: 'git_push' | 'pr_push';
@@ -534,7 +620,7 @@ async function runCiForSha(
 ): Promise<void> {
   const { branch, headSha, trigger, signal: supersedeSignal } = args;
   if (supersedeSignal?.aborted) return;
-  const bare = gitHostRepoPath(project.id, dataDir);
+  const bare = args.repoDir;
 
   // One run per (project, sha) ACROSS triggers. UNIQUE(idempotency_key)
   // is the real guard; the lookup avoids burning a uuid + clone on replay.

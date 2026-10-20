@@ -918,34 +918,34 @@ export default function CiRunsSection({ project, onProjectsChange, showToast }: 
 
   return (
     <div className="bg-gray-800 rounded-xl p-4 space-y-4" data-testid="ci-runs-section">
-      {hosted && (
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex-1 min-w-0">
-            <span className="text-sm text-gray-200 flex items-center gap-1.5">
-              <Zap size={14} className="text-gray-400" />
-              CI on push
-            </span>
-            <p className="text-xs text-gray-500">
-              Run the same jobs when the default branch updates. Results appear below. This does not
-              block the merge.
-            </p>
-          </div>
-          <button
-            onClick={toggleCiOnPush}
-            disabled={savingToggle}
-            data-testid="ci-on-push-toggle"
-            className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 disabled:opacity-50 ${
-              ciOnPush ? 'bg-emerald-600' : 'bg-gray-600'
-            }`}
-          >
-            <span
-              className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
-                ciOnPush ? 'translate-x-4' : 'translate-x-0.5'
-              }`}
-            />
-          </button>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex-1 min-w-0">
+          <span className="text-sm text-gray-200 flex items-center gap-1.5">
+            <Zap size={14} className="text-gray-400" />
+            CI on push
+          </span>
+          <p className="text-xs text-gray-500">
+            {hosted
+              ? 'Run the same jobs when the default branch updates.'
+              : 'Run the same jobs on every new default-branch commit. Agent Hub checks GitHub about once a minute, and right away after merges it makes.'}{' '}
+            Results appear below. This does not block the merge.
+          </p>
         </div>
-      )}
+        <button
+          onClick={toggleCiOnPush}
+          disabled={savingToggle}
+          data-testid="ci-on-push-toggle"
+          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 disabled:opacity-50 ${
+            ciOnPush ? 'bg-emerald-600' : 'bg-gray-600'
+          }`}
+        >
+          <span
+            className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+              ciOnPush ? 'translate-x-4' : 'translate-x-0.5'
+            }`}
+          />
+        </button>
+      </div>
 
       {spotChoiceAvailable && (
         <div className="flex items-center justify-between gap-3">

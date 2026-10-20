@@ -3539,8 +3539,9 @@ export interface Project {
    */
   gitMirror?: { enabled?: boolean; refs?: 'default-branch' | 'all' };
   /**
-   * "CI on push" for Agent Hub-hosted projects: when enabled and the
-   * default branch moves (smart-HTTP push or native PR merge), the repo's
+   * "CI on push": when enabled and the default branch moves (smart-HTTP
+   * push or native PR merge on a Hub-hosted repo; a new origin head seen by
+   * `server/git-host/default-branch-watcher.ts` otherwise), the repo's
    * `.agent-hub/ci.yaml` (version 2) jobs run against the new commit and
    * results land in finalize_runs with `trigger_source: 'git_push'` —
    * report-only (no reviewer / fix-dispatch / push step). See
