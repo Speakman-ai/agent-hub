@@ -3,6 +3,8 @@
  * have an "idk" hatch that means defer to agent/default.
  */
 
+import { DEFAULT_PROJECT_ICON, resolveProjectIcon } from './project-icons.js';
+
 /** Sentinel value stored in the draft when the user picks "idk". */
 export const IDK = 'idk';
 
@@ -152,6 +154,7 @@ export function initialDraft() {
     description: '',
     hosting: 'agenthub',
     name: '',
+    icon: DEFAULT_PROJECT_ICON,
     generationModel: null,
     visibility: null,
   };
@@ -248,6 +251,7 @@ export function toProvisioningPayload(draft: any) {
     integrations: IDK,
     authDetail: null,
     name: draft.name === IDK ? IDK : String(draft.name || '').trim(),
+    icon: resolveProjectIcon(draft.icon),
     visibility: draft.visibility,
     // idk → Hub hosting (the recommended default).
     hostOnAgentHub: draft.hosting !== 'github',

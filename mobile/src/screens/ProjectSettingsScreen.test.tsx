@@ -103,30 +103,3 @@ describe('ProjectSettingsScreen — feature request approval toggle', () => {
     flushSync(() => root.unmount());
   });
 });
-
-describe('ProjectSettingsScreen project icon', () => {
-  it('saves complete emoji and clears it back to color', async () => {
-    const project = { id: 'p1', name: 'Acme', icon: '★', color: '#6366f1' };
-    const { container, root } = mount();
-    flushSync(() =>
-      root.render(
-        <ProjectSettingsScreen route={{ params: { projectId: 'p1', project } }} navigation={{}} />,
-      ),
-    );
-    await flush();
-    const input = container.querySelector('[data-testid="project-icon-input"]') as HTMLInputElement;
-    expect(input.value).toBe('★');
-    input.value = '👩🏽‍💻';
-    flushSync(() => input.dispatchEvent(new Event('input', { bubbles: true })));
-    (container.querySelector('[data-testid="save-project-icon"]') as HTMLButtonElement).click();
-    await flush();
-    expect(apiMocks.updateProject).toHaveBeenLastCalledWith('p1', { icon: '👩🏽‍💻' });
-    (container.querySelector('[data-testid="clear-project-icon"]') as HTMLButtonElement).click();
-    await flush();
-    expect(apiMocks.updateProject).toHaveBeenLastCalledWith('p1', { icon: null });
-    expect(appState.refreshProjects).toHaveBeenCalled();
-    expect(input.value).toBe('');
-    flushSync(() => root.unmount());
-    container.remove();
-  });
-});

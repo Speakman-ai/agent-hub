@@ -38,6 +38,8 @@ import { resolveTemplateId, isKnownTemplateId } from '../provisioning/stack-defa
 import { getTemplate } from '../provisioning/templates.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { z, registerPath } from '../openapi/registry.js';
+import { ProjectIconSchema } from '../openapi/schemas/project-icon.js';
+import { DEFAULT_PROJECT_ICON } from '../../shared/utils/project-icons.js';
 
 registerPath({
   method: 'post',
@@ -399,6 +401,11 @@ export default function createProvisioningRoutes(deps: RouteDeps): Router {
 
     const projects = getProjects();
     const dataDir = getProjectDataDir(projectId);
+    const requestedIcon = ProjectIconSchema.safeParse((payload as { icon?: unknown }).icon);
+    const icon =
+      requestedIcon.success && typeof requestedIcon.data === 'string' && requestedIcon.data
+        ? requestedIcon.data
+        : DEFAULT_PROJECT_ICON;
     const project: Project = {
       id: projectId,
       name: displayName,
@@ -408,6 +415,7 @@ export default function createProvisioningRoutes(deps: RouteDeps): Router {
       cwd: dataDir,
       ahw: dataDir,
       color: '#6b7280',
+      icon,
       mode: 'dev',
       agents: [],
     };

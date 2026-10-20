@@ -70,12 +70,14 @@ describe('createWorkflowProject', () => {
     (globalThis as any).fetch = vi.fn(async (_url: any, init: any) => {
       const body = JSON.parse(init.body);
       expect(body.color).toBe('#3B82F6');
+      expect(body.icon).toBe('🚀');
       expect(body.cwd).toBe('/var/data/wf');
       return { ok: true, json: async () => ({ id: body.id }) };
     });
     await createWorkflowProject({
       name: 'Ops Hub',
       color: '#3B82F6',
+      icon: ' 🚀 ',
       cwd: '/var/data/wf',
     });
   });

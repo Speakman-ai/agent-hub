@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import type supertest from 'supertest';
+import { DEFAULT_PROJECT_ICON } from '../../shared/utils/project-icons.js';
 import { createProject, getRequest } from './helpers.js';
 
 let request: supertest.Agent;
@@ -8,6 +9,11 @@ beforeAll(async () => {
 });
 
 describe('project icons', () => {
+  it('assigns the default folder icon when create omits one', async () => {
+    const project = await createProject();
+    expect(project.icon).toBe(DEFAULT_PROJECT_ICON);
+  });
+
   it('creates, updates, lists and clears an icon without losing the accent color', async () => {
     const project = await createProject({ icon: '👩🏽‍💻', color: '#123456' });
     expect(project.icon).toBe('👩🏽‍💻');

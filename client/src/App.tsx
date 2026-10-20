@@ -11,8 +11,10 @@ import {
   useCallback,
   lazy,
   Suspense,
+  type CSSProperties,
 } from 'react';
 import Sidebar from './components/Sidebar';
+import { readSelectedOrganization, writeSelectedOrganization } from './utils/sidebarOrgSections';
 import NotificationBell, { NOTIFICATION_WS_EVENT } from './components/NotificationBell';
 import type { NotificationTarget } from './utils/notificationTarget';
 import BrandLogo from './components/BrandLogo';
@@ -249,12 +251,14 @@ import {
   Package,
   SquareTerminal,
   PanelLeftOpen,
+  GripVertical,
   History,
   Globe,
   MessageCircleQuestion,
   Gauge,
 } from 'lucide-react';
 import { readSidebarCollapsed, writeSidebarCollapsed } from './utils/sidebarCollapse';
+import { useResizablePaneWidth } from './hooks/useResizablePaneWidth';
 import { SIDEBAR_WS_EVENT, isSidebarWsEvent } from '@shared/utils/sessionSidebar';
 import {
   migrateFromLegacy,
@@ -423,6 +427,10 @@ export default function App({ initialView }: any = {}) {
     const server = initialNavigation.serverId;
     return id && (!server || server === getActiveOrg()?.id) ? id : null;
   });
+  // Same organization the sidebar is showing. Independent keeps unlinked projects.
+  const [sidebarOrganizationId, setSidebarOrganizationId] = useState<string | null>(
+    () => organizationRouteId || readSelectedOrganization(),
+  );
   // The live per-user Hub assistant session id, resolved from GET /api/me/hub.
   // The Hub composer binds and sends ONLY to this session — never a project row.
   const [hubSessionId, setHubSessionId] = useState<string | null>(null);
@@ -435,6 +443,19 @@ export default function App({ initialView }: any = {}) {
   // using the `sidebarOpen` slide-out drawer and ignores this flag). Persisted
   // to localStorage so the preference survives reloads.
   const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
+  const {
+    width: sidebarWidth,
+    isResizing: sidebarResizing,
+    handleProps: sidebarResizeHandleProps,
+    resetWidth: resetSidebarWidth,
+  } = useResizablePaneWidth({
+    storageKey: 'sidebarWidth',
+    defaultWidth: 256,
+    min: 200,
+    max: 480,
+    maxViewportFraction: 0.45,
+    growDirection: 'right',
+  });
   const [deletingSessionIds, setDeletingSessionIds] = useState<Set<any>>(new Set());
   const [deletingBulk, setDeletingBulk] = useState<any>(null); // 'all' | 'inactive' | null
   // Map of sessionId -> running task state ({messageId, content, engine, model}).
@@ -1113,12 +1134,17 @@ export default function App({ initialView }: any = {}) {
     if (view === 'replays') setReplaysProjectId(route?.projectId || null);
     if (view === 'security') setSecurityProjectId(route?.projectId || null);
     if (view === 'design') setActiveDesignId(route?.designId || null);
-    if (view === 'organizations')
-      setOrganizationRouteId(
+    if (view === 'organizations') {
+      const organizationId =
         route?.organizationId && (!route.serverId || route.serverId === getActiveOrg()?.id)
           ? route.organizationId
-          : null,
-      );
+          : null;
+      setOrganizationRouteId(organizationId);
+      if (organizationId) {
+        setSidebarOrganizationId(organizationId);
+        writeSelectedOrganization(organizationId);
+      }
+    }
     setSidebarOpen(false);
   }, []);
 
@@ -6754,8 +6780,11 @@ export default function App({ initialView }: any = {}) {
         {/* Sidebar */}
         <div
           className={`fixed md:relative inset-y-0 left-0 z-50 md:z-auto flex h-dvh max-h-dvh md:h-full md:max-h-none overflow-hidden transition-transform duration-200 ${
-            sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
-          } ${sidebarCollapsed ? 'md:hidden' : ''}`}
+            sidebarResizing ? 'select-none' : ''
+          } ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'} ${
+            sidebarCollapsed ? 'md:hidden' : ''
+          }`}
+          style={{ '--sidebar-width': `${sidebarWidth}px` } as CSSProperties}
         >
           <Sidebar
             showAiSignInGuide={showAiSignInGuide && !currentView.startsWith('settings')}
@@ -6811,8 +6840,18 @@ export default function App({ initialView }: any = {}) {
             deletingSessionIds={deletingSessionIds}
             deletingBulk={deletingBulk}
             onRenameSession={handleRenameSession}
+            onOpenOrganizationChat={handleOpenOrganizationChat}
             onNavigate={(view: any, extra: any) => {
               setCurrentView(view);
+              if (view === 'organizations') {
+                const routed =
+                  typeof extra === 'string' && extra && extra !== 'independent' ? extra : null;
+                const sidebarOrg =
+                  sidebarOrganizationId && sidebarOrganizationId !== 'independent'
+                    ? sidebarOrganizationId
+                    : null;
+                setOrganizationRouteId(routed ?? sidebarOrg ?? organizationRouteId);
+              }
               if (view === 'wiki' && extra) setWikiProjectId(extra);
               if (view === 'notes' && extra) setNotesProjectId(extra);
               if (view === 'reviewer' && extra) setReviewerProjectId(extra);
@@ -6835,6 +6874,13 @@ export default function App({ initialView }: any = {}) {
               setSidebarOpen(false);
             }}
             currentView={currentView}
+            activeOrganizationId={currentView === 'organizations' ? organizationRouteId : null}
+            selectedOrganizationId={sidebarOrganizationId}
+            onSelectOrganization={(id: string) => {
+              setSidebarOrganizationId(id);
+              writeSelectedOrganization(id);
+              if (id !== 'independent') setOrganizationRouteId(id);
+            }}
             activeTaskSessionIds={activeTasks}
             awaitingInputBySession={awaitingInputBySession}
             subagentsBySession={subagents}
@@ -6891,6 +6937,21 @@ export default function App({ initialView }: any = {}) {
             }}
             kanbanRefreshKey={kanbanRefreshKey}
           />
+          <div
+            {...sidebarResizeHandleProps}
+            data-testid="sidebar-resize-handle"
+            aria-label="Resize sidebar"
+            title="Drag to resize sidebar. Double-click to reset."
+            onDoubleClick={(event) => {
+              event.preventDefault();
+              resetSidebarWidth();
+            }}
+            className={`absolute top-0 right-0 z-30 hidden h-full w-1.5 cursor-col-resize touch-none items-center justify-center focus:outline-none focus-visible:bg-sky-500/50 md:flex ${
+              sidebarResizing ? 'bg-sky-500/50' : 'hover:bg-sky-500/35'
+            }`}
+          >
+            <GripVertical size={14} className="text-gray-500" aria-hidden />
+          </div>
         </div>
 
         <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
@@ -6994,7 +7055,13 @@ export default function App({ initialView }: any = {}) {
               {currentView === 'organizations' ? (
                 <OrganizationsPage
                   initialOrganizationId={organizationRouteId}
-                  onSelectOrganization={setOrganizationRouteId}
+                  onSelectOrganization={(id: string | null) => {
+                    setOrganizationRouteId(id);
+                    if (id) {
+                      setSidebarOrganizationId(id);
+                      writeSelectedOrganization(id);
+                    }
+                  }}
                   onOpenChat={handleOpenOrganizationChat}
                   onOpenProject={(id) => {
                     setCurrentView(`kanban:${id}`);

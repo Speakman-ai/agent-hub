@@ -146,11 +146,19 @@ async function render(projectId?: string) {
   await flush();
 }
 function button(label: string) {
-  return [...container.querySelectorAll('button')].find((b) => b.textContent === label)!;
+  return [...container.querySelectorAll('button')]
+    .filter((item) => item.getAttribute('aria-label') !== 'Organization')
+    .find((item) => item.textContent === label)!;
 }
 async function click(label: string) {
-  expect(button(label), label).toBeTruthy();
-  button(label).click();
+  let target = button(label);
+  if (!target) {
+    container.querySelector<HTMLButtonElement>('button[aria-label="Organization"]')?.click();
+    await flush();
+    target = button(label);
+  }
+  expect(target, label).toBeTruthy();
+  target.click();
   await flush();
 }
 async function text(label: string, value: string) {
@@ -277,7 +285,9 @@ describe('web/Electron organization flow', () => {
     expect(container.textContent).toContain('403: Access changed');
     expect(container.textContent).toContain('Refresh to retry');
     await click('Refresh organizations');
-    expect(button('First')).toBeTruthy();
+    expect(container.querySelector('[data-testid="organizations-switch"]')?.textContent).toContain(
+      'First',
+    );
   });
   it('clears selection and ignores an old Server response after switching', async () => {
     seed();

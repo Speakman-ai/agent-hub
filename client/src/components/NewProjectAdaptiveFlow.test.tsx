@@ -444,6 +444,7 @@ describe('NewProjectAdaptiveFlow — workflow (non-code) submit path', () => {
       name: 'Q3 Research',
       description: 'Quarterly findings',
       color: expect.any(String),
+      icon: 'Folder',
       visibility: 'shared',
     });
     await waitFor(() =>

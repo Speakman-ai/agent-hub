@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
     "dev:local": "concurrently \"npm run dev:server:local\" \"npm run dev:client\"",
-    "dev:server": "cd server && npx tsx watch index.ts",
+    "dev:server": "cd server && AGENT_HUB_DEV_EMAIL_USER=1 npx tsx watch index.ts",
     "dev:server:local": "cd server && AGENT_HUB_MODE=local npx tsx watch index.ts",
     "dev:client": "cd client && npx vite",
     "build": "cd client && npx vite build",

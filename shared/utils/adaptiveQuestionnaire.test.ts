@@ -172,6 +172,7 @@ describe('adaptiveQuestionnaire — pure helpers', () => {
         integrations: IDK,
         authDetail: null,
         name: IDK,
+        icon: 'Folder',
         visibility: 'private',
         hostOnAgentHub: true,
         generationModel: null,

@@ -25,6 +25,9 @@ export function useResizablePaneWidth({
   maxViewportFraction = 0.6,
   keyStep = 16,
   keyPageStep = 64,
+  // 'left': dragging toward smaller clientX widens the pane (right-edge panes).
+  // 'right': dragging toward larger clientX widens the pane (left sidebar).
+  growDirection = 'left',
 }: any) {
   const readStored = useCallback(() => {
     if (!storageKey) return defaultWidth;
@@ -92,15 +95,17 @@ export function useResizablePaneWidth({
     (e: React.PointerEvent) => {
       if (!dragStateRef.current) return;
       const { startX, startWidth } = dragStateRef.current;
+      const delta = e.clientX - startX;
+      const signed = growDirection === 'right' ? delta : -delta;
       setWidth(
-        clampPaneWidth(startWidth + (startX - e.clientX), {
+        clampPaneWidth(startWidth + signed, {
           min,
           max: effectiveMax,
           fallback: defaultWidth,
         }),
       );
     },
-    [min, effectiveMax, defaultWidth],
+    [min, effectiveMax, defaultWidth, growDirection],
   );
 
   const endResize = useCallback(() => {
@@ -110,13 +115,18 @@ export function useResizablePaneWidth({
 
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      const horizontalStep = growDirection === 'right' ? keyStep : -keyStep;
       let next;
       switch (e.key) {
+        case 'ArrowRight':
+          next = displayWidth + horizontalStep;
+          break;
         case 'ArrowLeft':
+          next = displayWidth - horizontalStep;
+          break;
         case 'ArrowUp':
           next = displayWidth + keyStep;
           break;
-        case 'ArrowRight':
         case 'ArrowDown':
           next = displayWidth - keyStep;
           break;
@@ -138,8 +148,12 @@ export function useResizablePaneWidth({
       e.preventDefault();
       setWidth(clampPaneWidth(next, { min, max: effectiveMax, fallback: defaultWidth }));
     },
-    [displayWidth, min, effectiveMax, defaultWidth, keyStep, keyPageStep],
+    [displayWidth, min, effectiveMax, defaultWidth, keyStep, keyPageStep, growDirection],
   );
+
+  const resetWidth = useCallback(() => {
+    setWidth(defaultWidth);
+  }, [defaultWidth]);
 
   useEffect(() => {
     if (!isResizing) return undefined;
@@ -164,7 +178,7 @@ export function useResizablePaneWidth({
     onKeyDown,
   };
 
-  return { width: displayWidth, isResizing, handleProps };
+  return { width: displayWidth, isResizing, handleProps, resetWidth };
 }
 
 export default useResizablePaneWidth;

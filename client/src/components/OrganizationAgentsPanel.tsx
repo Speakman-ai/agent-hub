@@ -18,6 +18,7 @@ import {
 } from '@shared/utils/organization-agents';
 import type { Organization, OrganizationProject } from '@shared/utils/organizations';
 import { api } from '../utils/api';
+import Checkbox from './Checkbox';
 
 const useOrganizationAgents = createUseOrganizationAgents({
   useEffect,
@@ -338,9 +339,8 @@ function AgentEditor({
       <fieldset className="space-y-1">
         <legend className="text-sm">Tool permissions</legend>
         {ORGANIZATION_AGENT_TOOLS.map((tool) => (
-          <label className="flex items-center gap-2 text-sm" key={tool}>
-            <input
-              type="checkbox"
+          <label className="flex items-center gap-2.5 text-sm text-gray-200" key={tool}>
+            <Checkbox
               checked={draft.tools.includes(tool)}
               onChange={() => set({ tools: toggleValue(draft.tools, tool) })}
             />
@@ -348,9 +348,8 @@ function AgentEditor({
           </label>
         ))}
         {draft.tools.includes('computer') && (
-          <label className="ml-6 flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
+          <label className="ml-6 flex items-center gap-2.5 text-sm text-gray-200">
+            <Checkbox
               checked={draft.computerByDefault}
               onChange={() => set({ computerByDefault: !draft.computerByDefault })}
             />
@@ -387,9 +386,11 @@ function AgentEditor({
         {!draft.allLinked &&
           (linkedProjects.length ? (
             linkedProjects.map((project) => (
-              <label className="ml-6 flex items-center gap-2 text-sm" key={project.id}>
-                <input
-                  type="checkbox"
+              <label
+                className="ml-6 flex items-center gap-2.5 text-sm text-gray-200"
+                key={project.id}
+              >
+                <Checkbox
                   checked={draft.projectIds.includes(project.id)}
                   onChange={() => set({ projectIds: toggleValue(draft.projectIds, project.id) })}
                 />
@@ -403,12 +404,8 @@ function AgentEditor({
           Each person chatting only reaches the projects they can already access.
         </p>
       </fieldset>
-      <label className="flex items-center gap-2 text-sm">
-        <input
-          type="checkbox"
-          checked={draft.enabled}
-          onChange={() => set({ enabled: !draft.enabled })}
-        />
+      <label className="flex items-center gap-2.5 text-sm text-gray-200">
+        <Checkbox checked={draft.enabled} onChange={() => set({ enabled: !draft.enabled })} />
         Enabled
       </label>
       <div className="flex flex-wrap gap-2">

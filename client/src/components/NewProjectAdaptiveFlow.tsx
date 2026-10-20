@@ -10,7 +10,7 @@ import {
   createWorkflowProject as defaultCreateWorkflowProject,
   slugifyProjectId,
 } from '../utils/workflowProjectClient';
-
+import { DEFAULT_PROJECT_ICON } from '@shared/utils/project-icons';
 /**
  * NewProjectAdaptiveFlow — stitches the project-type picker, the
  * questionnaire, the live provisioning status view, and the workflow
@@ -239,8 +239,8 @@ export default function NewProjectAdaptiveFlow({
   // route the host to the new project's kanban (action:'task' is the
   // existing host signal that transitions to `kanban:<projectId>`).
   const handleWorkflowSubmit = useCallback(
-    async ({ name, description, color, visibility }: any) => {
-      const project = await createWorkflowProject({ name, description, color, visibility });
+    async ({ name, description, color, visibility, icon }: any) => {
+      const project = await createWorkflowProject({ name, description, color, visibility, icon });
       const projectId = project?.id || slugifyProjectId(name);
       setCreatedProjectId(projectId);
       onProjectCreated?.({
@@ -481,6 +481,7 @@ export function WorkflowProjectForm({ onSubmit, onBack, onClose }: any) {
           description: description.trim(),
           color,
           visibility,
+          icon: DEFAULT_PROJECT_ICON,
         });
         // Don't reset state — onSubmit's host handler unmounts us by
         // routing to the new project's kanban view.

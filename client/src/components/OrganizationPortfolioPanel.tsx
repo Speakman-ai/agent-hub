@@ -186,9 +186,9 @@ function DispatchForm({ state, controller }: PortfolioHook) {
       }}
     >
       <h5 className="font-medium">Dispatch a project agent</h5>
-      <div className="flex flex-wrap gap-2">
+      <div className="grid gap-2 sm:grid-cols-3">
         <select
-          className={input}
+          className={`${input} w-full`}
           aria-label="Organization agent"
           value={source?.id ?? ''}
           onChange={(event) => {
@@ -204,7 +204,7 @@ function DispatchForm({ state, controller }: PortfolioHook) {
           ))}
         </select>
         <select
-          className={input}
+          className={`${input} w-full`}
           aria-label="Target project"
           value={projectId}
           onChange={(event) => {
@@ -220,7 +220,7 @@ function DispatchForm({ state, controller }: PortfolioHook) {
           ))}
         </select>
         <select
-          className={input}
+          className={`${input} w-full`}
           aria-label="Target agent"
           value={agentId}
           disabled={!project}

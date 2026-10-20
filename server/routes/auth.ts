@@ -43,6 +43,7 @@ import {
 } from '../auth-store.js';
 import { requireRole, hasAtLeastRole, parseRole, type Role } from '../roles.js';
 import { isLocalBundledServer, type AuthenticatedRequest } from '../auth.js';
+import { ensureDevEmailUser } from '../dev-email-user.js';
 import { getActiveOrgId, getOrg } from '../orgs.js';
 import {
   getUserById,
@@ -251,6 +252,21 @@ registerPath({
             apiKeyConfigured: z.boolean(),
             needsMigration: z.boolean(),
             activeOrgIsLocal: z.boolean(),
+            devAutoLogin: z
+              .object({
+                token: z.string(),
+                expiresAt: z.string(),
+                user: z.object({
+                  id: z.string(),
+                  email: z.string(),
+                  needsEmailUpdate: z.literal(false),
+                  role: z.enum(['Owner', 'Admin', 'User']),
+                }),
+              })
+              .optional()
+              .describe(
+                'Present on `npm run dev`. The client stores it and skips the login screen.',
+              ),
           }),
         },
       },
@@ -2500,6 +2516,13 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     if (activeOrgIsLocal && process.env.AGENT_HUB_PREVIEW === '1') {
       emailStatus.needsEmailUpdate = false;
     }
+    let devAutoLogin: ReturnType<typeof ensureDevEmailUser> = null;
+    try {
+      devAutoLogin = ensureDevEmailUser();
+    } catch (err) {
+      console.warn(`[dev-email-user] ${(err as Error).message}`);
+    }
+    if (devAutoLogin) emailStatus.needsEmailUpdate = false;
     res.json({
       authConfigured: jwtConfigured,
       ...emailStatus,
@@ -2511,6 +2534,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       apiKeyConfigured,
       needsMigration,
       activeOrgIsLocal,
+      ...(devAutoLogin ? { devAutoLogin } : {}),
     });
   });
 

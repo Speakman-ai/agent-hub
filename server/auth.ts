@@ -28,6 +28,7 @@ import {
   matchPreviewProxyPath,
   readPreviewCookie,
 } from './preview-auth.js';
+import { ensureDevEmailUser, isDevEmailUserEnabled } from './dev-email-user.js';
 
 /**
  * Endpoints the auth middleware always lets through. Anything that is
@@ -411,6 +412,24 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
     }
   }
 
+  // `npm run dev` stays signed in as the generated email user. A presented
+  // credential is ignored so a leftover token cannot switch accounts.
+  if (isDevEmailUserEnabled()) {
+    try {
+      const session = ensureDevEmailUser();
+      if (session) {
+        const r = req as AuthenticatedRequest;
+        r.authUser = session.user.email;
+        r.authUserId = session.user.id;
+        r.authRole = session.user.role;
+        r.authOrgId = getActiveOrgId();
+        return next();
+      }
+    } catch (err) {
+      console.warn(`[dev-email-user] ${(err as Error).message}`);
+    }
+  }
+
   // Local bundled server (Electron / dev box) intentionally runs without
   // per-user auth. Populate a synthetic `local` Owner identity so
   // downstream handlers still see `authUser`, `authRole`, and
@@ -649,6 +668,24 @@ export function authenticateWsDetailed(request: IncomingMessage): WsAuthResult {
   }
   const apiKey = config.apiKey;
   const authRecord = getAuthRecord();
+
+  if (isDevEmailUserEnabled()) {
+    try {
+      const session = ensureDevEmailUser();
+      if (session) {
+        return {
+          ok: true,
+          subject: session.user.email,
+          userId: session.user.id,
+          role: session.user.role,
+          orgId: getActiveOrgId(),
+        };
+      }
+    } catch (err) {
+      console.warn(`[dev-email-user] ${(err as Error).message}`);
+    }
+  }
+
   if (!apiKey && !authRecord) return { ok: true };
 
   // Local bundled server: mirror the REST bypass — return a synthetic

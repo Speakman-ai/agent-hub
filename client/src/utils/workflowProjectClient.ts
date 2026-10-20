@@ -65,6 +65,7 @@ export async function createWorkflowProject(input: any) {
     mode: 'workflow',
   };
   if (input?.color) body.color = input.color;
+  if (typeof input?.icon === 'string' && input.icon.trim()) body.icon = input.icon.trim();
   // Visibility is optional — server defaults to 'shared' if omitted.
   // Only forward an explicit 'private' (or 'shared' for clarity) so a
   // wizard that doesn't expose the toggle yet inherits the safe default.

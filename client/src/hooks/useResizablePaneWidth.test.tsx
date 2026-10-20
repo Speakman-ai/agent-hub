@@ -17,17 +17,19 @@ function Harness({
   min = 320,
   max = 1200,
   maxViewportFraction = 0.6,
+  growDirection = 'left',
 }: any) {
-  const { width, isResizing, handleProps } = useResizablePaneWidth({
+  const { width, isResizing, handleProps, resetWidth } = useResizablePaneWidth({
     storageKey,
     defaultWidth,
     min,
     max,
     maxViewportFraction,
+    growDirection,
   });
   return (
     <div data-testid="pane" style={{ width: `${width}px` }} data-resizing={String(isResizing)}>
-      <div data-testid="handle" {...handleProps} />
+      <div data-testid="handle" {...handleProps} onDoubleClick={resetWidth} />
     </div>
   );
 }
@@ -49,6 +51,38 @@ describe('useResizablePaneWidth', () => {
     window.localStorage.setItem('k2', '700');
     render(<Harness storageKey="k2" />);
     expect(screen.getByTestId('pane').style.width).toBe('700px');
+  });
+
+  it('widens a left sidebar when the handle is dragged right', () => {
+    render(
+      <Harness storageKey="k-left" defaultWidth={256} min={200} max={480} growDirection="right" />,
+    );
+    const handle = screen.getByTestId('handle');
+    fireEvent.pointerDown(handle, { clientX: 256, button: 0, pointerId: 1 });
+    fireEvent.pointerMove(handle, { clientX: 320, pointerId: 1 });
+    fireEvent.pointerUp(handle, { pointerId: 1 });
+    expect(screen.getByTestId('pane').style.width).toBe('320px');
+    expect(window.localStorage.getItem('k-left')).toBe('320');
+  });
+
+  it('widens a left sidebar on ArrowRight and resets on double-click', () => {
+    render(
+      <Harness
+        storageKey="k-left-key"
+        defaultWidth={256}
+        min={200}
+        max={480}
+        growDirection="right"
+      />,
+    );
+    const handle = screen.getByTestId('handle');
+    fireEvent.keyDown(handle, { key: 'ArrowRight' });
+    expect(screen.getByTestId('pane').style.width).toBe('272px');
+    fireEvent.keyDown(handle, { key: 'ArrowLeft' });
+    expect(screen.getByTestId('pane').style.width).toBe('256px');
+    fireEvent.keyDown(handle, { key: 'ArrowRight' });
+    fireEvent.doubleClick(handle);
+    expect(screen.getByTestId('pane').style.width).toBe('256px');
   });
 
   it('widens when the handle is dragged left (pane is right-anchored)', () => {

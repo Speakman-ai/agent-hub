@@ -1,6 +1,5 @@
 import OrganizationsPage from './OrganizationsPage';
 import ProjectIcon from './ProjectIcon';
-import ProjectIconEditor from './ProjectIconEditor';
 import AiSignInHint from './AiSignInHint';
 import DesktopUpdateHint from './DesktopUpdateHint';
 import DesktopUpdateCard, { type DesktopUpdateInfo } from './DesktopUpdateCard';
@@ -1451,7 +1450,6 @@ export function ProjectsSection({
 
   const projectSettingsBody = (p: any) => (
     <div className={singleProjectMode ? 'space-y-4' : 'pl-8 pt-3 space-y-4'}>
-      <ProjectIconEditor project={p} onProjectsChange={onProjectsChange} />
       <ProjectWorkflowCommandsEditor
         project={p}
         showToast={showToast}

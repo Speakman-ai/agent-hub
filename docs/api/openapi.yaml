@@ -3718,8 +3718,8 @@ components:
               type: string
               nullable: true
               maxLength: 32
-              description: Emoji or symbol replacing the project color marker (up to 32 UTF-16 code units). Null or empty restores the colored marker.
-              example: 🚀
+              description: Stored project icon name (up to 32 characters). Create uses Folder when this is omitted or empty. The app always shows a folder icon beside the project name.
+              example: Folder
           additionalProperties:
             nullable: true
         crons:
@@ -3836,8 +3836,8 @@ components:
               type: string
               nullable: true
               maxLength: 32
-              description: Emoji or symbol replacing the project color marker (up to 32 UTF-16 code units). Null or empty restores the colored marker.
-              example: 🚀
+              description: Stored project icon name (up to 32 characters). Create uses Folder when this is omitted or empty. The app always shows a folder icon beside the project name.
+              example: Folder
           additionalProperties:
             nullable: true
       required:
@@ -14209,8 +14209,8 @@ components:
           type: string
           nullable: true
           maxLength: 32
-          description: Emoji or symbol replacing the project color marker (up to 32 UTF-16 code units). Null or empty restores the colored marker.
-          example: 🚀
+          description: Stored project icon name (up to 32 characters). Create uses Folder when this is omitted or empty. The app always shows a folder icon beside the project name.
+          example: Folder
         color:
           type: string
         id:
@@ -19478,6 +19478,40 @@ paths:
                     type: boolean
                   activeOrgIsLocal:
                     type: boolean
+                  devAutoLogin:
+                    type: object
+                    properties:
+                      token:
+                        type: string
+                      expiresAt:
+                        type: string
+                      user:
+                        type: object
+                        properties:
+                          id:
+                            type: string
+                          email:
+                            type: string
+                          needsEmailUpdate:
+                            type: boolean
+                            enum:
+                              - false
+                          role:
+                            type: string
+                            enum:
+                              - Owner
+                              - Admin
+                              - User
+                        required:
+                          - id
+                          - email
+                          - needsEmailUpdate
+                          - role
+                    required:
+                      - token
+                      - expiresAt
+                      - user
+                    description: Present on `npm run dev`. The client stores it and skips the login screen.
                 required:
                   - authConfigured
                   - email
@@ -55705,8 +55739,8 @@ paths:
                   type: string
                   nullable: true
                   maxLength: 32
-                  description: Emoji or symbol replacing the project color marker (up to 32 UTF-16 code units). Null or empty restores the colored marker.
-                  example: 🚀
+                  description: Stored project icon name (up to 32 characters). Create uses Folder when this is omitted or empty. The app always shows a folder icon beside the project name.
+                  example: Folder
               additionalProperties:
                 nullable: true
       responses:
@@ -55821,8 +55855,8 @@ paths:
                       type: string
                       nullable: true
                       maxLength: 32
-                      description: Emoji or symbol replacing the project color marker (up to 32 UTF-16 code units). Null or empty restores the colored marker.
-                      example: 🚀
+                      description: Stored project icon name (up to 32 characters). Create uses Folder when this is omitted or empty. The app always shows a folder icon beside the project name.
+                      example: Folder
                     githubRepo:
                       type: object
                       properties:
@@ -56241,8 +56275,8 @@ paths:
                   type: string
                   nullable: true
                   maxLength: 32
-                  description: Emoji or symbol replacing the project color marker (up to 32 UTF-16 code units). Null or empty restores the colored marker.
-                  example: 🚀
+                  description: Stored project icon name (up to 32 characters). Create uses Folder when this is omitted or empty. The app always shows a folder icon beside the project name.
+                  example: Folder
                 id:
                   type: string
                   pattern: ^[a-zA-Z0-9-]+$

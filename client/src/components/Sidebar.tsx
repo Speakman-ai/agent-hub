@@ -1,7 +1,7 @@
 import ProjectIcon from './ProjectIcon';
 import AiSignInHint from './AiSignInHint';
 import DesktopUpdateHint from './DesktopUpdateHint';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import {
   BookOpen,
   Settings,
@@ -59,8 +59,16 @@ import BugReportButton from './BugReportButton';
 import NotificationBell from './NotificationBell';
 import BrandLogo from './BrandLogo';
 import KanbanSidebarEpicsPanel from './KanbanSidebarEpicsPanel';
+import OrganizationMenu from './OrganizationMenu';
 import { isWorkflowProject } from '../utils/projectMode';
 import { readNavGroupCollapsed, writeNavGroupCollapsed } from '../utils/sidebarNavGroupCollapse';
+import {
+  activeOrganizationSection,
+  groupProjectsByOrganization,
+  readSelectedOrganization,
+  writeSelectedOrganization,
+  type SidebarOrgSection,
+} from '../utils/sidebarOrgSections';
 import {
   currentCollapsedProjectsKey,
   readCollapsedProjects,
@@ -74,6 +82,8 @@ import {
   toCollapsedMap,
 } from '@shared/utils/sidebarProjectCollapse';
 import { api } from '../utils/api';
+import { rosterAgents, type OrganizationAgent } from '@shared/utils/organization-agents';
+import type { OrganizationChatTarget } from './OrganizationAgentsPanel';
 
 /**
  * The one API call the collapsed-project saver makes. Module scope so every
@@ -114,7 +124,17 @@ export default function Sidebar({
   onClearMergedSessions,
   onRenameSession,
   onNavigate,
+  /** Open an organization agent's chat. Organization agents are not project agents. */
+  onOpenOrganizationChat,
   currentView,
+  /** Organization open on the Organizations page, so its settings row can highlight. */
+  activeOrganizationId = null,
+  /**
+   * App-wide organization selection. When omitted, the sidebar keeps its own
+   * stored choice. `independent` is the unlinked project set.
+   */
+  selectedOrganizationId,
+  onSelectOrganization,
   activeTaskSessionIds = {},
   /**
    * Map of sessionId → { askIds, agentId, sessionName } for sessions that
@@ -293,6 +313,151 @@ export default function Sidebar({
    */
   const [collapsedNavGroups, setCollapsedNavGroups] =
     useState<Record<string, boolean>>(readNavGroupCollapsed);
+  /**
+   * Organization → project grouping. Null until a non-empty organization list
+   * loads; the sidebar stays a flat project list in that case.
+   */
+  const [orgLinks, setOrgLinks] = useState<{
+    organizations: { id: string; name: string }[];
+    links: Record<string, { id: string }[]>;
+  } | null>(null);
+  const [orgAgentsById, setOrgAgentsById] = useState<Record<string, OrganizationAgent[]>>({});
+  const [storedOrgId, setStoredOrgId] = useState<string | null>(readSelectedOrganization);
+  const selectedOrgId = selectedOrganizationId !== undefined ? selectedOrganizationId : storedOrgId;
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const result = await api.organizations.list();
+        const organizations = Array.isArray(result?.organizations) ? result.organizations : [];
+        if (organizations.length === 0) {
+          if (!cancelled) setOrgLinks(null);
+          return;
+        }
+        const links: Record<string, { id: string }[]> = {};
+        const agentsById: Record<string, OrganizationAgent[]> = {};
+        await Promise.all(
+          organizations.map(async (org) => {
+            try {
+              const linked = await api.organizations.linked(org.id);
+              links[org.id] = Array.isArray(linked?.projects) ? linked.projects : [];
+            } catch {
+              links[org.id] = [];
+            }
+            try {
+              const listed = await api.organizationAgents.list(org.id);
+              agentsById[org.id] = rosterAgents(Array.isArray(listed?.agents) ? listed.agents : []);
+            } catch {
+              agentsById[org.id] = [];
+            }
+          }),
+        );
+        if (!cancelled) {
+          setOrgLinks({
+            organizations: organizations.map((org) => ({ id: org.id, name: org.name })),
+            links,
+          });
+          setOrgAgentsById(agentsById);
+        }
+      } catch {
+        if (!cancelled) setOrgLinks(null);
+      }
+    };
+    void load();
+    window.addEventListener('organizations_changed', load);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('organizations_changed', load);
+    };
+  }, []);
+  const orgSections = useMemo((): SidebarOrgSection[] | null => {
+    if (!orgLinks) return null;
+    return groupProjectsByOrganization(
+      projects.map((project: { id: string }) => ({ id: project.id })),
+      orgLinks.organizations,
+      orgLinks.links,
+    );
+  }, [projects, orgLinks]);
+  const activeOrgSection = activeOrganizationSection(orgSections, selectedOrgId);
+  const sidebarEntries = useMemo(() => {
+    if (!activeOrgSection) {
+      return projects.map((project: any, index: number) => ({
+        kind: 'project' as const,
+        project,
+        index,
+        sectionId: null as string | null,
+      }));
+    }
+    const byId = new Map(projects.map((project: any) => [project.id, project]));
+    const entries: Array<
+      | { kind: 'project'; project: any; index: number; sectionId: string }
+      | { kind: 'org-settings'; id: string }
+    > = [];
+    let index = 0;
+    for (const id of activeOrgSection.projectIds) {
+      const project = byId.get(id);
+      if (!project) continue;
+      entries.push({ kind: 'project', project, index, sectionId: activeOrgSection.id });
+      index += 1;
+    }
+    if (activeOrgSection.id !== 'independent') {
+      entries.push({ kind: 'org-settings', id: activeOrgSection.id });
+    }
+    return entries;
+  }, [projects, activeOrgSection]);
+  const selectOrganization = (id: string) => {
+    setStoredOrgId(id);
+    writeSelectedOrganization(id);
+    onSelectOrganization?.(id);
+  };
+  // A removed organization (archived, or a stale stored id) falls back to the
+  // first remaining set so the sidebar and the rest of the app stay aligned.
+  useEffect(() => {
+    if (!orgSections?.length || !selectedOrgId) return;
+    if (orgSections.some((section) => section.id === selectedOrgId)) return;
+    selectOrganization(orgSections[0].id);
+  }, [orgSections, selectedOrgId]);
+  const activeOrgAgents =
+    activeOrgSection && activeOrgSection.id !== 'independent'
+      ? orgAgentsById[activeOrgSection.id] || []
+      : [];
+  const openOrganizationAgent = async (agent: OrganizationAgent) => {
+    if (!onOpenOrganizationChat || !activeOrgSection || activeOrgSection.id === 'independent') {
+      return;
+    }
+    const organizationId = activeOrgSection.id;
+    const organizationName = activeOrgSection.name;
+    const open = (sessionId: string, session?: OrganizationChatTarget['session']) => {
+      onOpenOrganizationChat({
+        organizationId,
+        organizationName,
+        agentId: agent.id,
+        sessionId,
+        agent,
+        ...(session ? { session } : {}),
+      });
+    };
+    try {
+      const history = await api.organizationAgents.chats(organizationId);
+      const sessions = Array.isArray(history?.sessions) ? history.sessions : [];
+      const latest = sessions
+        .filter((session) => session?.agentId === agent.id && session.agentAvailable !== false)
+        .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))[0];
+      if (latest?.id) {
+        open(latest.id);
+        return;
+      }
+    } catch {
+      // No history — start a chat below.
+    }
+    try {
+      const started = await api.organizationAgents.startChat(organizationId, agent.id);
+      const sessionId = started?.session?.id;
+      if (sessionId) open(sessionId, started.session);
+    } catch {
+      // Leave the sidebar as it is; the organizations page can retry.
+    }
+  };
   // Project drag-and-drop state. `draggedProjectId` is the row the user
   // is currently dragging; `dragOverProjectId` is whichever other row has
   // a pending drop indicator. Both reset on dragend / drop / cancel.
@@ -702,9 +867,11 @@ export default function Sidebar({
             </div>
           ) : null}
 
-          <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-2">
-            Projects
-          </div>
+          {!orgSections && (
+            <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-2">
+              Projects
+            </div>
+          )}
 
           {onOpenProject && (
             <button
@@ -730,7 +897,74 @@ export default function Sidebar({
             </button>
           )}
 
-          {projects.map((project: any, index: any) => {
+          {orgSections && activeOrgSection && (
+            <div className="mb-2">
+              <OrganizationMenu
+                options={orgSections.map((section) => ({
+                  id: section.id,
+                  name: section.name,
+                  independent: section.id === 'independent',
+                }))}
+                selectedId={activeOrgSection.id}
+                onSelect={selectOrganization}
+                testId="sidebar-org-switch"
+                optionTestIdPrefix="sidebar-org-option"
+              />
+            </div>
+          )}
+
+          {activeOrgSection && activeOrgSection.id !== 'independent' && (
+            <div
+              data-testid="sidebar-org-agents-heading"
+              className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 px-1 pt-1 pb-0.5"
+            >
+              Agents
+            </div>
+          )}
+          {activeOrgAgents.map((agent) => {
+            const enabled = agent.organizationScope?.enabled !== false;
+            const agentActive = currentView === 'chat' && activeAgentId === agent.id;
+            return (
+              <button
+                key={agent.id}
+                type="button"
+                data-testid={`sidebar-org-agent-${agent.id}`}
+                disabled={!enabled}
+                onClick={() => void openOrganizationAgent(agent)}
+                className={projectMenuLinkClass(agentActive)}
+              >
+                <Bot size={14} className="flex-shrink-0" />
+                <span className="truncate">{agent.name}</span>
+              </button>
+            );
+          })}
+          {activeOrgSection && (
+            <div
+              data-testid="sidebar-org-projects-heading"
+              className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 px-1 pt-2 pb-0.5"
+            >
+              Projects
+            </div>
+          )}
+
+          {sidebarEntries.map((entry) => {
+            if (entry.kind === 'org-settings') {
+              const settingsActive =
+                currentView === 'organizations' && activeOrganizationId === entry.id;
+              return (
+                <button
+                  key={`org-settings-${entry.id}`}
+                  type="button"
+                  data-testid={`sidebar-org-settings-${entry.id}`}
+                  onClick={() => onNavigate('organizations', entry.id)}
+                  className={projectMenuLinkClass(settingsActive)}
+                >
+                  <Settings size={14} className="flex-shrink-0" />
+                  <span className="truncate">Organization settings</span>
+                </button>
+              );
+            }
+            const { project, index, sectionId } = entry;
             const activeAgents = project.agents.filter((a: any) => a.active !== false);
             if (activeAgents.length === 0) return null;
 
@@ -754,7 +988,7 @@ export default function Sidebar({
 
             return (
               <div
-                key={project.id}
+                key={`${sectionId ?? 'all'}:${project.id}`}
                 className={`mb-1 flex flex-col ${isBeingDragged ? 'opacity-40' : ''} ${
                   isDropTarget ? 'border-t-2 border-emerald-500' : 'border-t-2 border-transparent'
                 }`}

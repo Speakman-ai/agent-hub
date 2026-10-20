@@ -1,4 +1,5 @@
 import { ProjectIconSchema } from '../openapi/schemas/project-icon.js';
+import { DEFAULT_PROJECT_ICON } from '../../shared/utils/project-icons.js';
 import { Router, Request, Response } from 'express';
 import cron from 'node-cron';
 import { execFileSync, spawn, ChildProcess, exec, execFile } from 'child_process';
@@ -1914,7 +1915,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       cwd: workflowWorkspaceDir ?? (cwd || config.defaultCwd),
       ahw: dataDir,
       color: color || '#6b7280',
-      ...(icon.data !== undefined ? { icon: icon.data || null } : {}),
+      icon: typeof icon.data === 'string' && icon.data ? icon.data : DEFAULT_PROJECT_ICON,
       visibility: initialVisibility,
       ownerUserId,
       agents: [],

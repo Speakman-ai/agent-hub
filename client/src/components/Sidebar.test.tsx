@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, within, fireEvent, waitFor } from '@testing-library/react';
 import Sidebar from './Sidebar';
+import { api } from '../utils/api';
 
 // OrgSwitcher hits the server on mount; stub it so we can render Sidebar standalone.
 (vi as any).mock('./OrgSwitcher.jsx', () => ({
@@ -1873,15 +1874,11 @@ describe('Sidebar Chat link', () => {
 });
 
 describe('Sidebar project icons', () => {
-  it('uses the saved icon and restores the color after a project refresh', () => {
+  it('shows every project as a folder', () => {
     const props = buildProps();
-    props.projects[0].icon = '★';
-    const { rerender } = render(<Sidebar {...props} />);
-    expect(screen.getByTestId('project-icon')).toHaveTextContent('★');
-    props.projects[0] = { ...props.projects[0], icon: null };
-    rerender(<Sidebar {...props} projects={[...props.projects]} />);
-    expect(screen.getByTestId('project-icon')).toBeEmptyDOMElement();
-    expect(screen.getByTestId('project-icon')).toHaveStyle({ backgroundColor: '#22d3ee' });
+    props.projects[0].icon = 'Rocket';
+    render(<Sidebar {...props} />);
+    expect(screen.getAllByTestId('project-icon')[0]).toHaveAttribute('data-icon', 'Folder');
   });
 });
 
@@ -1891,4 +1888,161 @@ it('opens Organizations without replacing the normal project list', () => {
   fireEvent.click(screen.getByRole('button', { name: /^Organizations$/ }));
   expect(props.onNavigate).toHaveBeenCalledWith('organizations');
   expect(screen.getByText('Test Project')).toBeTruthy();
+});
+
+describe('Sidebar organization sections', () => {
+  const org = {
+    id: 'org-1',
+    serverId: 'server-1',
+    name: 'Acme',
+    role: 'Owner' as const,
+    canManage: true,
+  };
+
+  beforeEach(() => {
+    vi.spyOn(api.organizations, 'list').mockResolvedValue({ organizations: [org] });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('shows the selected organization and swaps its projects', async () => {
+    const other = {
+      id: 'org-2',
+      serverId: 'server-1',
+      name: 'Beta',
+      role: 'Owner' as const,
+      canManage: true,
+    };
+    vi.spyOn(api.organizations, 'list').mockResolvedValue({ organizations: [org, other] });
+    vi.spyOn(api.organizations, 'linked').mockImplementation(async (id: string) => ({
+      projects: id === 'org-1' ? [{ id: PROJECT_ID, name: 'Test Project' }] : [],
+    }));
+    const projects = [
+      ...buildProps().projects,
+      {
+        id: 'proj-2',
+        name: 'Other Project',
+        color: '#a78bfa',
+        agents: [{ id: 'agent-3', name: 'Other Agent', color: '#a78bfa', active: true }],
+      },
+    ];
+    render(<Sidebar {...buildProps({ projects })} />);
+
+    const select = await screen.findByTestId('sidebar-org-switch');
+    expect(select).toHaveTextContent('Acme');
+    expect(screen.getByTestId(`sidebar-project-row-${PROJECT_ID}`)).toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-project-row-proj-2')).not.toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-org-settings-org-1')).toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-org-agents-heading')).toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-org-projects-heading')).toHaveTextContent('Projects');
+
+    fireEvent.click(select);
+    fireEvent.click(screen.getByTestId('sidebar-org-option-independent'));
+    expect(screen.queryByTestId(`sidebar-project-row-${PROJECT_ID}`)).not.toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-project-row-proj-2')).toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-org-settings-org-1')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-org-agents-heading')).not.toBeInTheDocument();
+    expect(localStorage.getItem('sidebarSelectedOrganization')).toBe('independent');
+
+    fireEvent.click(screen.getByTestId('sidebar-org-switch'));
+    fireEvent.click(screen.getByTestId('sidebar-org-option-org-2'));
+    expect(screen.queryByTestId('sidebar-project-row-proj-2')).not.toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-org-settings-org-2')).toBeInTheDocument();
+  });
+
+  it('opens that organization from its settings row', async () => {
+    vi.spyOn(api.organizations, 'linked').mockResolvedValue({
+      projects: [{ id: PROJECT_ID, name: 'Test Project' }],
+    });
+    const onNavigate = vi.fn();
+    render(
+      <Sidebar
+        {...buildProps({
+          onNavigate,
+          currentView: 'organizations',
+          activeOrganizationId: 'org-1',
+        })}
+      />,
+    );
+
+    const settings = await screen.findByTestId('sidebar-org-settings-org-1');
+    expect(settings).toHaveClass('bg-gray-800');
+    fireEvent.click(settings);
+    expect(onNavigate).toHaveBeenCalledWith('organizations', 'org-1');
+  });
+
+  it('keeps an unlinked project on the Independent option', async () => {
+    vi.spyOn(api.organizations, 'linked').mockResolvedValue({ projects: [] });
+    render(<Sidebar {...buildProps()} />);
+
+    const select = await screen.findByTestId('sidebar-org-switch');
+    expect(select).toHaveTextContent('Acme');
+    expect(screen.queryByTestId(`sidebar-project-row-${PROJECT_ID}`)).not.toBeInTheDocument();
+    fireEvent.click(select);
+    fireEvent.click(screen.getByTestId('sidebar-org-option-independent'));
+    expect(screen.getByTestId(`sidebar-project-row-${PROJECT_ID}`)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Organization settings' })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-org-agents-heading')).not.toBeInTheDocument();
+  });
+
+  it('opens the latest chat for an organization agent', async () => {
+    vi.spyOn(api.organizations, 'linked').mockResolvedValue({
+      projects: [{ id: PROJECT_ID, name: 'Test Project' }],
+    });
+    vi.spyOn(api.organizationAgents, 'list').mockResolvedValue({
+      agents: [
+        {
+          id: 'oa-1',
+          name: 'Dispatch',
+          engine: 'claude-code',
+          organizationScope: { enabled: true, projects: 'all-linked', tools: ['projects:read'] },
+        },
+      ],
+    });
+    const startChat = vi.spyOn(api.organizationAgents, 'startChat');
+    vi.spyOn(api.organizationAgents, 'chats').mockResolvedValue({
+      sessions: [
+        {
+          id: 'chat-1',
+          name: 'Earlier',
+          agentId: 'oa-1',
+          agentName: 'Dispatch',
+          agentAvailable: true,
+          createdAt: '2026-10-01T00:00:00.000Z',
+          updatedAt: '2026-10-01T00:00:00.000Z',
+        },
+        {
+          id: 'chat-2',
+          name: 'Latest',
+          agentId: 'oa-1',
+          agentName: 'Dispatch',
+          agentAvailable: true,
+          createdAt: '2026-10-02T00:00:00.000Z',
+          updatedAt: '2026-10-02T00:00:00.000Z',
+        },
+      ],
+    });
+    const onOpenOrganizationChat = vi.fn();
+    render(<Sidebar {...buildProps({ onOpenOrganizationChat })} />);
+
+    const agent = await screen.findByTestId('sidebar-org-agent-oa-1');
+    expect(agent).toHaveTextContent('Dispatch');
+    expect(agent.compareDocumentPosition(screen.getByTestId('sidebar-org-projects-heading'))).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    fireEvent.click(agent);
+    await waitFor(() =>
+      expect(onOpenOrganizationChat).toHaveBeenCalledWith(
+        expect.objectContaining({
+          organizationId: 'org-1',
+          organizationName: 'Acme',
+          agentId: 'oa-1',
+          sessionId: 'chat-2',
+        }),
+      ),
+    );
+    expect(startChat).not.toHaveBeenCalled();
+  });
 });
