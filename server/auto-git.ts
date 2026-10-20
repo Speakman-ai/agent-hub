@@ -21,7 +21,7 @@ import {
 import { resolveShouldAutoMerge } from './auto-merge.js';
 import { mergeOrEnableGithubAutoMerge } from './github-auto-merge.js';
 import { resolveSpawnPath } from './shell-path.js';
-import { effectivePrBaseBranch } from './kanban-pr-base.js';
+import { effectiveSessionPrBaseBranch } from './kanban-pr-base.js';
 import { resolveDefaultBranch, resolveDefaultBranchIn } from './git-default-branch.js';
 import { HostWorktreeIo, type SessionWorktreeIo } from './session-env/worktree-io.js';
 import { sessionWorktreeIoFor } from './session-worktree-io.js';
@@ -1853,7 +1853,8 @@ async function publishFromCheckout(
   if (card?.epic_id) {
     linkedEpic = d.stmts.getKanbanEpic.get(card.epic_id) as KanbanEpicRow | undefined;
   }
-  const requestedBaseRaw = effectivePrBaseBranch(card, linkedEpic);
+  const sessionForBase = d.stmts.getSession?.get?.(sessionId) as SessionRow | undefined;
+  const requestedBaseRaw = effectiveSessionPrBaseBranch(sessionForBase, card, linkedEpic);
   const requestedBase = requestedBaseRaw?.trim();
   // Defensive re-validation of the persisted value before we hand it to
   // `gh`. The PUT route already enforces this regex, but we don't want a

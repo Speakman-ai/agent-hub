@@ -1,6 +1,7 @@
 /**
  * Shared Finalize run kickoff for card and session routes.
  */
+import { settleSessionRetarget } from '../session-retarget.js';
 import {
   isSpikeSession,
   SPIKE_SESSION_SHIP_ERROR,
@@ -213,12 +214,18 @@ async function kickoffFinalizeRunBody(
     if (blocked) return blocked;
   }
 
+  const io = await sessionWorktreeIoFor(session.id, session.worktree_path);
+  const getEpic = (epicId: string) => stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined;
   const gateBase = resolveFinalizeGateBase({
     card,
+    session: await settleSessionRetarget({
+      session,
+      io,
+      clear: () => stmts.clearSessionPendingRetarget.run(session.id),
+    }),
     worktreePath: session.worktree_path,
-    getEpic: (epicId) => stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
+    getEpic,
   });
-  const io = await sessionWorktreeIoFor(session.id, session.worktree_path);
   {
     const blocked = refuseIfPushed();
     if (blocked) return blocked;
@@ -327,6 +334,7 @@ async function kickoffFinalizeRunBody(
     const ownerId = args.triggeredByUserId;
     const baseBranch = await resolveFinalizeBaseBranchForCard({
       card,
+      session,
       worktreePath: session.worktree_path,
       getEpic: (epicId) => stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
     });

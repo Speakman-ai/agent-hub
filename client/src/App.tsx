@@ -8338,6 +8338,7 @@ export default function App({ initialView }: any = {}) {
                                 projectId={activeChatProject?.id}
                                 disabled={!connected || !activeChatProject}
                                 onError={(msg: any) => showToast(msg, 'error', 8000)}
+                                onNotice={(msg: string, level: any) => showToast(msg, level, 8000)}
                               />
                             )}
                             {activeSessionId && activeChatProject?.id ? (

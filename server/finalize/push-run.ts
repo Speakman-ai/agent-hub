@@ -5,6 +5,7 @@
  * run in `ready_to_push`. Performs phase 8 only when the
  * operator clicks **Push to GitHub**.
  */
+import { settleSessionRetarget } from '../session-retarget.js';
 import {
   isSpikeSession,
   SPIKE_SESSION_SHIP_ERROR,
@@ -686,6 +687,7 @@ async function executePush(args: {
   try {
     const baseBranch = await resolveFinalizeBaseBranchForCard({
       card,
+      session,
       worktreePath: sourcePath,
       getEpic: (epicId) => stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
     });
@@ -949,6 +951,10 @@ async function runFinalizePushInner(args: RunFinalizePushArgs): Promise<Finalize
 
   const gateBase = resolveFinalizeGateBase({
     card,
+    session: await settleSessionRetarget({
+      session,
+      clear: () => (deps.stmts as Stmts).clearSessionPendingRetarget.run(session.id),
+    }),
     worktreePath: session.worktree_path,
     getEpic: (epicId) => deps.stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
   });
@@ -1047,6 +1053,7 @@ async function runFinalizePushInner(args: RunFinalizePushArgs): Promise<Finalize
     mainline?.defaultBranch ??
     (await resolveFinalizeBaseBranchForCard({
       card,
+      session,
       worktreePath: sourcePath,
       getEpic: (epicId) => deps.stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
     }));
@@ -1316,6 +1323,10 @@ export async function runSessionPushToGithub(
 
   const gateBase = resolveFinalizeGateBase({
     card,
+    session: await settleSessionRetarget({
+      session,
+      clear: () => (deps.stmts as Stmts).clearSessionPendingRetarget.run(session.id),
+    }),
     worktreePath: session.worktree_path,
     getEpic: (epicId) => deps.stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
   });
@@ -1385,6 +1396,7 @@ export async function runSessionPushToGithub(
   try {
     const baseBranch = await resolveFinalizeBaseBranchForCard({
       card,
+      session,
       worktreePath: sourcePath,
       getEpic: (epicId) => deps.stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
     });

@@ -1,20 +1,28 @@
-import { effectivePrBaseBranch } from '../kanban-pr-base.js';
+import { effectiveSessionPrBaseBranch } from '../kanban-pr-base.js';
 import { resolveDefaultBranch } from '../git-default-branch.js';
-import type { KanbanCardRow, KanbanEpicRow } from '../types.js';
+import type { KanbanCardRow, KanbanEpicRow, SessionRow } from '../types.js';
+
+type SessionBaseFields = Pick<SessionRow, 'pr_base_branch'> &
+  Partial<Pick<SessionRow, 'pr_base_pending_from'>>;
 
 const SAFE_BRANCH_RE = /^[A-Za-z0-9._/-]+$/;
 const FALLBACK_DEFAULT_BRANCH = 'main';
 
 /**
- * Effective rebase / PR base for Finalize: card → epic override, else git
- * default branch detection, else `main`.
+ * Effective rebase / PR base for Finalize: session target → card → epic
+ * override, else git default branch detection, else `main`.
  */
 export async function resolveFinalizeBaseBranch(args: {
-  card: Pick<KanbanCardRow, 'pr_base_branch' | 'epic_id'>;
+  card: Pick<KanbanCardRow, 'pr_base_branch' | 'epic_id'> | null;
   epic?: Pick<KanbanEpicRow, 'pr_base_branch'> | null;
+  session?: SessionBaseFields | null;
   worktreePath: string;
 }): Promise<string> {
-  const configured = effectivePrBaseBranch(args.card, args.epic ?? null);
+  const configured = effectiveSessionPrBaseBranch(
+    args.session ?? null,
+    args.card,
+    args.epic ?? null,
+  );
   if (configured && SAFE_BRANCH_RE.test(configured)) {
     return configured;
   }
@@ -23,14 +31,17 @@ export async function resolveFinalizeBaseBranch(args: {
 }
 
 export async function resolveFinalizeBaseBranchForCard(args: {
-  card: KanbanCardRow;
+  card: KanbanCardRow | null;
+  session?: SessionBaseFields | null;
   worktreePath: string;
   getEpic?: (epicId: string) => KanbanEpicRow | undefined;
 }): Promise<string> {
-  const epic = args.card.epic_id && args.getEpic ? (args.getEpic(args.card.epic_id) ?? null) : null;
+  const epic =
+    args.card?.epic_id && args.getEpic ? (args.getEpic(args.card.epic_id) ?? null) : null;
   return resolveFinalizeBaseBranch({
     card: args.card,
     epic,
+    session: args.session ?? null,
     worktreePath: args.worktreePath,
   });
 }
@@ -51,24 +62,38 @@ export async function resolveFinalizeBaseBranchForCard(args: {
 export type FinalizeGateBase =
   | { kind: 'explicit'; baseBranch: string }
   | { kind: 'default' }
-  | { kind: 'unresolved' };
+  | { kind: 'unresolved'; reason?: string };
 
 /**
- * Resolve the committable/net-diff gate base for a session. No card (or no
- * worktree) → `default` (legacy repo-default path). A card with a valid
- * configured override → `explicit`. A card whose override is malformed, or
- * whose base resolution throws → `unresolved` (block; never silently default).
+ * Resolve the committable/net-diff gate base for a session. No worktree, or
+ * no session target and no card → `default` (repo-default path). A valid
+ * configured target (session, card, or epic) → `explicit`. A malformed target,
+ * or a base resolution that throws → `unresolved` (block; never silently
+ * default).
  */
 export function resolveFinalizeGateBase(args: {
   card: KanbanCardRow | null | undefined;
+  session?: SessionBaseFields | null;
   worktreePath: string | null | undefined;
   getEpic?: (epicId: string) => KanbanEpicRow | undefined;
 }): FinalizeGateBase {
-  if (!args.card || !args.worktreePath) return { kind: 'default' };
+  if (!args.worktreePath) return { kind: 'default' };
+  // An unfinished retarget leaves HEAD on the old base, so any diff or rebase
+  // against the saved target would be measured from the wrong fork point.
+  const pendingFrom = args.session?.pr_base_pending_from?.trim();
+  if (pendingFrom) {
+    return {
+      kind: 'unresolved',
+      reason:
+        `The session's target branch change is unfinished: its commits still sit on \`${pendingFrom}\`. ` +
+        'Finish the `git rebase --onto` the agent was given, then retry.',
+    };
+  }
+  if (!args.card && !args.session?.pr_base_branch?.trim()) return { kind: 'default' };
   try {
     const epic =
-      args.card.epic_id && args.getEpic ? (args.getEpic(args.card.epic_id) ?? null) : null;
-    const configured = effectivePrBaseBranch(args.card, epic);
+      args.card?.epic_id && args.getEpic ? (args.getEpic(args.card.epic_id) ?? null) : null;
+    const configured = effectiveSessionPrBaseBranch(args.session ?? null, args.card, epic);
     if (configured) {
       // A configured PR base is authoritative. A malformed value means we
       // cannot trust the target, so block rather than silently probe default.

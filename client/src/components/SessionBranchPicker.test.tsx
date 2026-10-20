@@ -1,15 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 
 (vi as any).mock('../utils/api', () => ({
   api: {
     getProjectBranches: vi.fn(),
     setSessionWorktreeBranch: vi.fn(),
+    setSessionTargetBranch: vi.fn(),
   },
 }));
 
 import { api } from '../utils/api';
-import SessionBranchPicker from './SessionBranchPicker';
+import SessionBranchPicker, { retargetNotice } from './SessionBranchPicker';
 
 const baseSession = {
   id: 'sess-1',
@@ -28,6 +29,7 @@ function renderPicker(session: any = baseSession, extra: any = {}) {
       projectId="proj-1"
       disabled={false}
       onError={extra.onError ?? vi.fn()}
+      onNotice={extra.onNotice ?? vi.fn()}
     />,
   );
 }
@@ -55,11 +57,12 @@ describe('SessionBranchPicker', () => {
     fireEvent.click(screen.getByTestId('session-branch-picker'));
 
     await waitFor(() => expect(api.getProjectBranches).toHaveBeenCalledWith('proj-1', false));
-    // Default branch is excluded from selectable options.
-    await screen.findByText('feature/foo');
-    expect(screen.queryByText('main')).toBeNull();
+    const head = await screen.findByTestId('session-branch-picker-head-list');
+    await within(head).findByText('feature/foo');
+    // Default branch is excluded from the working-branch options.
+    expect(within(head).queryByText('main')).toBeNull();
 
-    fireEvent.click(screen.getByText('feature/foo'));
+    fireEvent.click(within(head).getByText('feature/foo'));
     await waitFor(() =>
       expect(api.setSessionWorktreeBranch).toHaveBeenCalledWith('sess-1', 'feature/foo'),
     );
@@ -68,11 +71,12 @@ describe('SessionBranchPicker', () => {
   it('clears the choice via the Default option', async () => {
     renderPicker({ ...baseSession, worktree_checkout_branch: 'feature/foo' });
     fireEvent.click(screen.getByTestId('session-branch-picker'));
-    fireEvent.click(await screen.findByText(/Default/));
+    const head = await screen.findByTestId('session-branch-picker-head-list');
+    fireEvent.click(within(head).getByText(/New branch/));
     await waitFor(() => expect(api.setSessionWorktreeBranch).toHaveBeenCalledWith('sess-1', null));
   });
 
-  it('locks (no popover) once the worktree is provisioned and shows the branch', () => {
+  it('hides the working-branch list after code changes but keeps the target list', async () => {
     renderPicker({
       ...baseSession,
       worktree_path: '/tmp/w',
@@ -82,9 +86,9 @@ describe('SessionBranchPicker', () => {
     const btn = screen.getByTestId('session-branch-picker');
     expect(btn).toHaveTextContent('agent-hub/x/session-1');
     fireEvent.click(btn);
-    // Locked: clicking does not open the branch list.
-    expect(api.getProjectBranches).not.toHaveBeenCalled();
-    expect(screen.queryByText(/Start session on/)).toBeNull();
+    await screen.findByTestId('session-branch-picker-target-list');
+    expect(screen.queryByTestId('session-branch-picker-head-list')).toBeNull();
+    expect(screen.queryByText(/Switch session to/)).toBeNull();
   });
 
   it('allows a clean provisioned session to choose another existing branch', async () => {
@@ -95,12 +99,102 @@ describe('SessionBranchPicker', () => {
     });
 
     fireEvent.click(screen.getByTestId('session-branch-picker'));
-    await screen.findByText('feature/foo');
-    expect(screen.queryByText(/Default/)).toBeNull();
+    const head = await screen.findByTestId('session-branch-picker-head-list');
+    await within(head).findByText('feature/foo');
+    expect(within(head).queryByText(/New branch/)).toBeNull();
 
-    fireEvent.click(screen.getByText('feature/foo'));
+    fireEvent.click(within(head).getByText('feature/foo'));
     await waitFor(() =>
       expect(api.setSessionWorktreeBranch).toHaveBeenCalledWith('sess-1', 'feature/foo'),
     );
+  });
+
+  it('sets the target branch (default branch included) and reports the rebase', async () => {
+    (api.setSessionTargetBranch as any).mockResolvedValue({
+      session: { ...baseSession, pr_base_branch: 'main' },
+      retarget: { kind: 'rebased', fromBranch: 'feature/foo', toBranch: 'main', commits: 3 },
+    });
+    const onNotice = vi.fn();
+    renderPicker(
+      {
+        ...baseSession,
+        worktree_path: '/tmp/w',
+        worktree_branch: 'agent-hub/x/session-1',
+        code_changed_at: '2026-07-15T16:00:00.000Z',
+        pr_base_branch: 'feature/foo',
+      },
+      { onNotice },
+    );
+    expect(screen.getByTestId('session-branch-picker-target')).toHaveTextContent('feature/foo');
+
+    fireEvent.click(screen.getByTestId('session-branch-picker'));
+    const targets = await screen.findByTestId('session-branch-picker-target-list');
+    fireEvent.click(await within(targets).findByText('main'));
+    await waitFor(() => expect(api.setSessionTargetBranch).toHaveBeenCalledWith('sess-1', 'main'));
+    await waitFor(() =>
+      expect(onNotice).toHaveBeenCalledWith('Target set to main. Rebased 3 commit(s).', 'success'),
+    );
+  });
+
+  it('clears the target via the Default option', async () => {
+    (api.setSessionTargetBranch as any).mockResolvedValue({
+      session: baseSession,
+      retarget: { kind: 'stored', fromBranch: null, toBranch: null },
+    });
+    renderPicker({ ...baseSession, pr_base_branch: 'feature/foo' });
+    fireEvent.click(screen.getByTestId('session-branch-picker'));
+    const targets = await screen.findByTestId('session-branch-picker-target-list');
+    fireEvent.click(within(targets).getByText(/Default/));
+    await waitFor(() => expect(api.setSessionTargetBranch).toHaveBeenCalledWith('sess-1', null));
+  });
+});
+
+describe('retargetNotice', () => {
+  it('describes an agent hand-off on conflict', () => {
+    expect(
+      retargetNotice({
+        kind: 'conflict',
+        toBranch: 'release-1.16.0',
+        files: ['a', 'b'],
+        agentDispatched: true,
+      }),
+    ).toEqual({
+      message:
+        'Target set to release-1.16.0. Rebase conflicts in 2 file(s); the agent is resolving them.',
+      level: 'info',
+    });
+  });
+
+  it('explains why an unsafe history was not rebased', () => {
+    expect(
+      retargetNotice({
+        kind: 'unsafe',
+        toBranch: 'release',
+        reason: 'the session history has 1 merge commit(s), which a rebase does not replay',
+        agentDispatched: true,
+      })?.message,
+    ).toBe(
+      'Target set to release. Not rebased automatically (the session history has 1 merge commit(s), which a rebase does not replay); the agent will move the commits.',
+    );
+  });
+
+  it('says when merge commits were flattened', () => {
+    expect(
+      retargetNotice({
+        kind: 'rebased',
+        toBranch: 'release',
+        commits: 1,
+        flattened: {
+          originalHead: 'abc',
+          backupRef: 'refs/agent-hub/pre-flatten/abc',
+          mergeCount: 1,
+        },
+      })?.message,
+    ).toContain('original history is kept at refs/agent-hub/pre-flatten/abc');
+  });
+
+  it('is silent when nothing changed', () => {
+    expect(retargetNotice({ kind: 'unchanged' })).toBeNull();
+    expect(retargetNotice(undefined)).toBeNull();
   });
 });

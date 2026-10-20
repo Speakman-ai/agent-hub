@@ -395,7 +395,9 @@ import {
   linkAwsSsoHostCacheIntoSpawnHome,
 } from './project-aws-spawn.js';
 import { resolveProjectAwsMonitoringProfile } from './project-aws-profiles.js';
-import { effectivePrBaseBranch } from './kanban-pr-base.js';
+import { effectiveSessionPrBaseBranch } from './kanban-pr-base.js';
+import { pendingRetargetBase, sessionTargetNoteFor } from './session-retarget.js';
+import { sessionWorktreeIoFor } from './session-worktree-io.js';
 import { resolveDefaultBranch } from './git-default-branch.js';
 
 const stmts = _stmts!;
@@ -2840,7 +2842,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       if (session && sessionUsesWorktree(session) && !msg._multiAgentInternal) {
         // Both rewrite the worktree under the session; a turn must start on the result.
         const blockingOwner = getSessionWorktreeLockOwner(sessionId);
-        if (blockingOwner === 'branch-switch' || blockingOwner === 'discard') {
+        if (
+          blockingOwner === 'branch-switch' ||
+          blockingOwner === 'target-branch' ||
+          blockingOwner === 'discard'
+        ) {
           await waitForSessionWorktreeLockRelease(sessionId);
           session = stmts.getSession.get(sessionId) as SessionRow | undefined;
           if (!session) {
@@ -3396,7 +3402,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           orchestrationPhase: session!.orchestration_phase ?? null,
           orchestrationMetaJson: session!.orchestration_meta ?? null,
           branchPrUrl: resolvedBranchPrUrl,
-          branchPrBase: linkedCardForPr?.pr_base_branch ?? null,
+          branchPrBase: session!.pr_base_branch?.trim() || linkedCardForPr?.pr_base_branch || null,
           defaultBranch: resolvedDefaultBranch,
           sessionHasLinkedCard: !!linkedCardForPr,
           epicSpecContext,
@@ -3692,11 +3698,30 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             | KanbanEpicRow
             | undefined;
         }
-        const rawBase = effectivePrBaseBranch(cardForWorktree, epicForBase);
+        const rawBase = effectiveSessionPrBaseBranch(session, cardForWorktree, epicForBase);
         sessionPrBase =
           typeof rawBase === 'string' && rawBase.trim() !== '' ? rawBase.trim() : null;
       } catch {
         sessionPrBase = null;
+      }
+
+      // An unfinished retarget leaves the commits on the old base. Until the
+      // agent completes the `--onto` rebase, the drift auto-rebase (a plain
+      // rebase onto the target) and the plain-rebase reminder would replay
+      // old-base commits, so both switch to the pending path below.
+      let pendingRetargetFrom: string | null = null;
+      if (session!.pr_base_pending_from && session!.worktree_path) {
+        try {
+          pendingRetargetFrom = await pendingRetargetBase({
+            pendingFrom: session!.pr_base_pending_from,
+            pendingToSha: session!.pr_base_pending_to_sha,
+            pendingForkSha: session!.pr_base_pending_fork_sha,
+            io: await sessionWorktreeIoFor(sessionId, session!.worktree_path),
+            clear: () => stmts.clearSessionPendingRetarget.run(sessionId),
+          });
+        } catch {
+          pendingRetargetFrom = session!.pr_base_pending_from;
+        }
       }
 
       // Captured for the reuse-path drift case below — populated by the
@@ -3759,9 +3784,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               sessionPrBase,
               (project as Project).repoUrl ?? null,
               project.id,
-              (info) => {
-                baseBranchAdvanced = info;
-              },
+              pendingRetargetFrom
+                ? undefined
+                : (info) => {
+                    baseBranchAdvanced = info;
+                  },
               (project as Project).githubRepo ?? null,
               hostedBarePathForProject(project as Project),
             );
@@ -3905,6 +3932,16 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       // runs once per turn — if the drift persists across turns (dirty /
       // conflict cases), the callback fires again and the notice is
       // re-injected each time, which is the correct behavior.
+      // Resuming engines only see the full prompt (and its rebase guidance) on
+      // the first turn, so a target picked mid-session must be restated.
+      if (sessionUsesWorktree(session!)) {
+        enrichedPrompt += sessionTargetNoteFor({
+          session: session!,
+          effectiveTarget: sessionPrBase ?? resolvedDefaultBranch,
+          pendingFrom: pendingRetargetFrom,
+        });
+      }
+
       if (baseBranchAdvanced) {
         const drift: import('./worktree.js').BaseBranchAdvancedInfo = baseBranchAdvanced;
         const shortNew = drift.newTipSha.slice(0, 7);

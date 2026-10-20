@@ -2,6 +2,7 @@
  * Fire-and-forget Finalize automation — auto-start on session end and
  * auto-push when a run reaches ready_to_push.
  */
+import { settleSessionRetarget } from '../session-retarget.js';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import type {
@@ -271,6 +272,10 @@ export async function maybeAutoStartFinalizeForSession(sessionId: string): Promi
 
   const gateBase = resolveFinalizeGateBase({
     card: ctx.card,
+    session: await settleSessionRetarget({
+      session: ctx.session,
+      clear: () => routeDeps!.stmts.clearSessionPendingRetarget.run(ctx.session.id),
+    }),
     worktreePath: ctx.session.worktree_path,
     getEpic: (epicId) => routeDeps!.stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
   });
@@ -415,6 +420,7 @@ export async function autoPushReadyFinalizeRun(args: {
   try {
     lockBaseBranch = await resolveFinalizeBaseBranchForCard({
       card: ctx.card,
+      session: ctx.session,
       worktreePath: ctx.session.worktree_path ?? '',
       getEpic: (epicId) => routeDeps!.stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
     });

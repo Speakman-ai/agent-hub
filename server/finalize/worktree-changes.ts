@@ -51,6 +51,7 @@ export interface CommittableChangesOptions {
 const NO_CHANGES_MESSAGE = 'No committable changes in the session worktree.';
 
 function baseUnresolvedMessage(base: FinalizeGateBase): string {
+  if (base.kind === 'unresolved' && base.reason) return base.reason;
   const target = base.kind === 'explicit' ? ` (${base.baseBranch})` : '';
   return (
     `Could not verify a net diff against the session's PR base branch${target}. ` +

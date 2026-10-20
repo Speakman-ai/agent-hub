@@ -24,6 +24,7 @@ import {
   PutSessionModeRequestSchema,
   PutSessionLinkedDesignRequestSchema,
   PutSessionWorktreeBranchRequestSchema,
+  PutSessionTargetBranchRequestSchema,
   RewindRequestSchema,
   PatchCheckpointRequestSchema,
   SubmitSessionCredentialRequestSchema,
@@ -161,6 +162,14 @@ import {
 import { mintPreviewTicket, PREVIEW_TICKET_TTL_MS } from '../preview-auth.js';
 import type { DevServerPortLookup } from '../preview/preview-runtime-lookup.js';
 import { triggerSessionShip, markSessionFinalizeAutomation } from '../session-ship.js';
+import {
+  retargetSessionWorktree,
+  buildRetargetAgentPrompt,
+  planRetarget,
+  settleSessionRetarget,
+} from '../session-retarget.js';
+import { sessionIsLockedAfterFinalizePush } from '../finalize/post-push-session-lock.js';
+import type { SessionRetargetOutcomeSchema } from './sessions.openapi.js';
 import { kickoffSeededTurn } from '../seeded-session-kickoff.js';
 import {
   bindAutopilotBranch,
@@ -498,6 +507,8 @@ export function summarizeTranscript(
     });
   });
 }
+
+type SessionRetargetResult = z.infer<typeof SessionRetargetOutcomeSchema>;
 
 export default function createSessionRoutes(deps: RouteDeps): Router {
   const {
@@ -1361,6 +1372,11 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       const gateCard = stmts.getKanbanCardBySession.get(session.id) as KanbanCardRow | undefined;
       const gateBase = resolveFinalizeGateBase({
         card: gateCard,
+        session: await settleSessionRetarget({
+          session,
+          io,
+          clear: () => stmts.clearSessionPendingRetarget.run(session.id),
+        }),
         worktreePath: session.worktree_path,
         getEpic: (epicId) => stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
       });
@@ -1406,17 +1422,19 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   }
 
   // Resolve the branch a session should be diffed against. Uses the same
-  // card → epic → repo-default chain as Finalize / auto-git so the Changes
-  // pane anchors to the session's real PR base, not just the repo default.
-  // Returns null when there's no linked card; computeSessionChanges then
-  // resolves the repo default itself.
+  // session target → card → epic → repo-default chain as Finalize / auto-git
+  // so the Changes pane anchors to the session's real PR base, not just the
+  // repo default. Returns null when nothing is configured; computeSessionChanges
+  // then resolves the repo default itself.
   async function resolveSessionDiffBase(session: SessionRow): Promise<string | null> {
     if (!session.worktree_path) return null;
-    const card = stmts.getKanbanCardBySession.get(session.id) as KanbanCardRow | undefined;
-    if (!card) return null;
+    const card =
+      (stmts.getKanbanCardBySession.get(session.id) as KanbanCardRow | undefined) ?? null;
+    if (!card && !session.pr_base_branch?.trim()) return null;
     try {
       return await resolveFinalizeBaseBranchForCard({
         card,
+        session,
         worktreePath: session.worktree_path,
         getEpic: (epicId) => stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
       });
@@ -2061,6 +2079,237 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       res.json(enriched);
     },
   );
+
+  /**
+   * PUT /api/sessions/:sessionId/target-branch — set (or clear) the session's
+   * PR target branch. A provisioned worktree is rebased onto the new target;
+   * when that conflicts (or the tree is dirty) the target still sticks and the
+   * agent is handed the rebase in a follow-up turn.
+   */
+  router.put(
+    '/api/sessions/:sessionId/target-branch',
+    requireRole('User'),
+    async (req: Request, res: Response) => {
+      const parsed = parseBody(PutSessionTargetBranchRequestSchema, req, res);
+      if (!parsed) return;
+      const sessionId = req.params.sessionId as string;
+      const existing = stmts.getSession.get(sessionId) as SessionRow | undefined;
+      if (!existing || !userOwnsSession(req as AuthenticatedRequest, sessionId)) {
+        return res.status(404).json({ error: 'Session not found' });
+      }
+      if (!sessionUsesWorktree(existing)) {
+        return res.status(400).json({ error: 'Session does not use a worktree' });
+      }
+      if (sessionIsLockedAfterFinalizePush(stmts, existing)) {
+        return res
+          .status(409)
+          .json({ error: 'This session already pushed; its target branch is locked' });
+      }
+      const branch = parsed.branch ?? null;
+      if (!tryAcquireSessionWorktreeLock(sessionId, 'target-branch')) {
+        return res
+          .status(409)
+          .json({ error: 'The session is already starting or switching a turn' });
+      }
+
+      let retarget: SessionRetargetResult = { kind: 'unchanged', fromBranch: null, toBranch: null };
+      let agentPrompt: string | null = null;
+      try {
+        const current = stmts.getSession.get(sessionId) as SessionRow | undefined;
+        if (!current) return res.status(404).json({ error: 'Session not found' });
+        if (!current.worktree_path) {
+          stmts.setSessionPrBaseBranch.run(branch, null, null, null, null, sessionId);
+          retarget = { kind: 'stored', fromBranch: null, toBranch: branch };
+        } else {
+          const activeTask = stmts.getActiveTask.get(sessionId) as
+            | { status?: string | null }
+            | undefined;
+          if (activeProcesses.has(sessionId) || activeTask?.status === 'running') {
+            return res
+              .status(409)
+              .json({ error: 'Cannot change the target branch while the session is active' });
+          }
+          const activeFinalizeRuns = stmts.getActiveFinalizeRuns.all() as Array<{
+            session_id?: string | null;
+          }>;
+          if (activeFinalizeRuns.some((run) => run.session_id === sessionId)) {
+            return res
+              .status(409)
+              .json({ error: 'Cannot change the target branch while Finalize is active' });
+          }
+
+          const card =
+            (stmts.getKanbanCardBySession.get(sessionId) as KanbanCardRow | undefined) ?? null;
+          const getEpic = (epicId: string) =>
+            stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined;
+          const worktreePath = current.worktree_path;
+          const [effectiveTarget, toBranch] = await Promise.all([
+            resolveFinalizeBaseBranchForCard({ card, session: current, worktreePath, getEpic }),
+            resolveFinalizeBaseBranchForCard({
+              card,
+              session: { pr_base_branch: branch },
+              worktreePath,
+              getEpic,
+            }),
+          ]);
+          const io = await sessionWorktreeIo(current);
+          if (!io) return res.status(409).json({ error: 'Session has no worktree' });
+          const { plan, pendingFinished } = await planRetarget(io, {
+            effectiveTarget,
+            toBranch,
+            pending: current.pr_base_pending_from
+              ? {
+                  fromBranch: current.pr_base_pending_from,
+                  targetSha: current.pr_base_pending_to_sha ?? null,
+                  forkSha: current.pr_base_pending_fork_sha ?? null,
+                  headSha: current.pr_base_pending_head_sha ?? null,
+                }
+              : null,
+          });
+          if (plan.kind === 'refuse') {
+            return res.status(plan.status).json({ error: plan.error });
+          }
+          if (pendingFinished) stmts.clearSessionPendingRetarget.run(sessionId);
+          const fromBranch = plan.fromBranch;
+          if (plan.kind === 'unchanged') {
+            stmts.setSessionPrBaseBranch.run(branch, null, null, null, null, sessionId);
+            retarget = { kind: 'unchanged', fromBranch, toBranch };
+          } else {
+            const outcome = await retargetSessionWorktree(io, {
+              fromBranch,
+              toBranch,
+              recorded: plan.recorded,
+            });
+            if (outcome.kind === 'busy') {
+              return res.status(409).json({
+                error: `Cannot change the target branch: ${outcome.reason}`,
+              });
+            }
+            if (outcome.kind === 'error') {
+              return res.status(502).json({
+                error: `Could not rebase onto ${toBranch}`,
+                message: outcome.message,
+              });
+            }
+            // Only a verified rewrite clears the old base; every other outcome keeps it.
+            const stillPending = outcome.kind !== 'rebased' && outcome.kind !== 'noop';
+            stmts.setSessionPrBaseBranch.run(
+              branch,
+              stillPending ? fromBranch : null,
+              stillPending && 'targetSha' in outcome ? outcome.targetSha : null,
+              stillPending && 'forkSha' in outcome ? outcome.forkSha : null,
+              stillPending && 'headSha' in outcome ? outcome.headSha : null,
+              sessionId,
+            );
+            if (outcome.kind === 'noop') {
+              retarget = { kind: 'unchanged', fromBranch, toBranch };
+            } else if (outcome.kind === 'rebased') {
+              retarget = {
+                kind: 'rebased',
+                fromBranch,
+                toBranch,
+                commits: outcome.commits,
+                ...(outcome.flattened ? { flattened: outcome.flattened } : {}),
+              };
+              persistRetargetNotice(
+                sessionId,
+                outcome.flattened
+                  ? `Target branch changed to \`${toBranch}\`. The session history had ${outcome.flattened.mergeCount} merge commit(s), so it was combined into one commit with the same content and rebased from \`${fromBranch}\`. The original history is kept at \`${outcome.flattened.backupRef}\`.`
+                  : `Target branch changed to \`${toBranch}\`. Rebased ${outcome.commits} session commit(s) from \`${fromBranch}\`.`,
+                retarget,
+              );
+            } else {
+              const canDispatch = Number(current.ask_mode ?? 0) === 0;
+              retarget = {
+                kind: outcome.kind,
+                fromBranch,
+                toBranch,
+                ...(outcome.kind === 'conflict'
+                  ? { commits: outcome.commits, files: outcome.files }
+                  : {}),
+                ...(outcome.kind === 'unsafe'
+                  ? { commits: outcome.commits, reason: outcome.reason }
+                  : {}),
+                agentDispatched: canDispatch,
+              };
+              persistRetargetNotice(
+                sessionId,
+                outcome.kind === 'conflict'
+                  ? `Target branch changed to \`${toBranch}\`. Rebasing from \`${fromBranch}\` conflicts in ${outcome.files.length} file(s)${canDispatch ? '; the agent is resolving them' : ''}.`
+                  : outcome.kind === 'unsafe'
+                    ? `Target branch changed to \`${toBranch}\`. Not rebased automatically: ${outcome.reason}${canDispatch ? '; the agent will move the commits' : ''}.`
+                    : `Target branch changed to \`${toBranch}\`. The worktree has uncommitted changes, so it was not rebased${canDispatch ? '; the agent will commit and rebase' : ''}.`,
+                retarget,
+              );
+              if (canDispatch) {
+                agentPrompt = buildRetargetAgentPrompt({ fromBranch, toBranch, outcome });
+              }
+            }
+          }
+        }
+      } catch (err: unknown) {
+        return res.status(409).json({ error: err instanceof Error ? err.message : String(err) });
+      } finally {
+        releaseSessionWorktreeLock(sessionId, 'target-branch');
+        setImmediate(() => deps.drainSessionQueue?.(sessionId));
+      }
+
+      const updated = stmts.getSession.get(sessionId) as SessionRow;
+      const enriched = enrichSessionForClient(updated, stmts);
+      deps.broadcast({ type: 'session-updated', session: enriched });
+      res.json({ session: enriched, retarget });
+
+      if (agentPrompt) {
+        // Read off deps at call time so the hand-off is observable in tests.
+        void deps
+          .handleChat(null, {
+            type: 'chat',
+            agentId: updated.agent_id,
+            sessionId,
+            content: agentPrompt,
+            _skipUserMessagePersist: true,
+          })
+          .catch((err: unknown) => {
+            console.error(
+              `[target-branch] rebase hand-off failed for session ${sessionId}:`,
+              err instanceof Error ? err.message : String(err),
+            );
+          });
+      }
+    },
+  );
+
+  function persistRetargetNotice(
+    sessionId: string,
+    content: string,
+    retarget: SessionRetargetResult,
+  ): void {
+    const msgId = uuidv4();
+    const metadata = JSON.stringify({ kind: 'session_retarget', retarget });
+    try {
+      stmts.addMessage.run(
+        msgId,
+        sessionId,
+        'system',
+        content,
+        null,
+        null,
+        null,
+        metadata,
+        null,
+        null,
+        null,
+      );
+      stmts.touchSession.run(sessionId);
+      const inserted = stmts.getMessageById.get(msgId) as MessageRow | undefined;
+      if (inserted) deps.broadcast({ type: 'message', message: inserted });
+    } catch (err: unknown) {
+      console.warn(
+        '[target-branch] failed to persist notice:',
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
 
   router.put('/api/sessions/:sessionId/linked-epic', (req: Request, res: Response) => {
     const epicId =

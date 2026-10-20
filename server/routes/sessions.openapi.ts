@@ -86,6 +86,12 @@ export const SessionComponent = registerComponent(
       worktree_path: z.string().nullable().optional(),
       worktree_branch: z.string().nullable().optional(),
       worktree_checkout_branch: z.string().nullable().optional(),
+      pr_base_branch: z.string().nullable().optional(),
+      pr_base_pending_from: z.string().nullable().optional(),
+      pr_base_pending_to_sha: z.string().nullable().optional(),
+      pr_base_pending_fork_sha: z.string().nullable().optional(),
+      pr_base_pending_head_sha: z.string().nullable().optional(),
+      pr_base_target_changed: z.number().int().nullable().optional(),
       autopilot: z
         .object({
           durationHours: z.number().int(),
@@ -547,6 +553,52 @@ export const PutSessionLinkedDesignRequestSchema = z.object({
     .min(1, 'designId must be a non-empty string or null')
     .nullable()
     .openapi({ description: 'Design id to link, or null to clear the link.' }),
+});
+
+/** PUT /api/sessions/:sessionId/target-branch — the session's PR target (base) branch. */
+export const PutSessionTargetBranchRequestSchema = z.object({
+  branch: z
+    .string()
+    .trim()
+    .min(1, 'branch must be a non-empty string or null')
+    .max(255, 'branch name is too long')
+    .regex(/^(?!-)(?!.*\.\.)[A-Za-z0-9._][A-Za-z0-9._/-]*$/, 'invalid branch name')
+    .nullable()
+    .openapi({
+      description:
+        'Existing remote branch the session should target, or null to defer to the card/epic target and then the repo default.',
+    }),
+});
+
+export const SessionRetargetOutcomeSchema = z
+  .object({
+    kind: z.enum(['unchanged', 'stored', 'rebased', 'conflict', 'dirty', 'unsafe']).openapi({
+      description:
+        '`unchanged`: effective target did not change. `stored`: no worktree yet, the target applies when it is created. `rebased`: session commits now sit on the new target. `conflict` / `dirty` / `unsafe` (merge commits, or the rewritten tree did not match target + session changes): target saved, worktree unchanged, the agent was handed the rebase.',
+    }),
+    fromBranch: z.string().nullable(),
+    toBranch: z.string().nullable(),
+    commits: z.number().int().optional(),
+    files: z.array(z.string()).optional(),
+    reason: z.string().optional(),
+    flattened: z
+      .object({
+        originalHead: z.string(),
+        backupRef: z.string(),
+        mergeCount: z.number().int(),
+      })
+      .optional()
+      .openapi({
+        description:
+          'Set when merge commits forced the Hub to combine the session commits into one commit with the identical tree before rebasing; the original history is kept at backupRef.',
+      }),
+    agentDispatched: z.boolean().optional(),
+  })
+  .openapi('SessionRetargetOutcome');
+
+export const PutSessionTargetBranchResponseSchema = z.object({
+  session: SessionComponent,
+  retarget: SessionRetargetOutcomeSchema,
 });
 
 /**
@@ -1034,6 +1086,34 @@ registerPath({
     400: errorResponse('Validation failed or session does not use a worktree.'),
     404: errorResponse('Session not found.'),
     409: errorResponse('The branch cannot be changed in the current session state.'),
+  },
+});
+
+// PUT /api/sessions/:sessionId/target-branch
+registerPath({
+  method: 'put',
+  path: '/api/sessions/{sessionId}/target-branch',
+  tags: ['Sessions'],
+  summary: "Set (or clear) the session's PR target branch",
+  description:
+    "Sets `pr_base_branch` on the session: the branch Finalize rebases onto and opens the PR against. It wins over the linked card/epic `pr_base_branch`; `branch: null` defers to those, then the repo default. Before provisioning, the worktree forks from the chosen target. On a provisioned worktree the session's own commits are rebased onto the new target (`git rebase --onto`). When that hits conflicts, or the worktree has uncommitted changes, the target is still saved and the agent is given a turn to finish the rebase; `retarget.kind` reports which. Active turns, Finalize runs, and pushed sessions are rejected.",
+  request: {
+    params: sessionIdParams,
+    body: { content: jsonContent(PutSessionTargetBranchRequestSchema) },
+  },
+  responses: {
+    200: {
+      description: 'Updated session plus the retarget outcome.',
+      content: jsonContent(PutSessionTargetBranchResponseSchema),
+    },
+    400: errorResponse('Validation failed or session does not use a worktree.'),
+    404: errorResponse('Session not found.'),
+    409: errorResponse(
+      'The target cannot be changed in the current session state (active turn, Finalize, pushed, or a git operation already in progress in the worktree).',
+    ),
+    502: errorResponse(
+      'The worktree could not be rebased (git failure before any history changed).',
+    ),
   },
 });
 

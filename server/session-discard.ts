@@ -6,6 +6,7 @@
  * worktree to the point where the session branch forked from its base,
  * removes untracked files, clears `changes_ready`, and stamps `discarded_at`.
  */
+import { settleSessionRetarget } from './session-retarget.js';
 import { v4 as uuidv4 } from 'uuid';
 import type {
   ActiveTaskRow,
@@ -44,6 +45,7 @@ type DiscardStmts = Pick<
   | 'getOpenPullRequestByHeadBranch'
   | 'getKanbanCardBySession'
   | 'getKanbanEpic'
+  | 'clearSessionPendingRetarget'
   | 'markSessionChangesDiscarded'
   | 'addMessage'
   | 'getMessageById'
@@ -273,12 +275,17 @@ async function resolveBaseBranch(
   const card = stmts.getKanbanCardBySession.get(session.id) as KanbanCardRow | undefined;
   const gate = resolveFinalizeGateBase({
     card,
+    session: await settleSessionRetarget({
+      session,
+      io,
+      clear: () => stmts.clearSessionPendingRetarget.run(session.id),
+    }),
     worktreePath: session.worktree_path,
     getEpic: (epicId) => stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
   });
   if (gate.kind === 'explicit') return gate.baseBranch;
   if (gate.kind === 'unresolved') {
-    throw new DiscardRefusal(BASE_UNRESOLVED, "The linked card's PR base branch is invalid");
+    throw new DiscardRefusal(BASE_UNRESOLVED, "The session's target branch is invalid");
   }
   return resolveDefaultBranchStrict(io);
 }

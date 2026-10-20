@@ -3,7 +3,7 @@
  * and `gh pr create --base`.
  */
 
-import type { KanbanCardRow, KanbanEpicRow } from './types.js';
+import type { KanbanCardRow, KanbanEpicRow, SessionRow } from './types.js';
 
 const SAFE_BRANCH_RE = /^[A-Za-z0-9._/-]+$/;
 
@@ -38,4 +38,18 @@ export function effectivePrBaseBranch(
   const fromEpic = epic?.pr_base_branch?.trim();
   if (fromEpic) return fromEpic;
   return null;
+}
+
+/**
+ * Effective base branch for a session: the session's own target (set from the
+ * Branch picker) wins, then the card override, then the card's epic.
+ */
+export function effectiveSessionPrBaseBranch(
+  session: Pick<SessionRow, 'pr_base_branch'> | null | undefined,
+  card: Pick<KanbanCardRow, 'pr_base_branch' | 'epic_id'> | null | undefined,
+  epic: Pick<KanbanEpicRow, 'pr_base_branch'> | null | undefined,
+): string | null {
+  const fromSession = session?.pr_base_branch?.trim();
+  if (fromSession) return fromSession;
+  return effectivePrBaseBranch(card, epic);
 }

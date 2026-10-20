@@ -1,5 +1,6 @@
 export type SessionWorktreeLockOwner =
   | 'branch-switch'
+  | 'target-branch'
   | 'workspace-setup'
   | 'turn-start'
   | 'multi-agent-round'

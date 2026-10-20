@@ -2584,6 +2584,11 @@ export const api = {
       body: JSON.stringify({ epicId: epicId ?? null }),
     }),
   /** Choose an initial branch, or switch a clean provisioned worktree. */
+  setSessionTargetBranch: (sessionId: any, branch: string | null) =>
+    fetchJSON(`/sessions/${sessionId}/target-branch`, {
+      method: 'PUT',
+      body: JSON.stringify({ branch: branch ?? null }),
+    }),
   setSessionWorktreeBranch: (sessionId: any, branch: any) =>
     fetchJSON(`/sessions/${sessionId}/worktree-branch`, {
       method: 'PUT',

@@ -40,6 +40,26 @@ export interface SessionRow {
    * `PUT /api/sessions/:sessionId/worktree-branch`.
    */
   worktree_checkout_branch?: string | null;
+  /**
+   * Session-level PR target (base) branch chosen in the Branch picker. Wins
+   * over the linked card/epic `pr_base_branch`. NULL defers to those, then the
+   * repo default. See `PUT /api/sessions/:sessionId/target-branch`.
+   */
+  pr_base_branch?: string | null;
+  /**
+   * The base the worktree still sits on while a target change is unfinished
+   * (the Hub hit conflicts or a dirty tree and handed the rebase to the
+   * agent). NULL once the session commits are on the target.
+   */
+  pr_base_pending_from?: string | null;
+  /** Target tip that unfinished retarget must incorporate before it counts as done. */
+  pr_base_pending_to_sha?: string | null;
+  /** Session fork point with the old base when the retarget was left pending. */
+  pr_base_pending_fork_sha?: string | null;
+  /** HEAD when the retarget was handed off; a retry needs it as an ancestor of HEAD. */
+  pr_base_pending_head_sha?: string | null;
+  /** 1 once the target was changed from the picker; keeps the per-turn target note on. */
+  pr_base_target_changed?: number | null;
   changes_ready: string | null;
   /** ISO timestamp set when the session's worktree changes were discarded. */
   discarded_at?: string | null;
@@ -2234,6 +2254,8 @@ export interface Stmts {
   updateSessionWorktreeBranch: Stmt;
   setSessionResolvePrHeadBranch: Stmt;
   setSessionWorktreeCheckoutBranch: Stmt;
+  setSessionPrBaseBranch: Stmt;
+  clearSessionPendingRetarget: Stmt;
   updateSessionGitWorktreeDetected: Stmt;
   updateSessionAskMode: Stmt;
   updateSessionReactLoop: Stmt;

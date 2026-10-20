@@ -2553,6 +2553,24 @@ components:
         worktree_checkout_branch:
           type: string
           nullable: true
+        pr_base_branch:
+          type: string
+          nullable: true
+        pr_base_pending_from:
+          type: string
+          nullable: true
+        pr_base_pending_to_sha:
+          type: string
+          nullable: true
+        pr_base_pending_fork_sha:
+          type: string
+          nullable: true
+        pr_base_pending_head_sha:
+          type: string
+          nullable: true
+        pr_base_target_changed:
+          type: integer
+          nullable: true
         autopilot:
           type: object
           nullable: true
@@ -18468,6 +18486,53 @@ components:
         - merged_at
         - closed_at
         - relation
+    SessionRetargetOutcome:
+      type: object
+      properties:
+        kind:
+          type: string
+          enum:
+            - unchanged
+            - stored
+            - rebased
+            - conflict
+            - dirty
+            - unsafe
+          description: "`unchanged`: effective target did not change. `stored`: no worktree yet, the target applies when it is created. `rebased`: session commits now sit on the new target. `conflict` / `dirty` / `unsafe` (merge commits, or the rewritten tree did not match target + session changes): target saved, worktree unchanged, the agent was handed the rebase."
+        fromBranch:
+          type: string
+          nullable: true
+        toBranch:
+          type: string
+          nullable: true
+        commits:
+          type: integer
+        files:
+          type: array
+          items:
+            type: string
+        reason:
+          type: string
+        flattened:
+          type: object
+          properties:
+            originalHead:
+              type: string
+            backupRef:
+              type: string
+            mergeCount:
+              type: integer
+          required:
+            - originalHead
+            - backupRef
+            - mergeCount
+          description: Set when merge commits forced the Hub to combine the session commits into one commit with the identical tree before rebasing; the original history is kept at backupRef.
+        agentDispatched:
+          type: boolean
+      required:
+        - kind
+        - fromBranch
+        - toBranch
     SessionDesignFile:
       type: object
       properties:
@@ -26240,6 +26305,74 @@ paths:
                 $ref: "#/components/schemas/SessionErrorResponse"
         "409":
           description: The branch cannot be changed in the current session state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/target-branch:
+    put:
+      tags:
+        - Sessions
+      summary: Set (or clear) the session's PR target branch
+      description: "Sets `pr_base_branch` on the session: the branch Finalize rebases onto and opens the PR against. It wins over the linked card/epic `pr_base_branch`; `branch: null` defers to those, then the repo default. Before provisioning, the worktree forks from the chosen target. On a provisioned worktree the session's own commits are rebased onto the new target (`git rebase --onto`). When that hits conflicts, or the worktree has uncommitted changes, the target is still saved and the agent is given a turn to finish the rebase; `retarget.kind` reports which. Active turns, Finalize runs, and pushed sessions are rejected."
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                branch:
+                  type: string
+                  nullable: true
+                  minLength: 1
+                  maxLength: 255
+                  pattern: ^(?!-)(?!.*\.\.)[A-Za-z0-9._][A-Za-z0-9._/-]*$
+                  description: Existing remote branch the session should target, or null to defer to the card/epic target and then the repo default.
+              required:
+                - branch
+      responses:
+        "200":
+          description: Updated session plus the retarget outcome.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session:
+                    $ref: "#/components/schemas/Session"
+                  retarget:
+                    $ref: "#/components/schemas/SessionRetargetOutcome"
+                required:
+                  - session
+                  - retarget
+        "400":
+          description: Validation failed or session does not use a worktree.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "409":
+          description: The target cannot be changed in the current session state (active turn, Finalize, pushed, or a git operation already in progress in the worktree).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "502":
+          description: The worktree could not be rebased (git failure before any history changed).
           content:
             application/json:
               schema:

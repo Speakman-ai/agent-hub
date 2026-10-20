@@ -2154,6 +2154,50 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE sessions ADD COLUMN worktree_checkout_branch TEXT DEFAULT NULL');
   }
 
+  // Session-level PR target (base) branch, set from the session Branch picker.
+  // Wins over the linked card/epic `pr_base_branch`; NULL falls through to them
+  // and then the repo default.
+  try {
+    db.prepare('SELECT pr_base_branch FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN pr_base_branch TEXT DEFAULT NULL');
+  }
+  // Base the worktree actually sits on while a target change is unfinished
+  // (conflict / dirty hand-off). NULL once HEAD is on the target.
+  try {
+    db.prepare('SELECT pr_base_pending_from FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN pr_base_pending_from TEXT DEFAULT NULL');
+  }
+  // Target tip the unfinished retarget must incorporate (pinned, so the target
+  // advancing later cannot change whether the retarget counts as finished).
+  try {
+    db.prepare('SELECT pr_base_pending_to_sha FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN pr_base_pending_to_sha TEXT DEFAULT NULL');
+  }
+  // Fork point with the old base when the retarget was left pending: the
+  // commits below it that the target lacks must not survive the move.
+  try {
+    db.prepare('SELECT pr_base_pending_fork_sha FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN pr_base_pending_fork_sha TEXT DEFAULT NULL');
+  }
+  // HEAD when the retarget was handed off. A retry may reuse the recorded fork
+  // only while this is still an ancestor of HEAD (commits appended, nothing rewritten).
+  try {
+    db.prepare('SELECT pr_base_pending_head_sha FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN pr_base_pending_head_sha TEXT DEFAULT NULL');
+  }
+  // Set once the target was ever changed from the picker, so every later turn
+  // restates the effective target (also after the override is cleared).
+  try {
+    db.prepare('SELECT pr_base_target_changed FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN pr_base_target_changed INTEGER NOT NULL DEFAULT 0');
+  }
+
   try {
     db.prepare('SELECT changes_ready FROM sessions LIMIT 1').get();
   } catch {
@@ -5170,6 +5214,13 @@ function initDb(dataDir: string): void {
     // that branch's PR). NULL clears the choice back to the default fresh branch.
     setSessionWorktreeCheckoutBranch: db.prepare(
       "UPDATE sessions SET worktree_checkout_branch = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    setSessionPrBaseBranch: db.prepare(
+      "UPDATE sessions SET pr_base_branch = ?, pr_base_pending_from = ?, pr_base_pending_to_sha = ?, pr_base_pending_fork_sha = ?, pr_base_pending_head_sha = ?, pr_base_target_changed = 1, updated_at = datetime('now') WHERE id = ?",
+    ),
+    // Clears only the pending-retarget record; never rewrites the target itself.
+    clearSessionPendingRetarget: db.prepare(
+      "UPDATE sessions SET pr_base_pending_from = NULL, pr_base_pending_to_sha = NULL, pr_base_pending_fork_sha = NULL, pr_base_pending_head_sha = NULL, updated_at = datetime('now') WHERE id = ?",
     ),
     getSessionIdsByWorktreeBranch: db.prepare('SELECT id FROM sessions WHERE worktree_branch = ?'),
     updateSessionGitWorktreeDetected: db.prepare(

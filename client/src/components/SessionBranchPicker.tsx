@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { GitBranch, Loader2, Check, Lock, RefreshCw } from 'lucide-react';
+import { GitBranch, GitMerge, Loader2, Check, Lock, RefreshCw } from 'lucide-react';
 import { api } from '../utils/api';
 import { isSessionWorktreeEnabled } from '../utils/sessionDerivedState';
 import {
@@ -9,16 +9,19 @@ import {
 } from '../utils/sessionActionMenu';
 
 /**
- * Toolbar control to position a session worktree on an EXISTING remote branch
- * (the general form of the resolve-PR head-branch mechanism).
+ * Toolbar control for the two branches a session cares about:
  *
- * Before provisioning, the picker chooses the branch for the initial clone.
- * After provisioning, it remains available only while the session is clean
- * and has not recorded code changes. Once work begins it renders a locked chip.
+ * - **Target branch** (`PUT /api/sessions/:id/target-branch`): the branch
+ *   Finalize rebases onto and opens the PR against. Changeable until the
+ *   session pushes; on a provisioned worktree the server rebases the session
+ *   commits onto the new target, or hands the agent the conflicts.
+ * - **Working branch** (`PUT /api/sessions/:id/worktree-branch`): position the
+ *   worktree on an EXISTING remote branch. Before provisioning it picks the
+ *   initial clone; after, only while the session is clean and has no code
+ *   changes. Once work begins that section is hidden and the chip shows a lock.
  *
- * Selecting a branch calls `PUT /api/sessions/:id/worktree-branch`; the server
- * broadcasts `session-updated`, so the `session` prop refreshes over WebSocket
- * and the label reflects the new choice without a manual refetch.
+ * The server broadcasts `session-updated`, so the `session` prop refreshes
+ * over WebSocket and the label follows without a manual refetch.
  */
 export default function SessionBranchPicker({
   sessionId,
@@ -26,6 +29,7 @@ export default function SessionBranchPicker({
   projectId,
   disabled,
   onError,
+  onNotice,
   variant = 'toolbar',
 }: {
   variant?: SessionActionControlVariant;
@@ -43,6 +47,8 @@ export default function SessionBranchPicker({
   const canSwitchProvisioned = provisioned && !session?.code_changed_at;
   const chosen = session?.worktree_checkout_branch || null;
   const lockedBranch = session?.worktree_branch || null;
+  const target = session?.pr_base_branch || null;
+  const headLocked = provisioned && !canSwitchProvisioned;
 
   // Close the popover on outside click / Escape.
   useEffect(() => {
@@ -78,7 +84,6 @@ export default function SessionBranchPicker({
   }
 
   function toggleOpen() {
-    if (provisioned && !canSwitchProvisioned) return;
     const next = !open;
     setOpen(next);
     if (next) void loadBranches(false);
@@ -96,9 +101,23 @@ export default function SessionBranchPicker({
     }
   }
 
+  async function chooseTarget(branch: string | null) {
+    setSaving(true);
+    try {
+      const res: any = await api.setSessionTargetBranch(sessionId, branch);
+      setOpen(false);
+      const notice = retargetNotice(res?.retarget);
+      if (notice) onNotice?.(notice.message, notice.level);
+    } catch (err: any) {
+      onError?.(err?.message || 'Failed to set target branch');
+    } finally {
+      setSaving(false);
+    }
+  }
+
   // Label: locked branch after provisioning, else the chosen branch, else a prompt.
   const label = provisioned ? lockedBranch || 'Branch' : chosen || 'Branch';
-  const title =
+  const headTitle =
     provisioned && canSwitchProvisioned
       ? 'Switch this clean session to an existing branch'
       : provisioned
@@ -106,6 +125,7 @@ export default function SessionBranchPicker({
         : chosen
           ? `Session will start on existing branch ${chosen}`
           : 'Start this session on an existing branch';
+  const title = `${headTitle}. Target: ${target || 'default'}`;
 
   // Branches that can be checked out onto (exclude the default — Finalize can't
   // push to it — and the session's own default branch pattern is never listed).
@@ -118,7 +138,7 @@ export default function SessionBranchPicker({
       <button
         type="button"
         data-testid="session-branch-picker"
-        aria-haspopup={!provisioned || canSwitchProvisioned}
+        aria-haspopup
         aria-expanded={open}
         disabled={disabled}
         onClick={toggleOpen}
@@ -126,7 +146,7 @@ export default function SessionBranchPicker({
         className={sessionActionControlClass(
           variant,
           `${
-            provisioned && !canSwitchProvisioned
+            headLocked
               ? isMenu
                 ? 'text-gray-400 cursor-default'
                 : 'bg-gray-900/60 text-gray-400 border-gray-800 cursor-default'
@@ -144,11 +164,19 @@ export default function SessionBranchPicker({
           } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`,
         )}
       >
-        {provisioned && !canSwitchProvisioned ? <Lock size={12} /> : <GitBranch size={13} />}
+        {headLocked ? <Lock size={12} /> : <GitBranch size={13} />}
         <span className="truncate max-w-[120px]">{label}</span>
+        {target && (
+          <span
+            data-testid="session-branch-picker-target"
+            className="truncate max-w-[110px] text-sky-300"
+          >
+            → {target}
+          </span>
+        )}
       </button>
 
-      {open && (!provisioned || canSwitchProvisioned) && (
+      {open && (
         <div
           className={sessionActionSubmenuClass(
             variant,
@@ -156,7 +184,7 @@ export default function SessionBranchPicker({
           )}
         >
           <div className="flex items-center justify-between px-2 py-1.5 text-[11px] uppercase tracking-wide text-gray-500">
-            <span>{provisioned ? 'Switch session to…' : 'Start session on…'}</span>
+            <span>Target branch</span>
             <button
               type="button"
               onClick={() => void loadBranches(true)}
@@ -167,54 +195,138 @@ export default function SessionBranchPicker({
             </button>
           </div>
 
-          {!provisioned && (
-            <button
-              type="button"
-              disabled={saving}
-              onClick={() => void choose(null)}
-              className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-gray-800 text-left text-gray-200"
-            >
-              <span className="w-3">
-                {!chosen && <Check size={12} className="text-emerald-400" />}
-              </span>
-              <span>
-                Default <span className="text-gray-500">(new branch off the base)</span>
-              </span>
-            </button>
-          )}
-
-          <div className="my-1 border-t border-gray-800" />
-
           {loading && (
             <div className="flex items-center gap-2 px-2 py-2 text-gray-400">
               <Loader2 size={13} className="animate-spin" /> Loading branches…
             </div>
           )}
           {loadError && !loading && <div className="px-2 py-2 text-rose-300">{loadError}</div>}
-          {!loading && !loadError && selectable.length === 0 && (
-            <div className="px-2 py-2 text-gray-500">No other branches on origin.</div>
-          )}
-          {!loading &&
-            !loadError &&
-            selectable.map((b: any) => (
+
+          {!loading && !loadError && (
+            <div data-testid="session-branch-picker-target-list">
               <button
-                key={b.name}
                 type="button"
                 disabled={saving}
-                onClick={() => void choose(b.name)}
+                onClick={() => void chooseTarget(null)}
                 className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-gray-800 text-left text-gray-200"
               >
                 <span className="w-3">
-                  {(provisioned ? lockedBranch : chosen) === b.name && (
-                    <Check size={12} className="text-emerald-400" />
-                  )}
+                  {!target && <Check size={12} className="text-emerald-400" />}
                 </span>
-                <GitBranch size={12} className="text-gray-500 shrink-0" />
-                <span className="truncate">{b.name}</span>
+                <span>
+                  Default <span className="text-gray-500">(card, epic, or repo default)</span>
+                </span>
               </button>
-            ))}
+              {branches.map((b: any) => (
+                <button
+                  key={b.name}
+                  type="button"
+                  disabled={saving}
+                  onClick={() => void chooseTarget(b.name)}
+                  className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-gray-800 text-left text-gray-200"
+                >
+                  <span className="w-3">
+                    {target === b.name && <Check size={12} className="text-emerald-400" />}
+                  </span>
+                  <GitMerge size={12} className="text-gray-500 shrink-0" />
+                  <span className="truncate">{b.name}</span>
+                  {b.isDefault && <span className="text-gray-500 shrink-0">default</span>}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {!headLocked && (
+            <div data-testid="session-branch-picker-head-list">
+              <div className="my-1 border-t border-gray-800" />
+              <div className="px-2 py-1.5 text-[11px] uppercase tracking-wide text-gray-500">
+                {provisioned ? 'Switch session to…' : 'Start session on…'}
+              </div>
+
+              {!provisioned && (
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={() => void choose(null)}
+                  className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-gray-800 text-left text-gray-200"
+                >
+                  <span className="w-3">
+                    {!chosen && <Check size={12} className="text-emerald-400" />}
+                  </span>
+                  <span>
+                    New branch <span className="text-gray-500">(off the target)</span>
+                  </span>
+                </button>
+              )}
+
+              {!loading && !loadError && selectable.length === 0 && (
+                <div className="px-2 py-2 text-gray-500">No other branches on origin.</div>
+              )}
+              {!loading &&
+                !loadError &&
+                selectable.map((b: any) => (
+                  <button
+                    key={b.name}
+                    type="button"
+                    disabled={saving}
+                    onClick={() => void choose(b.name)}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-gray-800 text-left text-gray-200"
+                  >
+                    <span className="w-3">
+                      {(provisioned ? lockedBranch : chosen) === b.name && (
+                        <Check size={12} className="text-emerald-400" />
+                      )}
+                    </span>
+                    <GitBranch size={12} className="text-gray-500 shrink-0" />
+                    <span className="truncate">{b.name}</span>
+                  </button>
+                ))}
+            </div>
+          )}
         </div>
       )}
     </div>
   );
+}
+
+/** Toast copy for a `PUT /target-branch` outcome; null when nothing moved. */
+export function retargetNotice(
+  retarget: any,
+): { message: string; level: 'success' | 'info' } | null {
+  if (!retarget) return null;
+  const to = retarget.toBranch || 'the default branch';
+  switch (retarget.kind) {
+    case 'rebased':
+      return {
+        message: retarget.flattened
+          ? `Target set to ${to}. Merge commits were combined into one commit with the same content and rebased; the original history is kept at ${retarget.flattened.backupRef}.`
+          : `Target set to ${to}. Rebased ${retarget.commits ?? 0} commit(s).`,
+        level: 'success',
+      };
+    case 'conflict':
+      return {
+        message: retarget.agentDispatched
+          ? `Target set to ${to}. Rebase conflicts in ${retarget.files?.length ?? 0} file(s); the agent is resolving them.`
+          : `Target set to ${to}. Rebase conflicts in ${retarget.files?.length ?? 0} file(s); rebase manually.`,
+        level: 'info',
+      };
+    case 'unsafe':
+      return {
+        message: retarget.agentDispatched
+          ? `Target set to ${to}. Not rebased automatically (${retarget.reason}); the agent will move the commits.`
+          : `Target set to ${to}. Not rebased automatically (${retarget.reason}); move the commits manually.`,
+        level: 'info',
+      };
+    case 'dirty':
+      return {
+        message: retarget.agentDispatched
+          ? `Target set to ${to}. Uncommitted changes, so the agent will commit and rebase.`
+          : `Target set to ${to}. Commit your changes, then rebase onto it.`,
+        level: 'info',
+      };
+    case 'stored':
+      return { message: `Session will branch from ${to}.`, level: 'info' };
+    default:
+      return null;
+  }
 }

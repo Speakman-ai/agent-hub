@@ -131,3 +131,65 @@ describe('resolveFinalizeGateBase', () => {
     ).toEqual({ kind: 'unresolved' });
   });
 });
+
+describe('session target branch precedence', () => {
+  it('session target wins over card and epic overrides', async () => {
+    const branch = await resolveFinalizeBaseBranch({
+      card: { pr_base_branch: 'feature/card', epic_id: 'epic-1' },
+      epic: { pr_base_branch: 'feature/epic' },
+      session: { pr_base_branch: 'release-1.16.0' },
+      worktreePath: '/tmp/unused',
+    });
+    expect(branch).toBe('release-1.16.0');
+  });
+
+  it('applies a session target even with no linked card', async () => {
+    const branch = await resolveFinalizeBaseBranchForCard({
+      card: null,
+      session: { pr_base_branch: 'release-1.16.0' },
+      worktreePath: '/tmp/unused',
+    });
+    expect(branch).toBe('release-1.16.0');
+  });
+
+  it('gate base is explicit for a session target without a card', () => {
+    expect(
+      resolveFinalizeGateBase({
+        card: null,
+        session: { pr_base_branch: 'release-1.16.0' },
+        worktreePath: '/tmp/w',
+      }),
+    ).toEqual({ kind: 'explicit', baseBranch: 'release-1.16.0' });
+  });
+
+  it('gate base is unresolved for a malformed session target', () => {
+    expect(
+      resolveFinalizeGateBase({
+        card: null,
+        session: { pr_base_branch: 'bad branch;' },
+        worktreePath: '/tmp/w',
+      }),
+    ).toEqual({ kind: 'unresolved' });
+  });
+
+  it('blank session target falls through to the card', async () => {
+    const branch = await resolveFinalizeBaseBranch({
+      card: { pr_base_branch: 'feature/card', epic_id: null },
+      session: { pr_base_branch: '  ' },
+      worktreePath: '/tmp/unused',
+    });
+    expect(branch).toBe('feature/card');
+  });
+});
+
+describe('pending retarget', () => {
+  it('fails the gate closed with a specific reason while a retarget is unfinished', () => {
+    const gate = resolveFinalizeGateBase({
+      card: null,
+      session: { pr_base_branch: 'release', pr_base_pending_from: 'main' },
+      worktreePath: '/tmp/w',
+    });
+    expect(gate.kind).toBe('unresolved');
+    expect(gate.kind === 'unresolved' && gate.reason).toContain('still sit on `main`');
+  });
+});
