@@ -188,8 +188,9 @@ describe('HubChatPage pinned Agent Hub DM', () => {
     fireEvent.click(screen.getByTestId('hub-chat-assistant'));
     expect(screen.queryByTestId('hub-chat-assistant-unread')).toBeNull();
     expect(getHubAssistantUnread()).toBe(0);
-    // The transcript is mounted in the assistant column instead.
-    expect(screen.getByTestId('hub-chat-assistant-elsewhere')).toBeTruthy();
+    expect(screen.getByTestId('hub-chat-assistant-elsewhere')).toHaveTextContent(
+      'The assistant conversation is unavailable.',
+    );
   });
 
   it('falls back to a channel when the assistant DM is not available', async () => {

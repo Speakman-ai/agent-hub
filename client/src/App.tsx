@@ -3997,9 +3997,8 @@ export default function App({ initialView }: any = {}) {
       ]);
     },
   });
-  // The pinned Agent Hub DM renders the Hub assistant session. It takes over
-  // from the assistant column only while it is actually the visible Chat
-  // conversation; otherwise the column keeps the transcript.
+  // The pinned Agent Hub DM renders the Hub assistant session while that
+  // conversation is the visible Chat view.
   const hubAssistantSelected = useHubAssistantSelected();
   const chatPaneSideChoice = useChatPaneSide();
   const hubAssistantInChat =
@@ -6717,7 +6716,7 @@ export default function App({ initialView }: any = {}) {
             toolbarStart={
               <div className="flex items-center gap-2 min-w-0 w-full">
                 {hubModelPicker}
-                <div className="lg:hidden ml-auto shrink-0">{hubClearButton}</div>
+                <div className="ml-auto shrink-0">{hubClearButton}</div>
               </div>
             }
           />
@@ -7408,10 +7407,6 @@ export default function App({ initialView }: any = {}) {
                     setHubPane(pane);
                     setHubMobileTab(pane);
                   }}
-                  mobileAssistantTab
-                  mobileTab={hubMobileTab}
-                  onMobileTabChange={setHubMobileTab}
-                  assistantActions={hubClearButton}
                   today={
                     <PersonalDashboard
                       onNavigate={(view: any) => {
@@ -7482,7 +7477,7 @@ export default function App({ initialView }: any = {}) {
                     <ChatPane
                       hubUnread={agentHubChatBadge}
                       assistantEnabled
-                      assistant={hubAssistantInChat ? hubAssistantChat : null}
+                      assistant={hubAssistantChat}
                       googleUnread={googleChatBadge}
                       onSessionStarted={handleOpenCreatedSession}
                       onOpenRef={handleOpenChatRef}
@@ -7509,9 +7504,6 @@ export default function App({ initialView }: any = {}) {
                       }}
                     />
                   }
-                  assistant={hubAssistantInChat ? null : hubAssistantChat}
-                  assistantInWorkspace={hubAssistantInChat}
-                  paneBadges={{ chat: chatButtonBadge }}
                 />
               ) : currentView === 'deployments' && deploymentsProjectId ? (
                 <DeploymentsPage
