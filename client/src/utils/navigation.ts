@@ -51,6 +51,9 @@ export type NavigationState = {
    * the removed Daily Summary pane; never written back to the hash.
    */
   openSummaries?: boolean;
+  /** Organizations view only: the selected organization and the Server it belongs to. */
+  organizationId?: string | null;
+  serverId?: string | null;
 };
 
 function cleanSegment(value: any) {
@@ -123,6 +126,7 @@ export function parseNavigationHash(hash?: any): NavigationState | null {
 
   const chatChannelId =
     view === 'hub' && hubPane === 'chat' ? cleanSegment(params.get('channel')) : null;
+  const organizationId = view === 'organizations' ? cleanSegment(params.get('organization')) : null;
 
   return {
     view: view || DEFAULT_VIEW,
@@ -133,6 +137,7 @@ export function parseNavigationHash(hash?: any): NavigationState | null {
     hubPane: view === 'hub' ? hubPane || DEFAULT_HUB_PANE : null,
     ...(chatChannelId ? { chatChannelId, chatMessageId: cleanSegment(params.get('message')) } : {}),
     ...(openSummaries && !chatChannelId ? { openSummaries: true } : {}),
+    ...(organizationId ? { organizationId, serverId: cleanSegment(params.get('server')) } : {}),
   };
 }
 
@@ -175,6 +180,12 @@ export function buildNavigationHash(state: NavigationState) {
   if (view === 'design' && designId) params.set('design', designId);
   const ticketId = cleanSegment(state?.ticketId);
   if (view === 'support' && ticketId) params.set('ticket', ticketId);
+  const organizationId = cleanSegment(state?.organizationId);
+  if (view === 'organizations' && organizationId) {
+    params.set('organization', organizationId);
+    const serverId = cleanSegment(state?.serverId);
+    if (serverId) params.set('server', serverId);
+  }
 
   const query = params.toString();
   if (!path && !query) return '';

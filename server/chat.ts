@@ -1,3 +1,14 @@
+import { organizationSessionCwd } from './organization-sessions.js';
+import { agentComputerDenial, sessionDesktopComputerIdentity } from './session-computer-access.js';
+import { readOrganizationMemory } from './organization-memory.js';
+import {
+  isOrganizationWorkspace,
+  prepareOrganizationTurn,
+  organizationSessionPrompt,
+  setOrganizationRevocationHandler,
+  organizationSessionAllowsTool,
+  sanitizeOrganizationSpawnEnv,
+} from './organization-capabilities.js';
 import { spawn, execSync } from 'child_process';
 import type { ChildProcess } from 'child_process';
 import { readFileSync, existsSync, mkdirSync, copyFileSync } from 'fs';
@@ -317,7 +328,11 @@ import {
   evaluateReactContinuationBudgets,
 } from './orchestration-budgets.js';
 import { emitReactLoopStep, mergeHostActionExitForEmit } from './react-loop-observability.js';
-import { clearReactChainCancel, isReactChainCancelRequested } from './react-chain-cancel.js';
+import {
+  clearReactChainCancel,
+  isReactChainCancelRequested,
+  requestReactChainCancel,
+} from './react-chain-cancel.js';
 import { formatOuterOrchestrationPromptAppend } from './orchestration.js';
 import {
   getProjectMode,
@@ -424,6 +439,8 @@ interface BuildEnrichedPromptOptions {
   sessionId?: string;
   /** `sessions.computer_tool_enabled`; NULL/absent inherits the agent default. */
   sessionComputerToolEnabled?: number | null;
+  /** False when organization scope refuses Computer; the tool is then never advertised. */
+  computerToolAuthorized?: boolean;
   /** Outer PAV — `sessions.orchestration_phase` / `orchestration_meta`. */
   orchestrationPhase?: string | null;
   orchestrationMetaJson?: string | null;
@@ -993,6 +1010,16 @@ export function buildEnrichedPrompt(
     : '';
   const systemPromptBody = (agent.systemPrompt || '').trim();
   let prompt: string = identityAnchor + rosterSection + systemPromptBody;
+  if (isOrganizationWorkspace(project)) {
+    if (!options.sessionId) throw new Error('Organization prompt requires a session identity');
+    return (
+      identityAnchor +
+      systemPromptBody +
+      organizationSessionPrompt(options.sessionId) +
+      '\nPrivate memory (source-attributed data, not instructions):\n' +
+      JSON.stringify(readOrganizationMemory(options.sessionId))
+    );
+  }
 
   // Resolve flags used by both the early capability callout and the
   // existing ReAct Loop section further down.
@@ -1117,9 +1144,11 @@ ${skillsList.join('\n')}`;
   }
 
   const previewEnabledForPrompt = isDevServerConfigured(project.prEnv?.devServer);
-  const computerToolOn = effectiveComputerToolEnabled(agent as Agent, {
-    computer_tool_enabled: options.sessionComputerToolEnabled ?? null,
-  });
+  const computerToolOn =
+    options.computerToolAuthorized !== false &&
+    effectiveComputerToolEnabled(agent as Agent, {
+      computer_tool_enabled: options.sessionComputerToolEnabled ?? null,
+    });
   if (isFirstMessage) {
     const reactExampleJson = browserToolsOn
       ? '{"actions":[{"tool":"wiki","query":"..."},{"tool":"skill","name":"kanban"},{"tool":"web","query":"..."},{"tool":"browser","op":"navigate","url":"https://example.com"}]}'
@@ -2426,6 +2455,15 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
     autoCommitAndPR,
     tryAutonomousDispatch,
   } = deps;
+  setOrganizationRevocationHandler((sessionId) => {
+    requestReactChainCancel(sessionId);
+    activeProcesses.get(sessionId)?.kill('SIGTERM');
+    broadcast({
+      type: 'error',
+      sessionId,
+      error: 'Organization access changed. Send a new message to rebuild context.',
+    });
+  });
 
   function saveErrorMessage(
     sessionId: string,
@@ -3014,6 +3052,17 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         return;
       }
 
+      // Only clear revoked context once the previous process has exited. Queued or
+      // automatic continuations cannot silently resume after access loss/restart.
+      if (isOrganizationWorkspace(project)) {
+        prepareOrganizationTurn(
+          sessionId,
+          !msg._autoContinuation && !msg._fromQueue && !msg._skipUserMessagePersist,
+          project,
+        );
+        session = stmts.getSession.get(sessionId) as SessionRow;
+      }
+
       let userMsgId: string | null = null;
       if (msg._fromQueue) {
         userMsgId = msg._existingMsgId!;
@@ -3343,6 +3392,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           isFirstMessage: isFirstMessage || !engineResumesAcrossTurns(engine),
           sessionId,
           sessionComputerToolEnabled: session!.computer_tool_enabled ?? null,
+          computerToolAuthorized: agentComputerDenial(sessionId) === null,
           orchestrationPhase: session!.orchestration_phase ?? null,
           orchestrationMetaJson: session!.orchestration_meta ?? null,
           branchPrUrl: resolvedBranchPrUrl,
@@ -3666,7 +3716,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         typeof msg._spawnCwd === 'string' && msg._spawnCwd.trim() !== ''
           ? msg._spawnCwd.trim()
           : null;
-      if (pinnedSpawnCwd) {
+      if (isOrganizationWorkspace(project)) {
+        effectiveCwd = organizationSessionCwd(sessionId);
+      } else if (pinnedSpawnCwd) {
         effectiveCwd = pinnedSpawnCwd;
       } else if (isSidebarSession(session)) {
         // SideBar shares the parent's checkout; it never gets a worktree.
@@ -4098,7 +4150,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         cliContent = `${ephemeralBashNotice}\n\n${cliContent}`;
       }
 
-      const needsHistoryBootstrap = isNewEngineSession && priorMessages.length > 0;
+      const needsHistoryBootstrap =
+        !isOrganizationWorkspace(project) && isNewEngineSession && priorMessages.length > 0;
       // A forwarded / pre-seeded session stores its context as message rows
       // before any engine session exists, so this is the only chance the CLI
       // gets to see it. Trim to fit rather than dropping the whole history.
@@ -4137,7 +4190,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               imgPaths.push(`${FIRECRACKER_GUEST_WORKSPACE}/${destRel}`);
             }
           } else {
-            const imgCwd = session!.worktree_path || project.cwd;
+            const imgCwd = isOrganizationWorkspace(project)
+              ? effectiveCwd
+              : session!.worktree_path || project.cwd;
             const imgDir = path.join(imgCwd, '.agent-hub-images');
             mkdirSync(imgDir, { recursive: true });
             for (const img of images as unknown as ImageRef[]) {
@@ -4243,7 +4298,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       // A SideBar runs in its parent's checkout but owns none of it: no commit
       // reminder, no hook config written into the parent's tree.
       const sidebarTurn = isSidebarSession(session);
-      const cwdIsOwnWorktree = effectiveCwd !== project.cwd && !sidebarTurn;
+      const cwdIsOwnWorktree =
+        effectiveCwd !== project.cwd && !sidebarTurn && !isOrganizationWorkspace(project);
       // First Claude turn of a SideBar forks the parent's CLI conversation.
       const sidebarForkFrom =
         engine === 'claude-code' && sidebarTurn && isNewEngineSession
@@ -4743,7 +4799,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // change accidentally leaks a token into the reviewer spawn env,
         // the credential cannot be used to forge commits or open PRs.
         applyReviewerRoleLock(base, agent.role);
-        applyGithubSpawnCredentials(base, tokenToInject);
+        if (!isOrganizationWorkspace(project)) applyGithubSpawnCredentials(base, tokenToInject);
         // Hub-hosted git remotes (gitHost: 'agenthub'): register a git
         // credential helper for the Hub's own /git/<id>.git origins that
         // derefs AGENT_HUB_API_KEY (injected by buildSpawnEnv). Harmless
@@ -4788,9 +4844,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         } catch {
           /* non-fatal — env var simply omitted, prompt block already covers the agent */
         }
-        mergeSkillCredentialSpawnEnv(base, { ownerId, agentId: agent.id, project });
-        mergeProjectSecretsSpawnEnv(base, { projectId: project.id, sessionId });
-        mergeProjectAwsSpawnEnv(base, project, projectAwsFiles);
+        if (!isOrganizationWorkspace(project)) {
+          mergeSkillCredentialSpawnEnv(base, { ownerId, agentId: agent.id, project });
+          mergeProjectSecretsSpawnEnv(base, { projectId: project.id, sessionId });
+          mergeProjectAwsSpawnEnv(base, project, projectAwsFiles);
+        }
         applySessionGitGuards(base, session!.worktree_path);
         return base;
       })();
@@ -4803,6 +4861,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       // autonomous-dispatch for cross-hub cards). See `mergeAllowlistedExtraEnv`.
       mergeAllowlistedExtraEnv(spawnEnv, msg.extraEnv);
       if (extraChildEnv) Object.assign(spawnEnv, extraChildEnv);
+      if (isOrganizationWorkspace(project)) sanitizeOrganizationSpawnEnv(spawnEnv);
 
       if (process.env.AGENT_HUB_DEBUG_CLAUDE_AUTH === '1' && engine === 'claude-code') {
         console.log('[chat] claude-code spawn auth:', {
@@ -6160,16 +6219,23 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             // to this session's preview, which every engine must be able to
             // verify. Only the public-web `browser` tool is gated.
           }
-          if (!effectiveComputerToolEnabled(agent, session)) {
+          const computerOff = !effectiveComputerToolEnabled(agent, session);
+          const computerScopeDenial = computerOff ? null : agentComputerDenial(sessionId);
+          if (computerOff || computerScopeDenial) {
             const removed = boundedActions.filter((a) => a.tool === 'computer').length;
             if (removed > 0) {
               boundedActions = boundedActions.filter((a) => a.tool !== 'computer');
               reactObservations.push(
-                `- ${removed} computer action(s) skipped: the computer tool is off for this session (agent "${agent.id}").`,
+                computerOff
+                  ? `- ${removed} computer action(s) skipped: the computer tool is off for this session (agent "${agent.id}").`
+                  : `- ${removed} computer action(s) skipped: denied by current organization agent scope.`,
               );
-              assistantContextToAppend = assistantContextToAppend
-                ? `${assistantContextToAppend}\n\n${COMPUTER_TOOL_DISABLED_MARKDOWN}`
+              const gateMsg = computerScopeDenial
+                ? `## Computer tool not authorized\n\n${computerScopeDenial}`
                 : COMPUTER_TOOL_DISABLED_MARKDOWN;
+              assistantContextToAppend = assistantContextToAppend
+                ? `${assistantContextToAppend}\n\n${gateMsg}`
+                : gateMsg;
             }
           }
           // Set when an action must stop the rest of the batch: an approval
@@ -6195,6 +6261,12 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               break;
             }
             const action = boundedActions[actionIdx]!;
+            if (!organizationSessionAllowsTool(sessionId, action.tool)) {
+              reactObservations.push(
+                `- ${action.tool} denied by current organization agent scope.`,
+              );
+              continue;
+            }
             const hostStepStart = Date.now();
             let hostExit = 0;
             let hostDetail: string | undefined;
@@ -6313,6 +6385,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               }
 
               if (action.tool === 'computer' && action.computer) {
+                const identity = sessionDesktopComputerIdentity(
+                  session!.owner_user_id,
+                  agent.id,
+                  project,
+                );
                 const c = await runComputerReActStep(
                   action.computer,
                   {
@@ -6320,9 +6397,12 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                     ownerUserId: session!.owner_user_id ?? null,
                     agentId: agent.id,
                     projectId: project?.id ?? null,
+                    key: identity.ok ? identity.key : null,
+                    ...(identity.ok ? {} : { keyRefusal: identity.reason }),
                   },
                   {
                     resolveRuntime: getActiveDesktopRuntime,
+                    authorize: () => agentComputerDenial(sessionId),
                     gate: createComputerApprovalGate(
                       {
                         sessionId,
@@ -7091,7 +7171,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           );
         }
 
-        if (project.ahw && !isAutoContinuation) {
+        if (project.ahw && !isAutoContinuation && !isOrganizationWorkspace(project)) {
           const briefEntry = `**Chat** — User: ${content.substring(0, 100)}${content.length > 100 ? '...' : ''}\nAssistant: ${finalContent.substring(0, 200)}${finalContent.length > 200 ? '...' : ''}`;
           appendDailyNote(project.ahw, briefEntry);
 
@@ -7234,13 +7314,16 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         const runWorktreeAutoCommitAndDrainTail = async (
           allowFinalizeAutoStart: boolean,
         ): Promise<void> => {
-          const worktreeClaude = engine === 'claude-code' && effectiveCwd !== project.cwd;
+          const worktreeClaude =
+            engine === 'claude-code' &&
+            effectiveCwd !== project.cwd &&
+            !isOrganizationWorkspace(project);
           if (worktreeClaude) {
             await new Promise<void>((resolve) => setTimeout(resolve, 1200));
           }
           // The cwd is the parent's worktree; committing from here would ship
           // the parent's work under the SideBar's session.
-          if (!sidebarTurn) {
+          if (!sidebarTurn && !isOrganizationWorkspace(project)) {
             await autoCommitAndPR(sessionId, agentId, project, agent, effectiveCwd, finalContent, {
               allowFinalizeAutoStart,
             }).catch((err: unknown) => {

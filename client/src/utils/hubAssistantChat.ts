@@ -3,8 +3,7 @@ import { getHubChatSession, subscribeHubChatSession, updateHubChatSession } from
 
 /**
  * Rail id of the pinned Agent Hub DM. It is not a hub_chat channel: selecting
- * it shows the user's Hub assistant session, the same one the assistant
- * column renders.
+ * it shows the user's Hub assistant session.
  */
 export const HUB_ASSISTANT_CHANNEL_ID = '__hub_assistant__';
 
@@ -59,9 +58,8 @@ export function useHubAssistantUnread(): number {
 }
 
 /**
- * Whether the assistant transcript is on screen: mounted, not inside a
- * `display: none` ancestor (collapsed column, other mobile tab), and the tab
- * is visible. A reply that lands while this is false counts as unseen.
+ * Whether the assistant transcript is on screen: mounted and the tab is
+ * visible. A reply that lands while this is false counts as unseen.
  */
 export function isHubAssistantTranscriptVisible(doc: Document = document): boolean {
   if (doc.visibilityState === 'hidden') return false;

@@ -8,6 +8,7 @@ import {
 } from '../utils/export';
 import { Radio } from 'lucide-react';
 import { api } from '../utils/api';
+import { computerToolResetLabel, computerToolSourceLabel } from '@shared/utils/computerTool';
 import SessionStateIcon from './SessionStateIcon';
 import { watchIndicatorLabel, watchIndicatorTitle } from '../utils/backgroundShells';
 
@@ -127,6 +128,7 @@ export default function TopBar({
   sessionReasoningEffort,
   onReasoningEffortChange,
   computerToolOn = false,
+  computerToolSetting,
   onComputerToolChange,
   modelConfig,
   messages,
@@ -451,11 +453,11 @@ export default function TopBar({
             data-testid="session-computer-tool-toggle"
             aria-pressed={computerToolOn}
             onClick={() => onComputerToolChange(!computerToolOn)}
-            title={
+            title={`${
               computerToolOn
                 ? 'Computer tool is on for this session: the agent can drive its Linux desktop'
                 : 'Computer tool is off for this session'
-            }
+            }${computerToolSetting ? ` (${computerToolSourceLabel(computerToolSetting).toLowerCase()})` : ''}`}
             className={`hidden sm:flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border transition-colors ${
               computerToolOn
                 ? 'bg-emerald-900/40 border-emerald-700 text-emerald-300 hover:bg-emerald-900/60'
@@ -464,6 +466,21 @@ export default function TopBar({
           >
             <span className="text-gray-500">Computer</span>
             <span>{computerToolOn ? 'On' : 'Off'}</span>
+            {computerToolSetting && (
+              <span className="text-gray-500" data-testid="session-computer-tool-source">
+                · {computerToolSetting.overridden ? 'this chat' : 'default'}
+              </span>
+            )}
+          </button>
+        )}
+        {agent && onComputerToolChange && computerToolSetting?.overridden && (
+          <button
+            type="button"
+            data-testid="session-computer-tool-reset"
+            onClick={() => onComputerToolChange(null)}
+            className="hidden sm:flex items-center text-xs px-2 py-1.5 rounded-lg border bg-gray-800 border-gray-700 text-gray-400 hover:bg-gray-700"
+          >
+            {computerToolResetLabel(computerToolSetting)}
           </button>
         )}
 
@@ -555,8 +572,26 @@ export default function TopBar({
                         <span>Computer tool</span>
                         <span className={computerToolOn ? 'text-emerald-400' : 'text-gray-500'}>
                           {computerToolOn ? 'On' : 'Off'}
+                          {computerToolSetting && (
+                            <span className="text-gray-500">
+                              {' '}
+                              · {computerToolSourceLabel(computerToolSetting)}
+                            </span>
+                          )}
                         </span>
                       </button>
+                      {computerToolSetting?.overridden && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onComputerToolChange(null);
+                            setMobileMenuOpen(false);
+                          }}
+                          className="w-full text-left px-3 py-2.5 text-sm hover:bg-gray-700 transition-colors min-h-[44px] text-gray-400"
+                        >
+                          {computerToolResetLabel(computerToolSetting)}
+                        </button>
+                      )}
                     </>
                   )}
                   {isCodex && onReasoningEffortChange && (

@@ -27,7 +27,7 @@ import {
 } from '../utils/todos';
 
 /**
- * Shared, organization-wide Todos list. Rendered above the personal list in the
+ * Shared, server-wide Todos list. Rendered above the personal list in the
  * Todos pane. Every member of the org sees and edits the SAME list — this is a
  * distinct shared list, not an aggregation of members' personal todos.
  *
@@ -412,8 +412,8 @@ export default function OrgTodosSection({ orgId }: { orgId: string }) {
       <div className="flex items-center gap-3 mb-3">
         <Users size={20} className="text-emerald-400" />
         <div>
-          <h2 className="text-lg font-semibold text-white">Organization</h2>
-          <p className="text-xs text-gray-500">Shared with everyone in your org</p>
+          <h2 className="text-lg font-semibold text-white">Server</h2>
+          <p className="text-xs text-gray-500">Shared with everyone on this server</p>
         </div>
       </div>
 
@@ -431,14 +431,14 @@ export default function OrgTodosSection({ orgId }: { orgId: string }) {
             value={newTitle}
             onChange={(e) => setNewTitle(e.target.value)}
             placeholder="Add a shared todo…"
-            aria-label="New org todo title"
+            aria-label="New server todo title"
             data-testid="org-todo-new-title"
             className="flex-1 bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-emerald-500"
           />
           <select
             value={newPriority}
             onChange={(e) => setNewPriority(e.target.value as TodoPriority)}
-            aria-label="New org todo priority"
+            aria-label="New server todo priority"
             className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 capitalize focus:outline-none focus:ring-1 focus:ring-emerald-500"
           >
             {PRIORITY_OPTIONS.map((p) => (
@@ -451,7 +451,7 @@ export default function OrgTodosSection({ orgId }: { orgId: string }) {
             type="date"
             value={newDue}
             onChange={(e) => setNewDue(e.target.value)}
-            aria-label="New org todo do date"
+            aria-label="New server todo do date"
             className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-1 focus:ring-emerald-500"
           />
           <button
@@ -468,7 +468,7 @@ export default function OrgTodosSection({ orgId }: { orgId: string }) {
           value={newNotes}
           onChange={(e) => setNewNotes(e.target.value)}
           placeholder="Add more detail (optional)…"
-          aria-label="New org todo detail"
+          aria-label="New server todo detail"
           rows={2}
           className="w-full resize-y bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-emerald-500"
         />
@@ -539,7 +539,7 @@ export default function OrgTodosSection({ orgId }: { orgId: string }) {
           data-testid="org-todos-empty"
           className="bg-gray-900 border border-gray-800 rounded-xl px-4 py-8 text-center text-sm text-gray-500"
         >
-          No shared todos yet. Add one your whole org can see.
+          No shared todos yet. Add one everyone on this server can see.
         </div>
       ) : (
         <>
@@ -629,14 +629,14 @@ function TodoEditor({
           value={draft.title}
           onChange={(e) => onChange({ title: e.target.value })}
           disabled={saving}
-          aria-label="Edit org todo title"
+          aria-label="Edit server todo title"
           className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:opacity-60"
         />
         <select
           value={draft.priority}
           onChange={(e) => onChange({ priority: e.target.value as TodoPriority })}
           disabled={saving}
-          aria-label="Edit org todo priority"
+          aria-label="Edit server todo priority"
           className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-200 capitalize focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:opacity-60"
         >
           {PRIORITY_OPTIONS.map((p) => (
@@ -650,7 +650,7 @@ function TodoEditor({
           value={draft.due}
           onChange={(e) => onChange({ due: e.target.value })}
           disabled={saving}
-          aria-label="Edit org todo do date"
+          aria-label="Edit server todo do date"
           className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:opacity-60"
         />
         <div className="flex items-center gap-1">
@@ -658,7 +658,7 @@ function TodoEditor({
             type="button"
             onClick={onSave}
             disabled={!draft.title.trim() || saving}
-            aria-label="Save org todo"
+            aria-label="Save server todo"
             className="p-1.5 rounded-md text-emerald-400 hover:bg-gray-800 disabled:opacity-40"
           >
             <Check size={16} />
@@ -679,7 +679,7 @@ function TodoEditor({
         onChange={(e) => onChange({ notes: e.target.value })}
         disabled={saving}
         placeholder="Add more detail (optional)…"
-        aria-label="Edit org todo detail"
+        aria-label="Edit server todo detail"
         rows={2}
         className="w-full resize-y bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:opacity-60"
       />
@@ -795,7 +795,7 @@ function OrgTodoRow({
           <button
             type="button"
             onClick={onStartEdit}
-            aria-label="Edit org todo"
+            aria-label="Edit server todo"
             className="p-1 rounded-md text-gray-500 hover:text-gray-200 hover:bg-gray-800"
           >
             <Pencil size={14} />
@@ -805,7 +805,7 @@ function OrgTodoRow({
       <button
         type="button"
         onClick={onDelete}
-        aria-label="Delete org todo"
+        aria-label="Delete server todo"
         className="p-1 rounded-md text-gray-500 hover:text-red-400 hover:bg-gray-800 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
       >
         <Trash2 size={15} />

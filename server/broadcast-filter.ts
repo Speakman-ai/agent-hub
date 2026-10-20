@@ -30,11 +30,27 @@
 
 import { canViewProject, type VisibilityCaller } from './project-visibility.js';
 import type { Project } from './types.js';
-import type { BroadcastEvent } from './event-project-resolver.js';
+import { eventSessionId, type BroadcastEvent } from './event-project-resolver.js';
 import type { WsVisibilityStamp } from './session-ownership.js';
 import { HUB_CHAT_EVENT_TYPES } from './hub-chat-events.js';
+import { isOrganizationSystemProject } from '../shared/utils/hub.js';
+import type { OrganizationSessionIdentity } from './organization-session-identity.js';
+import { canReadOrganizationSession } from './organization-session-access.js';
 
 export interface BroadcastFilterDeps {
+  canReadOrganizationWorkspaceEvent?: (
+    project: Project,
+    userId: string,
+    serverId: string,
+  ) => boolean;
+  /**
+   * Persisted organization identity for a session. It outlives the agent and the
+   * workspace, so a retained organization session keeps its privacy boundary even
+   * when the project model can no longer resolve it.
+   */
+  getOrganizationSessionIdentity?: (sessionId: string) => OrganizationSessionIdentity | null;
+  /** Organization events fail closed and recheck current membership and project access. */
+  canReadOrganizationEvent?: (data: BroadcastEvent, userId: string, serverId: string) => boolean;
   /** Resolve a projectId from the broadcast payload; null when unresolvable. */
   resolveProjectId: (data: BroadcastEvent) => string | null;
   /** Look up a project by id; null when unknown. */
@@ -146,6 +162,49 @@ export function shouldDeliverBroadcast(
   stamp: WsVisibilityStamp | undefined,
   deps: BroadcastFilterDeps,
 ): boolean {
+  const eventProjectId = deps.resolveProjectId(data);
+  const sessionId = eventSessionId(data);
+  const organizationIdentity = sessionId
+    ? (deps.getOrganizationSessionIdentity?.(sessionId) ?? null)
+    : null;
+  if (organizationIdentity) {
+    // Checked before every legacy bypass so a retained organization session never fails open.
+    if (eventProjectId && eventProjectId !== organizationIdentity.workspace_id) return false;
+    return canReadOrganizationSession(
+      organizationIdentity,
+      deps.findProject(organizationIdentity.workspace_id),
+      {
+        userId: stamp?.userId,
+        serverId: stamp?.serverId,
+        ownsSession: !!stamp?.userId && deps.getSessionOwner(sessionId!) === stamp.userId,
+      },
+      deps.canReadOrganizationWorkspaceEvent,
+      typeof data.agentId === 'string' ? data.agentId : null,
+    );
+  }
+  // Management events (roster changes carry an agentId that resolves to the workspace)
+  // have their own rule; the workspace gate below is for session content.
+  if (
+    data.type === 'organization_updated' ||
+    data.type === 'organization_invalidated' ||
+    data.type === 'organization_access_revoked'
+  ) {
+    if (!stamp?.userId || !stamp.serverId || data.serverId !== stamp.serverId) return false;
+    return deps.canReadOrganizationEvent?.(data, stamp.userId, stamp.serverId) === true;
+  }
+  const eventProject = eventProjectId ? deps.findProject(eventProjectId) : null;
+  if (isOrganizationSystemProject(eventProject)) {
+    if (
+      !stamp?.userId ||
+      !stamp.serverId ||
+      !sessionId ||
+      deps.getSessionOwner(sessionId) !== stamp.userId
+    )
+      return false;
+    return (
+      deps.canReadOrganizationWorkspaceEvent?.(eventProject!, stamp.userId, stamp.serverId) === true
+    );
+  }
   // 1. Recipients with no stamp keep legacy behavior. Test harnesses,
   //    local-bundled callers that didn't get a stamp, and any pre-
   //    visibility connection fall here.
@@ -225,10 +284,10 @@ export function shouldDeliverBroadcast(
   //    the legacy fan-out semantics; deny-on-unresolved would silently
   //    break new event types and any payload whose project model isn't
   //    encoded in the resolver yet.
-  const projectId = deps.resolveProjectId(data);
+  const projectId = eventProjectId;
   if (!projectId) return true;
 
-  const project = deps.findProject(projectId);
+  const project = eventProject;
   if (!project) {
     // Project was deleted between event emission and dispatch (or the
     // resolver was wrong). Default to deliver — the recipient will

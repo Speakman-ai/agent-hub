@@ -22,7 +22,7 @@ import { AGENT_HUB_SESSION_ID_HEADER } from '../kanban-caller-session.js';
 import { getMembershipRole, listMembersForOrg } from '../memberships-store.js';
 import { getActiveOrgId } from '../orgs.js';
 import { getUserById } from '../users-store.js';
-import { isHubSystemProject } from '../../shared/utils/hub.js';
+import { isInternalSystemProject } from '../../shared/utils/hub.js';
 import { canViewProject } from '../project-visibility.js';
 import { isEligibleBackgroundSessionAgent } from '../background-agent-session.js';
 import {
@@ -440,7 +440,7 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
     const project = deps.findProject?.(projectId) ?? null;
     if (
       !project ||
-      isHubSystemProject(project) ||
+      isInternalSystemProject(project) ||
       !canViewProject(project, refViewer(caller).visibility)
     ) {
       bad(res, 404, 'Project not found', 'project_not_found');
@@ -462,7 +462,7 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
     const project = projectId ? (deps.findProject?.(projectId) ?? null) : null;
     return Boolean(
       project &&
-      !isHubSystemProject(project) &&
+      !isInternalSystemProject(project) &&
       canViewProject(project, refViewer(caller).visibility),
     );
   }
@@ -1197,7 +1197,7 @@ export default function createHubChatRoutes(deps: RouteDeps): Router {
         // reveals that a project exists.
         if (
           !project ||
-          isHubSystemProject(project) ||
+          isInternalSystemProject(project) ||
           !canViewProject(project, refViewer(caller).visibility)
         ) {
           bad(res, 400, `Project not found: ${id}`, 'project_not_found');

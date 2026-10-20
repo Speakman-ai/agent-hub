@@ -1,3 +1,8 @@
+import { isOrganizationSystemProject } from '../../shared/utils/hub.js';
+import { canReadOrganizationWorkspaceEvent } from '../business-organizations-access.js';
+import { organizationSessionIdentity } from '../organization-session-identity.js';
+import { canReadOrganizationSession } from '../organization-session-access.js';
+import { ownerComputerAllowed } from '../session-computer-access.js';
 import { v4 as uuidv4 } from 'uuid';
 import { spawn } from 'child_process';
 import { Router, Request, Response } from 'express';
@@ -690,6 +695,9 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       ? deriveHeuristicTitle(parsed.name!)
       : parsed.name || `Session ${new Date().toLocaleString()}`;
     const found = findAgent(req.params.agentId as string);
+    if (isOrganizationSystemProject(found?.project)) {
+      return res.status(403).json({ error: 'Use the organization agent session endpoint' });
+    }
     // Reviewer agents are spawned exclusively by the GitHub webhook
     // handler (one session per PR, named "Review: PR #N"). Users may
     // not start ad-hoc sessions with a reviewer — the thread is a
@@ -2098,6 +2106,8 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const { agentId, model = null, engine: engineOverride = null } = parsed;
     const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
     if (!session) return res.status(404).json({ error: 'Session not found' });
+    if (isOrganizationSystemProject(findAgent(session.agent_id)?.project))
+      return res.status(403).json({ error: 'Organization chats use one agent per session' });
     const found = findAgent(agentId);
     if (!found) return res.status(404).json({ error: 'Agent not found' });
     const caller = resolveVisibilityCaller(req);
@@ -2780,6 +2790,13 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     if (!parsed) return;
     const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
     if (!session) return res.status(404).json({ error: 'Session not found' });
+    // Turning it off or back to the default is always allowed; turning it on
+    // stays within the organization agent's current tool scope.
+    if (parsed.enabled === true && !ownerComputerAllowed(String(req.params.sessionId))) {
+      return res
+        .status(403)
+        .json({ error: 'Computer is not permitted for this organization agent' });
+    }
     const value = parsed.enabled === null ? null : parsed.enabled ? 1 : 0;
     stmts.updateSessionComputerTool.run(value, req.params.sessionId);
     const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
@@ -3352,9 +3369,36 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
   });
 
-  router.get('/api/active-tasks', (_req: Request, res: Response) => {
+  router.get('/api/active-tasks', (req: Request, res: Response) => {
     try {
-      res.json(buildActiveTasksSnapshot(stmts));
+      const auth = req as AuthenticatedRequest;
+      res.json(
+        buildActiveTasksSnapshot(stmts).filter((task) => {
+          // The session retains its organization boundary even after its agent is removed.
+          const identity = organizationSessionIdentity(task.sessionId);
+          if (identity) {
+            return canReadOrganizationSession(
+              identity,
+              findProject(identity.workspace_id),
+              {
+                userId: auth.authUserId,
+                serverId: auth.authOrgId,
+                ownsSession: !!auth.authUserId && userOwnsSession(auth, task.sessionId),
+              },
+              canReadOrganizationWorkspaceEvent,
+              task.agentId,
+            );
+          }
+          const project = findAgent(task.agentId)?.project;
+          if (!isOrganizationSystemProject(project)) return true;
+          return (
+            !!auth.authUserId &&
+            !!auth.authOrgId &&
+            userOwnsSession(auth, task.sessionId) &&
+            canReadOrganizationWorkspaceEvent(project!, auth.authUserId, auth.authOrgId)
+          );
+        }),
+      );
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }

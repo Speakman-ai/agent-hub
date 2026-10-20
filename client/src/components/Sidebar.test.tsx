@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, within, fireEvent, waitFor } from '@testing-library/react';
 import Sidebar from './Sidebar';
+import { api } from '../utils/api';
+import { saveConnectionConfig } from '../utils/connection';
+import { HUB_WORKSPACE_PANES, type HubWorkspacePane } from '@shared/utils/hub';
 
 // OrgSwitcher hits the server on mount; stub it so we can render Sidebar standalone.
 (vi as any).mock('./OrgSwitcher.jsx', () => ({
@@ -132,33 +135,71 @@ describe('Sidebar — notification bell', () => {
 });
 
 describe('Sidebar — Hub nav (global home)', () => {
-  it('renders a single Hub entry instead of Home/Dashboard/Todos/Calendar/Gmail', () => {
-    render(
-      <Sidebar {...buildProps({ googleGmailNavVisible: true, googleCalendarNavVisible: true })} />,
-    );
+  it('keeps the logo and lists the personal destinations under Home', () => {
+    render(<Sidebar {...buildProps()} />);
     expect(screen.getByTestId('sidebar-global-hub')).toBeInTheDocument();
     const brandLogo = within(screen.getByTestId('sidebar-global-hub')).getByTestId('brand-logo');
     expect(brandLogo).toBeInTheDocument();
-    // Top-left logo renders at the md size (h-7), not the smaller h-6.
     expect(brandLogo).toHaveClass('h-7');
     expect(
       within(screen.getByTestId('sidebar-global-hub')).queryByText('Hub'),
     ).not.toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-home-heading')).toHaveTextContent('Home');
+    expect(screen.queryByTestId('sidebar-org-switch')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Dashboard' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Todos' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Calendar' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Mail' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Reminders' })).toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-home-support')).not.toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-home-server')).toHaveTextContent('Server');
     expect(screen.queryByTestId('sidebar-global-home')).not.toBeInTheDocument();
     expect(screen.queryByTestId('sidebar-global-todos')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('sidebar-global-calendar')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('sidebar-global-gmail')).not.toBeInTheDocument();
-    expect(screen.queryByText('Dashboard', { selector: 'button span' })).not.toBeInTheDocument();
     const hub = screen.getByTestId('sidebar-global-hub');
     const connected = screen.getByTestId('sidebar-connection-status');
     expect(hub.compareDocumentPosition(connected) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(
+      screen
+        .getByTestId('sidebar-home-heading')
+        .compareDocumentPosition(screen.getByRole('button', { name: /^Organizations$/ })) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
-  it('navigates to hub', () => {
+  it('reaches every Hub pane from the sidebar', () => {
+    // Keyed by pane so adding a pane without a sidebar destination fails typecheck.
+    const destinations: Record<HubWorkspacePane, string> = {
+      today: 'sidebar-home-dashboard',
+      chat: 'sidebar-chat',
+      todos: 'sidebar-home-todos',
+      reminders: 'sidebar-home-reminders',
+      calendar: 'sidebar-home-calendar',
+      mail: 'sidebar-home-mail',
+      org: 'sidebar-home-server',
+      support: 'sidebar-support-overview',
+    };
+    const onNavigate = vi.fn();
+    const onOpenChat = vi.fn();
+    render(<Sidebar {...buildProps({ onNavigate, onOpenChat })} />);
+    for (const pane of HUB_WORKSPACE_PANES) {
+      fireEvent.click(screen.getByTestId(destinations[pane]));
+      if (pane === 'chat') expect(onOpenChat).toHaveBeenCalled();
+      else expect(onNavigate).toHaveBeenLastCalledWith('hub', pane);
+    }
+  });
+
+  it('highlights the support overview when it is open', () => {
+    render(<Sidebar {...buildProps({ currentView: 'hub', hubPane: 'support' })} />);
+    expect(screen.getByTestId('sidebar-support-overview')).toHaveClass('bg-gray-800');
+  });
+
+  it('navigates to the dashboard', () => {
     const onNavigate = vi.fn();
     render(<Sidebar {...buildProps({ onNavigate })} />);
     fireEvent.click(screen.getByTestId('sidebar-global-hub'));
-    expect(onNavigate).toHaveBeenCalledWith('hub');
+    expect(onNavigate).toHaveBeenCalledWith('hub', 'today');
+    fireEvent.click(screen.getByRole('button', { name: 'Dashboard' }));
+    expect(onNavigate).toHaveBeenLastCalledWith('hub', 'today');
   });
 });
 
@@ -1853,13 +1894,13 @@ describe('Sidebar Chat link', () => {
     expect(screen.queryByTestId('sidebar-chat')).toBeNull();
   });
 
-  it('renders under Settings, opens the pane, and shows the unread badge', () => {
+  it('renders in Home, opens the pane, and shows the unread badge', () => {
     const onOpenChat = vi.fn();
     render(<Sidebar {...buildProps({ onOpenChat, chatUnread: 120 })} />);
     const link = screen.getByTestId('sidebar-chat');
     expect(link).toHaveTextContent(/^Chat/);
     expect(link).not.toHaveTextContent('Google');
-    expect(link.previousElementSibling).toHaveTextContent('Settings');
+    expect(link.previousElementSibling).toHaveTextContent('Dashboard');
     expect(screen.getByTestId('sidebar-chat-badge')).toHaveTextContent('99+');
     fireEvent.click(link);
     expect(onOpenChat).toHaveBeenCalledTimes(1);
@@ -1873,14 +1914,230 @@ describe('Sidebar Chat link', () => {
 });
 
 describe('Sidebar project icons', () => {
-  it('uses the saved icon and restores the color after a project refresh', () => {
+  it('shows every project as a folder', () => {
     const props = buildProps();
-    props.projects[0].icon = '★';
-    const { rerender } = render(<Sidebar {...props} />);
-    expect(screen.getByTestId('project-icon')).toHaveTextContent('★');
-    props.projects[0] = { ...props.projects[0], icon: null };
-    rerender(<Sidebar {...props} projects={[...props.projects]} />);
-    expect(screen.getByTestId('project-icon')).toBeEmptyDOMElement();
-    expect(screen.getByTestId('project-icon')).toHaveStyle({ backgroundColor: '#22d3ee' });
+    props.projects[0].icon = 'Rocket';
+    render(<Sidebar {...props} />);
+    expect(screen.getAllByTestId('project-icon')[0]).toHaveAttribute('data-icon', 'Folder');
+  });
+});
+
+it('opens Organizations without replacing the normal project list', () => {
+  const props = buildProps();
+  render(<Sidebar {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: /^Organizations$/ }));
+  expect(props.onNavigate).toHaveBeenCalledWith('organizations');
+  expect(screen.getByText('Test Project')).toBeTruthy();
+});
+
+describe('Sidebar organization sections', () => {
+  const org = {
+    id: 'org-1',
+    serverId: 'server-1',
+    name: 'Acme',
+    role: 'Owner' as const,
+    canManage: true,
+  };
+
+  beforeEach(() => {
+    vi.spyOn(api.organizations, 'list').mockResolvedValue({ organizations: [org] });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('shows the selected organization and swaps its projects', async () => {
+    const other = {
+      id: 'org-2',
+      serverId: 'server-1',
+      name: 'Beta',
+      role: 'Owner' as const,
+      canManage: true,
+    };
+    vi.spyOn(api.organizations, 'list').mockResolvedValue({ organizations: [org, other] });
+    vi.spyOn(api.organizations, 'linked').mockImplementation(async (id: string) => ({
+      projects: id === 'org-1' ? [{ id: PROJECT_ID, name: 'Test Project' }] : [],
+    }));
+    const projects = [
+      ...buildProps().projects,
+      {
+        id: 'proj-2',
+        name: 'Other Project',
+        color: '#a78bfa',
+        agents: [{ id: 'agent-3', name: 'Other Agent', color: '#a78bfa', active: true }],
+      },
+    ];
+    render(<Sidebar {...buildProps({ projects })} />);
+
+    const select = await screen.findByTestId('sidebar-org-switch');
+    expect(select).toHaveTextContent('Acme');
+    expect(
+      screen.getByTestId('sidebar-home-heading').compareDocumentPosition(select) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(screen.getByTestId('sidebar-home-dashboard')).toHaveTextContent('Dashboard');
+    expect(screen.getByTestId(`sidebar-project-row-${PROJECT_ID}`)).toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-project-row-proj-2')).not.toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-org-settings-org-1')).toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-org-agents-heading')).toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-org-projects-heading')).toHaveTextContent('Projects');
+
+    fireEvent.click(select);
+    fireEvent.click(screen.getByTestId('sidebar-org-option-independent'));
+    expect(screen.queryByTestId(`sidebar-project-row-${PROJECT_ID}`)).not.toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-project-row-proj-2')).toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-org-settings-org-1')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-org-agents-heading')).not.toBeInTheDocument();
+    expect(localStorage.getItem('sidebarSelectedOrganization')).toBe('independent');
+
+    fireEvent.click(screen.getByTestId('sidebar-org-switch'));
+    fireEvent.click(screen.getByTestId('sidebar-org-option-org-2'));
+    expect(screen.queryByTestId('sidebar-project-row-proj-2')).not.toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-org-settings-org-2')).toBeInTheDocument();
+  });
+
+  it('opens that organization from its settings row', async () => {
+    vi.spyOn(api.organizations, 'linked').mockResolvedValue({
+      projects: [{ id: PROJECT_ID, name: 'Test Project' }],
+    });
+    const onNavigate = vi.fn();
+    render(
+      <Sidebar
+        {...buildProps({
+          onNavigate,
+          currentView: 'organizations',
+          activeOrganizationId: 'org-1',
+        })}
+      />,
+    );
+
+    const settings = await screen.findByTestId('sidebar-org-settings-org-1');
+    expect(settings).toHaveClass('bg-gray-800');
+    fireEvent.click(settings);
+    expect(onNavigate).toHaveBeenCalledWith('organizations', 'org-1');
+  });
+
+  it('keeps an unlinked project on the Independent option', async () => {
+    vi.spyOn(api.organizations, 'linked').mockResolvedValue({ projects: [] });
+    render(<Sidebar {...buildProps()} />);
+
+    const select = await screen.findByTestId('sidebar-org-switch');
+    expect(select).toHaveTextContent('Acme');
+    expect(screen.queryByTestId(`sidebar-project-row-${PROJECT_ID}`)).not.toBeInTheDocument();
+    fireEvent.click(select);
+    fireEvent.click(screen.getByTestId('sidebar-org-option-independent'));
+    expect(screen.getByTestId(`sidebar-project-row-${PROJECT_ID}`)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Organization settings' })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-org-agents-heading')).not.toBeInTheDocument();
+  });
+
+  it('opens the latest chat for an organization agent', async () => {
+    vi.spyOn(api.organizations, 'linked').mockResolvedValue({
+      projects: [{ id: PROJECT_ID, name: 'Test Project' }],
+    });
+    vi.spyOn(api.organizationAgents, 'list').mockResolvedValue({
+      agents: [
+        {
+          id: 'oa-1',
+          name: 'Dispatch',
+          engine: 'claude-code',
+          organizationScope: { enabled: true, projects: 'all-linked', tools: ['projects:read'] },
+        },
+      ],
+    });
+    const startChat = vi.spyOn(api.organizationAgents, 'startChat');
+    vi.spyOn(api.organizationAgents, 'chats').mockResolvedValue({
+      sessions: [
+        {
+          id: 'chat-1',
+          name: 'Earlier',
+          agentId: 'oa-1',
+          agentName: 'Dispatch',
+          agentAvailable: true,
+          createdAt: '2026-10-01T00:00:00.000Z',
+          updatedAt: '2026-10-01T00:00:00.000Z',
+        },
+        {
+          id: 'chat-2',
+          name: 'Latest',
+          agentId: 'oa-1',
+          agentName: 'Dispatch',
+          agentAvailable: true,
+          createdAt: '2026-10-02T00:00:00.000Z',
+          updatedAt: '2026-10-02T00:00:00.000Z',
+        },
+      ],
+    });
+    const onOpenOrganizationChat = vi.fn();
+    render(<Sidebar {...buildProps({ onOpenOrganizationChat })} />);
+
+    const agent = await screen.findByTestId('sidebar-org-agent-oa-1');
+    expect(agent).toHaveTextContent('Dispatch');
+    expect(agent.compareDocumentPosition(screen.getByTestId('sidebar-org-projects-heading'))).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    fireEvent.click(agent);
+    await waitFor(() =>
+      expect(onOpenOrganizationChat).toHaveBeenCalledWith(
+        expect.objectContaining({
+          organizationId: 'org-1',
+          organizationName: 'Acme',
+          agentId: 'oa-1',
+          sessionId: 'chat-2',
+        }),
+      ),
+    );
+    expect(startChat).not.toHaveBeenCalled();
+  });
+
+  function pendingOrganizationHistory() {
+    vi.spyOn(api.organizations, 'linked').mockResolvedValue({
+      projects: [{ id: PROJECT_ID, name: 'Test Project' }],
+    });
+    vi.spyOn(api.organizationAgents, 'list').mockResolvedValue({
+      agents: [
+        {
+          id: 'oa-1',
+          name: 'Dispatch',
+          engine: 'claude-code',
+          organizationScope: { enabled: true, projects: 'all-linked', tools: ['projects:read'] },
+        },
+      ],
+    });
+    const startChat = vi
+      .spyOn(api.organizationAgents, 'startChat')
+      .mockResolvedValue({ session: { id: 'fresh' } } as any);
+    let resolveHistory: (value: any) => void = () => {};
+    vi.spyOn(api.organizationAgents, 'chats').mockReturnValue(
+      new Promise((resolve) => {
+        resolveHistory = resolve;
+      }) as any,
+    );
+    return { startChat, resolveHistory: (v: any) => resolveHistory(v) };
+  }
+
+  it('does not open or start an organization chat after the Sidebar unmounts', async () => {
+    const { startChat, resolveHistory } = pendingOrganizationHistory();
+    const onOpenOrganizationChat = vi.fn();
+    const { unmount } = render(<Sidebar {...buildProps({ onOpenOrganizationChat })} />);
+    fireEvent.click(await screen.findByTestId('sidebar-org-agent-oa-1'));
+    unmount();
+    resolveHistory({ sessions: [] });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(startChat).not.toHaveBeenCalled();
+    expect(onOpenOrganizationChat).not.toHaveBeenCalled();
+  });
+
+  it('does not open or start an organization chat after the connection changes', async () => {
+    const { startChat, resolveHistory } = pendingOrganizationHistory();
+    const onOpenOrganizationChat = vi.fn();
+    render(<Sidebar {...buildProps({ onOpenOrganizationChat })} />);
+    fireEvent.click(await screen.findByTestId('sidebar-org-agent-oa-1'));
+    saveConnectionConfig({ mode: 'remote', remoteUrl: 'https://other.example.com' });
+    resolveHistory({ sessions: [] });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(startChat).not.toHaveBeenCalled();
+    expect(onOpenOrganizationChat).not.toHaveBeenCalled();
   });
 });

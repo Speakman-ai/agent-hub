@@ -1,3 +1,4 @@
+import { getOrganizationSpawnPolicy } from './organization-spawn-policy.js';
 import { readFileSync, copyFileSync, cpSync, existsSync, mkdirSync, readdirSync } from 'fs';
 import os from 'os';
 import path from 'path';
@@ -869,6 +870,7 @@ export function buildSpawnEnv(
   cfg: AppConfig = config,
   opts: BuildSpawnEnvOptions = {},
 ): NodeJS.ProcessEnv {
+  const organizationPolicy = getOrganizationSpawnPolicy(opts.sessionId);
   const env: NodeJS.ProcessEnv = { ...process.env };
   // Merge the login-shell PATH into the spawn env so newly-installed CLIs
   // (aws, gh, etc.) are visible without restarting the server. See
@@ -1056,7 +1058,7 @@ export function buildSpawnEnv(
 
   const sessionId = presentString(opts.sessionId);
   const spawnCredsUserId = presentString(opts.spawnCredsUserId) ?? ownerUserId;
-  if (sessionId && spawnCredsUserId) {
+  if (!organizationPolicy && sessionId && spawnCredsUserId) {
     ensureSpawnCredsForSession({ sessionId, ownerUserId: spawnCredsUserId, cfg });
   }
 
@@ -1066,7 +1068,7 @@ export function buildSpawnEnv(
   // auth headers) hits 401 — kanban card creation silently fails. Inject the
   // freshly minted token here; `ah-api.sh` still re-reads the file on every
   // call for mid-flight `/api/auth/setup` recovery.
-  if (!cfg.apiKey && sessionId) {
+  if (!organizationPolicy && !cfg.apiKey && sessionId) {
     try {
       const spawnTok = readSpawnCredsFile(sessionId, cfg.dataDir);
       if (spawnTok) {
@@ -1082,6 +1084,11 @@ export function buildSpawnEnv(
   // Strip inherited venv relocation vars and pin npm/node-gyp at the image
   // Python so a leftover `.venv` cannot break native addon compiles.
   sanitizeSpawnPythonEnv(env);
+  if (organizationPolicy && sessionId) {
+    if (!presentString(override?.geminiApiKey)) delete env.GEMINI_API_KEY;
+    if (!presentString(override?.grokApiKey)) delete env.XAI_API_KEY;
+    organizationPolicy.apply(env, sessionId, ownerUserId, cfg);
+  }
 
   return env;
 }

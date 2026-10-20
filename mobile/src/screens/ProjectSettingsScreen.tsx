@@ -1,3 +1,4 @@
+import OrganizationsPanel from '../components/OrganizationsPanel';
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
@@ -32,7 +33,6 @@ export default function ProjectSettingsScreen({ route, navigation }: any) {
   const { projects, refreshProjects } = useApp();
   const project = projects?.find((p: any) => p.id === projectId) || routeProject;
   const [name, setName] = useState(project?.name || '');
-  const [icon, setIcon] = useState(project?.icon || '');
   const [color, setColor] = useState(project?.color || '#6366f1');
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -40,8 +40,7 @@ export default function ProjectSettingsScreen({ route, navigation }: any) {
     if (!project) return;
     setName(project.name || '');
     setColor(project.color || '#6366f1');
-    setIcon(project.icon || '');
-  }, [project?.id, project?.name, project?.color, project?.icon]);
+  }, [project?.id, project?.name, project?.color]);
   const saveField = useCallback(
     async (patch: any) => {
       if (!projectId) return;
@@ -103,6 +102,7 @@ export default function ProjectSettingsScreen({ route, navigation }: any) {
           <ActivityIndicator size="small" color={colors.gray400} style={{ marginBottom: 8 }} />
         )}
 
+        <OrganizationsPanel projectId={projectId} />
         <Text style={styles.label}>Name</Text>
         <TextInput
           style={styles.input}
@@ -112,43 +112,6 @@ export default function ProjectSettingsScreen({ route, navigation }: any) {
           placeholder="Project name"
           placeholderTextColor={colors.gray600}
         />
-
-        <Text style={styles.label}>Project icon</Text>
-        <TextInput
-          testID="project-icon-input"
-          accessibilityLabel="Project icon"
-          style={styles.input}
-          value={icon}
-          onChangeText={setIcon}
-          maxLength={32}
-          editable={!saving}
-          placeholder="Emoji or symbol"
-          placeholderTextColor={colors.gray600}
-        />
-        <Text style={styles.label}>
-          Paste an emoji or symbol, or leave blank to use the project color.
-        </Text>
-        <View style={styles.colorRow}>
-          <TouchableOpacity
-            accessibilityRole="button"
-            testID="save-project-icon"
-            disabled={saving}
-            onPress={() => saveField({ icon: icon.trim() || null })}
-          >
-            <Text style={styles.toggleTitle}>Save icon</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            accessibilityRole="button"
-            testID="clear-project-icon"
-            disabled={saving}
-            onPress={() => {
-              setIcon('');
-              void saveField({ icon: null });
-            }}
-          >
-            <Text style={styles.toggleTitle}>Use color</Text>
-          </TouchableOpacity>
-        </View>
 
         <Text style={styles.label}>Color</Text>
         <View style={styles.colorRow}>

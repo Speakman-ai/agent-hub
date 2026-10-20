@@ -3153,7 +3153,28 @@ export interface HookConfig {
   hooks: HookEntry[];
 }
 
+export interface OrganizationAgentScope {
+  enabled: boolean;
+  archivedAt?: string | null;
+  tools: Array<
+    | 'projects:read'
+    | 'dispatch'
+    | 'artifacts'
+    | 'credentials'
+    | 'skills'
+    | 'web'
+    | 'browser'
+    | 'computer'
+    | 'approvals'
+  >;
+  projects: 'all-linked' | string[];
+}
+
 export interface Agent {
+  /** Server-enforced organization permissions; names and role templates carry no authority. */
+  organizationScope?: OrganizationAgentScope;
+  /** Starter template copied at creation. Provenance only; never re-applied. */
+  organizationTemplate?: { id: string; version: number };
   id: string;
   name: string;
   engine: string;
@@ -3824,6 +3845,12 @@ export interface Project {
    * or Settings project list. Identified by `kind: 'system'` and/or id `__hub__`.
    */
   kind?: 'system';
+  workspaceKind?: 'hub' | 'organization';
+  /** Stable initial identity and seed marker, retained even if the Assistant is removed. */
+  organizationAssistantId?: string;
+  archivedAt?: string | null;
+  organizationId?: string;
+  serverId?: string;
   agents: Agent[];
   [key: string]: unknown;
 }
@@ -4847,7 +4874,27 @@ export interface TypedRequest<
   rawBody?: Buffer;
 }
 
-// Org Types
+export interface BusinessOrganizationRow {
+  server_id: string;
+  id: string;
+  name: string;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+  archived_at: string | null;
+}
+
+export type BusinessOrganizationRole = 'Owner' | 'Admin' | 'Member';
+
+export interface BusinessOrganizationMemberRow {
+  server_id: string;
+  organization_id: string;
+  user_id: string;
+  role: BusinessOrganizationRole;
+  created_at: string;
+}
+
+// Legacy Server partition storage. Never reuse OrgRow for business organizations.
 
 export interface OrgRow {
   id: string;
@@ -4859,6 +4906,19 @@ export interface OrgRow {
   position: number;
   created_at: string;
   updated_at: string;
+}
+
+/** Public /api/servers connection DTO; IDs and credentials refer to existing partitions. */
+export interface ServerConnection {
+  id: string;
+  name: string;
+  mode: 'local' | 'remote';
+  color: string;
+  remoteUrl: string;
+  apiKey: string;
+  position: number;
+  createdAt: string;
+  updatedAt: string;
 }
 
 // ── Agent Hub chat (hub-chat-schema.ts / hub-chat-store.ts) ──

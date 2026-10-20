@@ -28,6 +28,127 @@ function makeDeps(overrides: Partial<BroadcastFilterDeps> = {}): BroadcastFilter
 }
 
 describe('shouldDeliverBroadcast', () => {
+  describe('retained organization sessions', () => {
+    const identity = {
+      server_id: 'server-a',
+      organization_id: 'org-1',
+      workspace_id: 'org-workspace',
+      agent_id: 'removed-agent',
+    };
+    const workspace = makeProject({
+      id: 'org-workspace',
+      workspaceKind: 'organization',
+      organizationId: 'org-1',
+      serverId: 'server-a',
+    } as Partial<Project>);
+    const recipients: Array<[string, WsVisibilityStamp | undefined]> = [
+      ['an unstamped recipient', undefined],
+      ['a localBypass recipient', { userId: null, role: 'Owner', localBypass: true }],
+      ['an unrelated user', { userId: 'other', serverId: 'server-a', role: 'Owner' }],
+      ['the owner', { userId: 'owner', serverId: 'server-a', role: 'User' }],
+    ];
+    const events = [
+      { type: 'done', sessionId: 'org-session', content: 'private' },
+      { sessionId: 'org-session' },
+    ];
+
+    it.each(recipients)('denies %s when the workspace is missing', (_label, stamp) => {
+      const deps = makeDeps({
+        // The removed agent leaves the resolver with the retained workspace id.
+        resolveProjectId: () => 'org-workspace',
+        findProject: () => null,
+        getSessionOwner: () => 'owner',
+        getOrganizationSessionIdentity: () => identity,
+        canReadOrganizationWorkspaceEvent: () => true,
+      });
+      for (const event of events) expect(shouldDeliverBroadcast(event, stamp, deps)).toBe(false);
+    });
+
+    it('denies a workspace that no longer matches the recorded organization', () => {
+      const deps = makeDeps({
+        resolveProjectId: () => null,
+        findProject: () => ({ ...workspace, organizationId: 'org-2' }),
+        getSessionOwner: () => 'owner',
+        getOrganizationSessionIdentity: () => identity,
+        canReadOrganizationWorkspaceEvent: () => true,
+      });
+      const owner: WsVisibilityStamp = { userId: 'owner', serverId: 'server-a', role: 'User' };
+      expect(shouldDeliverBroadcast(events[0], owner, deps)).toBe(false);
+    });
+
+    it('denies an event resolved to a different project than the recorded workspace', () => {
+      const deps = makeDeps({
+        resolveProjectId: () => 'shared-project',
+        findProject: (id) => (id === 'org-workspace' ? workspace : makeProject({ id })),
+        getSessionOwner: () => 'owner',
+        getOrganizationSessionIdentity: () => identity,
+        canReadOrganizationWorkspaceEvent: () => true,
+      });
+      const owner: WsVisibilityStamp = { userId: 'owner', serverId: 'server-a', role: 'User' };
+      expect(shouldDeliverBroadcast(events[0], owner, deps)).toBe(false);
+    });
+
+    it('denies an event attributed to a different agent than the recorded identity', () => {
+      const deps = makeDeps({
+        resolveProjectId: () => null,
+        findProject: () => workspace,
+        getSessionOwner: () => 'owner',
+        getOrganizationSessionIdentity: () => identity,
+        canReadOrganizationWorkspaceEvent: () => true,
+      });
+      const owner: WsVisibilityStamp = { userId: 'owner', serverId: 'server-a', role: 'User' };
+      expect(shouldDeliverBroadcast({ ...events[0], agentId: 'other-agent' }, owner, deps)).toBe(
+        false,
+      );
+      expect(shouldDeliverBroadcast({ ...events[0], agentId: 'removed-agent' }, owner, deps)).toBe(
+        true,
+      );
+    });
+
+    it('delivers only to the owner with current organization access', () => {
+      const canRead = vi.fn(() => true);
+      const deps = makeDeps({
+        resolveProjectId: () => null,
+        findProject: () => workspace,
+        getSessionOwner: () => 'owner',
+        getOrganizationSessionIdentity: () => identity,
+        canReadOrganizationWorkspaceEvent: canRead,
+      });
+      for (const [label, stamp] of recipients) {
+        expect(shouldDeliverBroadcast(events[0], stamp, deps), label).toBe(label === 'the owner');
+      }
+      expect(
+        shouldDeliverBroadcast(
+          events[0],
+          { userId: 'owner', serverId: 'server-b', role: 'User' },
+          deps,
+        ),
+      ).toBe(false);
+      canRead.mockReturnValue(false);
+      expect(
+        shouldDeliverBroadcast(
+          events[0],
+          { userId: 'owner', serverId: 'server-a', role: 'User' },
+          deps,
+        ),
+      ).toBe(false);
+    });
+  });
+
+  it.each(['organization_updated', 'organization_invalidated', 'organization_access_revoked'])(
+    'fails closed for %s without an organization authorization resolver',
+    (type) => {
+      const event = { type, serverId: 'server-a', organizationId: 'private-organization' };
+      for (const stamp of [
+        undefined,
+        { userId: 'outsider', role: 'Owner' as const },
+        { userId: null, localBypass: true },
+      ]) {
+        expect(shouldDeliverBroadcast(event, stamp, makeDeps())).toBe(false);
+      }
+    },
+  );
+
   it('delivers to clients without a visibility stamp (legacy / test harness)', () => {
     const data = { type: 'done', sessionId: 's1' };
     const deps = makeDeps({
@@ -35,9 +156,8 @@ describe('shouldDeliverBroadcast', () => {
       findProject: vi.fn(),
     });
     expect(shouldDeliverBroadcast(data, undefined, deps)).toBe(true);
-    // No work done — the unstamped fast-path short-circuits ahead of any
-    // resolution. Keeps the legacy connection paths cheap.
-    expect(deps.resolveProjectId).not.toHaveBeenCalled();
+    // Organization chats must be identified before legacy bypasses apply.
+    expect(deps.resolveProjectId).toHaveBeenCalledWith(data);
     expect(deps.findProject).not.toHaveBeenCalled();
   });
 
@@ -49,7 +169,7 @@ describe('shouldDeliverBroadcast', () => {
       findProject: vi.fn(),
     });
     expect(shouldDeliverBroadcast(data, stamp, deps)).toBe(true);
-    expect(deps.resolveProjectId).not.toHaveBeenCalled();
+    expect(deps.resolveProjectId).toHaveBeenCalledWith(data);
   });
 
   it('delivers to authenticated user for a shared project they can view', () => {

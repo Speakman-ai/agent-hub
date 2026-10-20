@@ -615,7 +615,7 @@ describe('SettingsPage — sidebar navigation', () => {
 
   it('marks the active sidebar item with aria-current="page"', () => {
     // Use the "Account" tab (always visible) — the previous version targeted
-    // "Organizations", but that tab is now Electron-only and absent in the
+    // "Servers", but that tab is now Electron-only and absent in the
     // jsdom (browser-like) test environment.
     const { getAllByText } = render(
       <SettingsPage projects={[]} agents={[]} initialTab="account" />,
@@ -625,23 +625,27 @@ describe('SettingsPage — sidebar navigation', () => {
     expect(active!).toBeTruthy();
   });
 
-  // The web app is locked to a single Hub server, so the "Organizations" tab
+  // The web app is locked to a single Hub server, so the "Servers" tab
   // (which manages multi-server bookmarks) is Electron-only. In a plain
   // browser context the tab MUST NOT appear in the settings sidebar, and a
   // deep-link with initialTab="orgs" MUST redirect to a visible tab so the
   // user doesn't land on a blank settings pane.
-  describe('Organizations tab — Electron-only gating', () => {
-    it('does NOT render the "Organizations" sidebar entry in a plain browser', () => {
+  describe('Servers tab — Electron-only gating', () => {
+    it('does NOT render the "Servers" sidebar entry in a plain browser', () => {
       const { queryByText } = render(<SettingsPage projects={[]} agents={[]} />);
-      expect(queryByText('Organizations')).toBeNull();
+      expect(queryByText('Servers')).toBeNull();
     });
 
-    it('renders the "Organizations" sidebar entry when window.electronAPI.isElectron is true', () => {
+    it('renders the "Servers" sidebar entry when window.electronAPI.isElectron is true', () => {
       const origElectronAPI = globalThis.window.electronAPI;
       globalThis.window.electronAPI = { isElectron: true };
       try {
-        const { getAllByText } = render(<SettingsPage projects={[]} agents={[]} />);
-        expect(getAllByText('Organizations').length).toBeGreaterThan(0);
+        const { getAllByText, getByRole } = render(
+          <SettingsPage projects={[]} agents={[]} initialTab="orgs" />,
+        );
+        expect(getAllByText('Servers').length).toBeGreaterThan(0);
+        expect(getByRole('heading', { name: 'Servers' })).toBeInTheDocument();
+        expect(getByRole('button', { name: 'Add Server' })).toBeInTheDocument();
       } finally {
         if (origElectronAPI === undefined) {
           delete (globalThis as any).window.electronAPI;
@@ -666,11 +670,14 @@ describe('SettingsPage — sidebar navigation', () => {
     expect(queryByText('Projects')).toBeNull();
   });
 
-  it('renders project settings via ProjectsSection in single-project mode', async () => {
+  it('renders project settings and organization links via ProjectsSection in single-project mode', async () => {
     const projects = [
       { id: 'p1', name: 'Acme', color: '#ff0000', cwd: '/tmp/a', githubRepo: '', agents: [] },
     ];
-    const { findByText } = render(<ProjectsSection projects={projects} projectId="p1" />);
+    const { findByText, getByTestId } = render(
+      <ProjectsSection projects={projects} projectId="p1" />,
+    );
+    expect(getByTestId('project-organizations-p1')).toBeTruthy();
     await findByText('Project settings');
     expect(
       await findByText(
@@ -835,7 +842,7 @@ describe('SettingsPage — sidebar navigation', () => {
  * `remoteUrl` disagrees with the actual page origin.
  *
  * These tests guard the hide-on-web behavior in both the per-org edit
- * form and the "Add Organization" form.
+ * form and the "Add Server" form.
  */
 describe('OrganizationsSection — Connection Mode toggle visibility', () => {
   beforeEach(() => {
@@ -850,11 +857,11 @@ describe('OrganizationsSection — Connection Mode toggle visibility', () => {
     const { queryByText, getByText } = render(<OrganizationsSection />);
     // The orgs heading still renders — we only dropped the toggle, not
     // the section.
-    expect(getByText('Organizations')).toBeTruthy();
+    expect(getByText('Servers')).toBeTruthy();
     // No Connection Mode label anywhere on the page.
     expect(queryByText(/Connection Mode/i)).toBeNull();
     // No Local / Remote toggle buttons under the Add-Organization form.
-    fireEvent.click(getByText(/Add Organization/i as any));
+    fireEvent.click(getByText(/Add Server/i as any));
     expect(queryByText(/Connection Mode/i)).toBeNull();
     expect(queryByText(/Server runs on this machine/i)).toBeNull();
     expect(queryByText(/Connect to a remote server/i)).toBeNull();
@@ -863,9 +870,9 @@ describe('OrganizationsSection — Connection Mode toggle visibility', () => {
   it('renders the Connection Mode toggle on Electron (window.electronAPI.isElectron)', () => {
     window.electronAPI = { isElectron: true };
     const { getByText } = render(<OrganizationsSection />);
-    // Click "Add Organization" to expand the new-org form, where the toggle
+    // Click "Add Server" to expand the new-org form, where the toggle
     // is unconditionally rendered for the Electron build.
-    fireEvent.click(getByText(/Add Organization/i as any));
+    fireEvent.click(getByText(/Add Server/i as any));
     expect(getByText(/Connection Mode/i)).toBeTruthy();
     expect(getByText(/Server runs on this machine/i)).toBeTruthy();
     expect(getByText(/Connect to a remote server/i)).toBeTruthy();
@@ -1391,3 +1398,7 @@ describe('AgentConfigSection — context files', () => {
     expect(queryByPlaceholderText('github-username')).toBeNull();
   });
 });
+
+vi.mock('./OrganizationsPage', () => ({
+  default: ({ projectId }: any) => <div data-testid={`project-organizations-${projectId}`} />,
+}));

@@ -21,8 +21,16 @@ import path from 'path';
 const projectMembersStore = vi.hoisted(() => ({
   removeAllProjectMembers: vi.fn(() => 0),
 }));
+const organizationStore = vi.hoisted(() => ({
+  removeBusinessOrganizationProjectLinks: vi.fn(() => 0),
+}));
 
 vi.mock('./project-members-store.js', () => projectMembersStore);
+vi.mock('./business-organizations-store.js', () => organizationStore);
+vi.mock('./orgs.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./orgs.js')>()),
+  getActiveOrgId: () => 'default',
+}));
 
 import { cascadeDeleteUserPrivateProjects } from './project-owner-cascade.js';
 import { resolveProjectSkillsDir } from './project-skill-paths.js';
@@ -80,6 +88,34 @@ describe('cascadeDeleteUserPrivateProjects', () => {
     expect(result.deletedProjectIds.sort()).toEqual(['p1', 'p2']);
     expect(projects).toHaveLength(0);
     expect(saveProjects).toHaveBeenCalledTimes(1);
+    expect(organizationStore.removeBusinessOrganizationProjectLinks).toHaveBeenCalledWith(
+      'default',
+      'p1',
+    );
+    expect(organizationStore.removeBusinessOrganizationProjectLinks).toHaveBeenCalledWith(
+      'default',
+      'p2',
+    );
+  });
+
+  it('keeps the project when organization link cleanup fails', () => {
+    const projects = [makeProject({ id: 'p1', visibility: 'private', ownerUserId: 'u1' })];
+    organizationStore.removeBusinessOrganizationProjectLinks.mockImplementationOnce(() => {
+      throw new Error('organization cleanup failed');
+    });
+    const saveProjects = vi.fn();
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = cascadeDeleteUserPrivateProjects(
+        { stmts: makeStmts(), getProjects: () => projects, saveProjects },
+        'u1',
+      );
+      expect(result.deletedProjectIds).toEqual([]);
+      expect(projects).toHaveLength(1);
+      expect(saveProjects).not.toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
+    }
   });
 
   it('removes canonical project skill stores for deleted private projects', () => {

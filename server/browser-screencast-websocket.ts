@@ -267,6 +267,10 @@ function denyUpgrade(socket: Duplex, statusLine: string): void {
 function authOwnerRequest(auth: WsAuthResult): OwnerResolvable {
   return {
     authUserId: auth.userId,
+    // Organization sessions check membership against the authenticated Server,
+    // so the org context must travel with the user id.
+    authOrgId: auth.orgId,
+    authRole: auth.role,
     // Global API key, bundled-local, and fully-open installs have no per-user
     // id. Mirror the chat WS localBypass so their handshake stays usable.
     authViaApiKey: Boolean(auth.viaApiKey) || !auth.userId,

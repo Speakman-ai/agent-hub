@@ -1,5 +1,8 @@
 /**
- * Organization (remote server connection) management.
+ * Legacy org helper names, storage keys and wire fields are retained for saved
+ * connections and older clients. These records are Servers, not business organizations.
+ *
+ * Server connection management.
  *
  * On mobile, every org is a remote server connection.
  * Each org stores a server URL, optional API key, display name, and color.

@@ -256,4 +256,87 @@ describe('MobileBrowserPane', () => {
       renderer.root.findAllByProps({ testID: 'mobile-browser-make-routine' }).length,
     ).toBeGreaterThan(0);
   });
+
+  describe('organization agent desktops', () => {
+    const desktopState = {
+      type: 'state',
+      status: 'live',
+      url: null,
+      viewport: { width: 1280, height: 800 },
+      surface: 'desktop',
+    };
+    const desktopFrame = (data: string) => ({
+      type: 'frame',
+      data,
+      mime: 'image/png',
+      width: 1280,
+      height: 800,
+      viewportWidth: 1280,
+      viewportHeight: 800,
+      url: null,
+    });
+    const has = (renderer: ReactTestRenderer, testID: string) =>
+      renderer.root.findAllByProps({ testID }).length > 0;
+
+    it('labels the desktop with its organization, agent and owner', () => {
+      let renderer!: ReactTestRenderer;
+      act(() => {
+        renderer = TestRenderer.create(
+          <MobileBrowserPane
+            sessionId="org-a"
+            desktopOwnerLabel="Finance in Acme · private to ana"
+          />,
+        );
+      });
+      const socket = FakeSocket.instances[0];
+      act(() => socket.open());
+      expect(has(renderer, 'mobile-browser-desktop-owner')).toBe(false);
+      act(() => socket.receive(desktopState));
+      const owner = renderer.root.findByProps({ testID: 'mobile-browser-desktop-owner' });
+      expect(owner.props.children).toBe('Finance in Acme · private to ana');
+    });
+
+    it('never shows the previous organization desktop after switching chats', () => {
+      let renderer!: ReactTestRenderer;
+      act(() => {
+        renderer = TestRenderer.create(<MobileBrowserPane sessionId="org-a" />);
+      });
+      const first = FakeSocket.instances[0];
+      act(() => first.open());
+      const viewportView = renderer.root
+        .findAllByType('View' as any)
+        .find((n) => typeof n.props.onLayout === 'function')!;
+      act(() =>
+        viewportView.props.onLayout({ nativeEvent: { layout: { width: 320, height: 300 } } }),
+      );
+      act(() => {
+        first.receive(desktopState);
+        first.receive(desktopFrame('T1JHLUE='));
+      });
+      expect(has(renderer, 'mobile-browser-frame')).toBe(true);
+
+      act(() => renderer.update(<MobileBrowserPane sessionId="org-b" />));
+      expect(first.closed).toBeGreaterThan(0);
+      const second = FakeSocket.instances[1];
+      expect(second.url).toBe('wss://hub.test/api/sessions/org-b/browser/ws');
+      expect(has(renderer, 'mobile-browser-frame')).toBe(false);
+      act(() => first.receive(desktopFrame('T1JHLUE=')));
+      expect(has(renderer, 'mobile-browser-frame')).toBe(false);
+    });
+
+    it('reattaches to the same session desktop when the chat is reopened', () => {
+      let renderer!: ReactTestRenderer;
+      act(() => {
+        renderer = TestRenderer.create(<MobileBrowserPane sessionId="org-a" />);
+      });
+      act(() => renderer.unmount());
+      act(() => {
+        renderer = TestRenderer.create(<MobileBrowserPane sessionId="org-a" />);
+      });
+      const [a, b] = FakeSocket.instances;
+      expect(b.url).toBe(a.url);
+      act(() => b.open());
+      expect(b.sent[0]).toMatchObject({ type: 'attach' });
+    });
+  });
 });

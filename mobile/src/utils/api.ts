@@ -1,3 +1,6 @@
+import { createOrganizationApi } from '@shared/utils/organizations';
+import { createOrganizationAgentApi } from '@shared/utils/organization-agents';
+import { createOrganizationPortfolioApi } from '@shared/utils/organization-portfolio';
 import type {
   CreateReminderBody,
   ReminderStatus,
@@ -110,6 +113,9 @@ export function infraQuery(params: Record<string, any>): string {
   return qs ? `?${qs}` : '';
 }
 export const api = {
+  organizations: createOrganizationApi(fetchJSON),
+  organizationAgents: createOrganizationAgentApi(fetchJSON),
+  organizationPortfolio: createOrganizationPortfolioApi(fetchJSON),
   // Agents & Sessions
   getAgents: () => fetchJSON('/agents'),
   getSessions: (agentId: any) => fetchJSON(`/agents/${agentId}/sessions`),
@@ -269,6 +275,9 @@ export const api = {
     }),
   // Codex reasoning ("thinking") level: 'high' (default) or 'pro' (→ xhigh).
   // Returns the updated session row so callers can hydrate `reasoning_effort`.
+  /** Which desktop backend this Server runs agent Computers on, and whether it is usable. */
+  getDesktopRuntime: (): Promise<{ available: boolean; reason?: string }> =>
+    fetchJSON('/desktop/runtime'),
   // Per-session computer tool switch; `null` returns to the agent default.
   setSessionComputerTool: (sessionId: string, enabled: boolean | null) =>
     fetchJSON(`/sessions/${sessionId}/computer-tool`, {

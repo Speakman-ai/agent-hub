@@ -99,6 +99,27 @@ describe('/api/me/browser-profiles', () => {
     expect(JSON.stringify(res.body)).not.toContain(SECRET);
   });
 
+  it('shows the plain project for Server-scoped profiles and names only active-Server ones', async () => {
+    const { serverScopedProfileProjectId } = await import('../desktop/server-profile-scope.js');
+    // The active Server is 'default'; this profile belongs to another Server's 'proj-1'.
+    store.getOrCreateBrowserProfile({
+      userId: alice,
+      agentId: 'agent-a',
+      projectId: serverScopedProfileProjectId('acme', 'proj-1'),
+    });
+    seed(alice);
+    const res = await request(makeApp(alice)).get('/api/me/browser-profiles').expect(200);
+    const rows = res.body.profiles.map((p: Record<string, string>) => [
+      p.projectId,
+      p.projectName,
+      p.agentName,
+    ]);
+    expect(rows).toHaveLength(2);
+    expect(rows).toContainEqual(['proj-1', 'Project One', 'Agent A']);
+    // Never labeled with this Server's same-id project or agent.
+    expect(rows).toContainEqual(['proj-1', 'proj-1', 'agent-a']);
+  });
+
   it('lists per-domain counts without values', async () => {
     const p = seed(alice);
     const res = await request(makeApp(alice))

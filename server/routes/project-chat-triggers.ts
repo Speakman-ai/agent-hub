@@ -25,7 +25,7 @@ import { getMembershipRole } from '../memberships-store.js';
 import { getGoogleConnectionStatus } from '../google-connections-store.js';
 import { hasChatMessagesCreateScope } from '../google-scopes.js';
 import { getActiveOrgId } from '../orgs.js';
-import { isHubSystemProject } from '../../shared/utils/hub.js';
+import { isInternalSystemProject } from '../../shared/utils/hub.js';
 import { getDb } from '../db.js';
 import { createChannel, getChannel, getMember, listMembers } from '../hub-chat-store.js';
 import { HUB_CHAT_CHANNEL_UPDATE_EVENT, recipientsOf } from '../hub-chat-events.js';
@@ -135,7 +135,7 @@ export default function createProjectChatTriggerRoutes(deps: RouteDeps): Router 
 
   function requireProject(req: Request, res: Response): Project | null {
     const project = deps.findProject?.(String(req.params.projectId)) ?? null;
-    if (!project || isHubSystemProject(project)) {
+    if (!project || isInternalSystemProject(project)) {
       bad(res, 404, 'Project not found', 'project_not_found');
       return null;
     }

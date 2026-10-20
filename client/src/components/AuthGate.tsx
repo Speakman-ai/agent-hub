@@ -9,6 +9,7 @@ import {
   getAuthStatus,
   getAuthRecord,
   setActiveOrgIsLocal,
+  setToken,
   needsEmailUpdate,
   updateEmail,
 } from '../utils/auth';
@@ -67,12 +68,20 @@ export default function AuthGate({ children }: any) {
       try {
         const res = await getAuthStatus(getApiBase());
         if (cancelled) return;
+        if (res.devAutoLogin?.user?.email) {
+          setToken({
+            token: res.devAutoLogin.token,
+            expiresAt: res.devAutoLogin.expiresAt,
+            user: res.devAutoLogin.user,
+          });
+        }
         setActiveOrgIsLocal(!!res.activeOrgIsLocal);
         setStatus({
           state: 'ready',
           required: !!res.authConfigured,
           activeOrgIsLocal: !!res.activeOrgIsLocal,
-          needsEmailUpdate: !!res.needsEmailUpdate,
+          needsEmailUpdate: res.devAutoLogin ? false : !!res.needsEmailUpdate,
+          devAutoLogin: res.devAutoLogin ?? null,
         });
       } catch (err: any) {
         if (cancelled) return;
@@ -202,7 +211,7 @@ export default function AuthGate({ children }: any) {
   // edit. If the active org changes mid-session (e.g. via the org switcher),
   // `reloadForOrgSwitch()` triggers a full app reload, so the gate is
   // re-evaluated naturally — no explicit event wiring needed.
-  if (status.required && !status.activeOrgIsLocal && !isAuthenticated()) {
+  if (status.required && !status.activeOrgIsLocal && !status.devAutoLogin && !isAuthenticated()) {
     return <LoginScreen onAuthenticated={() => setNonce((n: any) => n + 1)} />;
   }
 

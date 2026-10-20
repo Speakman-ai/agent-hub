@@ -15,7 +15,9 @@ vi.mock('./routes/board.js', () => ({
 }));
 
 vi.mock('./config.js', () => ({
-  default: { apiKey: null, dataDir: '/tmp/agent-hub-autonomous-test' },
+  // Auth dependencies initialize SQLite at import time. Use the existing per-file
+  // directory from test/setup.ts, never a shared or nonexistent fixed path.
+  default: { apiKey: null, dataDir: process.env.AGENT_HUB_DATA_DIR! },
   defaultModelForEngine: vi.fn(() => 'mock-model'),
 }));
 

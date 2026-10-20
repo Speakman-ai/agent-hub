@@ -1,4 +1,5 @@
 import { ProjectIconSchema } from '../openapi/schemas/project-icon.js';
+import { DEFAULT_PROJECT_ICON } from '../../shared/utils/project-icons.js';
 import { Router, Request, Response } from 'express';
 import cron from 'node-cron';
 import { execFileSync, spawn, ChildProcess, exec, execFile } from 'child_process';
@@ -94,7 +95,7 @@ import { isPushConcurrencyMode } from '../git-host/push-concurrency.js';
 import { sanitizeOrchestrationBudgetsPartial } from '../orchestration-budgets.js';
 import { resolveProjectSkillsDir } from '../project-model.js';
 import { getProjectMode, getWorkflowWorkspaceDir } from '../project-mode.js';
-import { isHubSystemProject } from '../../shared/utils/hub.js';
+import { isInternalSystemProject } from '../../shared/utils/hub.js';
 import { parseBaseDriftPatch } from '../finalize/base-drift-policy.js';
 
 const ANALYZE_SYSTEM_PROMPT = `You are a project analyzer for Agent Hub, an AI-powered workspace manager. Analyze the code repository at your current working directory and return structured JSON.
@@ -1122,7 +1123,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     // Owners do NOT get a read bypass — they hit the admin endpoint
     // (`GET /api/admin/projects`) for the kill-switch view.
     const projects = filterVisibleProjects(getProjects(), caller).filter(
-      (p) => !isHubSystemProject(p),
+      (p) => !isInternalSystemProject(p),
     );
     const enriched = projects.map((p) => ({
       ...p,
@@ -1248,19 +1249,21 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     if (areq.authRole !== 'Owner' && !caller.localBypass) {
       return res.status(403).json({ error: 'Owner role required.' });
     }
-    const rows = getProjects().map((p) => {
-      const owner = p.ownerUserId ? getUserById(p.ownerUserId) : null;
-      return {
-        id: p.id,
-        name: p.name,
-        color: p.color ?? null,
-        visibility: getVisibility(p),
-        ownerUserId: p.ownerUserId ?? null,
-        ownerUsername: owner?.username ?? null,
-        canEnter: canViewProject(p, caller),
-        agentCount: p.agents?.length ?? 0,
-      };
-    });
+    const rows = getProjects()
+      .filter((p) => !isInternalSystemProject(p))
+      .map((p) => {
+        const owner = p.ownerUserId ? getUserById(p.ownerUserId) : null;
+        return {
+          id: p.id,
+          name: p.name,
+          color: p.color ?? null,
+          visibility: getVisibility(p),
+          ownerUserId: p.ownerUserId ?? null,
+          ownerUsername: owner?.username ?? null,
+          canEnter: canViewProject(p, caller),
+          agentCount: p.agents?.length ?? 0,
+        };
+      });
     res.json(rows);
   });
 
@@ -1912,7 +1915,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       cwd: workflowWorkspaceDir ?? (cwd || config.defaultCwd),
       ahw: dataDir,
       color: color || '#6b7280',
-      ...(icon.data !== undefined ? { icon: icon.data || null } : {}),
+      icon: typeof icon.data === 'string' && icon.data ? icon.data : DEFAULT_PROJECT_ICON,
       visibility: initialVisibility,
       ownerUserId,
       agents: [],
@@ -2127,7 +2130,7 @@ This workspace has no git repo and no PR automation — your job is planning, or
     // Its id (`__hub__`) is a published constant and the Hub assistant can edit
     // project config when asked — a PATCH of engine/role/mode here must not be
     // able to reshape the singleton. Hiding it is not the same as protecting it.
-    if (isHubSystemProject(project)) {
+    if (isInternalSystemProject(project)) {
       return res.status(403).json({
         error: 'The Hub is a system project and cannot be modified or deleted.',
         code: 'hub_project_protected',
@@ -3057,7 +3060,7 @@ This workspace has no git repo and no PR automation — your job is planning, or
 
     // The Hub is a system project: never deletable, even by an Owner. Deleting
     // it would drop every user's Hub chat via the scoped-row cleanup below.
-    if (isHubSystemProject(project)) {
+    if (isInternalSystemProject(project)) {
       return res.status(403).json({
         error: 'The Hub is a system project and cannot be modified or deleted.',
         code: 'hub_project_protected',

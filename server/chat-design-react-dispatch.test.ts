@@ -22,6 +22,7 @@ import { tmpdir } from 'os';
 import path from 'path';
 import config from './config.js';
 import { getStmts } from './db.js';
+import { initOrgsDb, setOrgsDbPathForTests } from './orgs.js';
 import createChatHandler, { type ChatHandlerDeps } from './chat.js';
 import { resolveDesignRenderLocation, DESIGN_RENDER_FILENAME } from './design-react.js';
 import type { ActiveChatProcess } from './active-chat-process.js';
@@ -42,6 +43,9 @@ const TINY_B64 =
 
 beforeAll(() => {
   tmpRoot = mkdtempSync(path.join(tmpdir(), 'design-dispatch-'));
+  // Host-tool authorization resolves the active Server even for regular sessions.
+  setOrgsDbPathForTests(path.join(tmpRoot, 'orgs.db'));
+  initOrgsDb();
 });
 
 afterAll(() => {

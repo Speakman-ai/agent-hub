@@ -72,6 +72,8 @@ vi.mock('react-native', () => ({
   View: nativeHost('View'),
 }));
 vi.mock('react-native-safe-area-context', () => ({ SafeAreaView: nativeHost('SafeAreaView') }));
+// ProjectIcon renders lucide-react-native, which does not load under vitest.
+vi.mock('./ProjectIcon', () => ({ default: nativeHost('ProjectIcon') }));
 vi.mock('../context/AppContext', () => ({ useApp: () => testState.app }));
 vi.mock('../utils/api', () => ({ api: testState.api }));
 vi.mock('../utils/config', () => ({ getApiBaseUrl: () => '', getWsUrl: () => '' }));
@@ -356,6 +358,17 @@ describe('mobile DrawerContent — web sidebar order', () => {
       sidebarCollapsedProjects: [],
     });
     testState.navGroups = () => [];
+  });
+
+  it('opens Organizations while keeping projects in the drawer', async () => {
+    const nav = navigation();
+    const renderer = await renderDrawer(nav);
+    await TestRenderer.act(async () =>
+      renderer.root.findByProps({ accessibilityLabel: 'Organizations' }).props.onPress(),
+    );
+    expect(nav.navigate).toHaveBeenCalledWith('Organizations');
+    expect(nav.closeDrawer).toHaveBeenCalled();
+    expect(collectText(renderer.toJSON())).toContain('PROJECTS');
   });
 
   it('puts New Project under Projects and Chat in the footer', async () => {

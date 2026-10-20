@@ -1,3 +1,4 @@
+import { revalidateOrganizationAccess } from './organization-spawn-policy.js';
 import {
   readFileSync,
   writeFileSync,
@@ -10,6 +11,7 @@ import {
 import { execSync } from 'child_process';
 import path from 'path';
 import config from './config.js';
+import { getActiveOrgId, getOrg, orgDataDir } from './orgs.js';
 import { getDb, getStmts } from './db.js';
 import { removeStaleMcpConfigFiles } from './hooks.js';
 import { resolveProjectSkillsDir, setProjectSkillsDataDir } from './project-skill-paths.js';
@@ -162,6 +164,7 @@ function getProjects(): Project[] {
 
 function setProjects(p: Project[]): void {
   projects = p;
+  revalidateOrganizationAccess();
 }
 
 function getProjectsPath(): string {
@@ -284,6 +287,7 @@ function saveProjects(): void {
     return rest;
   });
   writeFileSync(PROJECTS_PATH, JSON.stringify(toSave, null, 2) + '\n');
+  revalidateOrganizationAccess();
 }
 
 function reloadProjects(dataDir: string): void {
@@ -454,6 +458,23 @@ function findAgent(agentId: string): AgentLookup | null {
 
 function findProject(projectId: string): Project | null {
   return projects.find((p) => p.id === projectId) || null;
+}
+
+/** Read one Server's registry without changing the global active Server.
+ * Inactive partitions are read from disk; remote bookmarks have no local
+ * project registry. Registry read/parse failures propagate (fail closed).
+ */
+export function listProjectsForServer(serverId: string): Project[] {
+  const server = getOrg(serverId);
+  if (!server || server.mode !== 'local') return [];
+  if (serverId === getActiveOrgId()) return projects;
+  const registryPath = path.join(orgDataDir(serverId), 'projects.json');
+  if (!existsSync(registryPath)) return [];
+  return JSON.parse(readFileSync(registryPath, 'utf-8')) as Project[];
+}
+
+export function findProjectForServer(serverId: string, projectId: string): Project | null {
+  return listProjectsForServer(serverId).find((project) => project.id === projectId) ?? null;
 }
 
 function getEnrichedAgent(agentId: string): EnrichedAgent | null {

@@ -114,6 +114,16 @@ const PROJECT_FIXTURE = [
 const PROJECT_SESSION = [{ id: 'proj-sess-1', name: 'P1', engine: 'claude-code' }];
 
 import App from './App';
+import { selectHubAssistantDm } from './utils/hubAssistantChat';
+import { resetHubChatSessionForTests } from './utils/hubChatSession';
+import { setChatPaneSide } from './utils/chatPaneSide';
+
+/** The Hub assistant composer lives in Chat, on the pinned Agent Hub DM. */
+function openHubAssistantChat() {
+  setChatPaneSide('hub');
+  selectHubAssistantDm();
+  window.location.hash = '#/hub/chat';
+}
 
 function mockFetch() {
   (globalThis as any).fetch = vi.fn((url: any) => {
@@ -135,10 +145,13 @@ describe('App — Hub assistant composer binds only to the live Hub session', ()
     (globalThis as any).window.electronAPI = undefined;
     mockFetch();
     wsSend.mockClear();
+    resetHubChatSessionForTests();
+    window.location.hash = '';
   });
 
   it('locks the composer until the Hub GET resolves, then enables it, and never persists the Hub agent id', async () => {
-    render(<App initialView="hub" />);
+    openHubAssistantChat();
+    render(<App />);
 
     await waitFor(() => expect(typeof ctl.resolveProjects).toBe('function'), { timeout: 3000 });
     await act(async () => {
@@ -174,7 +187,8 @@ describe('App — Hub assistant composer binds only to the live Hub session', ()
   });
 
   it('dispatches the Hub turn as __hub_assistant__ even when init lands AFTER the Hub GET', async () => {
-    render(<App initialView="hub" />);
+    openHubAssistantChat();
+    render(<App />);
 
     // Resolve the Hub GET FIRST — hubSessionId + active session become the Hub's.
     await waitFor(() => expect(typeof ctl.resolveHub).toBe('function'), { timeout: 3000 });
@@ -218,7 +232,8 @@ describe('App — Hub assistant composer binds only to the live Hub session', ()
   it('keeps the composer usable after Clear (advances the canonical Hub session id)', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
     try {
-      render(<App initialView="hub" />);
+      openHubAssistantChat();
+      render(<App />);
 
       await waitFor(() => expect(typeof ctl.resolveProjects).toBe('function'), { timeout: 3000 });
       await act(async () => {
@@ -267,9 +282,12 @@ describe('App — Hub assistant composer binds only to the live Hub session', ()
 
   it('keeps the composer usable on a LEGACY Hub entry point (currentView=dashboard)', async () => {
     // The Hub is also reached via legacy views (home/dashboard/todos/calendar/
-    // gmail) that stay as currentView='dashboard' etc. The late-restore guard
-    // must fire on those too, or a project-session restore locks the assistant.
-    render(<App initialView="dashboard" />);
+    // gmail). The late-restore guard must fire on those too, or a project-session
+    // restore there locks the assistant once the user opens Chat.
+    setChatPaneSide('hub');
+    selectHubAssistantDm();
+    window.location.hash = '#/dashboard';
+    render(<App />);
 
     // Hub GET resolves first — Hub session becomes active.
     await waitFor(() => expect(typeof ctl.resolveHub).toBe('function'), { timeout: 3000 });
@@ -292,8 +310,12 @@ describe('App — Hub assistant composer binds only to the live Hub session', ()
       ctl.resolveSessionsByAgent['agent-1'](PROJECT_SESSION);
     });
 
-    // The project restore must NOT stomp the Hub session — composer stays usable
-    // without the user having to click a pane to flip currentView to 'hub'.
+    // The project restore must NOT stomp the Hub session: opening Chat afterwards
+    // finds the assistant composer bound and usable.
+    await act(async () => {
+      window.location.hash = '#/hub/chat';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
     const textarea = await screen.findByRole('textbox');
     await waitFor(() => expect((textarea as HTMLTextAreaElement).disabled).toBe(false));
   });

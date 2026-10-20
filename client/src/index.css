@@ -168,9 +168,16 @@ pre.whitespace-pre-wrap,
   -webkit-app-region: no-drag;
 }
 
-/* Sidebar responsive */
+/* Sidebar responsive. Desktop width comes from the drag handle
+   (`--sidebar-width` on the sidebar shell). Mobile stays a fixed drawer. */
 .sidebar-container {
   width: 16rem;
+}
+
+@media (min-width: 768px) {
+  .sidebar-container {
+    width: var(--sidebar-width, 16rem);
+  }
 }
 
 @media (max-width: 767px) {

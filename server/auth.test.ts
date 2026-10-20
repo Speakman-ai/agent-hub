@@ -4,6 +4,15 @@ import type { AuthRecord } from './auth-store.js';
 import type { Role } from './roles.js';
 import type { UserRow } from './users-store.js';
 
+// Capability behavior is covered with the real stores in organization-capabilities.test.ts.
+// Keep this unit suite independent of the database/config runtime.
+vi.mock('./organization-capabilities.js', () => ({
+  isOrganizationCapability: (value: unknown) =>
+    typeof value === 'string' && value.startsWith('ahorg_'),
+  verifyOrganizationCapability: () => null,
+  organizationCapabilityAllows: () => false,
+}));
+
 // Mocks
 // `./config.js` is stubbed so tests can flip `apiKey` between cases. The
 // auth-store mock lets us simulate "no JWT user configured" vs "user
@@ -857,6 +866,21 @@ describe('authenticateWsDetailed — local-bundled-server bypass (AGENT_HUB_MODE
     expect(result.subject).toBe('local');
     expect(result.role).toBe('Owner');
     expect(result.orgId).toBe('default');
+  });
+
+  it('attributes local WebSocket organization events to the same real Owner as REST', () => {
+    process.env.AGENT_HUB_MODE = 'local';
+    seedUser({ id: 'owner-uid', username: 'owner', password_hash: 'x', created_at: '2026-04-18' });
+    const result = authenticateWsDetailed({
+      url: '/ws',
+      headers: { host: 'localhost:3051' },
+    } as unknown as import('http').IncomingMessage);
+    expect(result).toMatchObject({
+      ok: true,
+      userId: 'owner-uid',
+      orgId: 'default',
+      localBypass: true,
+    });
   });
 
   it('rejects WS handshake when AGENT_HUB_MODE is unset and no token is provided', () => {

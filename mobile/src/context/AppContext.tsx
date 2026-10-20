@@ -1,5 +1,10 @@
 import { createUseAiSignInGuide } from '@shared/hooks/useAiSignInGuide';
-import { resolveComputerToolEnabled } from '@shared/utils/computerTool';
+import {
+  describeComputerToolSetting,
+  resolveComputerToolEnabled,
+} from '@shared/utils/computerTool';
+import { organizationComputerOwnerLabel } from '@shared/utils/organizationComputer';
+import { isOrganizationAgentId } from '@shared/utils/organization-agents';
 import { promoteQueuedMessage } from '@shared/utils/promoteQueuedMessage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, {
@@ -147,6 +152,14 @@ export function AppProvider({ children }: any) {
   const [agents, setAgents] = useState<any[]>([]);
   const [projects, setProjects] = useState<any[]>([]);
   const [activeAgentId, setActiveAgentId] = useState<any>(null);
+  // Organization agents live in a hidden workspace absent from `agents`; the open chat's agent
+  // is supplied by the Organizations screen instead.
+  const [organizationChatAgent, setOrganizationChatAgent] = useState<any>(null);
+  // The organization that chat belongs to, so its Computer can name its owner.
+  const [organizationChatOrganization, setOrganizationChatOrganization] = useState<{
+    id: string;
+    name: string | null;
+  } | null>(null);
   const [sessions, setSessions] = useState<any[]>([]);
   // Soft-deleted sessions within the 7-day recovery window for the active
   // agent. Shape: Array<SessionRow & { message_count:number, deleted_at:string }>.
@@ -292,6 +305,8 @@ export function AppProvider({ children }: any) {
   // Last `google_chat_draft_update` WS event (owner-only on the server):
   // { draft, bump }. Drives the session's agent-reply approval panel.
   const [lastGoogleChatDraftEvent, setLastGoogleChatDraftEvent] = useState<any>(null);
+  // Refresh business organizations after membership, links, or project access changes.
+  const [lastOrganizationEvent, setLastOrganizationEvent] = useState(0);
   // Last `org_todo_update` WS event — the shared-org counterpart of
   // `lastUserTodoEvent`. Drives live refetches of the org Todos section without
   // a poll. Shape: { orgId, action, bump }.
@@ -376,7 +391,9 @@ export function AppProvider({ children }: any) {
     [],
   );
   const [pushPermissionStatus, setPushPermissionStatus] = useState('unknown');
-  const activeAgent = agents.find((a: any) => a.id === activeAgentId);
+  const activeAgent =
+    agents.find((a: any) => a.id === activeAgentId) ??
+    (organizationChatAgent?.id === activeAgentId ? organizationChatAgent : undefined);
   const activeSession =
     sessions.find((s: any) => s.id === activeSessionId) ||
     cronSessions.find((s: any) => s.id === activeSessionId) ||
@@ -524,6 +541,7 @@ export function AppProvider({ children }: any) {
       const msgForActiveSession = data.message?.session_id === activeSessionIdRef.current;
       switch (data.type) {
         case 'projects_updated':
+          setLastOrganizationEvent((value) => value + 1);
           api
             .getProjects()
             .then(setProjects)
@@ -998,6 +1016,11 @@ export function AppProvider({ children }: any) {
               reminder: data.reminder ?? null,
             });
           }
+          break;
+        case 'organization_updated':
+        case 'organization_invalidated':
+        case 'organization_access_revoked':
+          setLastOrganizationEvent((value) => value + 1);
           break;
         case 'org_todo_update':
           // Shared org todo changed. The server fans this to every member of
@@ -1907,6 +1930,33 @@ export function AppProvider({ children }: any) {
     setActiveAgentId(targetAgentId);
     setActiveSessionId(targetSessionId);
   }, []);
+  /** Opens an organization chat in the shared chat screen, owned by the signed-in user. */
+  const openOrganizationChat = useCallback(
+    (target: {
+      organizationId?: string;
+      organizationName?: string;
+      agentId: string;
+      sessionId: string;
+      agent?: any;
+      session?: any;
+    }) => {
+      if (!target.agentId || !target.sessionId) return;
+      setOrganizationChatAgent(
+        target.agent ?? { id: target.agentId, name: 'Organization agent', engine: 'claude-code' },
+      );
+      setOrganizationChatOrganization(
+        target.organizationId
+          ? { id: target.organizationId, name: target.organizationName ?? null }
+          : null,
+      );
+      if (target.session && target.agentId === activeAgentIdRef.current)
+        setSessions((prev: any) => upsertSessionRow(prev, target.session));
+      pendingSessionIdRef.current = target.sessionId;
+      setActiveAgentId(target.agentId);
+      setActiveSessionId(target.sessionId);
+    },
+    [],
+  );
   // Rehydrate streaming state from activeTasks when switching sessions.
   useEffect(() => {
     if (!activeSessionId) {
@@ -1969,6 +2019,8 @@ export function AppProvider({ children }: any) {
           setProjects([]);
           setSessions([]);
           setActiveAgentId(null);
+          setOrganizationChatAgent(null);
+          setOrganizationChatOrganization(null);
           setActiveSessionId(null);
           setMessages([]);
           setThinking(false);
@@ -2279,9 +2331,21 @@ export function AppProvider({ children }: any) {
     activeAgent?.computerToolEnabled,
     activeSession?.computer_tool_enabled,
   );
+  const sessionComputerToolSetting = describeComputerToolSetting(
+    activeAgent?.computerToolEnabled,
+    activeSession?.computer_tool_enabled,
+  );
+  const organizationComputerOwner = isOrganizationAgentId(activeAgent?.id)
+    ? organizationComputerOwnerLabel({
+        organizationName: organizationChatOrganization?.name,
+        agentName: activeAgent?.name,
+        user: getAuthRecord()?.user,
+      })
+    : undefined;
   // Persist the per-session computer tool switch; the server row is the
-  // source of truth, so local state only changes once the PUT succeeds.
-  const handleComputerToolChange = useCallback(async (enabled: boolean) => {
+  // source of truth, so local state only changes once the PUT succeeds. `null`
+  // drops the session override so the agent default applies.
+  const handleComputerToolChange = useCallback(async (enabled: boolean | null) => {
     const sid = activeSessionIdRef.current;
     if (!sid) return;
     const updated = await api.setSessionComputerTool(sid, enabled);
@@ -2858,6 +2922,8 @@ export function AppProvider({ children }: any) {
     sessionReasoningEffort,
     handleReasoningEffortChange,
     sessionComputerToolOn,
+    sessionComputerToolSetting,
+    organizationComputerOwner,
     handleComputerToolChange,
     modelConfig,
     sessionConsultMode,
@@ -2892,6 +2958,9 @@ export function AppProvider({ children }: any) {
     delegations,
     sessionHandoffs,
     handleOpenHandoffSession,
+    openOrganizationChat,
+    organizationChatAgent,
+    organizationChatOrganization,
     messageQueues,
     eventsByMessage,
     browserScreensBySession,
@@ -2940,6 +3009,7 @@ export function AppProvider({ children }: any) {
     lastUserTodoEvent,
     subscribeReminderUpdates,
     lastGoogleChatDraftEvent,
+    lastOrganizationEvent,
     // Shared org todos (live refetch signal)
     lastOrgTodoEvent,
     lastDesignEvent,

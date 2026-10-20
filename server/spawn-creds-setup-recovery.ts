@@ -1,3 +1,4 @@
+import { getOrganizationSpawnPolicy } from './organization-spawn-policy.js';
 /**
  * Setup-time recovery for spawn-env staleness.
  *
@@ -94,6 +95,7 @@ export function recoverActiveSessionsAfterSetup(deps: RecoveryDeps): RecoveryRes
   let failed = 0;
   for (const row of rows) {
     try {
+      if (getOrganizationSpawnPolicy(row.id)) continue;
       const minted = createApiKey(
         deps.ownerUserId,
         `spawn-recovery (${row.id.slice(0, 8)})`,

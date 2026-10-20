@@ -1,3 +1,6 @@
+import createOrganizationCapabilityRoutes from './routes/organization-capabilities.js';
+import { repairOrganizationWorkspaces } from './organization-workspaces.js';
+import createOrganizationRuntimeRoutes from './routes/organization-runtime.js';
 import { installLogCapture, setLogBroadcast } from './server-log.js';
 installLogCapture(); // Must be first — captures all subsequent console output
 import { initLogShipperFromEnv } from './log-shipper.js';
@@ -204,6 +207,8 @@ import { resolveGlobalSkillsDir } from './global-skills-dir.js';
 import createSkillEvalRoutes from './routes/skill-evals.js';
 import createBackgroundAgentRoutes from './routes/background-agents.js';
 import createSessionDispatchRoutes from './routes/session-dispatch.js';
+import createOrganizationDispatchRoutes from './routes/organization-dispatch.js';
+import { ensureOrganizationDispatchQueue } from './organization-dispatch.js';
 import { initBackgroundAgentSessionHook } from './background-agent-session.js';
 import { initAgentChannels, observeBroadcastForAgentChannels } from './hub-chat-agent-channels.js';
 import createBoardRoutes from './routes/board.js';
@@ -216,7 +221,7 @@ import {
   resolveVisibilityCaller,
 } from './project-visibility-middleware.js';
 import { filterVisibleProjects } from './project-visibility.js';
-import { isHubSystemProject } from '../shared/utils/hub.js';
+import { isInternalSystemProject } from '../shared/utils/hub.js';
 import { isAwaitingUserReply } from '../shared/utils/userInputRequest.js';
 import { cascadeDeleteUserPrivateProjects } from './project-owner-cascade.js';
 import createPreviewSecretsRoutes from './routes/preview-secrets.js';
@@ -237,6 +242,8 @@ import createProvisioningRoutes from './routes/provisioning.js';
 import createJobRoutes from './routes/jobs.js';
 import createAgentRoutes from './routes/agents.js';
 import createOrgRoutes from './routes/orgs.js';
+import createOrganizationsRoutes from './routes/organizations.js';
+import createOrganizationContextRoutes from './routes/organization-context.js';
 import createDashboardRoutes from './routes/dashboard.js';
 import createUploadRoutes from './routes/uploads.js';
 import createArtifactRoutes from './routes/artifacts.js';
@@ -407,6 +414,7 @@ import { attachBrowserScreencastWebSocket } from './browser-screencast-websocket
 import { browserDemoRecorder, demoRecordingFilename } from './browser-demo-recorder.js';
 import { saveSessionArtifact } from './artifacts/save-session-artifact.js';
 import { createAgentPaneFeedHost } from './agent-pane-screencast.js';
+import { ownerComputerAllowed, sessionDesktopComputerIdentity } from './session-computer-access.js';
 import { createDesktopScreencastHub } from './desktop/desktop-screencast.js';
 import { effectiveBrowserToolsEnabled } from './browser-agent-settings.js';
 import { parsePreviewSubdomainHost } from './preview/preview-subdomain-host.js';
@@ -661,6 +669,7 @@ migrateProjectSkillDirectories();
 // Docs are no longer auto-seeded, Intake is retired, and Reviewer creation is
 // limited to explicit GitHub/hosting flows. Existing project rosters otherwise
 // remain unchanged.
+repairOrganizationWorkspaces();
 ensureContextFiles();
 // Retirement sweep: "Ticket Intake" agents (role: 'intake') are decommissioned
 // platform-wide. Unlike the deprecated-but-passive seeders above, this actively
@@ -1469,6 +1478,7 @@ app.use(
 startFleetScaler();
 
 app.use(authMiddleware);
+app.use(createOrganizationCapabilityRoutes());
 
 // Releases page powers the in-app "What's new" view, only reachable from
 // the logged-in sidebar. Mount AFTER authMiddleware so the `?refresh=1`
@@ -2477,6 +2487,7 @@ export const routeDeps: RouteDeps = {
 // non-members. DELETE on the project itself is allowed through so the
 // route handler can apply its own Owner kill-switch logic.
 app.use('/api/projects/:projectId', createProjectVisibilityGate({ findProject }));
+app.use(createOrganizationRuntimeRoutes(routeDeps));
 
 app.use(createMemoryRoutes(routeDeps));
 app.use(createNoteRoutes(routeDeps));
@@ -2499,6 +2510,7 @@ app.use(createSkillRoutes(routeDeps));
 app.use(createSkillEvalRoutes(routeDeps));
 app.use(createBackgroundAgentRoutes(routeDeps));
 app.use(createSessionDispatchRoutes(routeDeps));
+app.use(createOrganizationDispatchRoutes());
 app.use(createBoardRoutes(routeDeps));
 app.use(createConfigRoutes(routeDeps));
 app.use(createSessionRoutes(routeDeps));
@@ -2551,6 +2563,8 @@ app.use(createProvisioningRoutes(routeDeps));
 app.use(createJobRoutes(routeDeps));
 app.use(createAgentRoutes(routeDeps));
 app.use(createOrgRoutes(routeDeps));
+app.use(createOrganizationContextRoutes());
+app.use(createOrganizationsRoutes(routeDeps));
 app.use(createDashboardRoutes(routeDeps));
 app.use(createUploadRoutes(routeDeps));
 app.use(createTranscribeRoutes(routeDeps));
@@ -2601,7 +2615,7 @@ app.use(
       const caller = resolveVisibilityCaller(req);
       return new Set(
         filterVisibleProjects(getProjects(), caller)
-          .filter((p) => !isHubSystemProject(p))
+          .filter((p) => !isInternalSystemProject(p))
           .map((p) => p.id),
       );
     },
@@ -2690,11 +2704,16 @@ const agentPaneFeedHost = createAgentPaneFeedHost({
     resolveKey: (sessionId) => {
       const session = stmts!.getSession.get(sessionId) as SessionRow | undefined;
       const found = session ? findAgent(session.agent_id) : null;
-      const userId = session?.owner_user_id;
       // Same scope as the browser profile: no owner, no computer.
-      if (!session || !found?.project?.id || !userId) return null;
-      return { userId, agentId: session.agent_id, projectId: found.project.id };
+      if (!session || !found || !ownerComputerAllowed(sessionId)) return null;
+      const identity = sessionDesktopComputerIdentity(
+        session.owner_user_id,
+        session.agent_id,
+        found.project,
+      );
+      return identity.ok ? identity.key : null;
     },
+    inputAllowed: ownerComputerAllowed,
   },
 });
 browserDemoRecorder.configure({
@@ -2876,6 +2895,8 @@ initBackgroundAgentSessionHook({
   handleChat: (ws, msg) => handleChat!(ws, msg),
   broadcast,
 });
+// Queued organization dispatches survive restarts; they are re-authorized when they run.
+ensureOrganizationDispatchQueue();
 initAgentChannels({
   stmts: stmts!,
   broadcast,

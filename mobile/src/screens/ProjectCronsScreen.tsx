@@ -148,7 +148,9 @@ export default function ProjectCronsScreen({ route, navigation }: any) {
       <View style={styles.switchRow}>
         <View style={{ flex: 1 }}>
           <Text style={styles.label}>Shared</Text>
-          <Text style={styles.meta}>Visible to the org. Runs still use the owner credentials.</Text>
+          <Text style={styles.meta}>
+            Visible to server members. Runs still use the owner credentials.
+          </Text>
         </View>
         <Switch
           value={!!f.shared}

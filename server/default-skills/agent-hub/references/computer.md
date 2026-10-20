@@ -17,9 +17,19 @@ Cursor, Codex, Gemini, Grok) uses the same `<agenthub:react>` shape:
 
 ## The desktop
 
-- One computer per (session owner, agent, project), shared by all of that
-  user's sessions with the agent. Files, downloads and app logins in the home
-  directory survive between sessions.
+- One computer per (Server, session owner, agent, project), shared by all of
+  that user's sessions with the agent. Files, downloads and app logins in the
+  home directory survive between sessions. A project with the same id on two
+  Servers gets two separate computers and browser logins. Computers and
+  logins saved before Servers were separated stay with the default Server.
+- Organization agents get their own computer per (Server, session owner,
+  organization, agent). The organization's hidden workspace stands in for
+  the project, so two users, two organizations, two agents or the same
+  organization on two Servers never share files or logins, and renaming the
+  agent keeps its desktop. The Organization Assistant starts with Computer
+  on; custom agents start off, and a template never turns it on. The agent's
+  tool scope must include Computer, and an archived or disabled agent, an
+  archived organization or a removed member cannot use it.
 - Debian + Xvfb + openbox + Chromium, screen fixed at **1280x800**, origin
   top-left. Coordinates are screenshot pixels.
 - Boots on first use (can take a minute), stops after 30 idle minutes, and
@@ -87,6 +97,9 @@ into few commands. Signing in with autofill is clicks and keystrokes, not
   to switch it on for the session; do not retry.
 - **No owning user or project**: the session has no owner, so there is no
   computer to use.
+- **Computer tool not authorized**: an organization agent's scope excludes
+  Computer, or its access changed mid-turn. Do not retry; the remaining
+  actions in the block were skipped.
 - **The desktop op failed: ...**: the runtime is unavailable on this host
   (for example `desktopRuntime: firecracker` without KVM), the desktop could
   not start, or the op itself failed. The message says which.

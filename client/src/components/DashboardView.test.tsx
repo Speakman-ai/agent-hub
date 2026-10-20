@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
 import { render, screen, waitFor, fireEvent, within, act } from '@testing-library/react';
 import DashboardView from './DashboardView';
-import { CALENDAR_EVENTS_SCOPE } from '../utils/googleSurface';
 
 const SAMPLE = {
   orgId: 'org-1',
@@ -127,6 +126,16 @@ const SAMPLE = {
   ],
 } as Record<string, any>;
 
+/** A copy of SAMPLE whose first active session name is the visible load marker. */
+function sampleWithSession(sessionName: string) {
+  return {
+    ...SAMPLE,
+    activeSessions: SAMPLE.activeSessions.map((session: any, index: number) =>
+      index === 0 ? { ...session, sessionName } : session,
+    ),
+  };
+}
+
 // Cross-project support tickets returned by `GET /support-tickets`, which the
 // dashboard's Support issues panel fetches. Deliberately out of severity order
 // so the panel's client-side sort is exercised.
@@ -205,9 +214,11 @@ describe('DashboardView', () => {
     render(<DashboardView orgId="org-1" />);
 
     await waitFor(() => {
-      // The dashboard's section heading appears once data has loaded.
-      expect(screen.getByText('Acme')).toBeInTheDocument();
+      expect(screen.getByText('Refactor stream parser')).toBeInTheDocument();
     });
+    expect(screen.queryByRole('heading', { name: 'Dashboard' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Acme')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('dashboard-calendar')).not.toBeInTheDocument();
 
     // The org dashboard payload is fetched exactly once.
     const dashCalls = (fetch as any).mock.calls.filter((c: any) =>
@@ -215,201 +226,6 @@ describe('DashboardView', () => {
     );
     expect(dashCalls!).toHaveLength(1);
     expect((fetch as any).mock.calls[0][0]).toMatch(/\/orgs\/org-1\/dashboard$/);
-  });
-
-  it("shows this week's Google Calendar events on the dashboard", async () => {
-    vi.stubGlobal(
-      'fetch',
-      routedFetch(
-        SAMPLE,
-        SUPPORT_SAMPLE,
-        {
-          connected: true,
-          email: 'person@example.com',
-          grantedScopes: [CALENDAR_EVENTS_SCOPE],
-          serverConfigured: true,
-        },
-        {
-          events: [
-            {
-              id: 'event-2',
-              summary: 'Design review',
-              location: 'Room 4',
-              start: { dateTime: '2026-07-03T17:00:00Z' },
-              end: { dateTime: '2026-07-03T18:00:00Z' },
-            },
-            {
-              id: 'event-1',
-              summary: 'Planning',
-              start: { dateTime: '2026-07-01T17:00:00Z' },
-              end: { dateTime: '2026-07-01T18:00:00Z' },
-            },
-          ],
-        },
-      ),
-    );
-
-    render(<DashboardView orgId="org-1" onNavigate={() => {}} />);
-
-    const calendar = await screen.findByTestId('dashboard-calendar');
-    await waitFor(() => {
-      expect(within(calendar).getByText('Planning')).toBeInTheDocument();
-      expect(within(calendar).getByText('Design review')).toBeInTheDocument();
-    });
-
-    const calendarCalls = (fetch as any).mock.calls.filter((c: any) =>
-      /\/google\/calendar\/events\?/.test(String(c[0])),
-    );
-    expect(calendarCalls).toHaveLength(1);
-    expect(String(calendarCalls[0][0])).toContain('maxResults=20');
-    expect(within(calendar).getByText('Room 4')).toBeInTheDocument();
-  });
-
-  it('adds a calendar event to todos from the dashboard Todo button', async () => {
-    vi.stubGlobal(
-      'fetch',
-      routedFetch(
-        SAMPLE,
-        SUPPORT_SAMPLE,
-        {
-          connected: true,
-          email: 'person@example.com',
-          grantedScopes: [CALENDAR_EVENTS_SCOPE],
-          serverConfigured: true,
-        },
-        {
-          events: [
-            {
-              id: 'event-1',
-              summary: 'Planning',
-              start: { dateTime: '2026-07-01T17:00:00Z' },
-              end: { dateTime: '2026-07-01T18:00:00Z' },
-            },
-          ],
-        },
-      ),
-    );
-
-    render(<DashboardView orgId="org-1" onNavigate={() => {}} />);
-
-    const calendar = await screen.findByTestId('dashboard-calendar');
-    await waitFor(() => {
-      expect(within(calendar).getByText('Planning')).toBeInTheDocument();
-    });
-
-    // Each event exposes both capture affordances.
-    expect(within(calendar).getByTitle('Add to todos')).toBeInTheDocument();
-    expect(within(calendar).getByTitle('Create ticket')).toBeInTheDocument();
-
-    await act(async () => {
-      fireEvent.click(within(calendar).getByTitle('Add to todos'));
-    });
-
-    await waitFor(() => {
-      expect(within(calendar).getByText('Added')).toBeInTheDocument();
-    });
-
-    const todoPosts = (fetch as any).mock.calls.filter(
-      (c: any) => /\/me\/todos$/.test(String(c[0])) && c[1]?.method === 'POST',
-    );
-    expect(todoPosts).toHaveLength(1);
-    const posted = JSON.parse(String(todoPosts[0][1].body));
-    expect(posted.title).toContain('Planning');
-  });
-
-  it('opens the capture-to-ticket modal from the dashboard Ticket button', async () => {
-    vi.stubGlobal(
-      'fetch',
-      routedFetch(
-        SAMPLE,
-        SUPPORT_SAMPLE,
-        {
-          connected: true,
-          email: 'person@example.com',
-          grantedScopes: [CALENDAR_EVENTS_SCOPE],
-          serverConfigured: true,
-        },
-        {
-          events: [
-            {
-              id: 'event-1',
-              summary: 'Planning',
-              start: { dateTime: '2026-07-01T17:00:00Z' },
-              end: { dateTime: '2026-07-01T18:00:00Z' },
-            },
-          ],
-        },
-      ),
-    );
-
-    render(<DashboardView orgId="org-1" onNavigate={() => {}} />);
-
-    const calendar = await screen.findByTestId('dashboard-calendar');
-    await waitFor(() => {
-      expect(within(calendar).getByText('Planning')).toBeInTheDocument();
-    });
-
-    // The modal is not mounted until the Ticket button is clicked.
-    expect(screen.queryByText('Create ticket from capture')).not.toBeInTheDocument();
-
-    await act(async () => {
-      fireEvent.click(within(calendar).getByTitle('Create ticket'));
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText('Create ticket from capture')).toBeInTheDocument();
-    });
-  });
-
-  it('isolates a todo-capture failure from the load-error state (keeps the event list)', async () => {
-    // Route /me/todos POSTs to a rejected fetch; everything else succeeds.
-    const baseFetch = routedFetch(
-      SAMPLE,
-      SUPPORT_SAMPLE,
-      {
-        connected: true,
-        email: 'person@example.com',
-        grantedScopes: [CALENDAR_EVENTS_SCOPE],
-        serverConfigured: true,
-      },
-      {
-        events: [
-          {
-            id: 'event-1',
-            summary: 'Planning',
-            start: { dateTime: '2026-07-01T17:00:00Z' },
-            end: { dateTime: '2026-07-01T18:00:00Z' },
-          },
-        ],
-      },
-    );
-    vi.stubGlobal(
-      'fetch',
-      vi.fn((url: any, init: any) => {
-        if (/\/me\/todos$/.test(String(url)) && init?.method === 'POST') {
-          return Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({}) });
-        }
-        return baseFetch(url);
-      }),
-    );
-
-    render(<DashboardView orgId="org-1" onNavigate={() => {}} />);
-
-    const calendar = await screen.findByTestId('dashboard-calendar');
-    await waitFor(() => {
-      expect(within(calendar).getByText('Planning')).toBeInTheDocument();
-    });
-
-    await act(async () => {
-      fireEvent.click(within(calendar).getByTitle('Add to todos'));
-    });
-
-    // The event list survives — the failure must NOT trip the load-error branch.
-    await waitFor(() => {
-      expect(within(calendar).getByText('Planning')).toBeInTheDocument();
-    });
-    expect(screen.queryByText(/Failed to load Calendar/i)).not.toBeInTheDocument();
-    expect(within(calendar).getByText('Planning')).toBeInTheDocument();
   });
 
   it('loads under React.StrictMode (mountedRef survives dev remount)', async () => {
@@ -420,7 +236,7 @@ describe('DashboardView', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText('Acme')).toBeInTheDocument();
+      expect(screen.getByText('Refactor stream parser')).toBeInTheDocument();
     });
     expect(screen.queryByText(/Loading dashboard/i)).not.toBeInTheDocument();
   });
@@ -429,7 +245,7 @@ describe('DashboardView', () => {
     render(<DashboardView orgId="org-1" />);
 
     await waitFor(() => {
-      expect(screen.getByText('Acme')).toBeInTheDocument();
+      expect(screen.getByText('Refactor stream parser')).toBeInTheDocument();
     });
 
     // The counter cards were removed in the redesign.
@@ -443,20 +259,20 @@ describe('DashboardView', () => {
     render(<DashboardView orgId="org-1" onNewProject={onNewProject} />);
 
     await waitFor(() => {
-      expect(screen.getByText('Acme')).toBeInTheDocument();
+      expect(screen.getByText('Refactor stream parser')).toBeInTheDocument();
     });
 
     expect(screen.queryByTestId('dashboard-new-project-cta')).not.toBeInTheDocument();
   });
 
-  it('renders the calendar above active sessions above open PRs above recent activity', async () => {
+  it('renders active sessions above open PRs above recent activity', async () => {
     const { container } = render(<DashboardView orgId="org-1" />);
 
     await waitFor(() => {
       expect(screen.getByTestId('open-prs')).toBeInTheDocument();
     });
 
-    const order = ['dashboard-calendar', 'active-sessions', 'open-prs', 'recent-activity'];
+    const order = ['active-sessions', 'open-prs', 'recent-activity'];
     const positions = order.map((id: any) =>
       Array.prototype.indexOf.call(
         container.querySelectorAll('[data-testid]'),
@@ -1135,13 +951,13 @@ describe('DashboardView — 5s auto-refresh', () => {
 
     render(<DashboardView orgId="org-1" />);
     await vi.advanceTimersByTimeAsync(0);
-    expect(screen.getByText('Acme')).toBeInTheDocument();
+    expect(screen.getByText('Refactor stream parser')).toBeInTheDocument();
 
     // Next background poll fails — the dashboard stays on screen and no error
     // banner replaces it.
     failDashboard = true;
     await vi.advanceTimersByTimeAsync(5000);
-    expect(screen.getByText('Acme')).toBeInTheDocument();
+    expect(screen.getByText('Refactor stream parser')).toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });
@@ -1220,14 +1036,14 @@ describe('DashboardView — polling staleness guards', () => {
     expect(dashDeferreds.length).toBeGreaterThanOrEqual(2);
 
     // The newer request (#1) resolves first with fresh data.
-    await resolveAndFlush(dashDeferreds[1], { ...SAMPLE, orgName: 'FreshOrg' });
-    expect(screen.getByText('FreshOrg')).toBeInTheDocument();
+    await resolveAndFlush(dashDeferreds[1], sampleWithSession('Fresh session'));
+    expect(screen.getByText('Fresh session')).toBeInTheDocument();
 
     // The older mount request (#0) resolves later — the generation guard must
     // drop it so it can't overwrite the fresher dashboard.
-    await resolveAndFlush(dashDeferreds[0], { ...SAMPLE, orgName: 'StaleOrg' });
-    expect(screen.getByText('FreshOrg')).toBeInTheDocument();
-    expect(screen.queryByText('StaleOrg')).not.toBeInTheDocument();
+    await resolveAndFlush(dashDeferreds[0], sampleWithSession('Stale session'));
+    expect(screen.getByText('Fresh session')).toBeInTheDocument();
+    expect(screen.queryByText('Stale session')).not.toBeInTheDocument();
   });
 
   it('does not commit a previous org response after orgId changes', async () => {
@@ -1258,13 +1074,13 @@ describe('DashboardView — polling staleness guards', () => {
 
     // The previous org (org-1) resolves first — it must NOT be shown in the
     // org-2 view, even though no newer request has committed yet.
-    await resolveAndFlush(byOrg['org-1'][0], { ...SAMPLE, orgName: 'OldOrgA' });
-    expect(screen.queryByText('OldOrgA')).not.toBeInTheDocument();
+    await resolveAndFlush(byOrg['org-1'][0], sampleWithSession('Old session'));
+    expect(screen.queryByText('Old session')).not.toBeInTheDocument();
 
     // org-2 resolves and its data lands.
-    await resolveAndFlush(byOrg['org-2'][0], { ...SAMPLE, orgName: 'NewOrgB' });
-    expect(screen.getByText('NewOrgB')).toBeInTheDocument();
-    expect(screen.queryByText('OldOrgA')).not.toBeInTheDocument();
+    await resolveAndFlush(byOrg['org-2'][0], sampleWithSession('New session'));
+    expect(screen.getByText('New session')).toBeInTheDocument();
+    expect(screen.queryByText('Old session')).not.toBeInTheDocument();
   });
 
   it('commits a slow foreground dashboard load even if a silent poll failed first', async () => {
@@ -1299,8 +1115,8 @@ describe('DashboardView — polling staleness guards', () => {
 
     // The foreground load now succeeds: a failed background poll must NOT have
     // invalidated it, so its data still lands (and no error is surfaced).
-    await resolveAndFlush(dashDeferreds[0], { ...SAMPLE, orgName: 'ForegroundOrg' });
-    expect(screen.getByText('ForegroundOrg')).toBeInTheDocument();
+    await resolveAndFlush(dashDeferreds[0], sampleWithSession('Foreground session'));
+    expect(screen.getByText('Foreground session')).toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });

@@ -1,3 +1,4 @@
+import OrganizationsScreen from './src/screens/OrganizationsScreen';
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import {
   View,
@@ -242,6 +243,7 @@ function AppContent() {
           >
             <Stack.Screen name="Chat" component={ChatScreen} />
             <Stack.Screen name="Hub" component={HubScreen} />
+            <Stack.Screen name="Organizations" component={OrganizationsScreen} />
             <Stack.Screen name="Home" component={DashboardHomeScreen} />
             <Stack.Screen name="Dashboard" component={DashboardScreen} />
             <Stack.Screen name="Todos" component={TodosScreen} />

@@ -44,6 +44,28 @@ describe('mobile SessionEngineModelSheet computer tool switch', () => {
     expect(onToggle).toHaveBeenCalledWith(true);
   });
 
+  it('shows where the value comes from and resets a session override', async () => {
+    const onToggle = vi.fn().mockResolvedValue(undefined);
+    const inherited = render({
+      computerToolOn: true,
+      computerToolSetting: { enabled: true, overridden: false, agentDefault: true },
+      onToggleComputerTool: onToggle,
+    });
+    expect(inherited.root.findAllByProps({ testID: 'session-computer-tool-reset' })).toHaveLength(
+      0,
+    );
+    const r = render({
+      computerToolOn: true,
+      computerToolSetting: { enabled: true, overridden: true, agentDefault: false },
+      onToggleComputerTool: onToggle,
+    });
+    const reset = r.root.findByProps({ testID: 'session-computer-tool-reset' });
+    await act(async () => {
+      reset.props.onPress();
+    });
+    expect(onToggle).toHaveBeenCalledWith(null);
+  });
+
   it('is hidden without a handler', () => {
     const r = render({});
     expect(r.root.findAllByProps({ testID: 'session-computer-tool-toggle' })).toHaveLength(0);

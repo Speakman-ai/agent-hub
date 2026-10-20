@@ -23,6 +23,7 @@ import {
   type ApprovalRequest,
   type ApprovalRule,
 } from './approvals-store.js';
+import { activeServerProfileKey } from './desktop/server-profile-scope.js';
 
 export const APPROVAL_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 export const APPROVAL_TARGET_MAX_CHARS = 500;
@@ -182,11 +183,13 @@ export function answerApprovalRequest(
 
   let rule: ApprovalRule | null = null;
   if (decision === 'always_allow' && canRemember(current)) {
-    const profile = getOrCreateBrowserProfile({
-      userId: current.userId!,
-      agentId: current.agentId,
-      projectId: current.projectId!,
-    });
+    const profile = getOrCreateBrowserProfile(
+      activeServerProfileKey({
+        userId: current.userId!,
+        agentId: current.agentId,
+        projectId: current.projectId!,
+      }),
+    );
     rule = saveApprovalRule({
       profileId: profile.id,
       userId: current.userId!,
@@ -216,11 +219,13 @@ function existingProfileId(ctx: ApprovalContext): string | null {
   if (!ctx.ownerUserId || !ctx.projectId) return null;
   try {
     return (
-      getBrowserProfile({
-        userId: ctx.ownerUserId,
-        agentId: ctx.agentId,
-        projectId: ctx.projectId,
-      })?.id ?? null
+      getBrowserProfile(
+        activeServerProfileKey({
+          userId: ctx.ownerUserId,
+          agentId: ctx.agentId,
+          projectId: ctx.projectId,
+        }),
+      )?.id ?? null
     );
   } catch {
     return null;

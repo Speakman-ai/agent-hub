@@ -688,7 +688,7 @@ registerPath({
   tags: ['Sessions'],
   summary: 'Create a new session for an agent',
   description:
-    "Defaults the engine and model to the agent's configured engine/model. Sessions are always created with a per-session git worktree (the legacy shared-checkout option was removed when Agent Hub locked to worktree-only sessions).",
+    "Defaults the engine and model to the agent's configured engine/model. Sessions are created with a per-session git worktree. Organization agents must use POST /api/organizations/{organizationId}/agents/{agentId}/sessions for their private workflow sessions.",
   request: {
     params: agentIdParams,
     body: { content: jsonContent(CreateSessionRequestSchema) },
@@ -696,6 +696,9 @@ registerPath({
   responses: {
     200: { description: 'New session.', content: jsonContent(SessionComponent) },
     400: errorResponse('Validation failed.'),
+    403: errorResponse(
+      'Organization agents require the scoped workflow session endpoint; reviewer sessions cannot be started manually.',
+    ),
   },
 });
 
@@ -869,6 +872,7 @@ registerPath({
         'Message rows (oldest-first), or a truncated envelope for very large un-paginated transcripts.',
       content: jsonContent(z.union([z.array(MessageComponent), SessionMessagesListComponent])),
     },
+    403: errorResponse('Organization capabilities cannot read retained session history.'),
     404: errorResponse('Session not found (or hidden by ownership).'),
   },
 });
@@ -1076,7 +1080,9 @@ registerPath({
   responses: {
     200: { description: 'Updated session with roster.', content: jsonContent(SessionComponent) },
     400: errorResponse('Validation failed or model is invalid for the agent engine.'),
-    403: errorResponse('Reviewer agents cannot join multi-agent sessions.'),
+    403: errorResponse(
+      'Reviewer agents cannot join multi-agent sessions. Organization chats use one agent per session.',
+    ),
     404: errorResponse('Session or agent not found.'),
   },
 });
@@ -1376,7 +1382,7 @@ registerPath({
   tags: ['Sessions'],
   summary: 'Turn the computer tool on or off for one session',
   description:
-    'Overrides the agent `computerToolEnabled` default for this session only, so sessions with the same agent can differ. `enabled: null` clears the override.',
+    "Overrides the agent `computerToolEnabled` default for this session only, so sessions with the same agent can differ. `enabled: null` clears the override. For an organization agent session, turning it on requires the agent's current tool scope to include Computer and the agent and organization to be active; turning it off is always allowed.",
   request: {
     params: sessionIdParams,
     body: { content: jsonContent(SessionComputerToolRequestSchema) },
@@ -1384,6 +1390,7 @@ registerPath({
   responses: {
     200: { description: 'Updated session.', content: jsonContent(SessionComponent) },
     400: errorResponse('Validation failed.'),
+    403: errorResponse('Computer is not permitted for this organization agent.'),
     404: errorResponse('Session not found.'),
   },
 });
@@ -1715,5 +1722,34 @@ registerPath({
     400: errorResponse('Missing or invalid (absolute / out-of-worktree) file path.'),
     404: errorResponse('Session not found, has no worktree, or file is not a session change.'),
     500: errorResponse('Failed to compute file diff.'),
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/active-tasks',
+  tags: ['Sessions'],
+  summary: 'Read active chat tasks',
+  description:
+    'Organization workflow tasks are visible only to their initiating user while current organization access remains valid.',
+  responses: {
+    200: {
+      description: 'Visible active tasks.',
+      content: jsonContent(
+        z.array(
+          z.object({
+            sessionId: z.string(),
+            messageId: z.string(),
+            agentId: z.string(),
+            engine: z.string(),
+            model: z.string().nullable(),
+            prompt: z.string(),
+            content: z.string(),
+            startedAt: z.string(),
+          }),
+        ),
+      ),
+    },
+    500: errorResponse('Task storage unavailable.'),
   },
 });

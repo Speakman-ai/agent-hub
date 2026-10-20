@@ -26,6 +26,8 @@ import {
   resolveScreenshotDataDir,
   saveBrowserScreenshot,
 } from '../browser-screenshot-store.js';
+import { DESKTOP_NO_OWNER_REASON } from './desktop-computer-identity.js';
+import { activeServerProfileKey } from './server-profile-scope.js';
 
 export const COMPUTER_REACT_OPS = [
   'screenshot',
@@ -81,6 +83,12 @@ export interface ComputerReactContext {
   ownerUserId: string | null;
   agentId: string;
   projectId: string | null;
+  /**
+   * The computer resolved by resolveDesktopComputerIdentity. When set it wins
+   * over the (owner, agent, project) fields; null refuses with `keyRefusal`.
+   */
+  key?: DesktopComputerKey | null;
+  keyRefusal?: string;
 }
 
 export interface ComputerReactDeps {
@@ -90,6 +98,12 @@ export interface ComputerReactDeps {
   sleep?: (ms: number) => Promise<void>;
   /** Host approval gate (SPEC-4). Absent means no gating. */
   gate?: ComputerApprovalGate;
+  /**
+   * Current authorization for this session's computer, re-checked before the
+   * desktop is touched and again before each input lands, since an approval
+   * wait can outlast a revocation. Returns the refusal text, or null to allow.
+   */
+  authorize?: () => string | null;
 }
 
 export interface ComputerReactResult {
@@ -226,6 +240,8 @@ async function runGatedSteps(
   };
 }
 
+class ComputerAuthorizationError extends Error {}
+
 /** Run one validated op against the session owner's desktop. Never throws. */
 export async function runComputerReActStep(
   op: DesktopOp,
@@ -236,24 +252,38 @@ export async function runComputerReActStep(
     await (deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))))(op.ms);
     return done('wait', [`Waited ${op.ms} ms.`]);
   }
-  if (!ctx.ownerUserId || !ctx.projectId) {
-    return done(
-      op.op,
-      [
-        'This session has no owning user or project, and a desktop belongs to one (user, agent, project). The op did not run.',
-      ],
-      2,
-    );
-  }
-  const key: DesktopComputerKey = {
-    userId: ctx.ownerUserId,
-    agentId: ctx.agentId,
-    projectId: ctx.projectId,
+  const authRefusal = (reason: string): ComputerReactResult => ({
+    ...done(op.op, [reason], 2),
+    hostDetail: 'computer_denied',
+    haltRemaining: 'the computer tool is no longer authorized for this session',
+  });
+  const assertAuthorized = () => {
+    const reason = deps.authorize?.() ?? null;
+    if (reason) throw new ComputerAuthorizationError(reason);
   };
+  let key: DesktopComputerKey;
+  if (ctx.key !== undefined) {
+    if (!ctx.key) return done(op.op, [ctx.keyRefusal ?? DESKTOP_NO_OWNER_REASON], 2);
+    key = ctx.key;
+  } else {
+    if (!ctx.ownerUserId || !ctx.projectId) return done(op.op, [DESKTOP_NO_OWNER_REASON], 2);
+    key = activeServerProfileKey({
+      userId: ctx.ownerUserId,
+      agentId: ctx.agentId,
+      projectId: ctx.projectId,
+    });
+  }
   try {
+    // Before the runtime is resolved, so a revoked session never boots a desktop.
+    assertAuthorized();
     const runtime = await deps.resolveRuntime();
-    const probe = (command: string) =>
-      runtime.exec(key, command, { timeoutMs: GATE_PROBE_TIMEOUT_MS });
+    // Access can be revoked while the runtime resolves; nothing may touch it after that.
+    assertAuthorized();
+    // Gate probes can run after a long approval wait, so each one re-checks too.
+    const probe = async (command: string) => {
+      assertAuthorized();
+      return runtime.exec(key, command, { timeoutMs: GATE_PROBE_TIMEOUT_MS });
+    };
     const refused = (
       gate: { markdown: string; hostDetail: string; halt: string },
       extra: string[] = [],
@@ -265,14 +295,15 @@ export async function runComputerReActStep(
     });
     const steps = deps.gate ? splitGatedSteps(op) : null;
     if (deps.gate && steps) {
-      const r = await runGatedSteps(op, steps, deps.gate, probe, (step) =>
-        runtime.input(
+      const r = await runGatedSteps(op, steps, deps.gate, probe, (step) => {
+        assertAuthorized();
+        return runtime.input(
           key,
           step.op === 'key'
             ? { type: 'key', combo: step.combo }
             : { type: 'type', text: step.op === 'type' ? step.text : '' },
-        ),
-      );
+        );
+      });
       return 'refusal' in r ? refused(r.refusal, r.extra) : r.result;
     }
     let notice: string | undefined;
@@ -280,6 +311,7 @@ export async function runComputerReActStep(
       const gate = await deps.gate(op, probe);
       if (!gate.proceed) return refused(gate);
       notice = gate.notice;
+      assertAuthorized();
     }
     const withNotice = (r: ComputerReactResult): ComputerReactResult =>
       notice ? { ...r, markdown: `${notice}\n\n${r.markdown}` } : r;
@@ -373,6 +405,7 @@ export async function runComputerReActStep(
       done(op.op, [`Done: ${summarize(op)}. Take a screenshot to see the result.`]),
     );
   } catch (err) {
+    if (err instanceof ComputerAuthorizationError) return authRefusal(err.message);
     return done(op.op, [`The desktop op failed: ${errorMessage(err)}`], 1);
   }
 }

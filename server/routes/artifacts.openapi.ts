@@ -65,6 +65,7 @@ registerPath({
   request: { params: sessionIdParam },
   responses: {
     200: { description: 'Artifact list.', content: jsonContent(ArtifactListComponent) },
+    403: errorResponse('Organization capabilities cannot read retained artifacts.'),
     404: errorResponse('Session not found / not owned by caller.'),
   },
 });
@@ -114,6 +115,7 @@ registerPath({
   responses: {
     200: { description: 'Artifact bytes.' },
     302: { description: 'Redirect to a presigned download URL (S3 backend, redirect=1).' },
+    403: errorResponse('Organization capabilities cannot read retained artifacts.'),
     404: errorResponse('Session or artifact not found.'),
     500: errorResponse('Storage read failed.'),
     503: errorResponse('Artifact’s recorded storage backend is unavailable / unrecoverable.'),

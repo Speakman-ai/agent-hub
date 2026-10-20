@@ -1,3 +1,7 @@
+import OrganizationsPage from './components/OrganizationsPage';
+import OrganizationComputerBar from './components/OrganizationComputerBar';
+import type { OrganizationChatTarget } from './components/OrganizationAgentsPanel';
+import { isOrganizationAgentId } from '@shared/utils/organization-agents';
 import {
   useState,
   useEffect,
@@ -7,8 +11,10 @@ import {
   useCallback,
   lazy,
   Suspense,
+  type CSSProperties,
 } from 'react';
 import Sidebar from './components/Sidebar';
+import { readSelectedOrganization, writeSelectedOrganization } from './utils/sidebarOrgSections';
 import NotificationBell, { NOTIFICATION_WS_EVENT } from './components/NotificationBell';
 import type { NotificationTarget } from './utils/notificationTarget';
 import BrandLogo from './components/BrandLogo';
@@ -87,7 +93,12 @@ import NewProjectAdaptiveFlow from './components/NewProjectAdaptiveFlow';
 import SetupWizard from './components/SetupWizard';
 import { createUseAiSignInGuide } from '@shared/hooks/useAiSignInGuide';
 import { promoteQueuedMessage } from '@shared/utils/promoteQueuedMessage';
-import { resolveComputerToolEnabled } from '@shared/utils/computerTool';
+import {
+  computerToolErrorMessage,
+  describeComputerToolSetting,
+  resolveComputerToolEnabled,
+} from '@shared/utils/computerTool';
+import { organizationComputerOwnerLabel } from '@shared/utils/organizationComputer';
 import KanbanBoard from './components/KanbanBoard';
 import EpicView from './components/EpicView';
 import KanbanCardTemplatesView from './components/KanbanCardTemplatesView';
@@ -110,6 +121,7 @@ import HubClearChatButton from './components/HubClearChatButton';
 import {
   parseHubPane,
   hubPaneFromLegacyView,
+  isHubWorkspacePane,
   HUB_ASSISTANT_AGENT_ID,
   type HubWorkspacePane,
 } from '@shared/utils/hub';
@@ -240,12 +252,14 @@ import {
   Package,
   SquareTerminal,
   PanelLeftOpen,
+  GripVertical,
   History,
   Globe,
   MessageCircleQuestion,
   Gauge,
 } from 'lucide-react';
 import { readSidebarCollapsed, writeSidebarCollapsed } from './utils/sidebarCollapse';
+import { useResizablePaneWidth } from './hooks/useResizablePaneWidth';
 import { SIDEBAR_WS_EVENT, isSidebarWsEvent } from '@shared/utils/sessionSidebar';
 import {
   migrateFromLegacy,
@@ -340,11 +354,15 @@ export default function App({ initialView }: any = {}) {
     // Never restore the hidden Hub assistant as the active agent: it is absent
     // from GET /api/projects, so it can't resolve on reload and would fall
     // through to a project agent's session.
-    return stored && stored !== HUB_ASSISTANT_AGENT_ID ? stored : null;
+    return stored && stored !== HUB_ASSISTANT_AGENT_ID && !isOrganizationAgentId(stored)
+      ? stored
+      : null;
   });
   const setActiveAgentId = useCallback((id: any) => {
-    // Set Hub-assistant focus in memory, but never persist it — see above.
-    if (id && id !== HUB_ASSISTANT_AGENT_ID) localStorage.setItem('activeAgentId', id);
+    // Hidden Hub and organization agents are focused in memory only: they are absent from
+    // GET /api/projects and belong to one Server, so they must not be restored on reload.
+    if (id && id !== HUB_ASSISTANT_AGENT_ID && !isOrganizationAgentId(id))
+      localStorage.setItem('activeAgentId', id);
     _setActiveAgentId(id);
   }, []);
   const [sessions, setSessions] = useState<any[]>([]);
@@ -397,6 +415,23 @@ export default function App({ initialView }: any = {}) {
     parseHubPane(initialNavigation.hubPane || hubPaneFromLegacyView(initialNavigation.view)),
   );
   const [hubAgent, setHubAgent] = useState<any>(null);
+  // The organization agent behind an open organization chat (not in the project agent list).
+  const [organizationChatAgent, setOrganizationChatAgent] = useState<any>(null);
+  // The organization that chat belongs to, so its Computer can name its owner.
+  const [organizationChatOrganization, setOrganizationChatOrganization] = useState<{
+    id: string;
+    name: string | null;
+  } | null>(null);
+  // Organization selected on the Organizations page, mirrored into the URL for deep links.
+  const [organizationRouteId, setOrganizationRouteId] = useState<string | null>(() => {
+    const id = initialNavigation.view === 'organizations' ? initialNavigation.organizationId : null;
+    const server = initialNavigation.serverId;
+    return id && (!server || server === getActiveOrg()?.id) ? id : null;
+  });
+  // Same organization the sidebar is showing. Independent keeps unlinked projects.
+  const [sidebarOrganizationId, setSidebarOrganizationId] = useState<string | null>(
+    () => organizationRouteId || readSelectedOrganization(),
+  );
   // The live per-user Hub assistant session id, resolved from GET /api/me/hub.
   // The Hub composer binds and sends ONLY to this session — never a project row.
   const [hubSessionId, setHubSessionId] = useState<string | null>(null);
@@ -409,6 +444,19 @@ export default function App({ initialView }: any = {}) {
   // using the `sidebarOpen` slide-out drawer and ignores this flag). Persisted
   // to localStorage so the preference survives reloads.
   const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
+  const {
+    width: sidebarWidth,
+    isResizing: sidebarResizing,
+    handleProps: sidebarResizeHandleProps,
+    resetWidth: resetSidebarWidth,
+  } = useResizablePaneWidth({
+    storageKey: 'sidebarWidth',
+    defaultWidth: 256,
+    min: 200,
+    max: 480,
+    maxViewportFraction: 0.45,
+    growDirection: 'right',
+  });
   const [deletingSessionIds, setDeletingSessionIds] = useState<Set<any>>(new Set());
   const [deletingBulk, setDeletingBulk] = useState<any>(null); // 'all' | 'inactive' | null
   // Map of sessionId -> running task state ({messageId, content, engine, model}).
@@ -1087,6 +1135,17 @@ export default function App({ initialView }: any = {}) {
     if (view === 'replays') setReplaysProjectId(route?.projectId || null);
     if (view === 'security') setSecurityProjectId(route?.projectId || null);
     if (view === 'design') setActiveDesignId(route?.designId || null);
+    if (view === 'organizations') {
+      const organizationId =
+        route?.organizationId && (!route.serverId || route.serverId === getActiveOrg()?.id)
+          ? route.organizationId
+          : null;
+      setOrganizationRouteId(organizationId);
+      if (organizationId) {
+        setSidebarOrganizationId(organizationId);
+        writeSelectedOrganization(organizationId);
+      }
+    }
     setSidebarOpen(false);
   }, []);
 
@@ -1151,6 +1210,8 @@ export default function App({ initialView }: any = {}) {
       designId: activeDesignId,
       ticketId: currentView === 'support' ? supportTicketId : null,
       hubPane: currentView === 'hub' ? hubPane : null,
+      organizationId: currentView === 'organizations' ? organizationRouteId : null,
+      serverId: getActiveOrg()?.id ?? null,
     });
     if (window.location.hash === hash) {
       routeUrlInitializedRef.current = true;
@@ -1169,6 +1230,7 @@ export default function App({ initialView }: any = {}) {
     routeProjectId,
     supportTicketId,
     hubPane,
+    organizationRouteId,
   ]);
 
   const isWizardView = (v: any) =>
@@ -1440,7 +1502,8 @@ export default function App({ initialView }: any = {}) {
 
   const activeAgent =
     agents.find((a: any) => a.id === activeAgentId) ||
-    (hubAgent && hubAgent.id === activeAgentId ? hubAgent : undefined);
+    (hubAgent && hubAgent.id === activeAgentId ? hubAgent : undefined) ||
+    (organizationChatAgent?.id === activeAgentId ? organizationChatAgent : undefined);
 
   const workflowEditRoute = useMemo(() => parseWorkflowEditView(currentView), [currentView]);
 
@@ -3157,6 +3220,7 @@ export default function App({ initialView }: any = {}) {
           break;
 
         case 'projects_updated':
+          window.dispatchEvent(new CustomEvent('organizations_changed'));
           // Server added/changed an agent or project (e.g. GitHub App auto-setup
           // seeded a Reviewer agent). Re-fetch so the sidebar reflects it
           // without requiring a page refresh.
@@ -3346,6 +3410,11 @@ export default function App({ initialView }: any = {}) {
         // server; bridged so the session panel and the Chat pane both update.
         case 'google_chat_draft_update':
           window.dispatchEvent(new CustomEvent('google_chat_draft_update', { detail: data }));
+          break;
+        case 'organization_updated':
+        case 'organization_invalidated':
+        case 'organization_access_revoked':
+          window.dispatchEvent(new CustomEvent('organizations_changed'));
           break;
         // Shared org-todo change: bridge to a window CustomEvent so the org
         // section of <TodosPage /> refetches without subscribing to the WS
@@ -3928,9 +3997,8 @@ export default function App({ initialView }: any = {}) {
       ]);
     },
   });
-  // The pinned Agent Hub DM renders the Hub assistant session. It takes over
-  // from the assistant column only while it is actually the visible Chat
-  // conversation; otherwise the column keeps the transcript.
+  // The pinned Agent Hub DM renders the Hub assistant session while that
+  // conversation is the visible Chat view.
   const hubAssistantSelected = useHubAssistantSelected();
   const chatPaneSideChoice = useChatPaneSide();
   const hubAssistantInChat =
@@ -4485,6 +4553,27 @@ export default function App({ initialView }: any = {}) {
       setCurrentView('chat');
     },
     [setActiveAgentId],
+  );
+
+  // Organization chats reuse the normal streaming chat view. Their agent lives in a hidden
+  // workspace, so it is supplied here instead of coming from the project agent list.
+  const handleOpenOrganizationChat = useCallback(
+    (target: OrganizationChatTarget) => {
+      setOrganizationChatAgent(
+        target.agent ?? { id: target.agentId, name: 'Organization agent', engine: 'claude-code' },
+      );
+      setOrganizationChatOrganization({
+        id: target.organizationId,
+        name: target.organizationName ?? null,
+      });
+      if (target.session) insertCreatedSession(target.agentId, target.session);
+      pendingSessionIdRef.current = target.sessionId;
+      setActiveAgentId(target.agentId);
+      setActiveSessionId(target.sessionId);
+      setCurrentView('chat');
+      setSidebarOpen(false);
+    },
+    [insertCreatedSession, setActiveAgentId],
   );
 
   /** Switch to the agent that owns the session, then open chat (used by sidebar, toasts, dashboard). */
@@ -5318,17 +5407,22 @@ export default function App({ initialView }: any = {}) {
     }
   };
 
-  const handleComputerToolChange = async (enabled: boolean) => {
+  // Throws on failure so each surface can report it its own way; `null` drops the override.
+  const persistComputerTool = async (enabled: boolean | null) => {
     if (!activeSessionId) return;
+    const updated = await api.setSessionComputerTool(activeSessionId, enabled);
+    setSessions((prev: any) =>
+      prev.map((s: any) =>
+        s.id === updated.id ? { ...s, computer_tool_enabled: updated.computer_tool_enabled } : s,
+      ),
+    );
+  };
+
+  const handleComputerToolChange = async (enabled: boolean | null) => {
     try {
-      const updated = await api.setSessionComputerTool(activeSessionId, enabled);
-      setSessions((prev: any) =>
-        prev.map((s: any) =>
-          s.id === updated.id ? { ...s, computer_tool_enabled: updated.computer_tool_enabled } : s,
-        ),
-      );
+      await persistComputerTool(enabled);
     } catch (err: any) {
-      showToast(err?.message || 'Could not change the computer tool', 'error', 5000);
+      showToast(computerToolErrorMessage(err), 'error', 5000);
     }
   };
 
@@ -5849,9 +5943,22 @@ export default function App({ initialView }: any = {}) {
 
   const sessionOwnerAgentId = activeSession?.agent_id ?? activeAgentId;
   const chatAgent = useMemo(
-    () => agents.find((a: any) => a.id === sessionOwnerAgentId) ?? activeAgent ?? null,
-    [agents, sessionOwnerAgentId, activeAgent],
+    () =>
+      agents.find((a: any) => a.id === sessionOwnerAgentId) ??
+      (organizationChatAgent?.id === sessionOwnerAgentId ? organizationChatAgent : null) ??
+      activeAgent ??
+      null,
+    [agents, sessionOwnerAgentId, activeAgent, organizationChatAgent],
   );
+
+  const organizationComputerChat = isOrganizationAgentId(chatAgent?.id) ? chatAgent : null;
+  const organizationComputerOwner = organizationComputerChat
+    ? organizationComputerOwnerLabel({
+        organizationName: organizationChatOrganization?.name,
+        agentName: organizationComputerChat.name,
+        user: getAuthRecord()?.user,
+      })
+    : undefined;
 
   const chatAccentColor = useMemo(
     () =>
@@ -6597,7 +6704,7 @@ export default function App({ initialView }: any = {}) {
             agentColor={chatAccentColor}
             skills={skills}
             consultMode
-            consultHint="Hub assistant — org & account help, no code ship or Finalize"
+            consultHint="Hub assistant — server & account help, no code ship or Finalize"
             readOnly={false}
             draftKey={activeSessionId || 'hub'}
             onFileError={(msg: any) => showToast(msg, 'error', 6000)}
@@ -6609,7 +6716,7 @@ export default function App({ initialView }: any = {}) {
             toolbarStart={
               <div className="flex items-center gap-2 min-w-0 w-full">
                 {hubModelPicker}
-                <div className="lg:hidden ml-auto shrink-0">{hubClearButton}</div>
+                <div className="ml-auto shrink-0">{hubClearButton}</div>
               </div>
             }
           />
@@ -6673,8 +6780,11 @@ export default function App({ initialView }: any = {}) {
         {/* Sidebar */}
         <div
           className={`fixed md:relative inset-y-0 left-0 z-50 md:z-auto flex h-dvh max-h-dvh md:h-full md:max-h-none overflow-hidden transition-transform duration-200 ${
-            sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
-          } ${sidebarCollapsed ? 'md:hidden' : ''}`}
+            sidebarResizing ? 'select-none' : ''
+          } ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'} ${
+            sidebarCollapsed ? 'md:hidden' : ''
+          }`}
+          style={{ '--sidebar-width': `${sidebarWidth}px` } as CSSProperties}
         >
           <Sidebar
             showAiSignInGuide={showAiSignInGuide && !currentView.startsWith('settings')}
@@ -6730,8 +6840,23 @@ export default function App({ initialView }: any = {}) {
             deletingSessionIds={deletingSessionIds}
             deletingBulk={deletingBulk}
             onRenameSession={handleRenameSession}
+            onOpenOrganizationChat={handleOpenOrganizationChat}
+            hubPane={currentView === 'hub' ? hubPane : hubPaneFromLegacyView(currentView)}
             onNavigate={(view: any, extra: any) => {
               setCurrentView(view);
+              if (view === 'hub' && isHubWorkspacePane(extra)) {
+                setHubPane(extra);
+                setHubMobileTab(extra);
+              }
+              if (view === 'organizations') {
+                const routed =
+                  typeof extra === 'string' && extra && extra !== 'independent' ? extra : null;
+                const sidebarOrg =
+                  sidebarOrganizationId && sidebarOrganizationId !== 'independent'
+                    ? sidebarOrganizationId
+                    : null;
+                setOrganizationRouteId(routed ?? sidebarOrg ?? organizationRouteId);
+              }
               if (view === 'wiki' && extra) setWikiProjectId(extra);
               if (view === 'notes' && extra) setNotesProjectId(extra);
               if (view === 'reviewer' && extra) setReviewerProjectId(extra);
@@ -6754,6 +6879,13 @@ export default function App({ initialView }: any = {}) {
               setSidebarOpen(false);
             }}
             currentView={currentView}
+            activeOrganizationId={currentView === 'organizations' ? organizationRouteId : null}
+            selectedOrganizationId={sidebarOrganizationId}
+            onSelectOrganization={(id: string) => {
+              setSidebarOrganizationId(id);
+              writeSelectedOrganization(id);
+              if (id !== 'independent') setOrganizationRouteId(id);
+            }}
             activeTaskSessionIds={activeTasks}
             awaitingInputBySession={awaitingInputBySession}
             subagentsBySession={subagents}
@@ -6810,6 +6942,21 @@ export default function App({ initialView }: any = {}) {
             }}
             kanbanRefreshKey={kanbanRefreshKey}
           />
+          <div
+            {...sidebarResizeHandleProps}
+            data-testid="sidebar-resize-handle"
+            aria-label="Resize sidebar"
+            title="Drag to resize sidebar. Double-click to reset."
+            onDoubleClick={(event) => {
+              event.preventDefault();
+              resetSidebarWidth();
+            }}
+            className={`absolute top-0 right-0 z-30 hidden h-full w-1.5 cursor-col-resize touch-none items-center justify-center focus:outline-none focus-visible:bg-sky-500/50 md:flex ${
+              sidebarResizing ? 'bg-sky-500/50' : 'hover:bg-sky-500/35'
+            }`}
+          >
+            <GripVertical size={14} className="text-gray-500" aria-hidden />
+          </div>
         </div>
 
         <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
@@ -6830,6 +6977,10 @@ export default function App({ initialView }: any = {}) {
                     sessionReasoningEffort={sessionReasoningEffort}
                     onReasoningEffortChange={handleReasoningEffortChange}
                     computerToolOn={resolveComputerToolEnabled(
+                      chatAgent?.computerToolEnabled,
+                      activeSession?.computer_tool_enabled,
+                    )}
+                    computerToolSetting={describeComputerToolSetting(
                       chatAgent?.computerToolEnabled,
                       activeSession?.computer_tool_enabled,
                     )}
@@ -6854,6 +7005,18 @@ export default function App({ initialView }: any = {}) {
                       !!activeSessionId && filterForwardTargets(agents, activeAgent).length > 0
                     }
                   />
+
+                  {organizationComputerChat && (
+                    <OrganizationComputerBar
+                      key={`${organizationChatOrganization?.id ?? ''}:${activeSessionId}`}
+                      agent={chatAgent}
+                      organizationName={organizationChatOrganization?.name}
+                      user={getAuthRecord()?.user}
+                      sessionValue={activeSession?.computer_tool_enabled}
+                      onChange={persistComputerTool}
+                      onOpenViewer={() => openBrowserPaneForSession(activeSessionId)}
+                    />
+                  )}
 
                   <SessionSummarySidebar
                     sessionId={activeSessionId}
@@ -6894,7 +7057,24 @@ export default function App({ initialView }: any = {}) {
                 </div>
               )}
 
-              {currentView.startsWith('kanban:') ? (
+              {currentView === 'organizations' ? (
+                <OrganizationsPage
+                  initialOrganizationId={organizationRouteId}
+                  onSelectOrganization={(id: string | null) => {
+                    setOrganizationRouteId(id);
+                    if (id) {
+                      setSidebarOrganizationId(id);
+                      writeSelectedOrganization(id);
+                    }
+                  }}
+                  onOpenChat={handleOpenOrganizationChat}
+                  onOpenProject={(id) => {
+                    setCurrentView(`kanban:${id}`);
+                    setSidebarOpen(false);
+                  }}
+                  onOpenSession={focusAgentSession}
+                />
+              ) : currentView.startsWith('kanban:') ? (
                 <KanbanBoard
                   projectId={currentView.split(':')[1]}
                   project={projects.find((p: any) => p.id === currentView.split(':')[1])}
@@ -7227,10 +7407,6 @@ export default function App({ initialView }: any = {}) {
                     setHubPane(pane);
                     setHubMobileTab(pane);
                   }}
-                  mobileAssistantTab
-                  mobileTab={hubMobileTab}
-                  onMobileTabChange={setHubMobileTab}
-                  assistantActions={hubClearButton}
                   today={
                     <PersonalDashboard
                       onNavigate={(view: any) => {
@@ -7301,7 +7477,7 @@ export default function App({ initialView }: any = {}) {
                     <ChatPane
                       hubUnread={agentHubChatBadge}
                       assistantEnabled
-                      assistant={hubAssistantInChat ? hubAssistantChat : null}
+                      assistant={hubAssistantChat}
                       googleUnread={googleChatBadge}
                       onSessionStarted={handleOpenCreatedSession}
                       onOpenRef={handleOpenChatRef}
@@ -7328,9 +7504,6 @@ export default function App({ initialView }: any = {}) {
                       }}
                     />
                   }
-                  assistant={hubAssistantInChat ? null : hubAssistantChat}
-                  assistantInWorkspace={hubAssistantInChat}
-                  paneBadges={{ chat: chatButtonBadge }}
                 />
               ) : currentView === 'deployments' && deploymentsProjectId ? (
                 <DeploymentsPage
@@ -8338,7 +8511,9 @@ export default function App({ initialView }: any = {}) {
                         }
                       >
                         <SessionBrowserPane
+                          key={activeSessionId}
                           sessionId={activeSessionId}
+                          desktopOwnerLabel={organizationComputerOwner}
                           onClose={() =>
                             setBrowserPaneOpenBySession((prev) => ({
                               ...prev,

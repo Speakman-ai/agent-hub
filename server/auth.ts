@@ -1,3 +1,9 @@
+import {
+  isOrganizationCapability,
+  verifyOrganizationCapability,
+  organizationCapabilityAllows,
+  type OrganizationCapability,
+} from './organization-capabilities.js';
 import type { IncomingMessage } from 'http';
 import type { Request, Response, NextFunction } from 'express';
 import config from './config.js';
@@ -22,6 +28,7 @@ import {
   matchPreviewProxyPath,
   readPreviewCookie,
 } from './preview-auth.js';
+import { ensureDevEmailUser, isDevEmailUserEnabled } from './dev-email-user.js';
 
 /**
  * Endpoints the auth middleware always lets through. Anything that is
@@ -130,6 +137,8 @@ export function isLocalBundledServer(): boolean {
 
 /** Augmented Express request populated by the middleware on success. */
 export interface AuthenticatedRequest extends Request {
+  authOrganizationCapability?: OrganizationCapability;
+  authOrganizationToken?: string;
   /** Subject (username) when the caller used a JWT. */
   authUser?: string;
   /** Stable user id resolved from the JWT or per-user API key (Phase 3). Absent on the legacy global apiKey path. */
@@ -256,6 +265,32 @@ function resolveJwtCaller(payload: { sub: string; uid?: string; credentialVersio
 }
 
 export function authMiddleware(req: Request, res: Response, next: NextFunction): void {
+  // Capability credentials take precedence over EVERY bypass and any competing credential.
+  const candidates = [extractBearerToken(req), extractApiKey(req)];
+  const capabilityToken = candidates.find(isOrganizationCapability);
+  if (capabilityToken) {
+    const grant = verifyOrganizationCapability(capabilityToken);
+    if (!grant) {
+      res.status(401).json({ error: 'Invalid organization capability' });
+      return;
+    }
+    if (!organizationCapabilityAllows(grant, req.method, req.path)) {
+      res.status(403).json({ error: 'Operation unavailable to organization capability' });
+      return;
+    }
+    Object.assign(req, {
+      authUserId: grant.userId,
+      authOrgId: grant.serverId,
+      authRole: 'User',
+      authSpawnSessionId: grant.sessionId,
+      authOrganizationCapability: grant,
+      authOrganizationToken: capabilityToken,
+      authViaApiKey: false,
+      authLocalOrgBypass: false,
+    });
+    next();
+    return;
+  }
   const apiKey = config.apiKey;
   const authRecord = getAuthRecord();
 
@@ -374,6 +409,24 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
         // header (e.g. Electron), that still authenticates; otherwise the
         // tail of the middleware returns 401 so the SPA can re-mint.
       }
+    }
+  }
+
+  // `npm run dev` stays signed in as the generated email user. A presented
+  // credential is ignored so a leftover token cannot switch accounts.
+  if (isDevEmailUserEnabled()) {
+    try {
+      const session = ensureDevEmailUser();
+      if (session) {
+        const r = req as AuthenticatedRequest;
+        r.authUser = session.user.email;
+        r.authUserId = session.user.id;
+        r.authRole = session.user.role;
+        r.authOrgId = getActiveOrgId();
+        return next();
+      }
+    } catch (err) {
+      console.warn(`[dev-email-user] ${(err as Error).message}`);
     }
   }
 
@@ -584,6 +637,8 @@ export interface WsAuthResult {
   orgId?: string;
   role?: Role;
   viaApiKey?: boolean;
+  /** Bundled local mode retains its legacy bypass while also attributing a real user. */
+  localBypass?: boolean;
   /** When `ok === false`, a short reason so callers can log / close-code. */
   reason?: 'unauthenticated' | 'no-membership' | 'unknown-user';
 }
@@ -599,8 +654,38 @@ export interface WsAuthResult {
  * structured reason so the server can close the handshake cleanly.
  */
 export function authenticateWsDetailed(request: IncomingMessage): WsAuthResult {
+  // Agent tools use REST. Never grant the browser's broad subscriptions to a CLI capability.
+  const credentialUrl = new URL(request.url || '/', 'http://localhost');
+  if (
+    [
+      credentialUrl.searchParams.get('token'),
+      credentialUrl.searchParams.get('apiKey'),
+      request.headers['x-api-key'],
+      request.headers.authorization?.replace(/^Bearer /i, ''),
+    ].some(isOrganizationCapability)
+  ) {
+    return { ok: false, reason: 'unauthenticated' };
+  }
   const apiKey = config.apiKey;
   const authRecord = getAuthRecord();
+
+  if (isDevEmailUserEnabled()) {
+    try {
+      const session = ensureDevEmailUser();
+      if (session) {
+        return {
+          ok: true,
+          subject: session.user.email,
+          userId: session.user.id,
+          role: session.user.role,
+          orgId: getActiveOrgId(),
+        };
+      }
+    } catch (err) {
+      console.warn(`[dev-email-user] ${(err as Error).message}`);
+    }
+  }
+
   if (!apiKey && !authRecord) return { ok: true };
 
   // Local bundled server: mirror the REST bypass — return a synthetic
@@ -611,7 +696,13 @@ export function authenticateWsDetailed(request: IncomingMessage): WsAuthResult {
     try {
       orgId = getActiveOrgId();
     } catch {}
-    return { ok: true, subject: 'local', role: 'Owner', orgId };
+    let userId: string | undefined;
+    try {
+      if (authRecord?.username) userId = getUserByUsername(authRecord.username)?.id;
+    } catch {
+      /* Keep the synthetic identity until the user store is ready. */
+    }
+    return { ok: true, subject: 'local', role: 'Owner', orgId, userId, localBypass: true };
   }
 
   const url = new URL(request.url!, `http://${request.headers.host}`);

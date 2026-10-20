@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import Database from 'better-sqlite3';
 import { DESKTOP_COMPUTERS_SCHEMA } from './desktop-computers-schema.js';
 import { createDesktopComputersStore } from './desktop-computers-store.js';
+import { organizationWorkspaceId } from '../organization-workspace-id.js';
 
 function store() {
   const db = new Database(':memory:');
@@ -54,5 +55,33 @@ describe('desktop computers store', () => {
     expect(s.delete(key('u2'), 'firecracker')).toBe(false);
     expect(s.delete(key('u1'), 'firecracker')).toBe(true);
     expect(s.get(key('u1'), 'firecracker')).toBeNull();
+  });
+});
+
+describe('desktop computers store: organization agent isolation', () => {
+  const ws = (server: string, org: string) => organizationWorkspaceId(server, org);
+
+  it('keeps one row per Server, organization, user, agent and backend and survives a restart', () => {
+    const db = new Database(':memory:');
+    db.exec(DESKTOP_COMPUTERS_SCHEMA);
+    const s = createDesktopComputersStore(() => db);
+    const base = { userId: 'u1', agentId: 'assistant', projectId: ws('server-a', 'org-1') };
+    const variants = [
+      base,
+      { ...base, projectId: ws('server-b', 'org-1') },
+      { ...base, projectId: ws('server-a', 'org-2') },
+      { ...base, userId: 'u2' },
+      { ...base, agentId: 'finance' },
+    ];
+    variants.forEach((k, i) =>
+      s.create({ ...k, kind: 'container', vmId: `vm-${i}`, slot: null, lastActiveAt: null }),
+    );
+    s.create({ ...base, kind: 'firecracker', vmId: 'vm-fc', slot: 1, lastActiveAt: null });
+    expect(new Set(variants.map((k) => s.get(k, 'container')!.vmId)).size).toBe(variants.length);
+    expect(s.get(base, 'firecracker')!.vmId).toBe('vm-fc');
+
+    // A fresh store over the same database (Hub restart) resumes the same computer.
+    const restarted = createDesktopComputersStore(() => db);
+    expect(restarted.get(base, 'container')!.vmId).toBe('vm-0');
   });
 });

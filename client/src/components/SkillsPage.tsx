@@ -984,11 +984,11 @@ export function SkillCard({
                       GITHUB_TOKEN).
                     </p>
                     <p className="text-[10px] text-gray-500/90 leading-relaxed pl-0 sm:pl-6">
-                      Multi-user orgs: interactive chat, session summarize/rewind, and delegation
+                      Multi-user servers: interactive chat, session summarize/rewind, and delegation
                       use the session owner&apos;s saved keys when known. Conference rooms and
-                      Design Studio use the authenticated connection when present, otherwise the org
-                      owner. Scheduled work (crons, workflows), Slack, and room summarize use the
-                      org owner&apos;s vault.
+                      Design Studio use the authenticated connection when present, otherwise the
+                      server owner. Scheduled work (crons, workflows), Slack, and room summarize use
+                      the server owner&apos;s vault.
                     </p>
                   </div>
                   {credLoading ? (

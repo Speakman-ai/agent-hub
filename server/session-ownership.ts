@@ -23,7 +23,11 @@ import { getDb } from './db.js';
 import { getUserById } from './users-store.js';
 import config from './config.js';
 import { getAuthRecord } from './auth-store.js';
-import { findAgent } from './project-model.js';
+import { findAgent, findProjectForServer } from './project-model.js';
+import { isOrganizationSystemProject } from '../shared/utils/hub.js';
+import { organizationSessionIdentity } from './organization-session-identity.js';
+import { canReadOrganizationSession } from './organization-session-access.js';
+import { canAccessOrganizationHistory } from './business-organizations-access.js';
 import type { AuthenticatedRequest } from './auth.js';
 import { hasAtLeastRole, type Role } from './roles.js';
 
@@ -60,7 +64,12 @@ function isAuthDisabled(): boolean {
 
 export type OwnerResolvable = Pick<
   AuthenticatedRequest,
-  'authUserId' | 'authViaApiKey' | 'authLocalOrgBypass' | 'authRole'
+  | 'authUserId'
+  | 'authViaApiKey'
+  | 'authLocalOrgBypass'
+  | 'authRole'
+  | 'authOrganizationCapability'
+  | 'authOrgId'
 >;
 
 /**
@@ -91,6 +100,8 @@ function callerCanAdministerOrg(req: OwnerResolvable | undefined): boolean {
  */
 export interface WsVisibilityStamp {
   userId: string | null;
+  /** Authenticated Server partition at connection time, independent of later global switches. */
+  serverId?: string;
   role?: Role;
   /**
    * True for callers with no privacy boundary — single-tenant local
@@ -270,6 +281,12 @@ export function isSharedCronSession(sessionId: string): boolean {
  * `userOwnsSession` — visibility is broader than mutation rights.
  */
 export function userCanReadSession(req: OwnerResolvable | undefined, sessionId: string): boolean {
+  if (isOrganizationOwnedSession(sessionId)) return organizationSessionOwnerMatches(req, sessionId);
+  if (req?.authOrganizationCapability)
+    return (
+      req.authOrganizationCapability.sessionId === sessionId &&
+      req.authOrganizationCapability.userId === getSessionOwner(sessionId)
+    );
   if (isReviewerSession(sessionId)) return true;
   if (isSharedCronSession(sessionId)) return true;
   if (userOwnsSession(req, sessionId)) return true;
@@ -287,6 +304,12 @@ export function userCanReadSession(req: OwnerResolvable | undefined, sessionId: 
  * not auto-granted to any user — there is no org-owner grace path.
  */
 export function userOwnsSession(req: OwnerResolvable | undefined, sessionId: string): boolean {
+  if (isOrganizationOwnedSession(sessionId)) return organizationSessionOwnerMatches(req, sessionId);
+  if (req?.authOrganizationCapability)
+    return (
+      req.authOrganizationCapability.sessionId === sessionId &&
+      req.authOrganizationCapability.userId === getSessionOwner(sessionId)
+    );
   // No auth at all (fresh install / tests) → every caller "owns" everything.
   // This mirrors `authMiddleware`'s no-auth bypass so ownership doesn't
   // gate routes that auth itself doesn't.
@@ -319,6 +342,43 @@ export function userOwnsSession(req: OwnerResolvable | undefined, sessionId: str
   // NULL-owner rows belong to nobody — not auto-granted to any user.
   if (!owner) return false;
   return callerId === owner;
+}
+
+function isOrganizationOwnedSession(sessionId: string): boolean {
+  if (organizationSessionIdentity(sessionId)) return true;
+  const row = getDb().prepare('SELECT agent_id FROM sessions WHERE id = ?').get(sessionId) as
+    | { agent_id: string }
+    | undefined;
+  return !!row && isOrganizationSystemProject(findAgent(row.agent_id)?.project);
+}
+
+function organizationSessionOwnerMatches(
+  req: OwnerResolvable | undefined,
+  sessionId: string,
+): boolean {
+  const capability = req?.authOrganizationCapability;
+  if (capability && capability.sessionId !== sessionId) return false;
+  const userId = capability ? capability.userId : req?.authUserId;
+  const serverId = capability ? capability.serverId : req?.authOrgId;
+  if (!userId || !serverId) return false;
+  const ownsSession = userId === getSessionOwner(sessionId);
+  // Ownership alone is not enough: the owner must still belong to the
+  // organization on the same Server. The persisted identity outlives the agent,
+  // so it is the boundary of record whenever it exists.
+  const identity = organizationSessionIdentity(sessionId);
+  if (identity)
+    return canReadOrganizationSession(
+      identity,
+      findProjectForServer(identity.server_id, identity.workspace_id),
+      { userId, serverId, ownsSession },
+      canAccessOrganizationHistory,
+    );
+  const row = getDb().prepare('SELECT agent_id FROM sessions WHERE id = ?').get(sessionId) as
+    | { agent_id: string }
+    | undefined;
+  const project = row ? findAgent(row.agent_id)?.project : null;
+  if (!project || !isOrganizationSystemProject(project)) return false;
+  return ownsSession && canAccessOrganizationHistory(project, userId, serverId);
 }
 
 /**

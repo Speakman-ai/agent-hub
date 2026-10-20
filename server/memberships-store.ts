@@ -1,3 +1,4 @@
+import { revalidateOrganizationAccess } from './organization-spawn-policy.js';
 /**
  * Memberships store — Auth Phase 3.
  *
@@ -37,16 +38,19 @@ export function getMembershipRole(userId: string, orgId: string): Role | null {
 
 export function createMembership(userId: string, orgId: string, role: Role): void {
   const db = getOrgsDb();
-  db.prepare('INSERT OR REPLACE INTO memberships (user_id, org_id, role) VALUES (?, ?, ?)').run(
-    userId,
-    orgId,
-    role,
-  );
+  // REPLACE deletes the existing row and would cascade away organization
+  // memberships. Update its role in place and retain its original identity.
+  db.prepare(
+    `INSERT INTO memberships (user_id, org_id, role) VALUES (?, ?, ?)
+     ON CONFLICT(user_id, org_id) DO UPDATE SET role = excluded.role`,
+  ).run(userId, orgId, role);
+  revalidateOrganizationAccess();
 }
 
 export function deleteMembership(userId: string, orgId: string): void {
   const db = getOrgsDb();
   db.prepare('DELETE FROM memberships WHERE user_id = ? AND org_id = ?').run(userId, orgId);
+  revalidateOrganizationAccess();
 }
 
 export function setMembershipRole(userId: string, orgId: string, role: Role): void {
@@ -56,6 +60,7 @@ export function setMembershipRole(userId: string, orgId: string, role: Role): vo
     userId,
     orgId,
   );
+  revalidateOrganizationAccess();
 }
 
 /** Count how many Owners exist in `orgId`. Used to refuse removing the last one. */

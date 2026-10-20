@@ -29,6 +29,7 @@ import {
   unlinkSync,
   renameSync,
 } from 'fs';
+import { createServerConnectionStore } from './server-connections.js';
 import { createNotificationHandlers } from './notifications.js';
 import { resolvePermissionRequest } from './media-permission.js';
 import { saveDesignPdfWithDialog } from './save-design-pdf-dialog.js';
@@ -58,17 +59,13 @@ const USER_DATA = isDev
 type ConnectionConfig = RemoteConnection;
 type AuthTokenRecord = ScopedAuthRecord;
 
-interface RemoteOrg {
-  remote_url?: string;
-}
-
 let mainWindow: BrowserWindow | null = null;
 let serverProcess: ChildProcess | null = null;
 
 // Connection config (file-backed for Electron)
 
 const CONNECTION_CONFIG_PATH = path.join(USER_DATA, 'connection.json');
-const REMOTE_ORGS_PATH = path.join(USER_DATA, 'remote-orgs.json');
+const serverConnections = createServerConnectionStore(USER_DATA);
 // JWT bearer tokens are persisted alongside the legacy apiKey so the
 // webRequest interceptor can inject Authorization headers on the very
 // first request (before the React app boots).
@@ -134,22 +131,6 @@ function writeAuthToken(record: AuthTokenRecord | null | undefined) {
   writeFileSync(tmpPath, JSON.stringify(record, null, 2) + '\n', { mode: 0o600 });
   renameSync(tmpPath, AUTH_TOKEN_PATH);
   cachedAuthToken = record;
-}
-
-// Remote orgs (file-backed for Electron, survives origin changes)
-
-function readRemoteOrgs() {
-  try {
-    if (existsSync(REMOTE_ORGS_PATH)) {
-      return JSON.parse(readFileSync(REMOTE_ORGS_PATH, 'utf-8'));
-    }
-  } catch {}
-  return [];
-}
-
-function writeRemoteOrgs(orgs: RemoteOrg[]) {
-  mkdirSync(path.dirname(REMOTE_ORGS_PATH), { recursive: true });
-  writeFileSync(REMOTE_ORGS_PATH, JSON.stringify(orgs, null, 2) + '\n');
 }
 
 // Inject auth headers on every request to the remote host so the initial
@@ -363,7 +344,7 @@ function createWindow() {
     }
 
     // Also allow any known remote org servers
-    for (const org of readRemoteOrgs()) {
+    for (const org of serverConnections.readServers()) {
       if (org.remote_url) {
         allowedOrigins.push(org.remote_url.replace(/\/+$/, ''));
       }
@@ -440,33 +421,21 @@ ipcMain.on('navigate-to-org', async (event) => {
 // Server B, the remote org bookmarks stored in Server A's localStorage vanish.
 // File-backed storage solves this.
 ipcMain.on('get-remote-orgs', (event) => {
-  event.returnValue = readRemoteOrgs();
+  event.returnValue = serverConnections.readServers();
 });
 
 ipcMain.on('save-remote-orgs', (event, orgs) => {
-  writeRemoteOrgs(orgs);
+  serverConnections.saveServers(orgs);
   event.returnValue = true;
 });
 
-// Persist the active org ID so it survives origin changes too.
-const ACTIVE_ORG_PATH = path.join(USER_DATA, 'active-org.json');
-
+// Keep the legacy IPC channel names for existing renderer clients.
 ipcMain.on('get-active-org-id', (event) => {
-  try {
-    if (existsSync(ACTIVE_ORG_PATH)) {
-      const data = JSON.parse(readFileSync(ACTIVE_ORG_PATH, 'utf-8'));
-      event.returnValue = data.activeOrgId || null;
-    } else {
-      event.returnValue = null;
-    }
-  } catch {
-    event.returnValue = null;
-  }
+  event.returnValue = serverConnections.readActiveId();
 });
 
 ipcMain.on('save-active-org-id', (event, orgId) => {
-  mkdirSync(path.dirname(ACTIVE_ORG_PATH), { recursive: true });
-  writeFileSync(ACTIVE_ORG_PATH, JSON.stringify({ activeOrgId: orgId }) + '\n');
+  serverConnections.saveActiveId(orgId);
   event.returnValue = true;
 });
 

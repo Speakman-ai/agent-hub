@@ -192,6 +192,26 @@ describe('navigation defaults', () => {
   });
 });
 
+describe('organization deep links', () => {
+  it('round-trips the selected organization pinned to its Server', () => {
+    const hash = buildNavigationHash({
+      view: 'organizations',
+      organizationId: 'org 1',
+      serverId: 'server-a',
+    });
+    expect(hash).toBe('#/organizations?organization=org+1&server=server-a');
+    expect(parseNavigationHash(hash)).toMatchObject({
+      view: 'organizations',
+      organizationId: 'org 1',
+      serverId: 'server-a',
+    });
+  });
+  it('ignores organization params on other views', () => {
+    expect(buildNavigationHash({ view: 'chat', organizationId: 'o' })).toBe('#/chat');
+    expect(parseNavigationHash('#/chat?organization=o')?.organizationId).toBeUndefined();
+  });
+});
+
 describe('path deep links', () => {
   afterEach(() => {
     window.history.replaceState(null, '', '/');

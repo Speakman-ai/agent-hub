@@ -24,6 +24,8 @@ vi.mock('react-native', () => ({
   },
 }));
 vi.mock('react-native-safe-area-context', () => ({ SafeAreaView: 'SafeAreaView' }));
+// ProjectIcon renders lucide-react-native, which does not load under vitest.
+vi.mock('../components/ProjectIcon', () => ({ default: () => null }));
 vi.mock('@react-navigation/native', () => ({ useNavigation: () => ({ navigate: () => {} }) }));
 vi.mock('react-native-markdown-display', () => ({ default: 'Markdown' }));
 vi.mock('../context/AppContext', () => ({ useApp: () => ({}) }));

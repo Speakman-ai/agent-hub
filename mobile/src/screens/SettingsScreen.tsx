@@ -59,7 +59,7 @@ import SmtpSettingsSection from '../components/settings/SmtpSettingsSection';
 import GoogleConnectionSection from '../components/settings/GoogleConnectionSection';
 import BrowserProfilesSection from '../components/settings/BrowserProfilesSection';
 import ApprovalRulesSection from '../components/settings/ApprovalRulesSection';
-// Organizations (Server Connections) Tab
+// Servers (saved connections) tab
 function OrganizationsSection() {
   const { handleSwitchOrg, syncPushRegistrations, forgetPushServer, signOutOfServer } = useApp();
   const [signingOut, setSigningOut] = useState(false);
@@ -283,7 +283,7 @@ function OrganizationsSection() {
   );
   return (
     <View>
-      <Text style={styles.sectionTitle}>Server Connections</Text>
+      <Text style={styles.sectionTitle}>Servers</Text>
       <Text style={styles.sectionDesc}>Manage your remote Agent Hub server connections.</Text>
 
       {orgs.map((org: any) => {
@@ -1035,7 +1035,7 @@ function CronFormFields({ form, setForm, projects, modelConfig }: any) {
         <View style={{ flex: 1 }}>
           <Text style={styles.notifyToggleLabel}>Shared</Text>
           <Text style={styles.notifyToggleHint}>
-            Visible to the org. Runs still use the owner credentials.
+            Visible to server members. Runs still use the owner credentials.
           </Text>
         </View>
       </TouchableOpacity>

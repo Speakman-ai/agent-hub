@@ -11,6 +11,13 @@ function nativeHost(name: string) {
   return ({ children, ...props }: any) => React.createElement(name, props, children);
 }
 
+vi.mock('lucide-react-native', () => {
+  const React = require('react');
+  const icon = (name: string) => (props: any) =>
+    React.createElement('span', { 'data-testid': props.testID, 'data-icon': name }, name);
+  return { Folder: icon('Folder'), Rocket: icon('Rocket') };
+});
+
 vi.mock('react-native', () => ({
   ScrollView: nativeHost('ScrollView'),
   StyleSheet: { create: (styles: any) => styles },

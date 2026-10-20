@@ -69,6 +69,14 @@ function safeString(v: unknown): string | null {
   return typeof v === 'string' && v.length > 0 ? v : null;
 }
 
+export function eventSessionId(data: BroadcastEvent): string | null {
+  const nested =
+    data.session && typeof data.session === 'object'
+      ? (data.session as Record<string, unknown>)
+      : null;
+  return safeString(data.sessionId) ?? safeString(data.session_id) ?? safeString(nested?.id);
+}
+
 function defaultGetSessionAgentId(sessionId: string): string | null {
   try {
     if (!stmts) return null;
@@ -107,7 +115,11 @@ function defaultGetBoardProjectId(boardId: string): string | null {
 function defaultGetAgentProjectId(agentId: string): string | null {
   try {
     const lookup = findAgent(agentId);
-    return lookup?.project.id ?? null;
+    if (lookup) return lookup.project.id;
+    const retained = getDb()
+      .prepare('SELECT workspace_id FROM organization_workflow_sessions WHERE agent_id = ? LIMIT 1')
+      .get(agentId) as { workspace_id: string } | undefined;
+    return retained?.workspace_id ?? null;
   } catch {
     return null;
   }
@@ -133,7 +145,7 @@ export function resolveProjectIdFromEvent(
   const getAgentProjectId = deps?.getAgentProjectId ?? defaultGetAgentProjectId;
 
   // 2. sessionId / session_id -> agent -> project.
-  const sessionId = safeString(data.sessionId) ?? safeString(data.session_id);
+  const sessionId = eventSessionId(data);
   if (sessionId) {
     const agentId = getSessionAgentId(sessionId);
     if (agentId) {

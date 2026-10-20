@@ -5,7 +5,12 @@ export type { ProjectMode };
 
 /** Effective mode — missing or unknown values default to dev. */
 export function getProjectMode(project: Project | null | undefined): ProjectMode {
-  if (project?.mode === 'workflow') return 'workflow';
+  if (
+    project?.workspaceKind === 'organization' ||
+    project?.organizationId ||
+    project?.mode === 'workflow'
+  )
+    return 'workflow';
   return 'dev';
 }
 
@@ -41,12 +46,12 @@ export function isPlaceholderWorkflowCwd(
 /**
  * `sessions.use_worktree` default for new rows. Agent Hub is now
  * worktree-only for all user-facing session flows, so this always
- * returns 1 regardless of project mode. The flag is kept on the
+ * returns 1 for user projects. Internal organization workflows return 0. The flag is kept on the
  * row so internal callers (e.g., dev-server wizard) can still spawn
  * shared-checkout sessions when they need to.
  */
-export function defaultSessionUseWorktreeFlag(_project: Project | null | undefined): 0 | 1 {
-  return 1;
+export function defaultSessionUseWorktreeFlag(project: Project | null | undefined): 0 | 1 {
+  return project?.workspaceKind === 'organization' || project?.organizationId ? 0 : 1;
 }
 
 /** True only when the session row explicitly opted into worktree isolation. */

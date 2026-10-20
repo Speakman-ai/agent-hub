@@ -95,7 +95,7 @@ export default function LoginServerPicker({
     runTransition(async () => {
       await dropTokenIfLeaving(loginOrgUrl(org));
       await onSwitchOrg(org.id);
-    }, 'Failed to switch organization');
+    }, 'Failed to switch server');
 
   const handleSaveUrl = async () => {
     if (locked) return;
@@ -198,7 +198,7 @@ export default function LoginServerPicker({
             <>
               {others.length > 0 ? (
                 <>
-                  <Text style={styles.caption}>Other organizations</Text>
+                  <Text style={styles.caption}>Other servers</Text>
                   {others.map((org) => (
                     <TouchableOpacity
                       key={org.id}

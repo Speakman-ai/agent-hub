@@ -3718,8 +3718,8 @@ components:
               type: string
               nullable: true
               maxLength: 32
-              description: Emoji or symbol replacing the project color marker (up to 32 UTF-16 code units). Null or empty restores the colored marker.
-              example: 🚀
+              description: Stored project icon name (up to 32 characters). Create uses Folder when this is omitted or empty. The app always shows a folder icon beside the project name.
+              example: Folder
           additionalProperties:
             nullable: true
         crons:
@@ -3836,8 +3836,8 @@ components:
               type: string
               nullable: true
               maxLength: 32
-              description: Emoji or symbol replacing the project color marker (up to 32 UTF-16 code units). Null or empty restores the colored marker.
-              example: 🚀
+              description: Stored project icon name (up to 32 characters). Create uses Folder when this is omitted or empty. The app always shows a folder icon beside the project name.
+              example: Folder
           additionalProperties:
             nullable: true
       required:
@@ -13106,6 +13106,257 @@ components:
         - createdAt
         - updatedAt
       description: A single shared organization todo, visible and editable by every member of the org. A distinct list, not an aggregation of members' personal todos.
+    OrganizationContextSource:
+      type: object
+      properties:
+        serverId:
+          type: string
+        organizationId:
+          type: string
+        projectId:
+          type: string
+        projectName:
+          type: string
+        record:
+          type: string
+          example: card:3f2a…
+      required:
+        - serverId
+        - organizationId
+        - projectId
+        - projectName
+        - record
+    OrganizationDispatch:
+      type: object
+      properties:
+        requestId:
+          type: string
+        status:
+          type: string
+          enum:
+            - queued
+            - starting
+            - accepted
+            - rejected
+            - failed
+            - revoked
+            - expired
+          description: "`queued` waits for a busy target and is re-authorized when it runs; `starting` has a reserved session id and is settled by the queue if the Hub stopped mid-start; `accepted` started a session; `rejected` failed authorization or target validation; `failed` could not start (or its first turn failed); `revoked` lost access while queued; `expired` stayed queued too long."
+        code:
+          type: string
+          nullable: true
+        message:
+          type: string
+          nullable: true
+        serverId:
+          type: string
+        organizationId:
+          type: string
+        organizationAgentId:
+          type: string
+        initiatingSessionId:
+          type: string
+        actingUserId:
+          type: string
+        projectId:
+          type: string
+        agentId:
+          type: string
+        agentName:
+          type: string
+          nullable: true
+          description: Current name of the target agent; null once it no longer exists.
+        idempotencyKey:
+          type: string
+        name:
+          type: string
+        sessionId:
+          type: string
+          nullable: true
+        ref:
+          type: string
+          nullable: true
+          description: Chat ref token for the target session; renders as a live session chip.
+        sessionState:
+          type: string
+          nullable: true
+        statusPath:
+          type: string
+        resultPath:
+          type: string
+          nullable: true
+          description: Organization context path for the target session status and latest result.
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+        acceptedAt:
+          type: string
+          nullable: true
+        replayed:
+          type: boolean
+      required:
+        - requestId
+        - status
+        - code
+        - message
+        - serverId
+        - organizationId
+        - organizationAgentId
+        - initiatingSessionId
+        - actingUserId
+        - projectId
+        - agentId
+        - agentName
+        - idempotencyKey
+        - name
+        - sessionId
+        - ref
+        - sessionState
+        - statusPath
+        - resultPath
+        - createdAt
+        - updatedAt
+        - acceptedAt
+    BusinessOrganization:
+      type: object
+      properties:
+        id:
+          type: string
+        serverId:
+          type: string
+        name:
+          type: string
+        createdBy:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+        role:
+          type: string
+          nullable: true
+          enum:
+            - Owner
+            - Admin
+            - Member
+            - null
+        canManage:
+          type: boolean
+      required:
+        - id
+        - serverId
+        - name
+        - createdBy
+        - createdAt
+        - updatedAt
+        - role
+        - canManage
+    BusinessOrganizationMember:
+      type: object
+      properties:
+        userId:
+          type: string
+        username:
+          type: string
+        role:
+          type: string
+          enum:
+            - Owner
+            - Admin
+            - Member
+        createdAt:
+          type: string
+      required:
+        - userId
+        - username
+        - role
+        - createdAt
+    BusinessOrganizationProject:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        visibility:
+          type: string
+          enum:
+            - shared
+            - private
+      required:
+        - id
+        - name
+        - visibility
+    LegacyOrgConnection:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        mode:
+          type: string
+          enum:
+            - local
+            - remote
+        color:
+          type: string
+        position:
+          type: number
+        remote_url:
+          type: string
+        api_key:
+          type: string
+        created_at:
+          type: string
+        updated_at:
+          type: string
+      required:
+        - id
+        - name
+        - mode
+        - color
+        - position
+        - remote_url
+        - api_key
+        - created_at
+        - updated_at
+    ServerConnection:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        mode:
+          type: string
+          enum:
+            - local
+            - remote
+        color:
+          type: string
+        position:
+          type: number
+        remoteUrl:
+          type: string
+        apiKey:
+          type: string
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - name
+        - mode
+        - color
+        - position
+        - remoteUrl
+        - apiKey
+        - createdAt
+        - updatedAt
     PrAutoMergeRequest:
       type: object
       properties:
@@ -13963,8 +14214,8 @@ components:
           type: string
           nullable: true
           maxLength: 32
-          description: Emoji or symbol replacing the project color marker (up to 32 UTF-16 code units). Null or empty restores the colored marker.
-          example: 🚀
+          description: Stored project icon name (up to 32 characters). Create uses Folder when this is omitted or empty. The app always shows a folder icon beside the project name.
+          example: Folder
         color:
           type: string
         id:
@@ -18256,6 +18507,40 @@ components:
         - agentId
         - importedMessages
         - reused
+    OrganizationDispatchRequest:
+      type: object
+      properties:
+        projectId:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Linked project that owns the target agent.
+        agentId:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Target project agent.
+        prompt:
+          type: string
+          minLength: 1
+          maxLength: 50000
+          description: Task sent as the first message of the target session.
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        idempotencyKey:
+          type: string
+          minLength: 1
+          maxLength: 200
+          pattern: ^[\w.:-]+$
+          description: Scoped to the initiating organization session. An identical retry returns the same request and target session; reuse with a different payload fails with 409.
+      required:
+        - projectId
+        - agentId
+        - prompt
+        - idempotencyKey
+      additionalProperties: false
     DispatchSessionRequest:
       type: object
       properties:
@@ -18974,6 +19259,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ArtifactList"
+        "403":
+          description: Organization capabilities cannot read retained artifacts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtifactErrorResponse"
         "404":
           description: Session not found / not owned by caller.
           content:
@@ -19080,6 +19371,12 @@ paths:
           description: Artifact bytes.
         "302":
           description: Redirect to a presigned download URL (S3 backend, redirect=1).
+        "403":
+          description: Organization capabilities cannot read retained artifacts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtifactErrorResponse"
         "404":
           description: Session or artifact not found.
           content:
@@ -19186,6 +19483,40 @@ paths:
                     type: boolean
                   activeOrgIsLocal:
                     type: boolean
+                  devAutoLogin:
+                    type: object
+                    properties:
+                      token:
+                        type: string
+                      expiresAt:
+                        type: string
+                      user:
+                        type: object
+                        properties:
+                          id:
+                            type: string
+                          email:
+                            type: string
+                          needsEmailUpdate:
+                            type: boolean
+                            enum:
+                              - false
+                          role:
+                            type: string
+                            enum:
+                              - Owner
+                              - Admin
+                              - User
+                        required:
+                          - id
+                          - email
+                          - needsEmailUpdate
+                          - role
+                    required:
+                      - token
+                      - expiresAt
+                      - user
+                    description: Present on `npm run dev`. The client stores it and skips the login screen.
                 required:
                   - authConfigured
                   - email
@@ -24983,7 +25314,7 @@ paths:
       tags:
         - Sessions
       summary: Create a new session for an agent
-      description: Defaults the engine and model to the agent's configured engine/model. Sessions are always created with a per-session git worktree (the legacy shared-checkout option was removed when Agent Hub locked to worktree-only sessions).
+      description: Defaults the engine and model to the agent's configured engine/model. Sessions are created with a per-session git worktree. Organization agents must use POST /api/organizations/{organizationId}/agents/{agentId}/sessions for their private workflow sessions.
       parameters:
         - schema:
             type: string
@@ -25036,6 +25367,12 @@ paths:
                 $ref: "#/components/schemas/Session"
         "400":
           description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "403":
+          description: Organization agents require the scoped workflow session endpoint; reviewer sessions cannot be started manually.
           content:
             application/json:
               schema:
@@ -25555,6 +25892,12 @@ paths:
                     items:
                       $ref: "#/components/schemas/Message"
                   - $ref: "#/components/schemas/SessionMessagesList"
+        "403":
+          description: Organization capabilities cannot read retained session history.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
         "404":
           description: Session not found (or hidden by ownership).
           content:
@@ -25989,7 +26332,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/SessionErrorResponse"
         "403":
-          description: Reviewer agents cannot join multi-agent sessions.
+          description: Reviewer agents cannot join multi-agent sessions. Organization chats use one agent per session.
           content:
             application/json:
               schema:
@@ -26685,7 +27028,7 @@ paths:
       tags:
         - Sessions
       summary: Turn the computer tool on or off for one session
-      description: "Overrides the agent `computerToolEnabled` default for this session only, so sessions with the same agent can differ. `enabled: null` clears the override."
+      description: "Overrides the agent `computerToolEnabled` default for this session only, so sessions with the same agent can differ. `enabled: null` clears the override. For an organization agent session, turning it on requires the agent's current tool scope to include Computer and the agent and organization to be active; turning it off is always allowed."
       parameters:
         - schema:
             type: string
@@ -26714,6 +27057,12 @@ paths:
                 $ref: "#/components/schemas/Session"
         "400":
           description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "403":
+          description: Computer is not permitted for this organization agent.
           content:
             application/json:
               schema:
@@ -27271,6 +27620,54 @@ paths:
                 $ref: "#/components/schemas/SessionErrorResponse"
         "500":
           description: Failed to compute file diff.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/active-tasks:
+    get:
+      tags:
+        - Sessions
+      summary: Read active chat tasks
+      description: Organization workflow tasks are visible only to their initiating user while current organization access remains valid.
+      responses:
+        "200":
+          description: Visible active tasks.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    sessionId:
+                      type: string
+                    messageId:
+                      type: string
+                    agentId:
+                      type: string
+                    engine:
+                      type: string
+                    model:
+                      type: string
+                      nullable: true
+                    prompt:
+                      type: string
+                    content:
+                      type: string
+                    startedAt:
+                      type: string
+                  required:
+                    - sessionId
+                    - messageId
+                    - agentId
+                    - engine
+                    - model
+                    - prompt
+                    - content
+                    - startedAt
+        "500":
+          description: Task storage unavailable.
           content:
             application/json:
               schema:
@@ -45755,6 +46152,4494 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrgTodosErrorResponse"
+  /api/sessions/{sessionId}/organization-capability/renew:
+    post:
+      tags:
+        - Organizations
+      summary: Renew an organization session capability against current access
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Rotated capability. The previous token is revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+                  expiresAt:
+                    type: number
+                required:
+                  - token
+                  - expiresAt
+        "401":
+          description: Capability missing, expired, revoked or out of scope.
+        "403":
+          description: Capability missing, expired, revoked or out of scope.
+  /api/organizations/{organizationId}/capability-context:
+    get:
+      tags:
+        - Organizations
+      summary: Discover projects and agent roster within the current capability scope
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: organizationId
+          in: path
+        - schema:
+            type: integer
+            nullable: true
+            minimum: 0
+            default: 0
+          required: false
+          name: offset
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 25
+          required: false
+          name: limit
+          in: query
+      responses:
+        "200":
+          description: Paginated authorized project identities, with source and timestamp.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  serverId:
+                    type: string
+                  organizationId:
+                    type: string
+                  sessionId:
+                    type: string
+                  agentId:
+                    type: string
+                  timestamp:
+                    type: string
+                  offset:
+                    type: number
+                  nextOffset:
+                    type: number
+                    nullable: true
+                  projects:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        agents:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              id:
+                                type: string
+                              name:
+                                type: string
+                            required:
+                              - id
+                              - name
+                        agentCount:
+                          type: number
+                        agentsTruncated:
+                          type: boolean
+                      required:
+                        - id
+                        - name
+                        - agents
+                        - agentCount
+                        - agentsTruncated
+                required:
+                  - serverId
+                  - organizationId
+                  - sessionId
+                  - agentId
+                  - timestamp
+                  - offset
+                  - nextOffset
+                  - projects
+        "400":
+          description: Invalid pagination
+        "401":
+          description: Capability missing, expired, revoked or out of scope.
+        "403":
+          description: Capability missing, expired, revoked or out of scope.
+  /api/organizations/summary:
+    get:
+      tags:
+        - Organizations
+      summary: Server-wide organization totals for the current user
+      description: Counts only organizations and projects the user can see. A project linked to several organizations is counted once. Not available to organization capabilities.
+      parameters:
+        - schema:
+            type: integer
+            nullable: true
+            minimum: 0
+            maximum: 9007199254740991
+            default: 0
+          required: false
+          name: offset
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+          required: false
+          name: limit
+          in: query
+      responses:
+        "200":
+          description: Totals.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  serverId:
+                    type: string
+                  retrievedAt:
+                    type: string
+                  organizations:
+                    type: number
+                  linkedProjects:
+                    type: number
+                    description: Distinct visible projects; a project linked to several organizations counts once.
+                  offset:
+                    type: number
+                  nextOffset:
+                    type: number
+                    nullable: true
+                  perOrganization:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        organizationId:
+                          type: string
+                        name:
+                          type: string
+                        linkedProjects:
+                          type: number
+                      required:
+                        - organizationId
+                        - name
+                        - linkedProjects
+                    description: One page of the per-organization breakdown.
+                required:
+                  - serverId
+                  - retrievedAt
+                  - organizations
+                  - linkedProjects
+                  - offset
+                  - nextOffset
+                  - perOrganization
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication or capability missing, expired or revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Capability lacks projects:read or targets another organization.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Organization, project or record absent or not authorized.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/organizations/{organizationId}/context:
+    get:
+      tags:
+        - Organizations
+      summary: Paginated overview of authorized linked projects
+      description: Roster, board, wiki and own-session counts per project. Authorized for the intersection of current organization links, the calling agent project scope (organization capabilities) and the acting user project ACL. Sessions are limited to the acting user. Free text is redacted and truncated.
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+        - schema:
+            type: integer
+            nullable: true
+            minimum: 0
+            maximum: 9007199254740991
+            default: 0
+          required: false
+          name: offset
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+          required: false
+          name: limit
+          in: query
+      responses:
+        "200":
+          description: Overview page.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  serverId:
+                    type: string
+                  organizationId:
+                    type: string
+                  retrievedAt:
+                    type: string
+                  offset:
+                    type: number
+                  nextOffset:
+                    type: number
+                    nullable: true
+                  agentId:
+                    type: string
+                    nullable: true
+                  projects:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        source:
+                          $ref: "#/components/schemas/OrganizationContextSource"
+                        timestamp:
+                          type: string
+                          nullable: true
+                        agents:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              id:
+                                type: string
+                              name:
+                                type: string
+                              role:
+                                type: string
+                                nullable: true
+                            required:
+                              - id
+                              - name
+                              - role
+                        agentCount:
+                          type: number
+                        agentsTruncated:
+                          type: boolean
+                        board:
+                          type: object
+                          properties:
+                            columns:
+                              type: array
+                              items:
+                                type: object
+                                properties:
+                                  name:
+                                    type: string
+                                  count:
+                                    type: number
+                                required:
+                                  - name
+                                  - count
+                              description: At most 20 columns; see columnCount/columnsTruncated.
+                            columnCount:
+                              type: number
+                            columnsTruncated:
+                              type: boolean
+                            openCards:
+                              type: number
+                            totalCards:
+                              type: number
+                            epics:
+                              type: number
+                            phases:
+                              type: number
+                          required:
+                            - columns
+                            - columnCount
+                            - columnsTruncated
+                            - openCards
+                            - totalCards
+                            - epics
+                            - phases
+                        wiki:
+                          type: object
+                          properties:
+                            pages:
+                              type: number
+                            updatedAt:
+                              type: string
+                              nullable: true
+                          required:
+                            - pages
+                            - updatedAt
+                        sessions:
+                          type: object
+                          properties:
+                            own:
+                              type: number
+                            updatedAt:
+                              type: string
+                              nullable: true
+                          required:
+                            - own
+                            - updatedAt
+                      required:
+                        - id
+                        - name
+                        - source
+                        - timestamp
+                        - agents
+                        - agentCount
+                        - agentsTruncated
+                        - board
+                        - wiki
+                        - sessions
+                required:
+                  - serverId
+                  - organizationId
+                  - retrievedAt
+                  - offset
+                  - nextOffset
+                  - agentId
+                  - projects
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication or capability missing, expired or revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Capability lacks projects:read or targets another organization.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Organization, project or record absent or not authorized.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/organizations/{organizationId}/context/search:
+    get:
+      tags:
+        - Organizations
+      summary: Search wiki pages, cards and epics across authorized linked projects
+      description: Results are cited and newest-first. Authorized for the intersection of current organization links, the calling agent project scope (organization capabilities) and the acting user project ACL. Sessions are limited to the acting user. Free text is redacted and truncated.
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+          required: false
+          name: limit
+          in: query
+        - schema:
+            type: string
+            maxLength: 2000
+            description: nextCursor from the previous page; omit for the first page.
+          required: false
+          description: nextCursor from the previous page; omit for the first page.
+          name: cursor
+          in: query
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: q
+          in: query
+        - schema:
+            type: string
+          required: false
+          name: types
+          in: query
+      responses:
+        "200":
+          description: Search page.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  serverId:
+                    type: string
+                  organizationId:
+                    type: string
+                  retrievedAt:
+                    type: string
+                  partial:
+                    type: boolean
+                    description: True when the page stopped at the per-request scan budget; fewer results does not mean the end.
+                  nextCursor:
+                    type: string
+                    nullable: true
+                    description: Opaque keyset cursor for the next page; null on the last page.
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        type:
+                          type: string
+                          enum:
+                            - wiki
+                            - cards
+                            - epics
+                        id:
+                          type: string
+                        title:
+                          type: string
+                        snippet:
+                          type: string
+                        source:
+                          $ref: "#/components/schemas/OrganizationContextSource"
+                        timestamp:
+                          type: string
+                          nullable: true
+                      required:
+                        - type
+                        - id
+                        - title
+                        - snippet
+                        - source
+                        - timestamp
+                required:
+                  - serverId
+                  - organizationId
+                  - retrievedAt
+                  - partial
+                  - nextCursor
+                  - results
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication or capability missing, expired or revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Capability lacks projects:read or targets another organization.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Organization, project or record absent or not authorized.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/organizations/{organizationId}/context/projects/{projectId}/{resource}:
+    get:
+      tags:
+        - Organizations
+      summary: List one resource of an authorized linked project
+      description: agents, cards, epics, phases, wiki pages or the acting user sessions. Authorized for the intersection of current organization links, the calling agent project scope (organization capabilities) and the acting user project ACL. Sessions are limited to the acting user. Free text is redacted and truncated.
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            enum:
+              - agents
+              - cards
+              - epics
+              - phases
+              - wiki
+              - sessions
+          required: true
+          name: resource
+          in: path
+        - schema:
+            type: integer
+            nullable: true
+            minimum: 0
+            maximum: 9007199254740991
+            default: 0
+          required: false
+          name: offset
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+          required: false
+          name: limit
+          in: query
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: false
+          name: q
+          in: query
+        - schema:
+            type: string
+            maxLength: 2000
+            description: "With q (or a card column filter): nextCursor from the previous page. Filtered results are cursor-paged."
+          required: false
+          description: "With q (or a card column filter): nextCursor from the previous page. Filtered results are cursor-paged."
+          name: cursor
+          in: query
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: false
+          name: column
+          in: query
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: false
+          name: epicId
+          in: query
+      responses:
+        "200":
+          description: Resource page.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  serverId:
+                    type: string
+                  organizationId:
+                    type: string
+                  retrievedAt:
+                    type: string
+                  offset:
+                    type: number
+                  nextOffset:
+                    type: number
+                    nullable: true
+                  projectId:
+                    type: string
+                  resource:
+                    type: string
+                    enum:
+                      - agents
+                      - cards
+                      - epics
+                      - phases
+                      - wiki
+                      - sessions
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        source:
+                          $ref: "#/components/schemas/OrganizationContextSource"
+                        timestamp:
+                          type: string
+                          nullable: true
+                      required:
+                        - source
+                        - timestamp
+                      additionalProperties:
+                        nullable: true
+                      description: A record with its source citation and last-update timestamp.
+                  partial:
+                    type: boolean
+                    description: "Filtered pages: the page stopped at the per-request scan budget; keep following nextCursor."
+                  nextCursor:
+                    type: string
+                    nullable: true
+                    description: "Filtered pages: opaque continuation; null on the last page."
+                required:
+                  - serverId
+                  - organizationId
+                  - retrievedAt
+                  - offset
+                  - nextOffset
+                  - projectId
+                  - resource
+                  - items
+                  - partial
+                  - nextCursor
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication or capability missing, expired or revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Capability lacks projects:read or targets another organization.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Organization, project or record absent or not authorized.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/organizations/{organizationId}/context/projects/{projectId}/{resource}/{recordId}:
+    get:
+      tags:
+        - Organizations
+      summary: Read one record of an authorized linked project on demand
+      description: Card (with recent comments), epic, wiki page (by slug) or own session status with its latest result. Authorized for the intersection of current organization links, the calling agent project scope (organization capabilities) and the acting user project ACL. Sessions are limited to the acting user. Free text is redacted and truncated.
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            enum:
+              - cards
+              - epics
+              - wiki
+              - sessions
+          required: true
+          name: resource
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: recordId
+          in: path
+      responses:
+        "200":
+          description: Record.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  serverId:
+                    type: string
+                  organizationId:
+                    type: string
+                  projectId:
+                    type: string
+                  resource:
+                    type: string
+                    enum:
+                      - cards
+                      - epics
+                      - wiki
+                      - sessions
+                  retrievedAt:
+                    type: string
+                  record:
+                    type: object
+                    properties:
+                      source:
+                        $ref: "#/components/schemas/OrganizationContextSource"
+                      timestamp:
+                        type: string
+                        nullable: true
+                    required:
+                      - source
+                      - timestamp
+                    additionalProperties:
+                      nullable: true
+                    description: A record with its source citation and last-update timestamp.
+                required:
+                  - serverId
+                  - organizationId
+                  - projectId
+                  - resource
+                  - retrievedAt
+                  - record
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication or capability missing, expired or revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Capability lacks projects:read or targets another organization.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Organization, project or record absent or not authorized.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/organizations/{organizationId}/dispatches:
+    post:
+      tags:
+        - Organizations
+      summary: Dispatch a linked project agent from an organization agent session
+      description: Organization capability only. The target session is owned by the acting user and starts at the project default (manual) Finalize level. Every outcome is recorded with provenance.
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: organizationId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrganizationDispatchRequest"
+      responses:
+        "200":
+          description: "Identical retry of an accepted request: the same target session."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationDispatch"
+        "201":
+          description: Target session created and first turn started.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationDispatch"
+        "202":
+          description: Target busy; the request is queued and re-authorized when it runs.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationDispatch"
+        "400":
+          description: Invalid body.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+        "401":
+          description: Capability missing or revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+        "403":
+          description: Dispatch tool not configured for this agent.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+        "404":
+          description: Organization, project or agent not found or outside the current scope.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+        "409":
+          description: Idempotency key reused with a different payload.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+        "422":
+          description: Target agent disabled, ineligible or failed to start.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+        "503":
+          description: Session dispatch is not ready.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+    get:
+      tags:
+        - Organizations
+      summary: List dispatch requests visible to the caller
+      description: A capability sees its own session's requests; a member login sees their own requests. Requests for projects outside current access are omitted.
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: organizationId
+          in: path
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+          required: false
+          name: limit
+          in: query
+        - schema:
+            type: integer
+            nullable: true
+            minimum: 0
+            default: 0
+          required: false
+          name: offset
+          in: query
+      responses:
+        "200":
+          description: Newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dispatches:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/OrganizationDispatch"
+                  offset:
+                    type: number
+                  nextOffset:
+                    type: number
+                    nullable: true
+                required:
+                  - dispatches
+                  - offset
+                  - nextOffset
+        "400":
+          description: Invalid pagination.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+        "404":
+          description: Organization not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+  /api/organizations/{organizationId}/sessions/{sessionId}/dispatches:
+    post:
+      tags:
+        - Organizations
+      summary: Dispatch a linked project agent from your own organization chat
+      description: Signed-in member only. The chat must be the caller's own organization session in this organization; the request is attributed to that chat's organization agent and checked against its current tools and project scope, exactly like the agent's own dispatch. A lapsed agent CLI credential does not block it.
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: organizationId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrganizationDispatchRequest"
+      responses:
+        "200":
+          description: "Identical retry of an accepted request: the same target session."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationDispatch"
+        "201":
+          description: Target session created and first turn started.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationDispatch"
+        "202":
+          description: Target busy; the request is queued and re-authorized when it runs.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationDispatch"
+        "400":
+          description: Invalid body.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+        "403":
+          description: Dispatch tool not configured for this agent.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+        "404":
+          description: Organization, chat, project or agent not found, not yours, or outside the current scope.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+        "409":
+          description: Idempotency key reused with a different payload.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+        "422":
+          description: Target agent disabled, ineligible or failed to start.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+        "503":
+          description: Session dispatch is not ready.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+  /api/organizations/{organizationId}/dispatches/{requestId}:
+    get:
+      tags:
+        - Organizations
+      summary: Status of one dispatch request
+      description: A capability reads only requests from its own initiating session; a member login reads their own requests. Requests for projects outside current access return 404.
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: organizationId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: requestId
+          in: path
+      responses:
+        "200":
+          description: Current status, target session reference and result link.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationDispatch"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+        "404":
+          description: Not found or no longer authorized.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                  dispatch:
+                    $ref: "#/components/schemas/OrganizationDispatch"
+                required:
+                  - error
+  /api/organizations:
+    get:
+      tags:
+        - Organizations
+      summary: List accessible organizations
+      description: " Scoped to the authenticated Server and current user. Organization membership never grants project access. Global API keys without a user identity cannot access this surface."
+      responses:
+        "200":
+          description: Only accessible active organizations; no unfiltered counts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  organizations:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/BusinessOrganization"
+                required:
+                  - organizations
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: An authenticated user identity is required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Organization administration requires Owner/Admin.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Resource absent or inaccessible in the authenticated Server.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: The last organization Owner cannot be removed or demoted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+    post:
+      tags:
+        - Organizations
+      summary: Create an organization with the caller as Owner
+      description: Seeds one hidden workflow workspace and one editable Organization Assistant, with Computer preference on but no desktop provisioning or scheduled work. Scoped to the authenticated Server and current user. Organization membership never grants project access. Global API keys without a user identity cannot access this surface.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+              required:
+                - name
+              additionalProperties: false
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  organization:
+                    $ref: "#/components/schemas/BusinessOrganization"
+                required:
+                  - organization
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: An authenticated user identity is required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Organization administration requires Owner/Admin.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Resource absent or inaccessible in the authenticated Server.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: The last organization Owner cannot be removed or demoted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/organizations/{organizationId}:
+    get:
+      tags:
+        - Organizations
+      summary: Read an organization
+      description: " Scoped to the authenticated Server and current user. Organization membership never grants project access. Global API keys without a user identity cannot access this surface."
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+      responses:
+        "200":
+          description: Accessible organization metadata.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  organization:
+                    $ref: "#/components/schemas/BusinessOrganization"
+                required:
+                  - organization
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: An authenticated user identity is required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Organization administration requires Owner/Admin.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Resource absent or inaccessible in the authenticated Server.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: The last organization Owner cannot be removed or demoted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+    patch:
+      tags:
+        - Organizations
+      summary: Rename an organization
+      description: " Scoped to the authenticated Server and current user. Organization membership never grants project access. Global API keys without a user identity cannot access this surface."
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+              required:
+                - name
+              additionalProperties: false
+      responses:
+        "200":
+          description: Renamed with stable identity.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  organization:
+                    $ref: "#/components/schemas/BusinessOrganization"
+                required:
+                  - organization
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: An authenticated user identity is required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Organization administration requires Owner/Admin.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Resource absent or inaccessible in the authenticated Server.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: The last organization Owner cannot be removed or demoted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+    delete:
+      tags:
+        - Organizations
+      summary: Archive an organization
+      description: Archives the hidden workflow workspace, revokes active organization turns and membership, and removes links; preserves projects and owner-private session history. Scoped to the authenticated Server and current user. Organization membership never grants project access. Global API keys without a user identity cannot access this surface.
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+      responses:
+        "200":
+          description: Archived.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: An authenticated user identity is required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Organization administration requires Owner/Admin.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Resource absent or inaccessible in the authenticated Server.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: The last organization Owner cannot be removed or demoted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/organizations/{organizationId}/members:
+    get:
+      tags:
+        - Organizations
+      summary: List organization members
+      description: " Scoped to the authenticated Server and current user. Organization membership never grants project access. Global API keys without a user identity cannot access this surface."
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+      responses:
+        "200":
+          description: Organization members.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  members:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/BusinessOrganizationMember"
+                required:
+                  - members
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: An authenticated user identity is required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Organization administration requires Owner/Admin.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Resource absent or inaccessible in the authenticated Server.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: The last organization Owner cannot be removed or demoted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/organizations/{organizationId}/members/{userId}:
+    put:
+      tags:
+        - Organizations
+      summary: Add a Server member or change their organization role
+      description: Requires organization or Server Owner/Admin. The last Owner is protected. Scoped to the authenticated Server and current user. Organization membership never grants project access. Global API keys without a user identity cannot access this surface.
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: userId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role:
+                  type: string
+                  enum:
+                    - Owner
+                    - Admin
+                    - Member
+              required:
+                - role
+              additionalProperties: false
+      responses:
+        "200":
+          description: Membership saved.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: An authenticated user identity is required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Organization administration requires Owner/Admin.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Resource absent or inaccessible in the authenticated Server.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: The last organization Owner cannot be removed or demoted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+    delete:
+      tags:
+        - Organizations
+      summary: Remove organization membership
+      description: " Scoped to the authenticated Server and current user. Organization membership never grants project access. Global API keys without a user identity cannot access this surface."
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: userId
+          in: path
+      responses:
+        "200":
+          description: Membership removed; repeated removal is a no-op.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: An authenticated user identity is required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Organization administration requires Owner/Admin.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Resource absent or inaccessible in the authenticated Server.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: The last organization Owner cannot be removed or demoted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/organizations/{organizationId}/projects:
+    get:
+      tags:
+        - Organizations
+      summary: List linked projects the caller may read
+      description: " Scoped to the authenticated Server and current user. Organization membership never grants project access. Global API keys without a user identity cannot access this surface."
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+      responses:
+        "200":
+          description: Authorized project summaries only; no hidden counts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  projects:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/BusinessOrganizationProject"
+                required:
+                  - projects
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: An authenticated user identity is required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Organization administration requires Owner/Admin.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Resource absent or inaccessible in the authenticated Server.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: The last organization Owner cannot be removed or demoted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/organizations/{organizationId}/projects/{projectId}:
+    put:
+      tags:
+        - Organizations
+      summary: Attach an accessible project
+      description: Idempotent; neither copies the project nor changes its ACL. Scoped to the authenticated Server and current user. Organization membership never grants project access. Global API keys without a user identity cannot access this surface.
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Project linked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: An authenticated user identity is required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Organization administration requires Owner/Admin.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Resource absent or inaccessible in the authenticated Server.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: The last organization Owner cannot be removed or demoted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+    delete:
+      tags:
+        - Organizations
+      summary: Detach an accessible project
+      description: Idempotent; preserves the project and other organization links. Scoped to the authenticated Server and current user. Organization membership never grants project access. Global API keys without a user identity cannot access this surface.
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Project unlinked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: An authenticated user identity is required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Organization administration requires Owner/Admin.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Resource absent or inaccessible in the authenticated Server.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: The last organization Owner cannot be removed or demoted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/organizations/project-choices:
+    get:
+      tags:
+        - Organizations
+      summary: List projects available for organization attachment
+      description: Includes independent projects. Excludes hidden/internal workspaces and inaccessible projects, using the authenticated Server registry. Scoped to the authenticated Server and current user. Organization membership never grants project access. Global API keys without a user identity cannot access this surface.
+      responses:
+        "200":
+          description: Attachable project summaries only.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  projects:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/BusinessOrganizationProject"
+                required:
+                  - projects
+        "400":
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: An authenticated user identity is required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Organization administration requires Owner/Admin.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Resource absent or inaccessible in the authenticated Server.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: The last organization Owner cannot be removed or demoted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/organizations/{organizationId}/agents:
+    get:
+      tags:
+        - Organizations
+      summary: List organization agents, including disabled and archived entries for administrators
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+      responses:
+        "200":
+          description: Organization roster; an empty roster is valid.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agents:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        engine:
+                          type: string
+                        model:
+                          type: string
+                        systemPrompt:
+                          type: string
+                        computerToolEnabled:
+                          type: boolean
+                        organizationScope:
+                          type: object
+                          properties:
+                            enabled:
+                              type: boolean
+                            archivedAt:
+                              type: string
+                              nullable: true
+                            projects:
+                              anyOf:
+                                - type: string
+                                  enum:
+                                    - all-linked
+                                - type: array
+                                  items:
+                                    type: string
+                            tools:
+                              type: array
+                              items:
+                                type: string
+                          required:
+                            - enabled
+                            - projects
+                            - tools
+                        organizationTemplate:
+                          type: object
+                          properties:
+                            id:
+                              type: string
+                            version:
+                              type: integer
+                          required:
+                            - id
+                            - version
+                        isAssistant:
+                          type: boolean
+                        effectiveProjectIds:
+                          type: array
+                          items:
+                            type: string
+                          description: Linked projects this agent can reach for the calling user now.
+                      required:
+                        - id
+                        - name
+                        - engine
+                        - organizationScope
+                required:
+                  - agents
+        "400":
+          description: Invalid request.
+        "401":
+          description: User identity required.
+        "403":
+          description: Organization administrator required.
+        "404":
+          description: Organization agent or session unavailable.
+    post:
+      tags:
+        - Organizations
+      summary: Create an organization agent from scratch or from an optional starter template
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                systemPrompt:
+                  type: string
+                  maxLength: 32000
+                model:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                tools:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                      - projects:read
+                      - dispatch
+                      - artifacts
+                      - credentials
+                      - skills
+                      - web
+                      - browser
+                      - computer
+                      - approvals
+                  maxItems: 18
+                projects:
+                  anyOf:
+                    - type: string
+                      enum:
+                        - all-linked
+                    - type: array
+                      items:
+                        type: string
+                        minLength: 1
+                        maxLength: 200
+                      maxItems: 500
+                  description: "'all-linked' or an explicit subset (empty allowed). Explicit IDs must be linked and visible to the caller. Effective scope is always intersected with each session owner's current access."
+                computerToolEnabled:
+                  type: boolean
+                  description: Computer preference; requires the computer tool. Never provisions a desktop.
+                enabled:
+                  type: boolean
+                engine:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+                templateId:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+                  description: Optional starter template. Copies name and instructions only; grants no tools or projects.
+              additionalProperties: false
+      responses:
+        "201":
+          description: New agent with a stable ID. Computer is off unless explicitly enabled.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      engine:
+                        type: string
+                      model:
+                        type: string
+                      systemPrompt:
+                        type: string
+                      computerToolEnabled:
+                        type: boolean
+                      organizationScope:
+                        type: object
+                        properties:
+                          enabled:
+                            type: boolean
+                          archivedAt:
+                            type: string
+                            nullable: true
+                          projects:
+                            anyOf:
+                              - type: string
+                                enum:
+                                  - all-linked
+                              - type: array
+                                items:
+                                  type: string
+                          tools:
+                            type: array
+                            items:
+                              type: string
+                        required:
+                          - enabled
+                          - projects
+                          - tools
+                      organizationTemplate:
+                        type: object
+                        properties:
+                          id:
+                            type: string
+                          version:
+                            type: integer
+                        required:
+                          - id
+                          - version
+                      isAssistant:
+                        type: boolean
+                      effectiveProjectIds:
+                        type: array
+                        items:
+                          type: string
+                        description: Linked projects this agent can reach for the calling user now.
+                    required:
+                      - id
+                      - name
+                      - engine
+                      - organizationScope
+                required:
+                  - agent
+        "400":
+          description: Invalid request.
+        "401":
+          description: User identity required.
+        "403":
+          description: Organization administrator required.
+        "404":
+          description: Organization agent or session unavailable.
+  /api/organizations/{organizationId}/agents/{agentId}:
+    patch:
+      tags:
+        - Organizations
+      summary: Edit, disable or archive an existing organization agent without replacing its identity
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: agentId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                systemPrompt:
+                  type: string
+                  maxLength: 32000
+                model:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                tools:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                      - projects:read
+                      - dispatch
+                      - artifacts
+                      - credentials
+                      - skills
+                      - web
+                      - browser
+                      - computer
+                      - approvals
+                  maxItems: 18
+                projects:
+                  anyOf:
+                    - type: string
+                      enum:
+                        - all-linked
+                    - type: array
+                      items:
+                        type: string
+                        minLength: 1
+                        maxLength: 200
+                      maxItems: 500
+                  description: "'all-linked' or an explicit subset (empty allowed). Explicit IDs must be linked and visible to the caller. Effective scope is always intersected with each session owner's current access."
+                computerToolEnabled:
+                  type: boolean
+                  description: Computer preference; requires the computer tool. Never provisions a desktop.
+                enabled:
+                  type: boolean
+                archived:
+                  type: boolean
+              additionalProperties: false
+      responses:
+        "200":
+          description: Updated agent; history retained.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      engine:
+                        type: string
+                      model:
+                        type: string
+                      systemPrompt:
+                        type: string
+                      computerToolEnabled:
+                        type: boolean
+                      organizationScope:
+                        type: object
+                        properties:
+                          enabled:
+                            type: boolean
+                          archivedAt:
+                            type: string
+                            nullable: true
+                          projects:
+                            anyOf:
+                              - type: string
+                                enum:
+                                  - all-linked
+                              - type: array
+                                items:
+                                  type: string
+                          tools:
+                            type: array
+                            items:
+                              type: string
+                        required:
+                          - enabled
+                          - projects
+                          - tools
+                      organizationTemplate:
+                        type: object
+                        properties:
+                          id:
+                            type: string
+                          version:
+                            type: integer
+                        required:
+                          - id
+                          - version
+                      isAssistant:
+                        type: boolean
+                      effectiveProjectIds:
+                        type: array
+                        items:
+                          type: string
+                        description: Linked projects this agent can reach for the calling user now.
+                    required:
+                      - id
+                      - name
+                      - engine
+                      - organizationScope
+                required:
+                  - agent
+        "400":
+          description: Invalid request.
+        "401":
+          description: User identity required.
+        "403":
+          description: Organization administrator required.
+        "404":
+          description: Organization agent or session unavailable.
+    get:
+      tags:
+        - Organizations
+      summary: Read one organization agent with its effective project scope for the caller
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: agentId
+          in: path
+      responses:
+        "200":
+          description: Agent configuration. Members only see enabled, unarchived agents.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      engine:
+                        type: string
+                      model:
+                        type: string
+                      systemPrompt:
+                        type: string
+                      computerToolEnabled:
+                        type: boolean
+                      organizationScope:
+                        type: object
+                        properties:
+                          enabled:
+                            type: boolean
+                          archivedAt:
+                            type: string
+                            nullable: true
+                          projects:
+                            anyOf:
+                              - type: string
+                                enum:
+                                  - all-linked
+                              - type: array
+                                items:
+                                  type: string
+                          tools:
+                            type: array
+                            items:
+                              type: string
+                        required:
+                          - enabled
+                          - projects
+                          - tools
+                      organizationTemplate:
+                        type: object
+                        properties:
+                          id:
+                            type: string
+                          version:
+                            type: integer
+                        required:
+                          - id
+                          - version
+                      isAssistant:
+                        type: boolean
+                      effectiveProjectIds:
+                        type: array
+                        items:
+                          type: string
+                        description: Linked projects this agent can reach for the calling user now.
+                    required:
+                      - id
+                      - name
+                      - engine
+                      - organizationScope
+                required:
+                  - agent
+        "400":
+          description: Invalid request.
+        "401":
+          description: User identity required.
+        "403":
+          description: Organization administrator required.
+        "404":
+          description: Organization agent or session unavailable.
+  /api/organizations/{organizationId}/agent-templates:
+    get:
+      tags:
+        - Organizations
+      summary: List optional organization-agent starter templates
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+      responses:
+        "200":
+          description: Versioned starter instructions. Templates carry no permissions.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  templates:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        version:
+                          type: integer
+                        label:
+                          type: string
+                        name:
+                          type: string
+                        description:
+                          type: string
+                        instructions:
+                          type: string
+                      required:
+                        - id
+                        - version
+                        - label
+                        - name
+                        - description
+                        - instructions
+                required:
+                  - templates
+        "400":
+          description: Invalid request.
+        "401":
+          description: User identity required.
+        "403":
+          description: Organization administrator required.
+        "404":
+          description: Organization agent or session unavailable.
+  /api/organizations/{organizationId}/agents/{agentId}/sessions:
+    post:
+      tags:
+        - Organizations
+      summary: Start a private organization workflow chat using the initiating user identity
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: agentId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+              additionalProperties: false
+      responses:
+        "201":
+          description: New user-owned session; no Git workspace or background job.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session:
+                    $ref: "#/components/schemas/Session"
+                  agent:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      engine:
+                        type: string
+                      model:
+                        type: string
+                      systemPrompt:
+                        type: string
+                      computerToolEnabled:
+                        type: boolean
+                      organizationScope:
+                        type: object
+                        properties:
+                          enabled:
+                            type: boolean
+                          archivedAt:
+                            type: string
+                            nullable: true
+                          projects:
+                            anyOf:
+                              - type: string
+                                enum:
+                                  - all-linked
+                              - type: array
+                                items:
+                                  type: string
+                          tools:
+                            type: array
+                            items:
+                              type: string
+                        required:
+                          - enabled
+                          - projects
+                          - tools
+                      organizationTemplate:
+                        type: object
+                        properties:
+                          id:
+                            type: string
+                          version:
+                            type: integer
+                        required:
+                          - id
+                          - version
+                      isAssistant:
+                        type: boolean
+                      effectiveProjectIds:
+                        type: array
+                        items:
+                          type: string
+                        description: Linked projects this agent can reach for the calling user now.
+                    required:
+                      - id
+                      - name
+                      - engine
+                      - organizationScope
+                required:
+                  - session
+                  - agent
+        "400":
+          description: Invalid request.
+        "401":
+          description: User identity required.
+        "403":
+          description: Organization administrator required.
+        "404":
+          description: Organization agent or session unavailable.
+  /api/organizations/{organizationId}/sessions:
+    get:
+      tags:
+        - Organizations
+      summary: List the caller's own organization chats, including chats with archived agents
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          required: true
+          name: organizationId
+          in: path
+      responses:
+        "200":
+          description: Newest first, at most 200. Only sessions owned by the caller.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        agentId:
+                          type: string
+                        agentName:
+                          type: string
+                          nullable: true
+                        agentAvailable:
+                          type: boolean
+                          description: False when the agent is disabled, archived or removed.
+                        createdAt:
+                          type: string
+                        updatedAt:
+                          type: string
+                      required:
+                        - id
+                        - name
+                        - agentId
+                        - agentName
+                        - agentAvailable
+                        - createdAt
+                        - updatedAt
+                required:
+                  - sessions
+        "400":
+          description: Invalid request.
+        "401":
+          description: User identity required.
+        "403":
+          description: Organization administrator required.
+        "404":
+          description: Organization agent or session unavailable.
+  /api/sessions/{sessionId}/organization-memory:
+    get:
+      tags:
+        - Organizations
+      summary: Read authorized private organization memory
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Scoped to the session owner, organization and current project/tool access.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  memories:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        projectId:
+                          type: string
+                          minLength: 1
+                          maxLength: 200
+                        sourceRecord:
+                          type: string
+                          minLength: 1
+                          maxLength: 500
+                        content:
+                          type: string
+                          minLength: 1
+                          maxLength: 2000
+                        id:
+                          type: string
+                        serverId:
+                          type: string
+                        organizationId:
+                          type: string
+                        timestamp:
+                          type: string
+                      required:
+                        - projectId
+                        - sourceRecord
+                        - content
+                        - id
+                        - serverId
+                        - organizationId
+                        - timestamp
+                      additionalProperties: false
+                required:
+                  - memories
+        "400":
+          description: Invalid request.
+        "401":
+          description: User identity required.
+        "403":
+          description: Organization administrator required.
+        "404":
+          description: Organization agent or session unavailable.
+    post:
+      tags:
+        - Organizations
+      summary: Save private organization memory with project provenance
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: sessionId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                projectId:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                sourceRecord:
+                  type: string
+                  minLength: 1
+                  maxLength: 500
+                content:
+                  type: string
+                  minLength: 1
+                  maxLength: 2000
+              required:
+                - projectId
+                - sourceRecord
+                - content
+              additionalProperties: false
+      responses:
+        "201":
+          description: Scoped to the session owner, organization and current project/tool access.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  memory:
+                    type: object
+                    properties:
+                      projectId:
+                        type: string
+                        minLength: 1
+                        maxLength: 200
+                      sourceRecord:
+                        type: string
+                        minLength: 1
+                        maxLength: 500
+                      content:
+                        type: string
+                        minLength: 1
+                        maxLength: 2000
+                      id:
+                        type: string
+                      serverId:
+                        type: string
+                      organizationId:
+                        type: string
+                      timestamp:
+                        type: string
+                    required:
+                      - projectId
+                      - sourceRecord
+                      - content
+                      - id
+                      - serverId
+                      - organizationId
+                      - timestamp
+                    additionalProperties: false
+                required:
+                  - memory
+        "400":
+          description: Invalid request.
+        "401":
+          description: User identity required.
+        "403":
+          description: Organization administrator required.
+        "404":
+          description: Organization agent or session unavailable.
+  /api/orgs:
+    get:
+      tags: &a6
+        - Legacy Server Connections
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: List saved Server connections
+      responses:
+        "200":
+          description: Connections in saved order.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/LegacyOrgConnection"
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+    post:
+      tags: *a6
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: Create a Server connection (Owner)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id:
+                  type: string
+                  minLength: 1
+                name:
+                  type: string
+                  minLength: 1
+                mode:
+                  type: string
+                color:
+                  type: string
+                remoteUrl:
+                  type: string
+                apiKey:
+                  type: string
+              required:
+                - name
+      responses:
+        "201":
+          description: Created connection; creator receives Owner membership.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyOrgConnection"
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/orgs/{id}:
+    get:
+      tags: *a6
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: Get a Server connection
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Saved connection.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyOrgConnection"
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+    put:
+      tags: *a6
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: Update a Server connection
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                mode:
+                  type: string
+                color:
+                  type: string
+                remoteUrl:
+                  type: string
+                apiKey:
+                  type: string
+                position:
+                  type: number
+      responses:
+        "200":
+          description: Updated connection with stable ID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyOrgConnection"
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+    delete:
+      tags: *a6
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: Delete a Server connection (target Owner)
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Connection removed; data directory retained.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/orgs/{id}/members:
+    get:
+      tags: *a6
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: List Server members (target Admin or Owner)
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Existing Server memberships.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  orgId:
+                    type: string
+                  members:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        username:
+                          type: string
+                        role:
+                          type: string
+                          enum:
+                            - Owner
+                            - Admin
+                            - User
+                        createdAt:
+                          type: string
+                      required:
+                        - id
+                        - username
+                        - role
+                        - createdAt
+                required:
+                  - orgId
+                  - members
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/orgs/{id}/switch:
+    post:
+      tags: *a6
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: Activate an existing Server partition (target member)
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Active partition; repeated switches are a no-op. Keeps the legacy org_switched event.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  orgId:
+                    type: string
+                  projects:
+                    type: number
+                  agents:
+                    type: number
+                required:
+                  - ok
+                  - orgId
+                  - projects
+                  - agents
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "500":
+          description: Partition initialization failed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/org/switch:
+    post:
+      tags: *a6
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: Activate a Server partition using a body ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                orgId:
+                  type: string
+                  minLength: 1
+              required:
+                - orgId
+      responses:
+        "200":
+          description: Active partition.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  orgId:
+                    type: string
+                  projects:
+                    type: number
+                  agents:
+                    type: number
+                required:
+                  - ok
+                  - orgId
+                  - projects
+                  - agents
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "500":
+          description: Partition initialization failed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/servers:
+    get:
+      tags: &a7
+        - Servers
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: List saved Server connections
+      responses:
+        "200":
+          description: Connections in saved order.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ServerConnection"
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+    post:
+      tags: *a7
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: Create a Server connection (Owner)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id:
+                  type: string
+                  minLength: 1
+                name:
+                  type: string
+                  minLength: 1
+                mode:
+                  type: string
+                  enum:
+                    - local
+                    - remote
+                color:
+                  type: string
+                remoteUrl:
+                  type: string
+                apiKey:
+                  type: string
+              required:
+                - name
+      responses:
+        "201":
+          description: Created connection; creator receives Owner membership.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerConnection"
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/servers/{id}:
+    get:
+      tags: *a7
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: Get a Server connection
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Saved connection.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerConnection"
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+    put:
+      tags: *a7
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: Update a Server connection
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                mode:
+                  type: string
+                  enum:
+                    - local
+                    - remote
+                color:
+                  type: string
+                remoteUrl:
+                  type: string
+                apiKey:
+                  type: string
+                position:
+                  type: number
+      responses:
+        "200":
+          description: Updated connection with stable ID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerConnection"
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+    delete:
+      tags: *a7
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: Delete a Server connection (target Owner)
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Connection removed; data directory retained.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/servers/{id}/members:
+    get:
+      tags: *a7
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: List Server members (target Admin or Owner)
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Existing Server memberships.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  serverId:
+                    type: string
+                  members:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        username:
+                          type: string
+                        role:
+                          type: string
+                          enum:
+                            - Owner
+                            - Admin
+                            - User
+                        createdAt:
+                          type: string
+                      required:
+                        - id
+                        - username
+                        - role
+                        - createdAt
+                required:
+                  - serverId
+                  - members
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/servers/{id}/switch:
+    post:
+      tags: *a7
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: Activate an existing Server partition (target member)
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Active partition; repeated switches are a no-op. Keeps the legacy org_switched event.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  serverId:
+                    type: string
+                  projects:
+                    type: number
+                  agents:
+                    type: number
+                required:
+                  - ok
+                  - serverId
+                  - projects
+                  - agents
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "500":
+          description: Partition initialization failed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/server/switch:
+    post:
+      tags: *a7
+      description: Existing Server connection/data partition. Preserves legacy IDs, membership roles, JWT context and storage. Does not create or move business organizations or projects.
+      summary: Activate a Server partition using a body ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                serverId:
+                  type: string
+                  minLength: 1
+              required:
+                - serverId
+      responses:
+        "200":
+          description: Active partition.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  serverId:
+                    type: string
+                  projects:
+                    type: number
+                  agents:
+                    type: number
+                required:
+                  - ok
+                  - serverId
+                  - projects
+                  - agents
+        "400":
+          description: Invalid request or the last connection cannot be deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Insufficient role or target server membership.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Connection not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "500":
+          description: Partition initialization failed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
   /api/auth/me/claude-auth/browser/code:
     post:
       tags:
@@ -50859,8 +55744,8 @@ paths:
                   type: string
                   nullable: true
                   maxLength: 32
-                  description: Emoji or symbol replacing the project color marker (up to 32 UTF-16 code units). Null or empty restores the colored marker.
-                  example: 🚀
+                  description: Stored project icon name (up to 32 characters). Create uses Folder when this is omitted or empty. The app always shows a folder icon beside the project name.
+                  example: Folder
               additionalProperties:
                 nullable: true
       responses:
@@ -50975,8 +55860,8 @@ paths:
                       type: string
                       nullable: true
                       maxLength: 32
-                      description: Emoji or symbol replacing the project color marker (up to 32 UTF-16 code units). Null or empty restores the colored marker.
-                      example: 🚀
+                      description: Stored project icon name (up to 32 characters). Create uses Folder when this is omitted or empty. The app always shows a folder icon beside the project name.
+                      example: Folder
                     githubRepo:
                       type: object
                       properties:
@@ -51395,8 +56280,8 @@ paths:
                   type: string
                   nullable: true
                   maxLength: 32
-                  description: Emoji or symbol replacing the project color marker (up to 32 UTF-16 code units). Null or empty restores the colored marker.
-                  example: 🚀
+                  description: Stored project icon name (up to 32 characters). Create uses Folder when this is omitted or empty. The app always shows a folder icon beside the project name.
+                  example: Folder
                 id:
                   type: string
                   pattern: ^[a-zA-Z0-9-]+$
@@ -54206,18 +59091,29 @@ paths:
           required: true
           name: projectId
           in: path
+        - schema:
+            type: string
+            description: "Organization capabilities only: retries with the same key and payload return the same request (see POST /api/organizations/{organizationId}/dispatches)."
+          required: false
+          description: "Organization capabilities only: retries with the same key and payload return the same request (see POST /api/organizations/{organizationId}/dispatches)."
+          name: Idempotency-Key
+          in: header
       requestBody:
         content:
           application/json:
             schema:
               $ref: "#/components/schemas/DispatchSessionRequest"
       responses:
+        "200":
+          description: "Organization capability retry of an accepted request: the same target session (OrganizationDispatch body)."
         "201":
           description: Session created and first turn started.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/DispatchSessionResponse"
+        "202":
+          description: Organization capability request queued behind a busy target (OrganizationDispatch body).
         "400":
           description: Invalid body, agent or mode.
           content:
@@ -54244,8 +59140,47 @@ paths:
                     type: string
                 required:
                   - error
+        "403":
+          description: Organization capability scope denied or dispatch override forbidden.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                required:
+                  - error
         "404":
           description: Project not found or not visible.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: Organization capability reused an Idempotency-Key with a different payload.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                required:
+                  - error
+        "422":
+          description: Organization capability target agent disabled, ineligible or failed to start.
           content:
             application/json:
               schema:

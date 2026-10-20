@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createAgentPaneFeedHost,
   DESKTOP_AGENT_BUSY_MESSAGE,
+  DESKTOP_INPUT_NOT_ALLOWED_MESSAGE,
   DESKTOP_INPUT_STALE_MESSAGE,
   type AgentPaneBrowserSource,
   type AgentPaneFeedHost,
@@ -86,7 +87,9 @@ interface Setup {
 }
 const setups: Setup[] = [];
 
-function setup(opts: { key?: typeof KEY | null } = {}): Setup {
+function setup(
+  opts: { key?: typeof KEY | null; inputAllowed?: (chat: string) => boolean } = {},
+): Setup {
   const rt = createFakeDesktopRuntime();
   const browser = new FakeBrowser();
   const hub = createDesktopScreencastHub({
@@ -101,6 +104,7 @@ function setup(opts: { key?: typeof KEY | null } = {}): Setup {
       hub,
       runtime: () => rt,
       resolveKey: () => (opts.key === undefined ? KEY : opts.key),
+      ...(opts.inputAllowed ? { inputAllowed: opts.inputAllowed } : {}),
     },
   });
   const s = { host, hub, browser, rt };
@@ -297,6 +301,23 @@ describe('agent pane feed host', () => {
     ]);
     expect(browser.inputs).toHaveLength(0);
     expect(rt.wakeCalls).toBe(0);
+  });
+
+  it('refuses human desktop input once computer access is revoked', async () => {
+    let allowed = true;
+    const { host, hub, rt } = setup({ inputAllowed: () => allowed });
+    rt.state = 'running';
+    host.attach(CHAT, paneViewer().viewer);
+    await hub.tickAll();
+    await expect(host.input(CHAT, { kind: 'text', text: 'a' })).resolves.toEqual({ ok: true });
+    allowed = false;
+    const r = await host.input(CHAT, { kind: 'text', text: 'b' });
+    expect(r).toEqual({
+      ok: false,
+      code: 'no_desktop',
+      message: DESKTOP_INPUT_NOT_ALLOWED_MESSAGE,
+    });
+    expect(rt.inputs).toEqual([{ type: 'type', text: 'a' }]);
   });
 
   it('does not boot a stopped desktop for human input', async () => {

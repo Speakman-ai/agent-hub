@@ -31,6 +31,7 @@
 
 import type { Project } from './types.js';
 import type { Role } from './roles.js';
+import { isOrganizationSystemProject } from '../shared/utils/hub.js';
 
 /**
  * Resolved visibility — defaults to `'shared'` when the field is unset.
@@ -105,6 +106,8 @@ export interface VisibilityCaller {
  * real request callers fail closed after owner / explicit Owner checks.
  */
 export function canViewProject(project: Project, caller: VisibilityCaller): boolean {
+  // Organization workspaces are reachable only through their scoped runtime and owned sessions.
+  if (isOrganizationSystemProject(project)) return false;
   if (caller.localBypass) return true;
   if (caller.userId && project.ownerUserId === caller.userId) return true;
   if (caller.userId && caller.assignedProjectIds?.has(project.id)) return true;

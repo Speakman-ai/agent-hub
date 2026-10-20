@@ -1,3 +1,4 @@
+import { revalidateOrganizationAccess } from './organization-spawn-policy.js';
 import Database from 'better-sqlite3';
 import path from 'path';
 import { mkdirSync, existsSync, readFileSync, readdirSync, unlinkSync } from 'fs';
@@ -27,6 +28,10 @@ import { ORG_TODOS_SCHEMA } from './org-todos-schema.js';
 import { PROJECT_MEMBERS_SCHEMA } from './project-members-schema.js';
 import { NOTIFICATIONS_SCHEMA } from './notifications-schema.js';
 import { REMINDERS_SCHEMA } from './reminders-schema.js';
+import {
+  BUSINESS_ORGANIZATIONS_SCHEMA,
+  migrateBusinessOrganizationLinkIds,
+} from './business-organizations-schema.js';
 
 const HOME = process.env.HOME || '/home/' + (process.env.USER || 'user');
 
@@ -258,6 +263,10 @@ export function initOrgsDb(): void {
   // (project_id, user_id); FK on user_id CASCADEs from users. See
   // project-members-store.ts / project-visibility.ts.
   orgsDb.exec(PROJECT_MEMBERS_SCHEMA);
+  // Additive, rerunnable migration. Never convert Server partitions or
+  // auto-assign existing projects to a business organization.
+  orgsDb.transaction(() => orgsDb!.exec(BUSINESS_ORGANIZATIONS_SCHEMA))();
+  migrateBusinessOrganizationLinkIds(orgsDb);
   // Per-user notification inbox (bell feed). See notifications-store.ts.
   orgsDb.exec(NOTIFICATIONS_SCHEMA);
   // Per-user reminders that fire into the inbox. See reminders-store.ts.
@@ -657,6 +666,7 @@ export function getActiveOrgId(): string {
 
 export function setActiveOrgId(orgId: string): void {
   orgsStmts.setActiveOrgId.run(orgId);
+  revalidateOrganizationAccess();
 }
 
 export function getAllOrgs(): OrgRow[] {

@@ -8,6 +8,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
   needsEmailUpdate: vi.fn(),
   updateEmail: vi.fn(),
   setActiveOrgIsLocal: vi.fn(),
+  setToken: vi.fn(),
 }));
 
 (vi as any).mock('../utils/connection.js', () => ({
@@ -26,6 +27,7 @@ import {
   getAuthRecord,
   isAuthenticated,
   needsEmailUpdate,
+  setToken,
   updateEmail,
 } from '../utils/auth';
 import { getConnectionConfig, saveConnectionConfig } from '../utils/connection';
@@ -38,6 +40,7 @@ beforeEach(() => {
   (isAuthenticated as any).mockReset();
   (needsEmailUpdate as any).mockReset();
   (updateEmail as any).mockReset();
+  (setToken as any).mockReset();
   (getConnectionConfig as any).mockReset();
   (saveConnectionConfig as any).mockReset();
   (getConnectionConfig as any).mockReturnValue({ mode: 'local', remoteUrl: '', apiKey: '' });
@@ -50,6 +53,47 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   delete (window as any).electronAPI;
+});
+
+describe('AuthGate — dev email user', () => {
+  it('stores the dev session and skips the login screen', async () => {
+    (getAuthStatus as any).mockResolvedValue({
+      authConfigured: true,
+      needsEmailUpdate: true,
+      devAutoLogin: {
+        token: 'dev-email-session',
+        expiresAt: '2027-01-01T00:00:00.000Z',
+        user: {
+          id: 'dev-user',
+          email: 'dev-abc@example.com',
+          needsEmailUpdate: false,
+          role: 'Owner',
+        },
+      },
+    });
+
+    render(
+      <AuthGate>
+        <Child />
+      </AuthGate>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('app-child')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('login-screen')).toBeNull();
+    expect(screen.queryByText(/Set your email/i)).toBeNull();
+    expect(setToken).toHaveBeenCalledWith({
+      token: 'dev-email-session',
+      expiresAt: '2027-01-01T00:00:00.000Z',
+      user: {
+        id: 'dev-user',
+        email: 'dev-abc@example.com',
+        needsEmailUpdate: false,
+        role: 'Owner',
+      },
+    });
+  });
 });
 
 describe('AuthGate — local mode', () => {

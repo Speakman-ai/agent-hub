@@ -3,7 +3,8 @@
  * without importing the store.
  *
  * One row per (user, agent, project, backend): the identity of a persistent
- * computer, independent of any chat session.
+ * computer, independent of any chat session. project_id is Server-scoped
+ * (see server-profile-scope.ts) so equal ids on two Servers stay separate.
  *
  * Columns:
  *   - vm_id: stable backend resource name (Firecracker VM id). Derived from

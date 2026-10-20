@@ -19,7 +19,12 @@ import {
 import { handleBroadcastForNotifications } from './notification-fanout.js';
 import { isChatTriggerSourceType, routeBroadcastToChatTriggers } from './chat-trigger-router.js';
 import { resolveProjectIdFromEvent } from './event-project-resolver.js';
-import { shouldDeliverBroadcast } from './broadcast-filter.js';
+import { shouldDeliverBroadcast, type BroadcastFilterDeps } from './broadcast-filter.js';
+import { organizationSessionIdentity } from './organization-session-identity.js';
+import {
+  canReadOrganizationEvent,
+  canReadOrganizationWorkspaceEvent,
+} from './business-organizations-access.js';
 import { createSidebarBroadcastTagger } from './session-sidebar.js';
 import { buildBackgroundShellSnapshot } from './background-shells/background-shell-snapshot.js';
 import type { WebSocketDeps, BroadcastFn, MessageQueueRow } from './types.js';
@@ -437,6 +442,17 @@ export default function createWebSocket(
   const findProjectLocal = (projectId: string) =>
     getProjects().find((p) => p.id === projectId) ?? null;
 
+  const broadcastFilterDeps: BroadcastFilterDeps = {
+    resolveProjectId: resolveProjectIdFromEvent,
+    findProject: findProjectLocal,
+    canReadOrganizationWorkspaceEvent,
+    getOrganizationSessionIdentity: organizationSessionIdentity,
+    getSessionOwner,
+    isSharedReadableSession,
+    isOrgMember: (userId, orgId) => getMembershipRole(userId, orgId) !== null,
+    canReadOrganizationEvent,
+  };
+
   const tagSidebarBroadcast = createSidebarBroadcastTagger((sessionId) => {
     const row = stmts?.getSession.get(sessionId) as
       | { sidebar_parent_id?: string | null }
@@ -451,15 +467,7 @@ export default function createWebSocket(
       wss.clients.forEach((client: WsClient) => {
         if (client.readyState !== WsClient.OPEN) return;
         const stamp = getWsAuthVisibility(client as AuthStampedWs);
-        if (
-          !shouldDeliverBroadcast(data, stamp, {
-            resolveProjectId: resolveProjectIdFromEvent,
-            findProject: findProjectLocal,
-            getSessionOwner,
-            isSharedReadableSession,
-            isOrgMember: (userId, orgId) => getMembershipRole(userId, orgId) !== null,
-          })
-        ) {
+        if (!shouldDeliverBroadcast(data, stamp, broadcastFilterDeps)) {
           return;
         }
         client.send(msg);
@@ -514,10 +522,13 @@ export default function createWebSocket(
     //     (consistent with how those callers see every project in REST).
     const stamp: WsVisibilityStamp = {
       userId: wsAuth.userId ?? null,
+      serverId: wsAuth.orgId,
       role: wsAuth.role,
-      localBypass: Boolean(wsAuth.viaApiKey) || !wsAuth.userId,
+      localBypass: Boolean(wsAuth.localBypass || wsAuth.viaApiKey) || !wsAuth.userId,
     };
     setWsAuthVisibility(ws as AuthStampedWs, stamp);
+    const sessionSnapshotVisible = (sessionId: string) =>
+      shouldDeliverBroadcast({ sessionId }, stamp, broadcastFilterDeps);
 
     // Provisioning subscription — a dedicated URL hands this connection
     // off to the orchestrator's event stream rather than the normal
@@ -537,7 +548,9 @@ export default function createWebSocket(
       ws.send(
         JSON.stringify({
           type: 'active-tasks-snapshot',
-          tasks: buildActiveTasksSnapshotLenient(stmts!),
+          tasks: buildActiveTasksSnapshotLenient(stmts!).filter((task) =>
+            sessionSnapshotVisible(task.sessionId),
+          ),
         }),
       );
     } catch {
@@ -552,7 +565,9 @@ export default function createWebSocket(
       ws.send(
         JSON.stringify({
           type: 'awaiting-input-snapshot',
-          items: buildAwaitingInputSnapshotLenient(stmts!),
+          items: buildAwaitingInputSnapshotLenient(stmts!).filter((item) =>
+            sessionSnapshotVisible(item.sessionId),
+          ),
         }),
       );
     } catch {
@@ -562,6 +577,7 @@ export default function createWebSocket(
     try {
       const queuedSessions = stmts!.getAllQueuedSessions.all() as Array<{ session_id: string }>;
       for (const { session_id } of queuedSessions) {
+        if (!sessionSnapshotVisible(session_id)) continue;
         ws.send(
           JSON.stringify({
             type: 'queue_updated',
@@ -589,12 +605,11 @@ export default function createWebSocket(
           // recipients whose visibility stamp says they can't see the
           // project this event belongs to.
           if (
-            !shouldDeliverBroadcast(event as unknown as Record<string, unknown>, stamp, {
-              resolveProjectId: resolveProjectIdFromEvent,
-              findProject: findProjectLocal,
-              getSessionOwner,
-              isSharedReadableSession,
-            })
+            !shouldDeliverBroadcast(
+              event as unknown as Record<string, unknown>,
+              stamp,
+              broadcastFilterDeps,
+            )
           ) {
             continue;
           }
@@ -622,11 +637,7 @@ export default function createWebSocket(
     try {
       const shellRuntime = getBackgroundShellSnapshotRuntime?.();
       if (shellRuntime) {
-        const snapshot = buildBackgroundShellSnapshot(shellRuntime, stamp, {
-          resolveProjectId: resolveProjectIdFromEvent,
-          findProject: findProjectLocal,
-          getSessionOwner,
-        });
+        const snapshot = buildBackgroundShellSnapshot(shellRuntime, stamp, broadcastFilterDeps);
         ws.send(JSON.stringify(snapshot));
       }
     } catch (err) {
@@ -653,12 +664,11 @@ export default function createWebSocket(
       const finalizeEvents = buildFinalizeSnapshotEvents(stmts);
       for (const event of finalizeEvents) {
         if (
-          !shouldDeliverBroadcast(event as unknown as Record<string, unknown>, stamp, {
-            resolveProjectId: resolveProjectIdFromEvent,
-            findProject: findProjectLocal,
-            getSessionOwner,
-            isSharedReadableSession,
-          })
+          !shouldDeliverBroadcast(
+            event as unknown as Record<string, unknown>,
+            stamp,
+            broadcastFilterDeps,
+          )
         ) {
           continue;
         }
@@ -683,6 +693,7 @@ export default function createWebSocket(
     const ownerReq = {
       authUserId: getWsAuthUserId(ws as AuthStampedWs),
       authViaApiKey: Boolean(getWsAuthVisibility(ws as AuthStampedWs)?.localBypass),
+      authOrgId: getWsAuthVisibility(ws as AuthStampedWs)?.serverId,
     };
     const mayActOnSession = (sessionId: string): boolean => {
       try {

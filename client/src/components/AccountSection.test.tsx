@@ -420,6 +420,10 @@ describe('OrganizationSection — Add user button visibility', () => {
 
     const addBtn = await screen.findByRole('button', { name: /add user/i });
     expect(addBtn!).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Server members' })).toBeInTheDocument();
+    expect(
+      screen.getByText(/Invite links create Admin or User accounts on this server/),
+    ).toBeInTheDocument();
 
     fireEvent.click(addBtn as any);
 

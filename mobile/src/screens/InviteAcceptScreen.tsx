@@ -126,7 +126,8 @@ export default function InviteAcceptScreen({ route, navigation, onAccepted }: an
               <>
                 <View style={styles.preview}>
                   <Text style={styles.previewText}>
-                    You were invited to <Text style={styles.strong}>{invite.orgName}</Text> as{' '}
+                    You were invited to the server{' '}
+                    <Text style={styles.strong}>{invite.orgName}</Text> as{' '}
                     <Text style={styles.strong}>{invite.role}</Text>.
                   </Text>
                   <Text style={styles.muted}>Expires {invite.expiresAt}</Text>

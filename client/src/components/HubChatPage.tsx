@@ -259,8 +259,7 @@ export default function HubChatPage({
   assistantEnabled?: boolean;
   /**
    * The Hub assistant transcript and composer, rendered when the pinned DM is
-   * open. Null while the same transcript is mounted elsewhere (the assistant
-   * column), since it can only be on screen once.
+   * open.
    */
   assistant?: ReactNode;
 } = {}) {
@@ -1455,7 +1454,7 @@ export default function HubChatPage({
             </div>
             {assistant ?? (
               <p className="m-4 text-sm text-gray-400" data-testid="hub-chat-assistant-elsewhere">
-                The assistant conversation is open in the Assistant tab.
+                The assistant conversation is unavailable.
               </p>
             )}
           </div>
@@ -1463,7 +1462,7 @@ export default function HubChatPage({
           <div className="m-4 rounded-lg border border-gray-800 bg-gray-900 p-6">
             <h3 className="text-lg font-semibold text-white">Agent Hub chat</h3>
             <p className="mt-2 max-w-xl text-sm text-gray-400">
-              Message people in your organization directly or in shared channels.
+              Message people on this server directly or in shared channels.
             </p>
             <div className="mt-4 flex gap-2">
               <button

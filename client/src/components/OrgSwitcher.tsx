@@ -93,7 +93,7 @@ export default function OrgSwitcher({ onNavigateSettings }: any) {
               className="w-full flex items-center gap-2 px-3 py-2 text-xs text-gray-400 hover:text-gray-200 hover:bg-gray-700/30 transition-colors"
             >
               <Settings size={12} />
-              Manage Organizations
+              Manage Servers
             </button>
           </div>
         </div>

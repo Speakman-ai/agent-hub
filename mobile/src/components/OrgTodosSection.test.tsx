@@ -158,6 +158,8 @@ describe('OrgTodosSection (mobile) — mutation response never overwrites a newe
     });
     await act(async () => {});
     expect(texts(r)).toContain('A');
+    expect(texts(r)).toContain('Server');
+    expect(texts(r)).toContain('Shared with everyone on this server');
 
     const put = deferred<{ todo: unknown }>();
     const teammate = deferred<{ todos: unknown[] }>();
@@ -206,10 +208,10 @@ describe('OrgTodosSection (mobile) — live refresh preserves an unsaved editor 
     expect(texts(r)).toContain('Original');
 
     await act(async () => {
-      byLabel(r, 'Edit org todo')[0].props.onPress();
+      byLabel(r, 'Edit server todo')[0].props.onPress();
     });
     await act(async () => {
-      byLabel(r, 'Edit org todo title')[0].props.onChangeText('dirty draft');
+      byLabel(r, 'Edit server todo title')[0].props.onChangeText('dirty draft');
     });
 
     // Teammate refresh changes the same todo's title while the editor is open.
@@ -220,7 +222,7 @@ describe('OrgTodosSection (mobile) — live refresh preserves an unsaved editor 
     });
     await act(async () => {});
 
-    expect(byLabel(r, 'Edit org todo title')[0].props.value).toBe('dirty draft');
+    expect(byLabel(r, 'Edit server todo title')[0].props.value).toBe('dirty draft');
   });
 });
 
@@ -238,19 +240,19 @@ describe('OrgTodosSection (mobile) — failed edit keeps the draft', () => {
 
     // Enter edit mode.
     await act(async () => {
-      byLabel(r, 'Edit org todo')[0].props.onPress();
+      byLabel(r, 'Edit server todo')[0].props.onPress();
     });
     // Type a new draft title.
     await act(async () => {
-      byLabel(r, 'Edit org todo title')[0].props.onChangeText('My unsaved draft');
+      byLabel(r, 'Edit server todo title')[0].props.onChangeText('My unsaved draft');
     });
     // Attempt to save — the update rejects.
     await act(async () => {
-      byLabel(r, 'Save org todo')[0].props.onPress();
+      byLabel(r, 'Save server todo')[0].props.onPress();
     });
 
     // Editor must remain open with the draft intact.
-    const draftInput = byLabel(r, 'Edit org todo title');
+    const draftInput = byLabel(r, 'Edit server todo title');
     expect(draftInput).toHaveLength(1);
     expect(draftInput[0].props.value).toBe('My unsaved draft');
     expect(texts(r)).toContain('save failed');
@@ -272,7 +274,7 @@ describe('OrgTodosSection (mobile) — mutation errors survive the reconcile ref
     mockApi.listOrgTodos.mockResolvedValueOnce({ todos: [makeTodo('t1', 'Keep me')] });
 
     await act(async () => {
-      byLabel(r, 'Delete org todo')[0].props.onPress();
+      byLabel(r, 'Delete server todo')[0].props.onPress();
     });
     await act(async () => {});
 
@@ -365,22 +367,22 @@ describe('OrgTodosSection (mobile) — deferred save does not close a newer edit
 
     // Open row A's editor, change the title, save — the save is in flight.
     await act(async () => {
-      byLabel(r, 'Edit org todo')[0].props.onPress(); // Row A
+      byLabel(r, 'Edit server todo')[0].props.onPress(); // Row A
     });
     await act(async () => {
-      byLabel(r, 'Edit org todo title')[0].props.onChangeText('A edited');
+      byLabel(r, 'Edit server todo title')[0].props.onChangeText('A edited');
     });
     await act(async () => {
-      byLabel(r, 'Save org todo')[0].props.onPress();
+      byLabel(r, 'Save server todo')[0].props.onPress();
     });
 
     // While A's save is pending, open row B's editor (only B shows a pencil now)
     // and type a draft.
     await act(async () => {
-      byLabel(r, 'Edit org todo')[0].props.onPress(); // Row B
+      byLabel(r, 'Edit server todo')[0].props.onPress(); // Row B
     });
     await act(async () => {
-      byLabel(r, 'Edit org todo title')[0].props.onChangeText('B draft');
+      byLabel(r, 'Edit server todo title')[0].props.onChangeText('B draft');
     });
 
     // Now A's save resolves; its onSave completion must NOT close row B's editor.
@@ -390,7 +392,7 @@ describe('OrgTodosSection (mobile) — deferred save does not close a newer edit
     await act(async () => {});
 
     // Row B's editor is still open with the unsaved draft.
-    const draftInput = byLabel(r, 'Edit org todo title');
+    const draftInput = byLabel(r, 'Edit server todo title');
     expect(draftInput).toHaveLength(1);
     expect(draftInput[0].props.value).toBe('B draft');
   });
@@ -410,7 +412,7 @@ describe('OrgTodosSection (mobile) — a reconcile GET failure after a successfu
     mockApi.listOrgTodos.mockRejectedValueOnce(new Error('refresh failed'));
 
     await act(async () => {
-      byLabel(r, 'New org todo title')[0].props.onChangeText('new todo');
+      byLabel(r, 'New server todo title')[0].props.onChangeText('new todo');
     });
     await act(async () => {
       byTestId(r, 'org-todo-add')[0].props.onPress();
@@ -448,7 +450,7 @@ describe('OrgTodosSection (mobile) — deferred create does not wipe a new add-f
 
     // Submit "first todo"; the create stays pending.
     await act(async () => {
-      byLabel(r, 'New org todo title')[0].props.onChangeText('first todo');
+      byLabel(r, 'New server todo title')[0].props.onChangeText('first todo');
     });
     await act(async () => {
       byTestId(r, 'org-todo-add')[0].props.onPress();
@@ -456,7 +458,7 @@ describe('OrgTodosSection (mobile) — deferred create does not wipe a new add-f
 
     // Start typing the next todo while the create is still in flight.
     await act(async () => {
-      byLabel(r, 'New org todo title')[0].props.onChangeText('second todo');
+      byLabel(r, 'New server todo title')[0].props.onChangeText('second todo');
     });
 
     // The create resolves; its success clear must not wipe the new entry.
@@ -465,7 +467,7 @@ describe('OrgTodosSection (mobile) — deferred create does not wipe a new add-f
     });
     await act(async () => {});
 
-    expect(byLabel(r, 'New org todo title')[0].props.value).toBe('second todo');
+    expect(byLabel(r, 'New server todo title')[0].props.value).toBe('second todo');
   });
 });
 
@@ -587,7 +589,7 @@ describe('OrgTodosSection (mobile) — reorder while another row is being edited
 
     // Edit the middle row B — pinned editor, hidden from the list.
     await act(async () => {
-      byLabel(r, 'Edit org todo')[1].props.onPress();
+      byLabel(r, 'Edit server todo')[1].props.onPress();
     });
 
     mockApi.reorderOrgTodos.mockResolvedValueOnce({ todos: [] });
@@ -624,10 +626,10 @@ describe('OrgTodosSection (mobile) — a remote status transition preserves the 
 
     // Open A's editor and type an unsaved draft.
     await act(async () => {
-      byLabel(r, 'Edit org todo')[0].props.onPress();
+      byLabel(r, 'Edit server todo')[0].props.onPress();
     });
     await act(async () => {
-      byLabel(r, 'Edit org todo title')[0].props.onChangeText('A unsaved draft');
+      byLabel(r, 'Edit server todo title')[0].props.onChangeText('A unsaved draft');
     });
 
     // Another member marks A done; the refresh moves it to the completed bucket.
@@ -641,7 +643,7 @@ describe('OrgTodosSection (mobile) — a remote status transition preserves the 
     await act(async () => {});
 
     // Editor stays open with the draft intact, and the conflict is surfaced.
-    const input = byLabel(r, 'Edit org todo title');
+    const input = byLabel(r, 'Edit server todo title');
     expect(input).toHaveLength(1);
     expect(input[0].props.value).toBe('A unsaved draft');
     expect(byTestId(r, 'org-todo-edit-conflict')).toHaveLength(1);
@@ -662,18 +664,18 @@ describe('OrgTodosSection (mobile) — editor is locked while its save is in fli
     mockApi.updateOrgTodo.mockReturnValueOnce(putA.promise);
 
     await act(async () => {
-      byLabel(r, 'Edit org todo')[0].props.onPress();
+      byLabel(r, 'Edit server todo')[0].props.onPress();
     });
     await act(async () => {
-      byLabel(r, 'Edit org todo title')[0].props.onChangeText('v1');
+      byLabel(r, 'Edit server todo title')[0].props.onChangeText('v1');
     });
     await act(async () => {
-      byLabel(r, 'Save org todo')[0].props.onPress();
+      byLabel(r, 'Save server todo')[0].props.onPress();
     });
 
     // Locked while saving: inputs not editable, Cancel disabled.
-    expect(byLabel(r, 'Edit org todo title')[0].props.editable).toBe(false);
-    expect(byLabel(r, 'Edit org todo detail')[0].props.editable).toBe(false);
+    expect(byLabel(r, 'Edit server todo title')[0].props.editable).toBe(false);
+    expect(byLabel(r, 'Edit server todo detail')[0].props.editable).toBe(false);
     expect(byLabel(r, 'Cancel edit')[0].props.disabled).toBe(true);
 
     // Completing the save closes the editor cleanly.
@@ -681,7 +683,7 @@ describe('OrgTodosSection (mobile) — editor is locked while its save is in fli
       putA.resolve({ todo: makeTodo('a', 'v1') });
     });
     await act(async () => {});
-    expect(byLabel(r, 'Edit org todo title')).toHaveLength(0);
+    expect(byLabel(r, 'Edit server todo title')).toHaveLength(0);
   });
 
   it('re-enables the editor with the draft intact after a failed save', async () => {
@@ -694,18 +696,18 @@ describe('OrgTodosSection (mobile) — editor is locked while its save is in fli
     await act(async () => {});
 
     await act(async () => {
-      byLabel(r, 'Edit org todo')[0].props.onPress();
+      byLabel(r, 'Edit server todo')[0].props.onPress();
     });
     await act(async () => {
-      byLabel(r, 'Edit org todo title')[0].props.onChangeText('v1');
+      byLabel(r, 'Edit server todo title')[0].props.onChangeText('v1');
     });
     await act(async () => {
-      byLabel(r, 'Save org todo')[0].props.onPress();
+      byLabel(r, 'Save server todo')[0].props.onPress();
     });
     await act(async () => {});
 
     // Failure keeps the editor open, re-enabled, with the draft.
-    const input = byLabel(r, 'Edit org todo title')[0];
+    const input = byLabel(r, 'Edit server todo title')[0];
     expect(input.props.editable).toBe(true);
     expect(input.props.value).toBe('v1');
     expect(byLabel(r, 'Cancel edit')[0].props.disabled).toBe(false);
@@ -730,25 +732,25 @@ describe('OrgTodosSection (mobile) — a reopened editing session survives an ea
 
     // Session 1: open A, edit, Save (stays pending; A's editor locks).
     await act(async () => {
-      byLabel(r, 'Edit org todo')[0].props.onPress(); // Row A
+      byLabel(r, 'Edit server todo')[0].props.onPress(); // Row A
     });
     await act(async () => {
-      byLabel(r, 'Edit org todo title')[0].props.onChangeText('A v1');
+      byLabel(r, 'Edit server todo title')[0].props.onChangeText('A v1');
     });
     await act(async () => {
-      byLabel(r, 'Save org todo')[0].props.onPress();
+      byLabel(r, 'Save server todo')[0].props.onPress();
     });
 
     // Session 2: open B (bumps the editing session; A's editor closes).
     await act(async () => {
-      byLabel(r, 'Edit org todo')[0].props.onPress(); // only B shows a pencil now
+      byLabel(r, 'Edit server todo')[0].props.onPress(); // only B shows a pencil now
     });
     // Session 3: reopen A (bumps again; A reopens fresh/unlocked). Type a NEW draft.
     await act(async () => {
-      byLabel(r, 'Edit org todo')[0].props.onPress(); // only A shows a pencil now
+      byLabel(r, 'Edit server todo')[0].props.onPress(); // only A shows a pencil now
     });
     await act(async () => {
-      byLabel(r, 'Edit org todo title')[0].props.onChangeText('A v2 reopened');
+      byLabel(r, 'Edit server todo title')[0].props.onChangeText('A v2 reopened');
     });
 
     // The original (session-1) save resolves; it must NOT close the reopened A
@@ -758,7 +760,7 @@ describe('OrgTodosSection (mobile) — a reopened editing session survives an ea
     });
     await act(async () => {});
 
-    const input = byLabel(r, 'Edit org todo title');
+    const input = byLabel(r, 'Edit server todo title');
     expect(input).toHaveLength(1);
     expect(input[0].props.value).toBe('A v2 reopened');
   });
@@ -782,27 +784,27 @@ describe('OrgTodosSection (mobile) — concurrent writes to the same todo are se
 
     // Session 1: edit A, save S1 (PUT stays pending).
     await act(async () => {
-      byLabel(r, 'Edit org todo')[0].props.onPress();
+      byLabel(r, 'Edit server todo')[0].props.onPress();
     });
     await act(async () => {
-      byLabel(r, 'Edit org todo title')[0].props.onChangeText('S1');
+      byLabel(r, 'Edit server todo title')[0].props.onChangeText('S1');
     });
     await act(async () => {
-      byLabel(r, 'Save org todo')[0].props.onPress();
+      byLabel(r, 'Save server todo')[0].props.onPress();
     });
 
     // A→B→A, then save S2 on the reopened A.
     await act(async () => {
-      byLabel(r, 'Edit org todo')[0].props.onPress(); // B
+      byLabel(r, 'Edit server todo')[0].props.onPress(); // B
     });
     await act(async () => {
-      byLabel(r, 'Edit org todo')[0].props.onPress(); // A reopened
+      byLabel(r, 'Edit server todo')[0].props.onPress(); // A reopened
     });
     await act(async () => {
-      byLabel(r, 'Edit org todo title')[0].props.onChangeText('S2');
+      byLabel(r, 'Edit server todo title')[0].props.onChangeText('S2');
     });
     await act(async () => {
-      byLabel(r, 'Save org todo')[0].props.onPress();
+      byLabel(r, 'Save server todo')[0].props.onPress();
     });
 
     // S1's PUT in flight; S2's PUT not dispatched yet (serialized per todo).
@@ -842,29 +844,29 @@ describe('OrgTodosSection (mobile) — a stale save failure does not unlock a ne
 
     // Session 1: open A, edit, Save S1 (pending → A locks).
     await act(async () => {
-      byLabel(r, 'Edit org todo')[0].props.onPress();
+      byLabel(r, 'Edit server todo')[0].props.onPress();
     });
     await act(async () => {
-      byLabel(r, 'Edit org todo title')[0].props.onChangeText('A s1');
+      byLabel(r, 'Edit server todo title')[0].props.onChangeText('A s1');
     });
     await act(async () => {
-      byLabel(r, 'Save org todo')[0].props.onPress();
+      byLabel(r, 'Save server todo')[0].props.onPress();
     });
 
     // A→B→A: open B (session 2), reopen A (session 3, unlocked).
     await act(async () => {
-      byLabel(r, 'Edit org todo')[0].props.onPress();
+      byLabel(r, 'Edit server todo')[0].props.onPress();
     });
     await act(async () => {
-      byLabel(r, 'Edit org todo')[0].props.onPress();
+      byLabel(r, 'Edit server todo')[0].props.onPress();
     });
     await act(async () => {
-      byLabel(r, 'Edit org todo title')[0].props.onChangeText('A s3');
+      byLabel(r, 'Edit server todo title')[0].props.onChangeText('A s3');
     });
 
     // Session 3: Save S2 (pending → A locks again).
     await act(async () => {
-      byLabel(r, 'Save org todo')[0].props.onPress();
+      byLabel(r, 'Save server todo')[0].props.onPress();
     });
 
     // Stale S1 rejects — must NOT unlock the session-3 editor.
@@ -872,13 +874,13 @@ describe('OrgTodosSection (mobile) — a stale save failure does not unlock a ne
       s1.reject(new Error('s1 failed'));
     });
     await act(async () => {});
-    expect(byLabel(r, 'Edit org todo title')[0].props.editable).toBe(false);
+    expect(byLabel(r, 'Edit server todo title')[0].props.editable).toBe(false);
 
     // S2 succeeds → editor closes.
     await act(async () => {
       s2.resolve({ todo: makeTodo('a', 'A s3') });
     });
     await act(async () => {});
-    expect(byLabel(r, 'Edit org todo title')).toHaveLength(0);
+    expect(byLabel(r, 'Edit server todo title')).toHaveLength(0);
   });
 });

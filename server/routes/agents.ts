@@ -1,3 +1,4 @@
+import { isInternalSystemProject, isOrganizationSystemProject } from '../../shared/utils/hub.js';
 import { Router, Request, Response } from 'express';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'fs';
 import path from 'path';
@@ -201,7 +202,7 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     agentId: string,
   ): { project: Project; agent: Agent } | null {
     const found = findAgent(agentId);
-    if (!found) {
+    if (!found || isOrganizationSystemProject(found.project)) {
       res.status(404).json({ error: 'Agent not found' });
       return null;
     }
@@ -232,7 +233,7 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     if (
       isHubAssistantAgentId(found.agent.id) ||
       isHubAssistantRole(found.agent.role) ||
-      isHubSystemProject({ id: found.project.id, kind: found.project.kind })
+      isInternalSystemProject(found.project)
     ) {
       res.status(403).json({
         error: 'The Hub assistant is a system agent and cannot be modified or deleted.',
@@ -284,7 +285,7 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
       // would silently overwrite the Hub composer pick (and the next
       // getOrCreateHubSession would realign the live Hub chat). Matches the
       // list/PATCH/DELETE guards.
-      if (isHubSystemProject(p)) continue;
+      if (isInternalSystemProject(p)) continue;
       for (const a of p.agents) {
         if (isHubAssistantAgentId(a.id) || isHubAssistantRole(a.role)) continue;
         agentIds.push(a.id);
@@ -317,7 +318,7 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     const visibleProjectIds = new Set(
       deps
         .getProjects()
-        .filter((p) => canViewProject(p, caller))
+        .filter((p) => !isInternalSystemProject(p) && canViewProject(p, caller))
         .map((p) => p.id),
     );
     const enriched = allAgents()

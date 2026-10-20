@@ -95,7 +95,7 @@ export default function LoginServerPicker({
   };
 
   const handleSwitch = (orgId: string) =>
-    runTransition(() => switchOrg(orgId), 'Failed to switch organization');
+    runTransition(() => switchOrg(orgId), 'Failed to switch server');
 
   const handleSwitchToLocal = () =>
     runTransition(
@@ -237,7 +237,7 @@ export default function LoginServerPicker({
             <>
               {others.length > 0 && (
                 <div className="space-y-1">
-                  <div className="text-gray-500">Other organizations</div>
+                  <div className="text-gray-500">Other servers</div>
                   {others.map((org) => (
                     <button
                       key={org.id}

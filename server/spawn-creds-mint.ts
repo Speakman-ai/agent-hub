@@ -1,3 +1,7 @@
+import {
+  getOrganizationSpawnPolicy,
+  revalidateOrganizationAccess,
+} from './organization-spawn-policy.js';
 /**
  * Spawn-time minting for per-session Hub API credentials (W2).
  *
@@ -44,6 +48,7 @@ export interface EnsureSpawnCredsOpts {
  */
 export function ensureSpawnCredsForSession(opts: EnsureSpawnCredsOpts): void {
   const { sessionId, ownerUserId, cfg } = opts;
+  if (getOrganizationSpawnPolicy(sessionId)) return;
   if (cfg.apiKey) return;
   if (!sessionId.trim() || !ownerUserId.trim()) return;
 
@@ -66,6 +71,7 @@ export function ensureSpawnCredsForSession(opts: EnsureSpawnCredsOpts): void {
 /** Revoke DB keys + delete the on-disk token file. Best-effort. */
 export function cleanupSpawnCredsForSession(sessionId: string, dataDir: string): void {
   if (!sessionId.trim()) return;
+  revalidateOrganizationAccess();
   try {
     revokeApiKeysBySpawnSession(sessionId);
   } catch (err: unknown) {

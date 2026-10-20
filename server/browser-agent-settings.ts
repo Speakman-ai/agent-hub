@@ -2,6 +2,7 @@ import type { Agent, Project, SessionRow } from './types.js';
 import { resolveComputerToolEnabled } from '../shared/utils/computerTool.js';
 import { DEFAULT_TIMEOUT_MS, DEFAULT_VIEWPORT } from './browser.js';
 import type { BrowserSessionOptions } from './browser.js';
+import { activeServerProfileKey } from './desktop/server-profile-scope.js';
 
 /**
  * Resolved browser enablement: explicit per-agent flag wins; otherwise the
@@ -111,6 +112,10 @@ export function withBrowserProfile(
   if (!scope.ownerUserId || !scope.agentId || !scope.projectId) return opts;
   return {
     ...opts,
-    profile: { userId: scope.ownerUserId, agentId: scope.agentId, projectId: scope.projectId },
+    profile: activeServerProfileKey({
+      userId: scope.ownerUserId,
+      agentId: scope.agentId,
+      projectId: scope.projectId,
+    }),
   };
 }

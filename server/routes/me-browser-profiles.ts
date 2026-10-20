@@ -25,6 +25,8 @@ import {
 } from '../browser-domain-policy.js';
 import { isAgentCaller } from './approvals.js';
 import { deleteDesktopComputersWithProfile } from '../desktop/desktop-runtime-registry.js';
+import { describeProfileProjectId } from '../desktop/server-profile-scope.js';
+import { getActiveOrgId } from '../orgs.js';
 
 const UNREADABLE =
   'Saved browser state for this profile cannot be decrypted. Delete the profile to start fresh.';
@@ -33,13 +35,18 @@ export default function createMeBrowserProfilesRoutes(deps: RouteDeps): Router {
   const router = Router();
 
   function serialize(p: BrowserProfile) {
+    // Profiles are stored under a Server-scoped id; show the plain project, and only
+    // resolve names from the active Server's registry for profiles that belong to it.
+    const { projectId, inServer } = describeProfileProjectId(p.projectId, getActiveOrgId());
     let agentName = p.agentId;
-    let projectName = p.projectId;
+    let projectName = projectId;
     try {
-      const found = deps.findAgent?.(p.agentId);
-      if (found?.agent?.name) agentName = found.agent.name;
-      const project = deps.findProject?.(p.projectId);
-      if (project?.name) projectName = project.name;
+      if (inServer) {
+        const found = deps.findAgent?.(p.agentId);
+        if (found?.agent?.name) agentName = found.agent.name;
+        const project = deps.findProject?.(projectId);
+        if (project?.name) projectName = project.name;
+      }
     } catch {
       // Names are cosmetic; fall back to ids.
     }
@@ -47,7 +54,7 @@ export default function createMeBrowserProfilesRoutes(deps: RouteDeps): Router {
       id: p.id,
       agentId: p.agentId,
       agentName,
-      projectId: p.projectId,
+      projectId,
       projectName,
       domains: p.domains,
       domainPolicies: listBrowserDomainPolicies(p.id).map(({ domain, policy }) => ({

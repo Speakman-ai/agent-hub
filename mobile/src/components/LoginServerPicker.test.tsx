@@ -92,6 +92,7 @@ describe('mobile LoginServerPicker', () => {
     const onServerChangeEnd = vi.fn();
     const renderer = await renderPicker({ onSwitchOrg, onServerChangeEnd });
     await press(renderer, 'login-server-change');
+    expect(JSON.stringify(renderer.toJSON())).toContain('Other servers');
     await press(renderer, 'login-server-org-b');
     expect(onSwitchOrg).toHaveBeenCalledWith('b');
     expect(onServerChangeEnd).toHaveBeenCalledTimes(1);

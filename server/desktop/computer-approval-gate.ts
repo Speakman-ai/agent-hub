@@ -77,6 +77,7 @@ import {
   type ApprovalContext,
   type ApprovalDeps,
 } from '../approval-requests.js';
+import { activeServerProfileKey } from './server-profile-scope.js';
 
 /** Computer ops that change something on the desktop and so pass the gate. */
 /**
@@ -910,7 +911,11 @@ export function createComputerApprovalGate(
   opts: ComputerGateOptions = {},
 ): ComputerApprovalGate | undefined {
   if (!ctx.ownerUserId || !ctx.projectId) return undefined;
-  const key = { userId: ctx.ownerUserId, agentId: ctx.agentId, projectId: ctx.projectId };
+  const key = activeServerProfileKey({
+    userId: ctx.ownerUserId,
+    agentId: ctx.agentId,
+    projectId: ctx.projectId,
+  });
   const patterns = compileExecApprovalPatterns(opts.execApprovalPatterns);
 
   const policyUnavailable = (op: string, err: unknown): ComputerGateResult => {

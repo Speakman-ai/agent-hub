@@ -82,7 +82,7 @@ export default function SetupWizard({ onComplete }: { onComplete: () => Promise<
             <h1 className="text-xl font-bold text-white mb-1">Create your Hub account</h1>
             <p className="text-gray-400 text-sm">
               This email and password protect Agent Hub on this machine: API access, settings, and
-              org data. Pick something strong; you can add more users later in Settings.
+              server data. Pick something strong; you can add more users later in Settings.
             </p>
           </div>
           <form
