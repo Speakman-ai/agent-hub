@@ -42,10 +42,10 @@ import {
   LifeBuoy,
   MonitorPlay,
   ShieldAlert,
-  Building2,
   PanelLeftClose,
   Sparkles,
   MessagesSquare,
+  FolderInput,
 } from 'lucide-react';
 import { formatUnreadCount } from '../utils/googleChatPush';
 import { getServerBase } from '../utils/connection';
@@ -100,6 +100,9 @@ import type { OrganizationChatTarget } from './OrganizationAgentsPanel';
  */
 const putCollapsedProject = (projectId: string, collapsed: boolean) =>
   api.putMySidebarCollapsedProject(projectId, collapsed);
+
+const FOOTER_LINK_CLASS =
+  'w-full text-left px-3 py-2 rounded-lg flex items-center gap-2 text-sm transition-colors text-gray-400 hover:bg-gray-800/50 hover:text-gray-200';
 
 export default function Sidebar({
   /** When true, shows a loading overlay on the nav body (org switcher stays usable). */
@@ -938,6 +941,8 @@ export default function Sidebar({
                 onSelect={selectOrganization}
                 testId="sidebar-org-switch"
                 optionTestIdPrefix="sidebar-org-option"
+                manageLabel="Manage organizations"
+                onManage={() => onNavigate('organizations')}
               />
               {activeOrgSection.id === 'independent' && (
                 <p className="mt-2 px-1 text-[11px] leading-4 text-gray-500">
@@ -978,29 +983,6 @@ export default function Sidebar({
           >
             Projects
           </div>
-          {onOpenProject && (
-            <button
-              type="button"
-              data-testid="sidebar-new-project-cta"
-              onClick={onOpenProject}
-              className="w-full text-left px-3 py-1.5 mb-0.5 rounded-lg flex items-center gap-2 text-sm text-gray-200 hover:bg-gray-800/70 transition-colors"
-            >
-              <Plus size={14} className="shrink-0" aria-hidden />
-              <span>New Project</span>
-            </button>
-          )}
-          {onImportProject && (
-            <button
-              type="button"
-              data-testid="sidebar-import-project-cta"
-              onClick={onImportProject}
-              className={projectMenuLinkClass(false)}
-            >
-              <Plus size={14} className="shrink-0" aria-hidden />
-              <span>Import existing project</span>
-            </button>
-          )}
-
           {sidebarEntries.map((entry) => {
             if (entry.kind === 'org-settings') return null;
             const { project, index, sectionId } = entry;
@@ -2212,7 +2194,7 @@ export default function Sidebar({
       </div>
 
       {/* Bottom nav */}
-      <div className="border-t border-gray-800 p-3 space-y-1">
+      <div data-testid="sidebar-footer" className="border-t border-gray-800 p-3 space-y-1">
         {showAiSignInGuide && <AiSignInHint target="Settings" onDismiss={onDismissAiSignInGuide} />}
         {!showAiSignInGuide && desktopUpdateHintVersion && (
           <DesktopUpdateHint
@@ -2220,6 +2202,28 @@ export default function Sidebar({
             version={desktopUpdateHintVersion}
             onDismiss={onDismissDesktopUpdateHint}
           />
+        )}
+        {onOpenProject && (
+          <button
+            type="button"
+            data-testid="sidebar-new-project-cta"
+            onClick={onOpenProject}
+            className={FOOTER_LINK_CLASS}
+          >
+            <Plus size={16} className="shrink-0" aria-hidden />
+            <span>New Project</span>
+          </button>
+        )}
+        {onImportProject && (
+          <button
+            type="button"
+            data-testid="sidebar-import-project-cta"
+            onClick={onImportProject}
+            className={FOOTER_LINK_CLASS}
+          >
+            <FolderInput size={16} className="shrink-0" aria-hidden />
+            <span>Import existing project</span>
+          </button>
         )}
         {orgSettingsId && (
           <button
@@ -2233,35 +2237,9 @@ export default function Sidebar({
             }`}
           >
             <Settings size={16} className="shrink-0" />
-            <span className="truncate">Organization settings</span>
+            <span className="truncate">Organization Settings</span>
           </button>
         )}
-        <button
-          type="button"
-          onClick={() => onNavigate('organizations')}
-          className={`w-full text-left px-3 py-2 rounded-lg flex items-center gap-2 text-sm transition-colors ${
-            currentView === 'organizations' && !orgSettingsId
-              ? 'bg-gray-800 text-white'
-              : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
-          }`}
-        >
-          <Building2 size={16} className="shrink-0" />
-          <span>Organizations</span>
-        </button>
-        {/* Server-wide support overview; per-project Support links stay in each project menu. */}
-        <button
-          type="button"
-          data-testid="sidebar-support-overview"
-          onClick={() => openHubPane('support')}
-          className={`w-full text-left px-3 py-2 rounded-lg flex items-center gap-2 text-sm transition-colors ${
-            activeHubPane === 'support'
-              ? 'bg-gray-800 text-white'
-              : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
-          }`}
-        >
-          <LifeBuoy size={16} className="shrink-0" />
-          <span>Support</span>
-        </button>
         <button
           onClick={() => onNavigate('settings')}
           className={`w-full text-left px-3 py-3 md:py-2 rounded-lg flex items-center gap-2 text-sm transition-colors min-h-[44px] ${

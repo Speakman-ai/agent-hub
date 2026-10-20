@@ -158,17 +158,12 @@ describe('Sidebar — Hub nav (global home)', () => {
     const hub = screen.getByTestId('sidebar-global-hub');
     const connected = screen.getByTestId('sidebar-connection-status');
     expect(hub.compareDocumentPosition(connected) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(
-      screen
-        .getByTestId('sidebar-home-heading')
-        .compareDocumentPosition(screen.getByRole('button', { name: /^Organizations$/ })) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
   });
 
   it('reaches every Hub pane from the sidebar', () => {
     // Keyed by pane so adding a pane without a sidebar destination fails typecheck.
-    const destinations: Record<HubWorkspacePane, string> = {
+    // Support has no sidebar shortcut; per-project Support links cover it.
+    const destinations: Record<Exclude<HubWorkspacePane, 'support'>, string> = {
       today: 'sidebar-home-dashboard',
       chat: 'sidebar-chat',
       todos: 'sidebar-home-todos',
@@ -176,21 +171,22 @@ describe('Sidebar — Hub nav (global home)', () => {
       calendar: 'sidebar-home-calendar',
       mail: 'sidebar-home-mail',
       org: 'sidebar-home-server',
-      support: 'sidebar-support-overview',
     };
     const onNavigate = vi.fn();
     const onOpenChat = vi.fn();
     render(<Sidebar {...buildProps({ onNavigate, onOpenChat })} />);
     for (const pane of HUB_WORKSPACE_PANES) {
+      if (pane === 'support') continue;
       fireEvent.click(screen.getByTestId(destinations[pane]));
       if (pane === 'chat') expect(onOpenChat).toHaveBeenCalled();
       else expect(onNavigate).toHaveBeenLastCalledWith('hub', pane);
     }
   });
 
-  it('highlights the support overview when it is open', () => {
-    render(<Sidebar {...buildProps({ currentView: 'hub', hubPane: 'support' })} />);
-    expect(screen.getByTestId('sidebar-support-overview')).toHaveClass('bg-gray-800');
+  it('has no Organizations or Support buttons in the footer', () => {
+    render(<Sidebar {...buildProps()} />);
+    expect(screen.queryByRole('button', { name: /^Organizations$/ })).toBeNull();
+    expect(screen.queryByTestId('sidebar-support-overview')).toBeNull();
   });
 
   it('navigates to the dashboard', () => {
@@ -922,6 +918,15 @@ describe('Sidebar — New Project + Import existing project CTAs', () => {
     expect(onImportProject!).toHaveBeenCalledTimes(1);
     // Primary CTA wasn't triggered a second time.
     expect(onOpenProject!).toHaveBeenCalledTimes(1);
+  });
+
+  it('puts both CTAs in the footer above Settings', () => {
+    render(<Sidebar {...buildProps({ onOpenProject: vi.fn(), onImportProject: vi.fn() })} />);
+    const footer = screen.getByTestId('sidebar-footer');
+    const labels = within(footer)
+      .getAllByRole('button')
+      .map((b) => b.textContent?.trim());
+    expect(labels.slice(0, 3)).toEqual(['New Project', 'Import existing project', 'Settings']);
   });
 });
 
@@ -1922,14 +1927,6 @@ describe('Sidebar project icons', () => {
   });
 });
 
-it('opens Organizations without replacing the normal project list', () => {
-  const props = buildProps();
-  render(<Sidebar {...props} />);
-  fireEvent.click(screen.getByRole('button', { name: /^Organizations$/ }));
-  expect(props.onNavigate).toHaveBeenCalledWith('organizations');
-  expect(screen.getByText('Test Project')).toBeTruthy();
-});
-
 describe('Sidebar organization sections', () => {
   const org = {
     id: 'org-1',
@@ -2018,6 +2015,16 @@ describe('Sidebar organization sections', () => {
     expect(onNavigate).toHaveBeenCalledWith('organizations', 'org-1');
   });
 
+  it('opens the Organizations page from the organization switcher', async () => {
+    vi.spyOn(api.organizations, 'linked').mockResolvedValue({ projects: [] });
+    const onNavigate = vi.fn();
+    render(<Sidebar {...buildProps({ onNavigate })} />);
+
+    fireEvent.click(await screen.findByTestId('sidebar-org-switch'));
+    fireEvent.click(screen.getByTestId('sidebar-org-switch-manage'));
+    expect(onNavigate).toHaveBeenCalledWith('organizations');
+  });
+
   it('keeps an unlinked project on the Independent option', async () => {
     vi.spyOn(api.organizations, 'linked').mockResolvedValue({ projects: [] });
     render(<Sidebar {...buildProps()} />);
@@ -2028,7 +2035,7 @@ describe('Sidebar organization sections', () => {
     fireEvent.click(select);
     fireEvent.click(screen.getByTestId('sidebar-org-option-independent'));
     expect(screen.getByTestId(`sidebar-project-row-${PROJECT_ID}`)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Organization settings' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Organization Settings' })).not.toBeInTheDocument();
     expect(screen.queryByTestId('sidebar-org-agents-heading')).not.toBeInTheDocument();
   });
 

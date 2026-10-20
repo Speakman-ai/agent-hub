@@ -5519,6 +5519,13 @@ const SETTINGS_TABS = [
   { id: 'approvals', iconName: 'ShieldCheck', text: 'Approvals' },
   { id: 'organization', iconName: 'Users', text: 'Server Members' },
   { id: 'orgs', iconName: 'Building2', text: 'Servers' },
+  // Opens the Organizations page rather than a settings section.
+  {
+    id: 'organizations',
+    iconName: 'Building2',
+    text: 'Organizations',
+    navigateTo: 'organizations',
+  },
   // Host-wide Gemini API key (used for wiki embeddings; managed in
   // ~/.agent-hub/data/config.json). Per-user Claude/Cursor/Codex creds live
   // on Settings → Account, so this tab is gated to Admin/Owner via
@@ -5706,6 +5713,12 @@ export default function SettingsPage({
   // unsaved-edit prompt. Preview moved to the per-project sidebar, so no
   // settings tab registers a guard anymore and the machinery was dropped.
   const handleSelectTab = (id: any) => {
+    const target = SETTINGS_TABS.find((t: any) => t.id === id) as any;
+    if (target?.navigateTo) {
+      setMobileNavOpen(false);
+      onNavigate?.(target.navigateTo);
+      return;
+    }
     if (id === tab) {
       setMobileNavOpen(false);
       return;

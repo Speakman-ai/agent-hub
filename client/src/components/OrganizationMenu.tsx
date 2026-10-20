@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
-import { Building2, Check, ChevronDown, Folder } from 'lucide-react';
+import { Building2, Check, ChevronDown, Folder, Settings } from 'lucide-react';
 
 export interface OrganizationMenuOption {
   id: string;
@@ -25,6 +25,8 @@ export default function OrganizationMenu({
   renderMark,
   disabled = false,
   id,
+  manageLabel,
+  onManage,
 }: {
   options: OrganizationMenuOption[];
   selectedId: string | null;
@@ -37,6 +39,9 @@ export default function OrganizationMenu({
   renderMark?: (option: OrganizationMenuOption) => ReactNode;
   disabled?: boolean;
   id?: string;
+  /** Optional action row under the options, e.g. a link to the Organizations page. */
+  manageLabel?: string;
+  onManage?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -179,6 +184,22 @@ export default function OrganizationMenu({
               );
             })}
           </div>
+          {onManage && manageLabel && (
+            <div className="border-t border-gray-800 p-1">
+              <button
+                type="button"
+                data-testid={`${testId}-manage`}
+                onClick={() => {
+                  close();
+                  onManage();
+                }}
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-gray-400 transition-colors hover:bg-gray-800/70 hover:text-white"
+              >
+                <Settings size={14} className="flex-shrink-0" />
+                <span className="truncate">{manageLabel}</span>
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

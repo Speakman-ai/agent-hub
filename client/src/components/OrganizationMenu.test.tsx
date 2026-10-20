@@ -40,4 +40,28 @@ describe('OrganizationMenu', () => {
     fireEvent.change(screen.getByLabelText('Search organizations'), { target: { value: 'zzz' } });
     expect(screen.getByText('No matches')).toBeInTheDocument();
   });
+
+  it('runs the manage action from the open menu and closes it', () => {
+    const onManage = vi.fn();
+    render(
+      <OrganizationMenu
+        options={options}
+        selectedId="org-1"
+        onSelect={vi.fn()}
+        testId="org-switch"
+        manageLabel="Manage organizations"
+        onManage={onManage}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('org-switch'));
+    fireEvent.click(screen.getByRole('button', { name: 'Manage organizations' }));
+    expect(onManage).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('org-switch-search')).not.toBeInTheDocument();
+  });
+
+  it('omits the manage row without an action', () => {
+    render(<OrganizationMenu options={options} selectedId="org-1" onSelect={vi.fn()} />);
+    fireEvent.click(screen.getByLabelText('Organization'));
+    expect(screen.queryByTestId('organization-menu-manage')).not.toBeInTheDocument();
+  });
 });

@@ -174,7 +174,7 @@ function ProjectOrganizations({ projectId, state, controller }: Props & { projec
     <div className="space-y-3">
       {!state.organizations.length && (
         <p className="text-sm text-gray-400">
-          No organizations available. Create one explicitly from Organizations in the sidebar.
+          No organizations available. Create one from Settings → Organizations.
         </p>
       )}
       {!accessible && (

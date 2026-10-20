@@ -606,6 +606,16 @@ describe('SettingsPage — sidebar navigation', () => {
     });
   });
 
+  it('opens the Organizations page from the settings sidebar', () => {
+    const onNavigate = vi.fn();
+    const { getAllByLabelText } = render(
+      <SettingsPage projects={[]} agents={[]} onNavigate={onNavigate} />,
+    );
+    const nav = getAllByLabelText('Settings sections')[0];
+    fireEvent.click(within(nav).getByRole('button', { name: 'Organizations' }));
+    expect(onNavigate).toHaveBeenCalledWith('organizations');
+  });
+
   it('opens the Notifications tab with the preference matrix', async () => {
     const { findByTestId } = render(
       <SettingsPage projects={[]} agents={[]} initialTab="notifications" />,
