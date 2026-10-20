@@ -53,7 +53,9 @@ import type { StepRunResult } from './step-runner.js';
 import type { FixDispatchResult } from './fix-dispatch.js';
 import type { CardLifecycle } from './card-lifecycle.js';
 import {
+  __clearFinalizeRunAbortRegistry,
   createFinalizeRunSignal,
+  isFinalizeRunLive,
   registerFinalizeRunAbort,
   unregisterFinalizeRunAbort,
 } from './run-abort-registry.js';
@@ -3679,6 +3681,43 @@ describe('runFinalize — §10 double-reclaim survival (generation cap > 1)', ()
     expect(gen0).toBeDefined();
     expect(gen1).toBeDefined();
     expect(gen2).toBeDefined();
+  });
+
+  it('keeps every infra retry row live to the stuck-run reaper while it is being driven', async () => {
+    // A retry row opened inside runFinalize must read as live. Otherwise the
+    // reaper fails it as orphaned once its steps wait on runner capacity, while
+    // the orchestrator keeps running and holding the session worktree lock.
+    process.env.FINALIZE_MAX_INFRA_RETRY_GENERATIONS = '2';
+    let rebaseCalls = 0;
+    const liveDuringAttempt: Array<Record<string, boolean>> = [];
+    const { deps, stmts } = makeDeps({
+      runRebasePhase: vi.fn(async () => {
+        rebaseCalls += 1;
+        const rows = Array.from(stmts.rows.values());
+        // Kickoff registers only the first row id, as trigger-run does.
+        if (rebaseCalls === 1) registerFinalizeRunAbort(rows[0]!.id, () => {});
+        liveDuringAttempt.push(
+          Object.fromEntries(rows.map((r) => [r.id, isFinalizeRunLive(r.id)])),
+        );
+        if (rebaseCalls <= 2) throw new Error('agent reclaimed');
+        return REBASE_OK;
+      }) as never,
+    });
+    try {
+      const result = await runFinalize(deps, baseOpts());
+      expect(result.kind).toBe('ready_to_push');
+      const rows = Array.from(stmts.rows.values());
+      const gen0 = rows.find((r) => !r.retry_of_run_id)!;
+      const gen1 = rows.find((r) => r.retry_of_run_id === gen0.id)!;
+      const gen2 = rows.find((r) => r.retry_of_run_id === gen1.id)!;
+      expect(liveDuringAttempt[1]![gen1.id]).toBe(true);
+      expect(liveDuringAttempt[2]![gen2.id]).toBe(true);
+      // Kickoff's settle-time unregister of the first id clears the whole chain.
+      unregisterFinalizeRunAbort(gen0.id);
+      expect([gen0, gen1, gen2].map((r) => isFinalizeRunLive(r.id))).toEqual([false, false, false]);
+    } finally {
+      __clearFinalizeRunAbortRegistry();
+    }
   });
 
   it('still terminates infra_error if EVERY attempt up to the cap fails (cap=2 → 3 attempts)', async () => {

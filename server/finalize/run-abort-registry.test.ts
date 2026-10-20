@@ -3,6 +3,7 @@ import {
   createFinalizeRunSignal,
   isFinalizeRunLive,
   registerFinalizeRunAbort,
+  inheritFinalizeRunAbort,
   unregisterFinalizeRunAbort,
   abortFinalizeRunInProcess,
   __clearFinalizeRunAbortRegistry,
@@ -101,6 +102,33 @@ describe('run-abort-registry', () => {
       unregisterFinalizeRunAbort('run-1');
       expect(abortFinalizeRunInProcess('run-1')).toBe(false);
       expect(signal.aborted).toBe(false);
+    });
+  });
+
+  describe('inheritFinalizeRunAbort', () => {
+    it('makes a retry row live and cancellable through the parent handle', () => {
+      let tripped = 0;
+      registerFinalizeRunAbort('root', () => {
+        tripped++;
+      });
+      expect(inheritFinalizeRunAbort('root', 'retry-1')).toBe(true);
+      expect(inheritFinalizeRunAbort('retry-1', 'retry-2')).toBe(true);
+      expect(isFinalizeRunLive('retry-2')).toBe(true);
+      expect(abortFinalizeRunInProcess('retry-2')).toBe(true);
+      expect(tripped).toBe(1);
+    });
+
+    it('clears the whole retry chain when the root unregisters', () => {
+      registerFinalizeRunAbort('root', () => {});
+      inheritFinalizeRunAbort('root', 'retry-1');
+      inheritFinalizeRunAbort('retry-1', 'retry-2');
+      unregisterFinalizeRunAbort('root');
+      expect(['root', 'retry-1', 'retry-2'].map(isFinalizeRunLive)).toEqual([false, false, false]);
+    });
+
+    it('is a no-op when the parent is not registered in this process', () => {
+      expect(inheritFinalizeRunAbort('unknown', 'retry-1')).toBe(false);
+      expect(isFinalizeRunLive('retry-1')).toBe(false);
     });
   });
 });

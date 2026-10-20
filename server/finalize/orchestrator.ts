@@ -149,6 +149,7 @@ import { loadActiveQuarantine, recordRunTestHistory } from './quarantine-gate.js
 import { applyQuarantineToGate, describeExcused } from './quarantine.js';
 import { computeIdempotencyKey, DEFAULT_CI_CONFIG_RELATIVE_PATH } from './finalize-keys.js';
 import { inspectBaseDrift, resolveBaseSha } from './base-drift.js';
+import { inheritFinalizeRunAbort } from './run-abort-registry.js';
 import {
   decideBaseDriftAction,
   fastFallbackNote,
@@ -2825,6 +2826,7 @@ export async function runFinalize(
       { projectId: opts.project.id, runId: retry.runId, triggerSource: opts.triggerSource },
     );
 
+    inheritFinalizeRunAbort(currentRunId, retry.runId);
     currentRetryOf = currentRunId;
     currentRunId = retry.runId;
     attemptSessionId = inheritSessionId;

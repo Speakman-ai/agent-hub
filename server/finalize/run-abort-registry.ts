@@ -59,6 +59,11 @@ export function createFinalizeRunSignal(): { signal: CancelSignal; abort: () => 
 const abortFns = new Map<string, () => void>();
 // Aborting requests shutdown; only the orchestrator finally confirms settlement.
 const liveRuns = new Set<string>();
+// Infra retry rows opened inside the same runFinalize call, keyed by the run id
+// the kickoff registered. Kickoff only knows that first id, so its settle-time
+// unregister has to clear the retries too.
+const retryRunsByRoot = new Map<string, Set<string>>();
+const rootByRetryRun = new Map<string, string>();
 
 /** Associate an abort handle with a live run so cancel can find it. */
 export function registerFinalizeRunAbort(runId: string, abort: () => void): void {
@@ -72,6 +77,37 @@ export function unregisterFinalizeRunAbort(runId: string): void {
   if (!runId) return;
   abortFns.delete(runId);
   liveRuns.delete(runId);
+  for (const retryId of retryRunsByRoot.get(runId) ?? []) {
+    abortFns.delete(retryId);
+    liveRuns.delete(retryId);
+    rootByRetryRun.delete(retryId);
+  }
+  retryRunsByRoot.delete(runId);
+}
+
+/**
+ * Carry a live registration from a parent run to the infra retry row the
+ * orchestrator just opened for it. The retry is driven by the same
+ * orchestrator and the same cancel signal, so it shares the parent's abort
+ * handle. Without this the retry row reads as orphaned to the stuck-run
+ * reaper, which fails it while the orchestrator is still running its checks.
+ * Returns false (no-op) when the parent is not registered in this process.
+ */
+export function inheritFinalizeRunAbort(parentRunId: string, retryRunId: string): boolean {
+  if (!parentRunId || !retryRunId) return false;
+  const abort = abortFns.get(parentRunId);
+  if (!abort || !liveRuns.has(parentRunId)) return false;
+  const root = rootByRetryRun.get(parentRunId) ?? parentRunId;
+  abortFns.set(retryRunId, abort);
+  liveRuns.add(retryRunId);
+  rootByRetryRun.set(retryRunId, root);
+  let retries = retryRunsByRoot.get(root);
+  if (!retries) {
+    retries = new Set();
+    retryRunsByRoot.set(root, retries);
+  }
+  retries.add(retryRunId);
+  return true;
 }
 
 /**
@@ -107,4 +143,6 @@ export function abortFinalizeRunInProcess(runId: string): boolean {
 export function __clearFinalizeRunAbortRegistry(): void {
   abortFns.clear();
   liveRuns.clear();
+  retryRunsByRoot.clear();
+  rootByRetryRun.clear();
 }
