@@ -311,14 +311,19 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // 4.13.5 (it subsumes the 4.12.34 fix). hono is transitive via
     // @hono/node-server (`^4`) and @modelcontextprotocol/sdk (`^4.11.4`), both
     // of which admit 4.13.x, so this is a plain re-resolve with no override.
+    //
+    // GHSA-5r4p-p66f-jhc7 (4.13.11): serveStatic decoded the request path a
+    // second time, so encoded paths slipped past middleware scoped to static
+    // routes. The floor moves to 4.13.11, which subsumes everything above.
     {
       pkg: 'hono',
-      min: '4.13.5',
+      min: '4.13.11',
       advisory: [
         'GHSA-8j4g-w8fx-2239',
         'GHSA-gqvv-2mrq-wpjv',
         'GHSA-g6gw-c38x-mqfc',
         'GHSA-crvj-82cr-hjcx',
+        'GHSA-5r4p-p66f-jhc7',
       ],
     },
     // GHSA-frvp-7c67-39w9: serve-static path traversal via encoded backslash.
