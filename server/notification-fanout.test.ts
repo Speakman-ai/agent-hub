@@ -553,6 +553,7 @@ describe('mapBroadcastToNotification: PR environment ready', () => {
     projectId: 'p1',
     prNumber: 12,
     headBranch: 'feat/x',
+    headSha: 'abc123',
     url: 'https://pr-12--p1.example.com',
     readyAt: '2026-10-20T10:00:00.000Z',
   };
@@ -571,7 +572,7 @@ describe('mapBroadcastToNotification: PR environment ready', () => {
     }
   });
 
-  it('notifies the addressed users once per build, linking the PR', () => {
+  it('notifies the addressed users once per head commit, linking the PR', () => {
     const intent = mapBroadcastToNotification({
       type: 'pr_environment_update',
       projectId: 'p1',
@@ -585,7 +586,7 @@ describe('mapBroadcastToNotification: PR environment ready', () => {
       title: 'PR #12 preview is ready',
       body: 'https://pr-12--p1.example.com',
       data: { projectId: 'p1', prNumber: 12, type: 'pr_environment_ready' },
-      sourceKey: 'pr_env_ready:env1:2026-10-20T10:00:00.000Z',
+      sourceKey: 'pr_env_ready:env1:abc123',
       recipients: { kind: 'users', userIds: ['u1', 'u2'] },
       deviceScope: 'recipients',
     });
@@ -603,22 +604,27 @@ describe('mapBroadcastToNotification: PR environment ready', () => {
     ).toMatchObject({ recipients: { kind: 'project' } });
   });
 
-  it('a rebuild that becomes ready gets a new key', () => {
-    const a = mapBroadcastToNotification({
+  const readyKey = (environment: Record<string, unknown>) =>
+    mapBroadcastToNotification({
       type: 'pr_environment_update',
       projectId: 'p1',
       prNumber: 12,
       status: 'ready',
-      environment: env,
-    });
-    const b = mapBroadcastToNotification({
-      type: 'pr_environment_update',
-      projectId: 'p1',
-      prNumber: 12,
-      status: 'ready',
-      environment: { ...env, readyAt: '2026-10-20T11:00:00.000Z' },
-    });
-    expect(a?.sourceKey).not.toBe(b?.sourceKey);
+      environment,
+    })?.sourceKey;
+
+  it('a rebuild at the same head (runner loss, wake, retry) keeps the key', () => {
+    expect(readyKey({ ...env, readyAt: '2026-10-20T11:00:00.000Z' })).toBe(readyKey(env));
+  });
+
+  it('a new head commit gets a new key', () => {
+    const next = { ...env, headSha: 'def456', readyAt: '2026-10-20T11:00:00.000Z' };
+    expect(readyKey(next)).not.toBe(readyKey(env));
+  });
+
+  it('falls back to readyAt when the head is unknown', () => {
+    const { headSha: _drop, ...noHead } = env;
+    expect(readyKey(noHead)).toBe('pr_env_ready:env1:2026-10-20T10:00:00.000Z');
   });
 });
 

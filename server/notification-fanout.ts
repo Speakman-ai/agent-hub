@@ -574,10 +574,9 @@ export function mapBroadcastToNotification(data: BroadcastData): NotificationInt
       const env = (data.environment ?? {}) as Record<string, unknown>;
       const envId = str(env.id);
       const readyAt = str(env.readyAt);
+      const headSha = str(env.headSha);
       const prNumber = typeof data.prNumber === 'number' ? data.prNumber : Number(env.prNumber);
       const projectId = str(data.projectId) ?? str(env.projectId) ?? null;
-      // Every save of a ready row re-broadcasts; readyAt changes only when a
-      // build becomes ready, so the key dedupes to one row per build.
       if (!envId || !readyAt || !projectId || !Number.isFinite(prNumber)) return null;
       const url = str(env.url);
       const branch = str(env.headBranch);
@@ -592,7 +591,10 @@ export function mapBroadcastToNotification(data: BroadcastData): NotificationInt
         body: url ?? (branch ? `Environment for ${branch} is up` : 'The PR environment is up'),
         data: { projectId, prNumber, url, type: 'pr_environment_ready' },
         projectId,
-        sourceKey: `pr_env_ready:${envId}:${readyAt}`,
+        // One notification per head commit. Spot reclaims, idle wakes and
+        // retries rebuild the same head and each sets a new readyAt; keying on
+        // readyAt announced every one of those rebuilds as a fresh preview.
+        sourceKey: `pr_env_ready:${envId}:${headSha ?? readyAt}`,
         recipients: notify.length ? { kind: 'users', userIds: notify } : { kind: 'project' },
       };
     }
