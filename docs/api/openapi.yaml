@@ -14269,6 +14269,30 @@ components:
       required:
         - error
       description: Error envelope returned when the reorder payload is malformed or references projects the caller cannot see.
+    TestSelectionSettings:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum:
+            - full
+            - dynamic
+          description: "`full` (default) runs every ci.yaml job instance. `dynamic` runs only the instances a change needs and requires `ciOnPush.enabled`. Unknown values read as `full`."
+        alwaysRun:
+          type: array
+          items:
+            type: string
+            maxLength: 200
+          maxItems: 100
+          description: Job ids that run on every selected run.
+        fullRunPaths:
+          type: array
+          items:
+            type: string
+            maxLength: 200
+          maxItems: 100
+          description: Globs that force a full run when a changed file matches. Added to the built-in defaults (lockfiles, manifests, test-runner config, `.agent-hub/ci.yaml`, Dockerfiles, compose files, migrations).
+      description: Finalize dynamic test selection setting.
     ProjectDetail:
       type: object
       properties:
@@ -14293,6 +14317,8 @@ components:
           type: string
           nullable: true
           description: GitHub repo in `owner/repo` form (e.g. `Speakman-ai/agent-hub`). Empty/null when the project has no GitHub remote.
+        testSelection:
+          $ref: "#/components/schemas/TestSelectionSettings"
       required:
         - id
         - name
@@ -55923,6 +55949,31 @@ paths:
                   maxLength: 32
                   description: Stored project icon name (up to 32 characters). Create uses Folder when this is omitted or empty. The app always shows a folder icon beside the project name.
                   example: Folder
+                testSelection:
+                  type: object
+                  nullable: true
+                  properties:
+                    mode:
+                      type: string
+                      enum:
+                        - full
+                        - dynamic
+                      description: "`full` (default) runs every ci.yaml job instance. `dynamic` runs only the instances a change needs and requires `ciOnPush.enabled`. Unknown values read as `full`."
+                    alwaysRun:
+                      type: array
+                      items:
+                        type: string
+                        maxLength: 200
+                      maxItems: 100
+                      description: Job ids that run on every selected run.
+                    fullRunPaths:
+                      type: array
+                      items:
+                        type: string
+                        maxLength: 200
+                      maxItems: 100
+                      description: Globs that force a full run when a changed file matches. Added to the built-in defaults (lockfiles, manifests, test-runner config, `.agent-hub/ci.yaml`, Dockerfiles, compose files, migrations).
+                  description: "Merged over the stored value; `null` clears it. `mode: dynamic` is rejected with `400` unless `ciOnPush.enabled` is on, and turning `ciOnPush` off while dynamic is on is rejected the same way."
               additionalProperties:
                 nullable: true
       responses:
@@ -56459,6 +56510,31 @@ paths:
                   maxLength: 32
                   description: Stored project icon name (up to 32 characters). Create uses Folder when this is omitted or empty. The app always shows a folder icon beside the project name.
                   example: Folder
+                testSelection:
+                  type: object
+                  nullable: true
+                  properties:
+                    mode:
+                      type: string
+                      enum:
+                        - full
+                        - dynamic
+                      description: "`full` (default) runs every ci.yaml job instance. `dynamic` runs only the instances a change needs and requires `ciOnPush.enabled`. Unknown values read as `full`."
+                    alwaysRun:
+                      type: array
+                      items:
+                        type: string
+                        maxLength: 200
+                      maxItems: 100
+                      description: Job ids that run on every selected run.
+                    fullRunPaths:
+                      type: array
+                      items:
+                        type: string
+                        maxLength: 200
+                      maxItems: 100
+                      description: Globs that force a full run when a changed file matches. Added to the built-in defaults (lockfiles, manifests, test-runner config, `.agent-hub/ci.yaml`, Dockerfiles, compose files, migrations).
+                  description: "Merged over the stored value; `null` clears it. `mode: dynamic` is rejected with `400` unless `ciOnPush.enabled` is on, and turning `ciOnPush` off while dynamic is on is rejected the same way."
                 id:
                   type: string
                   pattern: ^[a-zA-Z0-9-]+$

@@ -3561,6 +3561,17 @@ export interface Project {
     hazardPaths?: string[];
   };
   /**
+   * Finalize dynamic test selection. `full` (default) runs every ci.yaml job
+   * instance; `dynamic` runs only those a change needs and requires
+   * `ciOnPush.enabled` as the full-suite backstop. `fullRunPaths` add to the
+   * built-in defaults. See `server/finalize/test-selection-policy.ts`.
+   */
+  testSelection?: {
+    mode?: 'full' | 'dynamic';
+    alwaysRun?: string[];
+    fullRunPaths?: string[];
+  };
+  /**
    * What a new push to a branch does to CI / auto-review work still running
    * (or waiting) for an older head of that same branch. `queue` (default)
    * lets the running job finish and runs only the newest pending head after

@@ -43,6 +43,10 @@ import { isOnboardingComplete, markOnboardingComplete } from '../onboarding-comp
 import { detectPreviewDefaults } from '../scaffolding/detect-preview-defaults.js';
 import { normalizeReplayConfig } from '../replays/replay-config.js';
 import { getOrCreateBoard } from './board.js';
+import {
+  checkTestSelectionBackstop,
+  parseTestSelectionPatch,
+} from '../finalize/test-selection-policy.js';
 import { createPage } from '../wiki.js';
 import { getEngineAuthStatus } from '../engine-auth-status.js';
 import { userHasEngineCreds, resolveUserCliCredOverride } from '../per-user-cli-spawn.js';
@@ -2174,6 +2178,25 @@ This workspace has no git repo and no PR automation — your job is planning, or
       }
     }
 
+    // testSelection is parsed, and its dependency on the full run after every
+    // default-branch merge checked, before any in-place mutation, like `mode`.
+    const hasTestSelection = Object.prototype.hasOwnProperty.call(
+      req.body as object,
+      'testSelection',
+    );
+    const pendingTestSelection = hasTestSelection
+      ? parseTestSelectionPatch((req.body as Record<string, unknown>).testSelection)
+      : null;
+    if (pendingTestSelection && !pendingTestSelection.ok) {
+      return res.status(400).json({ error: pendingTestSelection.error });
+    }
+    const backstopError = checkTestSelectionBackstop(project, req.body as Record<string, unknown>);
+    if (backstopError) {
+      return res
+        .status(400)
+        .json({ error: backstopError, code: 'test_selection_requires_ci_on_push' });
+    }
+
     const allowed = ['name', 'cwd', 'color', 'defaultReviewer', 'githubRepo'] as const;
     for (const key of allowed) {
       if ((req.body as Record<string, unknown>)[key] !== undefined)
@@ -2359,6 +2382,13 @@ This workspace has no git repo and no PR automation — your job is planning, or
         delete (project as Record<string, unknown>).baseDrift;
       } else {
         project.baseDrift = { ...(project.baseDrift ?? {}), ...parsed.value };
+      }
+    }
+    if (pendingTestSelection?.ok) {
+      if (pendingTestSelection.value === null) {
+        delete (project as Record<string, unknown>).testSelection;
+      } else {
+        project.testSelection = { ...(project.testSelection ?? {}), ...pendingTestSelection.value };
       }
     }
     if (Object.prototype.hasOwnProperty.call(req.body as object, 'finalizeRunner')) {

@@ -55,6 +55,27 @@ export const ProjectOrderErrorComponent = registerComponent(
     }),
 );
 
+const TestSelectionSettingsSchema = registerComponent(
+  'TestSelectionSettings',
+  z
+    .object({
+      mode: z.enum(['full', 'dynamic']).optional().openapi({
+        description:
+          '`full` (default) runs every ci.yaml job instance. `dynamic` runs only the instances a change needs and requires `ciOnPush.enabled`. Unknown values read as `full`.',
+      }),
+      alwaysRun: z
+        .array(z.string().max(200))
+        .max(100)
+        .optional()
+        .openapi({ description: 'Job ids that run on every selected run.' }),
+      fullRunPaths: z.array(z.string().max(200)).max(100).optional().openapi({
+        description:
+          'Globs that force a full run when a changed file matches. Added to the built-in defaults (lockfiles, manifests, test-runner config, `.agent-hub/ci.yaml`, Dockerfiles, compose files, migrations).',
+      }),
+    })
+    .openapi({ description: 'Finalize dynamic test selection setting.' }),
+);
+
 // ProjectDetail — minimal partial schema documenting only the fields
 // callers should be able to rely on at the OpenAPI contract layer. The
 // full Project shape (agents, githubWorkflow, prEnv, ...) is huge and
@@ -79,6 +100,7 @@ export const ProjectDetailComponent = registerComponent(
         description:
           'GitHub repo in `owner/repo` form (e.g. `Speakman-ai/agent-hub`). Empty/null when the project has no GitHub remote.',
       }),
+      testSelection: TestSelectionSettingsSchema.optional(),
     })
     .passthrough()
     .openapi({
@@ -762,6 +784,10 @@ export const ProjectUpdateRequestSchema = z
     cwd: z.string().optional(),
     color: z.string().optional(),
     icon: ProjectIconSchema,
+    testSelection: TestSelectionSettingsSchema.nullable().optional().openapi({
+      description:
+        'Merged over the stored value; `null` clears it. `mode: dynamic` is rejected with `400` unless `ciOnPush.enabled` is on, and turning `ciOnPush` off while dynamic is on is rejected the same way.',
+    }),
   })
   .passthrough();
 
