@@ -46,7 +46,7 @@ ci_ssm_deploy_instance_ids = []
 agent_hub_default_username = "admin"
 agent_hub_default_password = "auto"
 
-instance_type    = "m7i.2xlarge"
+instance_type    = "m7i.4xlarge"
 root_volume_size = 150
 
 # ── Hub data volume + daily snapshots (hub-data.tf) ──────────────────────────
