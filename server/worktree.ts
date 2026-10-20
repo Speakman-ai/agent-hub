@@ -1591,7 +1591,7 @@ async function ensureFeatureBaseBranchOnOrigin(
 ): Promise<'existed' | 'created' | 'adopted-after-race'> {
   if (await originHasBranch(cloneDir, authArgs, baseBranch)) return 'existed';
   await fetchWithRetry(
-    [...authArgs, 'fetch', 'origin', `${defaultBranch}:refs/remotes/origin/${defaultBranch}`],
+    [...authArgs, 'fetch', 'origin', `+${defaultBranch}:refs/remotes/origin/${defaultBranch}`],
     { cwd: cloneDir, timeoutMs: FETCH_TIMEOUT_MS },
   );
   const tip = await runGit(['rev-parse', `origin/${defaultBranch}`], { cwd: cloneDir });
@@ -3554,7 +3554,7 @@ async function getOrCreateProcessWorktreeUnlocked(
           ...authArgs,
           'fetch',
           'origin',
-          `${syncBranch}:refs/remotes/origin/${syncBranch}`,
+          `+${syncBranch}:refs/remotes/origin/${syncBranch}`,
           '--depth',
           '1',
         ],
@@ -3623,7 +3623,7 @@ async function getOrCreateProcessWorktreeUnlocked(
           ...authArgs,
           'fetch',
           'origin',
-          `${syncBranch}:refs/remotes/origin/${syncBranch}`,
+          `+${syncBranch}:refs/remotes/origin/${syncBranch}`,
           '--depth',
           '1',
         ],
@@ -3909,7 +3909,7 @@ async function refreshSessionCloneRemotes(opts: RefreshSessionCloneRemotesOpts):
   let baseRefRefreshed = false;
   try {
     await fetchWithRetry(
-      [...authArgs, 'fetch', 'origin', `${syncBranch}:refs/remotes/origin/${syncBranch}`],
+      [...authArgs, 'fetch', 'origin', `+${syncBranch}:refs/remotes/origin/${syncBranch}`],
       { cwd: cloneDir, timeoutMs: FETCH_TIMEOUT_MS },
     );
     baseRefRefreshed = true;
@@ -4036,7 +4036,7 @@ async function positionCloneOnExistingBranch(opts: {
     // `--depth 1` fetch would graft the head at depth 1 and strand it with no
     // shared history against the base branch.
     const shallow = await isShallowClone(cloneDir);
-    const refspec = `${branch}:refs/remotes/origin/${branch}`;
+    const refspec = `+${branch}:refs/remotes/origin/${branch}`;
     await fetchWithRetry(
       shallow
         ? [...authArgs, 'fetch', 'origin', refspec, '--depth', '1']
@@ -4203,15 +4203,14 @@ export async function checkoutAutopilotSessionBranch(
   }
 
   try {
+    // A `--depth 1` fetch into a full clone would re-shallow it and strand the
+    // new branch without a merge-base for the Finalize rebase.
+    const shallow = await isShallowClone(worktreePath);
+    const refspec = `+${defaultBranch}:refs/remotes/origin/${defaultBranch}`;
     await fetchWithRetry(
-      [
-        ...authArgs,
-        'fetch',
-        'origin',
-        `${defaultBranch}:refs/remotes/origin/${defaultBranch}`,
-        '--depth',
-        '1',
-      ],
+      shallow
+        ? [...authArgs, 'fetch', 'origin', refspec, '--depth', '1']
+        : [...authArgs, 'fetch', 'origin', refspec],
       { cwd: worktreePath, timeoutMs: FETCH_TIMEOUT_MS },
     );
     await runGit(['checkout', '-B', branch, `origin/${defaultBranch}`], { cwd: worktreePath });
@@ -4632,7 +4631,7 @@ async function ensureSessionWorkspaceUnlocked(
             ...authArgs,
             'fetch',
             'origin',
-            `${syncBranch}:refs/remotes/origin/${syncBranch}`,
+            `+${syncBranch}:refs/remotes/origin/${syncBranch}`,
             '--depth',
             '1',
           ],

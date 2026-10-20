@@ -16,6 +16,7 @@ const {
   switchSessionWorkspaceBranch,
   removeWorkspace,
   cleanupStaleWorkspaces,
+  checkoutAutopilotSessionBranch,
   __test,
 } = await import('./worktree.js');
 
@@ -1952,5 +1953,86 @@ describe('dependency install command helpers', () => {
       if (prev === undefined) delete process.env.AGENT_HUB_TEST_MODE;
       else process.env.AGENT_HUB_TEST_MODE = prev;
     }
+  });
+});
+
+describe('checkoutAutopilotSessionBranch — diverged origin/<default> tracking ref', () => {
+  // A session worktree cloned from GitHub keeps refs/remotes/origin/<default>
+  // at the GitHub tip. Autopilot then repoints origin at the Hub-hosted repo,
+  // whose default branch has diverged. A non-forced fetch refspec rejects the
+  // update as non-fast-forward and Start Autopilot fails with a 400.
+  let tmpRoot: string;
+  let originBare: string;
+  let cloneDir: string;
+
+  const git = (cwd: string, args: string): string =>
+    execSync(`git ${args}`, { cwd, stdio: 'pipe' }).toString().trim();
+
+  beforeEach(() => {
+    tmpRoot = path.join(
+      os.tmpdir(),
+      `autopilot-ff-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    mkdirSync(tmpRoot, { recursive: true });
+    originBare = path.join(tmpRoot, 'origin.git');
+    mkdirSync(originBare);
+    git(originBare, 'init --bare --initial-branch=main');
+
+    const source = path.join(tmpRoot, 'source');
+    execSync(`git clone --quiet "${originBare}" "${source}"`, { stdio: 'pipe' });
+    git(source, 'config user.email "t@example.com"');
+    git(source, 'config user.name "T"');
+    git(source, 'checkout -b main');
+    writeFileSync(path.join(source, 'README.md'), 'v1\n');
+    git(source, 'add README.md');
+    git(source, 'commit -m initial');
+    git(originBare, `fetch --quiet "${source}" +main:main`);
+
+    cloneDir = path.join(tmpRoot, 'work');
+    execSync(`git clone --quiet "${originBare}" "${cloneDir}"`, { stdio: 'pipe' });
+    git(cloneDir, 'config user.email "c@example.com"');
+    git(cloneDir, 'config user.name "C"');
+
+    // Point the local origin/main at a commit origin never had (the stale tip).
+    writeFileSync(path.join(cloneDir, 'stale.txt'), 'stale\n');
+    git(cloneDir, 'add stale.txt');
+    git(cloneDir, 'commit -m stale');
+    git(cloneDir, 'update-ref refs/remotes/origin/main HEAD');
+    git(cloneDir, 'reset --hard HEAD~1');
+
+    // Origin moves on independently, so the two tips have diverged.
+    writeFileSync(path.join(source, 'hosted.txt'), 'hosted\n');
+    git(source, 'add hosted.txt');
+    git(source, 'commit -m hosted');
+    git(originBare, `fetch --quiet "${source}" +main:main`);
+  });
+
+  afterEach(() => {
+    if (existsSync(tmpRoot)) rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('force-updates origin/<default> and cuts the new branch from the origin tip', async () => {
+    const session = { worktree_path: cloneDir, owner_user_id: null } as unknown as SessionRow;
+    const result = await checkoutAutopilotSessionBranch(
+      session,
+      'autopilot/reduce-testing-minutes',
+    );
+
+    expect(result).toEqual({ kind: 'ready', branch: 'autopilot/reduce-testing-minutes' });
+    const originTip = git(originBare, 'rev-parse main');
+    expect(git(cloneDir, 'rev-parse refs/remotes/origin/main')).toBe(originTip);
+    expect(git(cloneDir, 'rev-parse HEAD')).toBe(originTip);
+    expect(git(cloneDir, 'rev-parse --abbrev-ref HEAD')).toBe('autopilot/reduce-testing-minutes');
+  });
+
+  it('advances origin/<default> on a plain fast-forward without shallowing a full clone', async () => {
+    // Reset the stale ref so origin only moved forward, the common case.
+    git(cloneDir, 'update-ref refs/remotes/origin/main HEAD');
+    const session = { worktree_path: cloneDir, owner_user_id: null } as unknown as SessionRow;
+    const result = await checkoutAutopilotSessionBranch(session, 'autopilot/ff');
+
+    expect(result).toEqual({ kind: 'ready', branch: 'autopilot/ff' });
+    expect(git(cloneDir, 'rev-parse HEAD')).toBe(git(originBare, 'rev-parse main'));
+    expect(git(cloneDir, 'rev-parse --is-shallow-repository')).toBe('false');
   });
 });
