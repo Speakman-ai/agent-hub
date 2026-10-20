@@ -24,7 +24,6 @@ import { useSessionsViewMode } from '../hooks/useSessionsViewMode';
 import {
   ALL_OWNERS,
   ownerKeyForUser,
-  defaultOwnerFilter,
   buildOwnerOptions,
   filterSessionsByOwner,
 } from '@shared/utils/sessionOwnerFilter';
@@ -67,7 +66,7 @@ export default function DashboardScreen() {
   const accountName = currentUser?.email || currentUser?.username || 'Account';
   const currentUserKey = ownerKeyForUser(currentUser);
   const currentUserName = (currentUser && (currentUser.email || currentUser.username)) || null;
-  const [ownerFilter, setOwnerFilter] = useState(() => defaultOwnerFilter(currentUserKey));
+  const [ownerFilter, setOwnerFilter] = useState<string>(ALL_OWNERS);
   // Generation guards keyed on commit order (see
   // `@shared/utils/requestGeneration`): a result lands unless a strictly newer
   // request has already committed replacement data. A silent poll that fails

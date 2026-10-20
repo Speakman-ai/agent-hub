@@ -681,7 +681,7 @@ describe('DashboardView', () => {
     });
   });
 
-  it('defaults the active sessions filter to the current user and hides other owners', async () => {
+  it('defaults the active sessions filter to All users', async () => {
     // SAMPLE owns sess-1 by u1 (alice) and sess-2 by u2 (bob).
     localStorage.setItem(
       'agent-hub-jwt',
@@ -694,17 +694,14 @@ describe('DashboardView', () => {
       expect(screen.getByText('Refactor stream parser')).toBeInTheDocument();
     });
 
-    // Default shows only the current user's in-flight work.
     const panel = screen.getByTestId('active-sessions');
     expect(panel!).toHaveTextContent('Refactor stream parser');
-    expect(panel!).not.toHaveTextContent('Awaiting review feedback');
-    // Count reflects the filtered list.
-    expect(screen.getByText('1 in flight')).toBeInTheDocument();
-    // The filter control defaults to the current user's key.
-    expect(screen.getByTestId('active-sessions-owner-filter')).toHaveValue('id:u1');
+    expect(panel!).toHaveTextContent('Awaiting review feedback');
+    expect(screen.getByText('2 in flight')).toBeInTheDocument();
+    expect(screen.getByTestId('active-sessions-owner-filter')).toHaveValue('__all__');
   });
 
-  it('reveals every owner when the filter switches to All users', async () => {
+  it('narrows to one owner when the filter selects a user', async () => {
     localStorage.setItem(
       'agent-hub-jwt',
       JSON.stringify({ token: 't', user: { id: 'u1', username: 'alice' } }),
@@ -717,16 +714,16 @@ describe('DashboardView', () => {
     });
 
     fireEvent.change(screen.getByTestId('active-sessions-owner-filter' as any), {
-      target: { value: '__all__' },
+      target: { value: 'id:u1' },
     });
 
     const panel = screen.getByTestId('active-sessions');
     expect(panel!).toHaveTextContent('Refactor stream parser');
-    expect(panel!).toHaveTextContent('Awaiting review feedback');
-    expect(screen.getByText('2 in flight')).toBeInTheDocument();
+    expect(panel!).not.toHaveTextContent('Awaiting review feedback');
+    expect(screen.getByText('1 in flight')).toBeInTheDocument();
   });
 
-  it('shows an owner-specific empty state when you have no in-flight sessions', async () => {
+  it('shows an owner-specific empty state when the selected user has no in-flight sessions', async () => {
     // carol (u9) owns none of the sample sessions.
     localStorage.setItem(
       'agent-hub-jwt',
@@ -736,16 +733,14 @@ describe('DashboardView', () => {
     render(<DashboardView orgId="org-1" />);
 
     await waitFor(() => {
-      expect(screen.getByTestId('active-sessions-owner-filter')).toBeInTheDocument();
+      expect(screen.getByText('Refactor stream parser')).toBeInTheDocument();
     });
 
+    fireEvent.change(screen.getByTestId('active-sessions-owner-filter' as any), {
+      target: { value: 'id:u9' },
+    });
     expect(screen.getByText('No active sessions for the selected user.')).toBeInTheDocument();
     expect(screen.getByText('0 in flight')).toBeInTheDocument();
-    // You can still flip to All users to see the rest.
-    fireEvent.change(screen.getByTestId('active-sessions-owner-filter' as any), {
-      target: { value: '__all__' },
-    });
-    expect(screen.getByTestId('active-sessions')).toHaveTextContent('Refactor stream parser');
   });
 
   it('opens the session when an active session row is clicked', async () => {

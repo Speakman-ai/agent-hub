@@ -3,7 +3,6 @@ import {
   ALL_OWNERS,
   ownerKeyForSession,
   ownerKeyForUser,
-  defaultOwnerFilter,
   buildOwnerOptions,
   filterSessionsByOwner,
   type SessionOwnerFields,
@@ -26,14 +25,6 @@ describe('ownerKeyForSession / ownerKeyForUser', () => {
     expect(ownerKeyForUser({ email: 'alice@example.com' })).toBe('name:alice@example.com');
     expect(ownerKeyForUser({ username: 'alice' })).toBe('name:alice');
     expect(ownerKeyForUser(null)).toBe(null);
-  });
-});
-
-describe('defaultOwnerFilter', () => {
-  it('defaults to the current user, falling back to all', () => {
-    expect(defaultOwnerFilter('id:u1')).toBe('id:u1');
-    expect(defaultOwnerFilter(null)).toBe(ALL_OWNERS);
-    expect(defaultOwnerFilter(undefined)).toBe(ALL_OWNERS);
   });
 });
 

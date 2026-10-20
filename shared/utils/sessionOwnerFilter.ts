@@ -35,10 +35,6 @@ export function ownerKeyForUser(user: UserOwnerFields | null | undefined): strin
   return null;
 }
 
-export function defaultOwnerFilter(currentUserKey: string | null | undefined): string {
-  return currentUserKey || ALL_OWNERS;
-}
-
 export function buildOwnerOptions(
   sessions?: SessionOwnerFields[] | null,
   {

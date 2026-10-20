@@ -27,7 +27,6 @@ import {
 import {
   ALL_OWNERS,
   ownerKeyForUser,
-  defaultOwnerFilter,
   buildOwnerOptions,
   filterSessionsByOwner,
 } from '@shared/utils/sessionOwnerFilter';
@@ -573,8 +572,7 @@ function ActiveSessionsPanel({ sessions = [], onOpenSession, currentUser = null 
   const list = Array.isArray(sessions) ? sessions : [];
   const currentUserKey = ownerKeyForUser(currentUser);
   const currentUserName = (currentUser && (currentUser.email || currentUser.username)) || null;
-  // Default the queue to *your* sessions; "All users" reveals the rest.
-  const [ownerFilter, setOwnerFilter] = useState(() => defaultOwnerFilter(currentUserKey));
+  const [ownerFilter, setOwnerFilter] = useState<string>(ALL_OWNERS);
   const ownerOptions = buildOwnerOptions(list, { currentUserKey, currentUserName });
   // If the selected owner has dropped out of the list on a refetch, fall back
   // to "All users" so the <select> never shows a stale/blank value.
