@@ -133,33 +133,44 @@ describe('Sidebar — notification bell', () => {
 });
 
 describe('Sidebar — Hub nav (global home)', () => {
-  it('renders a single Hub entry instead of Home/Dashboard/Todos/Calendar/Gmail', () => {
-    render(
-      <Sidebar {...buildProps({ googleGmailNavVisible: true, googleCalendarNavVisible: true })} />,
-    );
+  it('keeps the logo and lists the personal destinations under Home', () => {
+    render(<Sidebar {...buildProps()} />);
     expect(screen.getByTestId('sidebar-global-hub')).toBeInTheDocument();
     const brandLogo = within(screen.getByTestId('sidebar-global-hub')).getByTestId('brand-logo');
     expect(brandLogo).toBeInTheDocument();
-    // Top-left logo renders at the md size (h-7), not the smaller h-6.
     expect(brandLogo).toHaveClass('h-7');
     expect(
       within(screen.getByTestId('sidebar-global-hub')).queryByText('Hub'),
     ).not.toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-home-heading')).toHaveTextContent('Home');
+    expect(screen.queryByTestId('sidebar-org-switch')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Dashboard' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Todos' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Calendar' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Mail' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Reminders' })).toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-home-support')).not.toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-home-server')).toHaveTextContent('Server');
     expect(screen.queryByTestId('sidebar-global-home')).not.toBeInTheDocument();
     expect(screen.queryByTestId('sidebar-global-todos')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('sidebar-global-calendar')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('sidebar-global-gmail')).not.toBeInTheDocument();
-    expect(screen.queryByText('Dashboard', { selector: 'button span' })).not.toBeInTheDocument();
     const hub = screen.getByTestId('sidebar-global-hub');
     const connected = screen.getByTestId('sidebar-connection-status');
     expect(hub.compareDocumentPosition(connected) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(
+      screen
+        .getByTestId('sidebar-home-heading')
+        .compareDocumentPosition(screen.getByRole('button', { name: /^Organizations$/ })) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
-  it('navigates to hub', () => {
+  it('navigates to the dashboard', () => {
     const onNavigate = vi.fn();
     render(<Sidebar {...buildProps({ onNavigate })} />);
     fireEvent.click(screen.getByTestId('sidebar-global-hub'));
-    expect(onNavigate).toHaveBeenCalledWith('hub');
+    expect(onNavigate).toHaveBeenCalledWith('hub', 'today');
+    fireEvent.click(screen.getByRole('button', { name: 'Dashboard' }));
+    expect(onNavigate).toHaveBeenLastCalledWith('hub', 'today');
   });
 });
 
@@ -1854,13 +1865,13 @@ describe('Sidebar Chat link', () => {
     expect(screen.queryByTestId('sidebar-chat')).toBeNull();
   });
 
-  it('renders under Settings, opens the pane, and shows the unread badge', () => {
+  it('renders in Home, opens the pane, and shows the unread badge', () => {
     const onOpenChat = vi.fn();
     render(<Sidebar {...buildProps({ onOpenChat, chatUnread: 120 })} />);
     const link = screen.getByTestId('sidebar-chat');
     expect(link).toHaveTextContent(/^Chat/);
     expect(link).not.toHaveTextContent('Google');
-    expect(link.previousElementSibling).toHaveTextContent('Settings');
+    expect(link.previousElementSibling).toHaveTextContent('Dashboard');
     expect(screen.getByTestId('sidebar-chat-badge')).toHaveTextContent('99+');
     fireEvent.click(link);
     expect(onOpenChat).toHaveBeenCalledTimes(1);
@@ -1932,6 +1943,11 @@ describe('Sidebar organization sections', () => {
 
     const select = await screen.findByTestId('sidebar-org-switch');
     expect(select).toHaveTextContent('Acme');
+    expect(
+      screen.getByTestId('sidebar-home-heading').compareDocumentPosition(select) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(screen.getByTestId('sidebar-home-dashboard')).toHaveTextContent('Dashboard');
     expect(screen.getByTestId(`sidebar-project-row-${PROJECT_ID}`)).toBeInTheDocument();
     expect(screen.queryByTestId('sidebar-project-row-proj-2')).not.toBeInTheDocument();
     expect(screen.getByTestId('sidebar-org-settings-org-1')).toBeInTheDocument();

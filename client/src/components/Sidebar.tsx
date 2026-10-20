@@ -20,6 +20,11 @@ import {
   ScrollText,
   AlertTriangle,
   BarChart3,
+  BellRing,
+  Briefcase,
+  CalendarDays,
+  ListTodo,
+  Mail,
   Plus,
   Archive,
   RotateCcw,
@@ -37,6 +42,7 @@ import {
   LifeBuoy,
   MonitorPlay,
   ShieldAlert,
+  Building2,
   PanelLeftClose,
   Sparkles,
   MessagesSquare,
@@ -83,6 +89,7 @@ import {
 } from '@shared/utils/sidebarProjectCollapse';
 import { api } from '../utils/api';
 import { rosterAgents, type OrganizationAgent } from '@shared/utils/organization-agents';
+import { hubPaneFromLegacyView, parseHubPane, type HubWorkspacePane } from '@shared/utils/hub';
 import type { OrganizationChatTarget } from './OrganizationAgentsPanel';
 
 /**
@@ -127,6 +134,8 @@ export default function Sidebar({
   /** Open an organization agent's chat. Organization agents are not project agents. */
   onOpenOrganizationChat,
   currentView,
+  /** Active Hub pane, so Dashboard / Chat / Todos can show which one is open. */
+  hubPane = null,
   /** Organization open on the Organizations page, so its settings row can highlight. */
   activeOrganizationId = null,
   /**
@@ -155,11 +164,6 @@ export default function Sidebar({
   cronSessions = [],
   reviewerProjectId,
   supportProjectId,
-  /** When true, the per-user Google account is connected, so the global
-   *  Calendar nav entry (under Dashboard) is shown. Calendar is NOT a
-   *  per-project surface. */
-  googleCalendarNavVisible: _googleCalendarNavVisible = false,
-  googleGmailNavVisible: _googleGmailNavVisible = false,
   deploymentsProjectId,
   replaysProjectId,
   securityProjectId,
@@ -617,6 +621,34 @@ export default function Sidebar({
       active ? 'bg-gray-800 text-white' : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
     }`;
 
+  const activeHubPane: HubWorkspacePane | null =
+    currentView === 'hub' ? parseHubPane(hubPane) : hubPaneFromLegacyView(currentView);
+  const openHubPane = (pane: HubWorkspacePane) => {
+    if (pane === 'chat' && onOpenChat) {
+      onOpenChat();
+      return;
+    }
+    onNavigate('hub', pane);
+  };
+  const orgSettingsId =
+    activeOrgSection && activeOrgSection.id !== 'independent' ? activeOrgSection.id : null;
+  const homeLinks: Array<{
+    pane: HubWorkspacePane;
+    label: string;
+    icon: typeof Briefcase;
+    testId: string;
+  }> = [
+    { pane: 'today', label: 'Dashboard', icon: Briefcase, testId: 'sidebar-home-dashboard' },
+    ...(onOpenChat
+      ? [{ pane: 'chat' as const, label: 'Chat', icon: MessagesSquare, testId: 'sidebar-chat' }]
+      : []),
+    { pane: 'todos', label: 'Todos', icon: ListTodo, testId: 'sidebar-home-todos' },
+    { pane: 'reminders', label: 'Reminders', icon: BellRing, testId: 'sidebar-home-reminders' },
+    { pane: 'calendar', label: 'Calendar', icon: CalendarDays, testId: 'sidebar-home-calendar' },
+    { pane: 'mail', label: 'Mail', icon: Mail, testId: 'sidebar-home-mail' },
+    { pane: 'org', label: 'Server', icon: BarChart3, testId: 'sidebar-home-server' },
+  ];
+
   // Move `sourceId` into the slot currently occupied by `targetId`,
   // preserving the order of every other project. Hands the resulting
   // full id list (every project the sidebar received, not just the
@@ -734,7 +766,60 @@ export default function Sidebar({
         </div>
       )}
 
-      {/* Projects & Agents */}
+      {/* Personal chrome. The organization switcher lives further down and only scopes Agents and Projects. */}
+      <div className="shrink-0 border-b border-gray-800 px-3 pt-3 pb-2">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => openHubPane('today')}
+            data-testid="sidebar-global-hub"
+            aria-label="Hub"
+            title="Dashboard"
+            className="shrink-0 rounded-lg p-1 hover:bg-gray-800 transition-colors"
+          >
+            <BrandLogo size="md" />
+          </button>
+          <div className="min-w-0 flex-1" />
+          {onCollapseSidebar && (
+            <button
+              type="button"
+              onClick={onCollapseSidebar}
+              className="hidden md:flex shrink-0 items-center justify-center text-gray-400 hover:text-white p-1.5 rounded-lg hover:bg-gray-800 transition-colors"
+              title="Collapse sidebar"
+              aria-label="Collapse sidebar"
+              data-testid="sidebar-collapse"
+            >
+              <PanelLeftClose size={16} />
+            </button>
+          )}
+        </div>
+        <div className="mt-2 flex items-center gap-1.5">
+          <span
+            className={`mr-auto inline-flex min-w-0 items-center gap-1.5 truncate text-[11px] ${
+              connected ? 'text-emerald-400' : reconnecting ? 'text-yellow-400' : 'text-red-400'
+            }`}
+            title={connected ? 'Connected' : reconnecting ? 'Reconnecting…' : 'Disconnected'}
+            data-testid="sidebar-connection-status"
+          >
+            <span aria-hidden="true">●</span>
+            {connected ? 'Connected' : reconnecting ? 'Reconnecting…' : 'Disconnected'}
+          </span>
+          {onOpenNotificationTarget && onOpenNotificationSettings && (
+            <NotificationBell
+              projects={projects}
+              onOpenTarget={onOpenNotificationTarget}
+              onOpenSettings={onOpenNotificationSettings}
+            />
+          )}
+          <BugReportButton
+            projectId={bugReportProjectId}
+            agentId={bugReportAgentId}
+            onToast={showToast}
+          />
+        </div>
+      </div>
+
+      {/* Work for the selected organization, plus the personal Hub destinations. */}
       <div className="sidebar-scroll flex-1 overflow-y-auto min-h-0 relative overscroll-y-contain">
         {isLoading && (
           <div
@@ -748,74 +833,37 @@ export default function Sidebar({
           </div>
         )}
         <div className="p-3">
-          {/* Hub — org/user home: assistant + Dashboard / Org / Chat /
-              Todos / Calendar / Mail / Support. The server-wide support overview is
-              a Hub tab, not a standalone section; per-project Support links —
-              with unread badges — stay in each project's menu below. */}
-          <button
-            onClick={() => onNavigate('hub')}
-            data-testid="sidebar-global-hub"
-            aria-label="Hub"
-            className={`w-full text-left px-3 py-2 rounded-lg mb-3 flex items-center transition-colors ${
-              currentView === 'hub' ||
-              currentView === 'home' ||
-              currentView === 'dashboard' ||
-              currentView === 'todos' ||
-              currentView === 'calendar' ||
-              currentView === 'gmail' ||
-              currentView === 'support-overview'
-                ? 'bg-gray-800'
-                : 'hover:bg-gray-800/50'
-            }`}
+          <div
+            data-testid="sidebar-home-heading"
+            className="px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500"
           >
-            <BrandLogo size="md" />
-          </button>
-
-          <button
-            className={`w-full text-left px-3 py-2 rounded-lg mb-3 ${currentView === 'organizations' ? 'bg-gray-800' : 'hover:bg-gray-800/50'}`}
-            onClick={() => onNavigate('organizations')}
-          >
-            Organizations
-          </button>
-          <div className="flex items-center gap-2 mb-3">
-            <span
-              className={`flex-1 min-w-0 text-xs px-2.5 py-2 rounded-lg text-center truncate ${
-                connected
-                  ? 'bg-emerald-900/50 text-emerald-400'
-                  : reconnecting
-                    ? 'bg-yellow-900/50 text-yellow-400'
-                    : 'bg-red-900/50 text-red-400'
-              }`}
-              title={connected ? 'Connected' : reconnecting ? 'Reconnecting…' : 'Disconnected'}
-              data-testid="sidebar-connection-status"
-            >
-              {connected ? '● Connected' : reconnecting ? '● Reconnecting…' : '● Disconnected'}
-            </span>
-            {onOpenNotificationTarget && onOpenNotificationSettings && (
-              <NotificationBell
-                projects={projects}
-                onOpenTarget={onOpenNotificationTarget}
-                onOpenSettings={onOpenNotificationSettings}
-              />
-            )}
-            <BugReportButton
-              projectId={bugReportProjectId}
-              agentId={bugReportAgentId}
-              onToast={showToast}
-            />
-            {onCollapseSidebar && (
-              <button
-                type="button"
-                onClick={onCollapseSidebar}
-                className="hidden md:flex flex-shrink-0 items-center justify-center text-gray-400 hover:text-white p-1.5 rounded-lg hover:bg-gray-800 transition-colors"
-                title="Collapse sidebar"
-                aria-label="Collapse sidebar"
-                data-testid="sidebar-collapse"
-              >
-                <PanelLeftClose size={16} />
-              </button>
-            )}
+            Home
           </div>
+          {homeLinks.map((item) => {
+            const Icon = item.icon;
+            const active = item.pane === 'chat' ? chatActive : activeHubPane === item.pane;
+            return (
+              <button
+                key={item.pane}
+                type="button"
+                data-testid={item.testId}
+                onClick={() => openHubPane(item.pane)}
+                className={projectMenuLinkClass(active)}
+              >
+                <Icon size={14} className="shrink-0" />
+                <span className="truncate">{item.label}</span>
+                {item.pane === 'chat' && chatUnread > 0 && (
+                  <span
+                    data-testid="sidebar-chat-badge"
+                    aria-label={`${chatUnread} unread`}
+                    className="ml-auto min-w-[1.25rem] rounded-full bg-blue-600 px-1.5 text-center text-[11px] font-semibold leading-5 text-white"
+                  >
+                    {formatUnreadCount(chatUnread)}
+                  </span>
+                )}
+              </button>
+            );
+          })}
 
           {/* Scheduled Tasks (cron sessions) render per-project inside each
               project block below. But a cron may have no rendered home: its
@@ -867,38 +915,8 @@ export default function Sidebar({
             </div>
           ) : null}
 
-          {!orgSections && (
-            <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-2">
-              Projects
-            </div>
-          )}
-
-          {onOpenProject && (
-            <button
-              type="button"
-              data-testid="sidebar-new-project-cta"
-              onClick={onOpenProject}
-              className="w-full text-left px-3 py-2.5 mb-2 rounded-xl flex items-center gap-2 bg-emerald-600/90 hover:bg-emerald-500 text-white shadow-md shadow-emerald-900/20 transition-colors font-medium text-sm"
-            >
-              <Plus size={18} strokeWidth={2.5} className="shrink-0" aria-hidden />
-              <span>New Project</span>
-            </button>
-          )}
-
-          {onImportProject && (
-            <button
-              type="button"
-              data-testid="sidebar-import-project-cta"
-              onClick={onImportProject}
-              className="w-full text-left px-2.5 py-1.5 mb-2 rounded-lg flex items-center gap-2 text-gray-400 hover:text-gray-200 hover:bg-gray-800/60 transition-colors text-xs"
-            >
-              <Plus size={14} strokeWidth={2} className="shrink-0" aria-hidden />
-              <span>Import existing project</span>
-            </button>
-          )}
-
           {orgSections && activeOrgSection && (
-            <div className="mb-2">
+            <div className="sticky top-0 z-10 -mx-3 mt-3 mb-1 border-y border-gray-800 bg-gray-900 px-3 py-2">
               <OrganizationMenu
                 options={orgSections.map((section) => ({
                   id: section.id,
@@ -910,6 +928,11 @@ export default function Sidebar({
                 testId="sidebar-org-switch"
                 optionTestIdPrefix="sidebar-org-option"
               />
+              {activeOrgSection.id === 'independent' && (
+                <p className="mt-2 px-1 text-[11px] leading-4 text-gray-500">
+                  Projects that are not in an organization.
+                </p>
+              )}
             </div>
           )}
 
@@ -938,32 +961,37 @@ export default function Sidebar({
               </button>
             );
           })}
-          {activeOrgSection && (
-            <div
-              data-testid="sidebar-org-projects-heading"
-              className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 px-1 pt-2 pb-0.5"
+          <div
+            data-testid={activeOrgSection ? 'sidebar-org-projects-heading' : undefined}
+            className="px-2 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500"
+          >
+            Projects
+          </div>
+          {onOpenProject && (
+            <button
+              type="button"
+              data-testid="sidebar-new-project-cta"
+              onClick={onOpenProject}
+              className="w-full text-left px-3 py-1.5 mb-0.5 rounded-lg flex items-center gap-2 text-sm text-gray-200 hover:bg-gray-800/70 transition-colors"
             >
-              Projects
-            </div>
+              <Plus size={14} className="shrink-0" aria-hidden />
+              <span>New Project</span>
+            </button>
+          )}
+          {onImportProject && (
+            <button
+              type="button"
+              data-testid="sidebar-import-project-cta"
+              onClick={onImportProject}
+              className={projectMenuLinkClass(false)}
+            >
+              <Plus size={14} className="shrink-0" aria-hidden />
+              <span>Import existing project</span>
+            </button>
           )}
 
           {sidebarEntries.map((entry) => {
-            if (entry.kind === 'org-settings') {
-              const settingsActive =
-                currentView === 'organizations' && activeOrganizationId === entry.id;
-              return (
-                <button
-                  key={`org-settings-${entry.id}`}
-                  type="button"
-                  data-testid={`sidebar-org-settings-${entry.id}`}
-                  onClick={() => onNavigate('organizations', entry.id)}
-                  className={projectMenuLinkClass(settingsActive)}
-                >
-                  <Settings size={14} className="flex-shrink-0" />
-                  <span className="truncate">Organization settings</span>
-                </button>
-              );
-            }
+            if (entry.kind === 'org-settings') return null;
             const { project, index, sectionId } = entry;
             const activeAgents = project.agents.filter((a: any) => a.active !== false);
             if (activeAgents.length === 0) return null;
@@ -2182,6 +2210,33 @@ export default function Sidebar({
             onDismiss={onDismissDesktopUpdateHint}
           />
         )}
+        {orgSettingsId && (
+          <button
+            type="button"
+            data-testid={`sidebar-org-settings-${orgSettingsId}`}
+            onClick={() => onNavigate('organizations', orgSettingsId)}
+            className={`w-full text-left px-3 py-2 rounded-lg flex items-center gap-2 text-sm transition-colors ${
+              currentView === 'organizations' && activeOrganizationId === orgSettingsId
+                ? 'bg-gray-800 text-white'
+                : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
+            }`}
+          >
+            <Settings size={16} className="shrink-0" />
+            <span className="truncate">Organization settings</span>
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => onNavigate('organizations')}
+          className={`w-full text-left px-3 py-2 rounded-lg flex items-center gap-2 text-sm transition-colors ${
+            currentView === 'organizations' && !orgSettingsId
+              ? 'bg-gray-800 text-white'
+              : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
+          }`}
+        >
+          <Building2 size={16} className="shrink-0" />
+          <span>Organizations</span>
+        </button>
         <button
           onClick={() => onNavigate('settings')}
           className={`w-full text-left px-3 py-3 md:py-2 rounded-lg flex items-center gap-2 text-sm transition-colors min-h-[44px] ${
@@ -2195,30 +2250,6 @@ export default function Sidebar({
             <span>Settings</span>
           </span>
         </button>
-        {onOpenChat && (
-          <button
-            type="button"
-            data-testid="sidebar-chat"
-            onClick={onOpenChat}
-            className={`w-full text-left px-3 py-3 md:py-2 rounded-lg flex items-center gap-2 text-sm transition-colors min-h-[44px] ${
-              chatActive
-                ? 'bg-gray-800 text-white'
-                : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
-            }`}
-          >
-            <MessagesSquare size={16} />
-            <span>Chat</span>
-            {chatUnread > 0 && (
-              <span
-                data-testid="sidebar-chat-badge"
-                aria-label={`${chatUnread} unread`}
-                className="ml-auto min-w-[1.25rem] rounded-full bg-blue-600 px-1.5 text-center text-[11px] font-semibold leading-5 text-white"
-              >
-                {formatUnreadCount(chatUnread)}
-              </span>
-            )}
-          </button>
-        )}
         {/* Version display.
             In a browser, the React bundle is served by the same Hub that
             answers /api/health — client and server versions are always

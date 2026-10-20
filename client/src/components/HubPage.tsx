@@ -1,39 +1,6 @@
 import { useCallback, useState, type ReactNode } from 'react';
-import {
-  BarChart3,
-  BellRing,
-  Bot,
-  Briefcase,
-  CalendarDays,
-  LifeBuoy,
-  ListTodo,
-  Mail,
-  MessagesSquare,
-  PanelRightClose,
-  PanelRightOpen,
-} from 'lucide-react';
-import BrandLogo from './BrandLogo';
-import { formatUnreadCount } from '../utils/googleChatPush';
-import {
-  DEFAULT_HUB_PANE,
-  HUB_WORKSPACE_PANES,
-  parseHubPane,
-  type HubWorkspacePane,
-} from '@shared/utils/hub';
-
-const PANE_META: Record<
-  HubWorkspacePane,
-  { label: string; icon: typeof Briefcase; testId: string }
-> = {
-  today: { label: 'Dashboard', icon: Briefcase, testId: 'hub-pane-today' },
-  org: { label: 'Server', icon: BarChart3, testId: 'hub-pane-org' },
-  todos: { label: 'Todos', icon: ListTodo, testId: 'hub-pane-todos' },
-  reminders: { label: 'Reminders', icon: BellRing, testId: 'hub-pane-reminders' },
-  calendar: { label: 'Calendar', icon: CalendarDays, testId: 'hub-pane-calendar' },
-  mail: { label: 'Mail', icon: Mail, testId: 'hub-pane-mail' },
-  chat: { label: 'Chat', icon: MessagesSquare, testId: 'hub-pane-chat' },
-  support: { label: 'Support', icon: LifeBuoy, testId: 'hub-pane-support' },
-};
+import { Bot, PanelRightClose, PanelRightOpen } from 'lucide-react';
+import { DEFAULT_HUB_PANE, parseHubPane, type HubWorkspacePane } from '@shared/utils/hub';
 
 export interface HubPageProps {
   pane?: HubWorkspacePane | null;
@@ -118,7 +85,7 @@ function workspaceBody(
  */
 export default function HubPage({
   pane,
-  onPaneChange,
+  onPaneChange: _onPaneChange,
   assistant,
   today,
   org,
@@ -128,21 +95,15 @@ export default function HubPage({
   mail,
   chat,
   support,
-  mobileAssistantTab = false,
-  mobileTab = 'today',
-  onMobileTabChange,
   assistantActions,
-  paneBadges,
   assistantInWorkspace = false,
 }: HubPageProps) {
-  const active = parseHubPane(pane);
-  // Desktop-only: narrow viewports reach the assistant through its own tab.
   const [assistantCollapsed, setAssistantCollapsedState] = useState(readAssistantCollapsed);
   const setAssistantCollapsed = useCallback((collapsed: boolean) => {
     setAssistantCollapsedState(collapsed);
     writeAssistantCollapsed(collapsed);
   }, []);
-  const workspace = workspaceBody(active, {
+  const workspace = workspaceBody(parseHubPane(pane), {
     today,
     org,
     todos,
@@ -155,82 +116,22 @@ export default function HubPage({
 
   return (
     <div className="flex-1 flex min-h-0 min-w-0 overflow-hidden bg-gray-950" data-testid="hub-page">
-      <div
-        className={`flex-1 flex flex-col min-h-0 min-w-0 ${
-          mobileAssistantTab && mobileTab === 'assistant' ? 'hidden lg:flex' : 'flex'
-        }`}
-      >
-        <header className="shrink-0 border-b border-gray-800 px-3 py-2 flex items-center gap-2">
-          <h1 className="m-0 leading-none shrink-0">
-            <BrandLogo size="sm" />
-          </h1>
-          <nav
-            className="flex-1 flex items-center gap-1 overflow-x-auto ml-2"
-            aria-label="Hub sections"
-          >
-            {mobileAssistantTab && (
-              <button
-                type="button"
-                data-testid="hub-pane-assistant"
-                onClick={() => onMobileTabChange?.('assistant')}
-                className={`lg:hidden inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors ${
-                  mobileTab === 'assistant'
-                    ? 'bg-gray-800 text-white'
-                    : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800/60'
-                }`}
-              >
-                <Bot size={13} />
-                Assistant
-              </button>
-            )}
-            {HUB_WORKSPACE_PANES.map((id) => {
-              const meta = PANE_META[id];
-              const Icon = meta.icon;
-              const selected = active === id && (!mobileAssistantTab || mobileTab !== 'assistant');
-              return (
-                <button
-                  key={id}
-                  type="button"
-                  data-testid={meta.testId}
-                  onClick={() => {
-                    onPaneChange(id);
-                    onMobileTabChange?.(id);
-                  }}
-                  className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors ${
-                    selected
-                      ? 'bg-gray-800 text-white'
-                      : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800/60'
-                  }`}
-                >
-                  <Icon size={13} />
-                  {meta.label}
-                  {!!paneBadges?.[id] && (
-                    <span
-                      data-testid={`${meta.testId}-badge`}
-                      aria-label={`${paneBadges[id]} unread`}
-                      className="ml-0.5 min-w-[1.1rem] rounded-full bg-blue-600 px-1 text-center text-[10px] font-semibold leading-4 text-white"
-                    >
-                      {formatUnreadCount(paneBadges[id] as number)}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </nav>
-          {assistantCollapsed && !assistantInWorkspace && (
+      <div className="flex-1 flex flex-col min-h-0 min-w-0">
+        {assistantCollapsed && !assistantInWorkspace && (
+          <div className="hidden lg:flex shrink-0 justify-end border-b border-gray-800 px-3 py-2">
             <button
               type="button"
               data-testid="hub-assistant-open"
               onClick={() => setAssistantCollapsed(false)}
               title="Show assistant"
               aria-label="Show assistant"
-              className="hidden lg:inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-gray-400 hover:text-gray-200 hover:bg-gray-800/60 transition-colors"
+              className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-gray-400 hover:text-gray-200 hover:bg-gray-800/60 transition-colors"
             >
               <PanelRightOpen size={13} />
               Assistant
             </button>
-          )}
-        </header>
+          </div>
+        )}
         {/* Flex column so pane roots using `flex-1` (org/todos/calendar/mail) get a
             bounded height and can scroll; `h-full` panes (today) still resolve
             against this bounded box. Without `flex`, `flex-1` is inert and pane content
@@ -239,9 +140,7 @@ export default function HubPage({
       </div>
 
       <aside
-        className={`border-gray-800 bg-gray-950 min-h-0 min-w-0 flex-col ${
-          mobileAssistantTab && mobileTab === 'assistant' ? 'flex' : 'hidden'
-        } ${
+        className={`hidden border-gray-800 bg-gray-950 min-h-0 min-w-0 flex-col ${
           assistantCollapsed || assistantInWorkspace
             ? 'lg:hidden'
             : 'lg:flex lg:w-[min(28rem,40vw)] lg:border-l'

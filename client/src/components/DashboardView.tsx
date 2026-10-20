@@ -1,7 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  BarChart3,
-  CalendarDays,
   GitPullRequest,
   AlertTriangle,
   Plus,
@@ -11,23 +9,8 @@ import {
   UserCircle,
   List,
   SquareKanban,
-  Check,
-  ListPlus,
-  Loader2,
-  Ticket,
 } from 'lucide-react';
-import { api } from '../utils/api';
-import { hasCalendarScope } from '../utils/googleSurface';
 import { createRequestGenerationState, beginRequest } from '@shared/utils/requestGeneration';
-import {
-  defaultCalendarRange,
-  eventTimeLabel,
-  localTimeZone,
-  sortCalendarEvents,
-} from '@shared/utils/calendarEvents';
-import { buildCalendarTodoDraft } from '@shared/utils/captureTodo';
-import { buildCalendarCardDraft, type CaptureCardDraft } from '@shared/utils/captureCard';
-import CaptureToTicketModal from './CaptureToTicketModal';
 import { useVisibleIntervalRefresh } from '../hooks/useVisibleIntervalRefresh';
 import { getApiBase, getAuthHeaders } from '../utils/connection';
 import { getAuthRecord } from '../utils/auth';
@@ -189,25 +172,7 @@ export default function DashboardView({
   return (
     <div className="flex-1 overflow-y-auto bg-gray-950">
       <div className="p-4 md:p-8">
-        <div className={`${PAGE_COLUMN} flex justify-end mb-4`}>
-          <button
-            type="button"
-            onClick={() => onNavigate?.('settings:account')}
-            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm text-gray-300 hover:text-white hover:bg-gray-800/70 transition-colors"
-            title="Account settings"
-          >
-            <UserCircle size={20} className="text-gray-400" />
-            <span className="font-medium truncate max-w-[12rem]">{accountName}</span>
-          </button>
-        </div>
-        <div className={`${PAGE_COLUMN} flex items-center justify-between mb-6`}>
-          <div className="flex items-center gap-3">
-            <BarChart3 size={28} className="text-blue-400" />
-            <div>
-              <h1 className="text-2xl font-semibold text-white">Dashboard</h1>
-              {data?.orgName && <p className="text-sm text-gray-500">{data.orgName}</p>}
-            </div>
-          </div>
+        <div className={`${PAGE_COLUMN} flex items-center justify-end gap-2 mb-6`}>
           <button
             type="button"
             onClick={() => load()}
@@ -217,6 +182,15 @@ export default function DashboardView({
           >
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
             Refresh
+          </button>
+          <button
+            type="button"
+            onClick={() => onNavigate?.('settings:account')}
+            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm text-gray-300 hover:text-white hover:bg-gray-800/70 transition-colors"
+            title="Account settings"
+          >
+            <UserCircle size={20} className="text-gray-400" />
+            <span className="font-medium truncate max-w-[12rem]">{accountName}</span>
           </button>
         </div>
 
@@ -235,9 +209,6 @@ export default function DashboardView({
 
         {data && (
           <>
-            <div className={PAGE_COLUMN}>
-              <WeeklyCalendarPanel onNavigate={onNavigate} />
-            </div>
             <ActiveSessionsPanel
               sessions={data.activeSessions}
               onOpenSession={onOpenSession}
@@ -270,224 +241,6 @@ const PR_PRIORITY_DOT = {
   medium: 'bg-amber-400',
   low: 'bg-emerald-400',
 } as Record<string, any>;
-
-function WeeklyCalendarPanel({ onNavigate }: any) {
-  const [status, setStatus] = useState<any>(null);
-  const [events, setEvents] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<any>(null);
-  // Per-event capture state, mirroring CalendarAgendaPage: the event key being
-  // captured to todos, the key just captured (transient "Added" flag), and the
-  // draft that seeds the create-ticket picker. `captureError` is a separate
-  // transient channel from `error` (the load-error branch that blanks the
-  // list) so a failed todo POST doesn't wipe the whole event list for a
-  // non-critical action.
-  const [capturingId, setCapturingId] = useState<string | null>(null);
-  const [capturedId, setCapturedId] = useState<string | null>(null);
-  const [captureError, setCaptureError] = useState<string | null>(null);
-  const [ticketDraft, setTicketDraft] = useState<CaptureCardDraft | null>(null);
-  const mountedRef = useRef(true);
-  const genRef = useRef(createRequestGenerationState());
-
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
-
-  const load = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
-    const req = beginRequest(genRef.current, { silent });
-    if (!silent) {
-      setLoading(true);
-      setError(null);
-    }
-    let committed = false;
-    try {
-      const nextStatus = await api.getGoogleStatus();
-      let nextEvents: any[] = [];
-      if (nextStatus?.connected && hasCalendarScope(nextStatus)) {
-        const body = await api.listGoogleCalendarEvents({
-          ...defaultCalendarRange(),
-          timeZone: localTimeZone(),
-          maxResults: 20,
-        });
-        nextEvents = sortCalendarEvents(Array.isArray(body?.events) ? body.events : []);
-      }
-      if (mountedRef.current && req.canCommit()) {
-        req.commit();
-        committed = true;
-        setStatus(nextStatus);
-        setEvents(nextEvents);
-        setError(null);
-      }
-    } catch (err: any) {
-      if (!silent && mountedRef.current && req.canCommit()) {
-        req.commit();
-        committed = true;
-        setError(err.message || String(err));
-        setEvents([]);
-      }
-    } finally {
-      if (mountedRef.current && (committed || req.ownsLoading())) setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  // `key` is the row's stable key (folds in the list index) so two same-titled
-  // events without an `id` don't share capture/captured state.
-  const captureEvent = useCallback(async (event: any, key: string) => {
-    setCapturingId(key);
-    setCaptureError(null);
-    try {
-      await api.createTodo(buildCalendarTodoDraft(event));
-      if (!mountedRef.current) return;
-      setCapturedId(key);
-      window.setTimeout(() => {
-        if (mountedRef.current) setCapturedId((current) => (current === key ? null : current));
-      }, 2000);
-    } catch (err: any) {
-      // Isolated from the load-error branch: surface a transient inline notice
-      // instead of blanking the event list.
-      if (mountedRef.current) setCaptureError(err.message || 'Failed to add to todos');
-    } finally {
-      if (mountedRef.current) setCapturingId((current) => (current === key ? null : current));
-    }
-  }, []);
-
-  const connected = !!status?.connected;
-  const configured = status?.serverConfigured !== false;
-  const calendarEnabled = hasCalendarScope(status);
-  const canOpenCalendar = connected && onNavigate;
-  const canOpenAccount = onNavigate;
-
-  let emptyTitle = 'No events this week';
-  let emptyBody = 'Your primary Google Calendar has no events in the next seven days.';
-  let actionLabel: string | null = canOpenCalendar ? 'Open Calendar' : null;
-  let actionTarget = 'calendar';
-
-  if (!configured && !connected) {
-    emptyTitle = 'Google is not configured';
-    emptyBody = 'An Admin needs to add the Google OAuth app before Calendar can connect.';
-    actionLabel = canOpenAccount ? 'Account settings' : null;
-    actionTarget = 'settings:account';
-  } else if (!connected) {
-    emptyTitle = 'Connect Google to show Calendar';
-    emptyBody = 'Link your Google account in Account settings to show this week on the dashboard.';
-    actionLabel = canOpenAccount ? 'Account settings' : null;
-    actionTarget = 'settings:account';
-  } else if (!calendarEnabled) {
-    emptyTitle = 'Enable Calendar access';
-    emptyBody = `Connected as ${status?.email || 'Google account'}, but Calendar access has not been granted yet.`;
-    actionLabel = canOpenCalendar ? 'Open Calendar' : null;
-    actionTarget = 'calendar';
-  }
-
-  return (
-    <section aria-label="This week's calendar" className="mb-8">
-      <div className="flex items-baseline justify-between mb-3 gap-3">
-        <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
-          <CalendarDays size={14} className="text-blue-400" />
-          This week
-        </h2>
-        <button
-          type="button"
-          onClick={() => load()}
-          disabled={loading}
-          className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-gray-400 hover:bg-gray-800 hover:text-gray-200 disabled:opacity-50"
-        >
-          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
-          Refresh
-        </button>
-      </div>
-      <div
-        data-testid="dashboard-calendar"
-        className="bg-gray-900 border border-gray-800 rounded-xl divide-y divide-gray-800"
-      >
-        {error ? (
-          <div className="px-4 py-6 text-center text-xs text-red-400">
-            Failed to load Calendar: {error}
-          </div>
-        ) : loading ? (
-          <div className="px-4 py-6 text-center text-xs text-gray-600">Loading Calendar…</div>
-        ) : !connected || !calendarEnabled || events.length === 0 ? (
-          <div className="px-4 py-6 text-center">
-            <div className="text-sm font-medium text-gray-300">{emptyTitle}</div>
-            <div className="mx-auto mt-1 max-w-md text-xs text-gray-500">{emptyBody}</div>
-            {actionLabel && (
-              <button
-                type="button"
-                onClick={() => onNavigate?.(actionTarget)}
-                className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-gray-700 px-2.5 py-1.5 text-xs text-gray-300 hover:bg-gray-800"
-              >
-                <CalendarDays size={12} />
-                {actionLabel}
-              </button>
-            )}
-          </div>
-        ) : (
-          events.slice(0, 6).map((event: any, index) => {
-            const key = event.id || `${event.summary}-${index}`;
-            const isCaptured = capturedId === key;
-            return (
-              <div key={key} className="px-4 py-3 flex gap-3">
-                <div className="w-32 flex-shrink-0 text-[11px] text-gray-500">
-                  {eventTimeLabel(event)}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm text-white truncate">{event.summary || '(no title)'}</div>
-                  {event.location ? (
-                    <div className="mt-0.5 text-[11px] text-gray-500 truncate">
-                      {event.location}
-                    </div>
-                  ) : null}
-                </div>
-                <div className="flex flex-shrink-0 items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => captureEvent(event, key)}
-                    disabled={capturingId === key}
-                    title="Add to todos"
-                    className="inline-flex items-center gap-1 rounded border border-gray-700 px-2 py-1 text-[11px] text-gray-300 hover:bg-gray-800 disabled:opacity-50"
-                  >
-                    {capturingId === key ? (
-                      <Loader2 size={12} className="animate-spin" />
-                    ) : isCaptured ? (
-                      <Check size={12} className="text-emerald-400" />
-                    ) : (
-                      <ListPlus size={12} />
-                    )}
-                    {isCaptured ? 'Added' : 'Todo'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setTicketDraft(buildCalendarCardDraft(event))}
-                    title="Create ticket"
-                    className="inline-flex items-center gap-1 rounded border border-gray-700 px-2 py-1 text-[11px] text-gray-300 hover:bg-gray-800"
-                  >
-                    <Ticket size={12} />
-                    Ticket
-                  </button>
-                </div>
-              </div>
-            );
-          })
-        )}
-      </div>
-      {captureError && (
-        <div className="mt-2 text-[11px] text-red-400" role="alert">
-          {captureError}
-        </div>
-      )}
-      {ticketDraft && (
-        <CaptureToTicketModal draft={ticketDraft} onClose={() => setTicketDraft(null)} />
-      )}
-    </section>
-  );
-}
 
 /**
  * Open pull requests: kanban cards carrying an unmerged `pr_url` that have

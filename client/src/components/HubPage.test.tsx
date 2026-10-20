@@ -48,20 +48,12 @@ describe('HubPage', () => {
     );
 
     expect(screen.getByTestId('hub-page')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Agent Hub' })).toBeInTheDocument();
-    expect(screen.getByTestId('brand-logo')).toBeInTheDocument();
+    expect(screen.queryByRole('navigation', { name: 'Hub sections' })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('hub-pane-assistant')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('hub-pane-support')).not.toBeInTheDocument();
     expect(screen.getByText('today-body')).toBeInTheDocument();
     expect(screen.getByText('assistant-body')).toBeInTheDocument();
-    expect(screen.getByTestId('hub-pane-today')).toHaveTextContent('Dashboard');
-    expect(screen.queryByTestId('hub-pane-summary')).not.toBeInTheDocument();
-    expect(screen.getByTestId('hub-pane-support')).toHaveTextContent('Support');
-    expect(screen.queryByTestId('hub-pane-troubleshoot')).not.toBeInTheDocument();
-
-    expect(screen.getByTestId('hub-pane-org')).toHaveTextContent('Server');
-    fireEvent.click(screen.getByTestId('hub-pane-org'));
-    expect(onPaneChange).toHaveBeenCalledWith('org');
-    fireEvent.click(screen.getByTestId('hub-pane-support'));
-    expect(onPaneChange).toHaveBeenCalledWith('support');
+    expect(onPaneChange).not.toHaveBeenCalled();
   });
 
   it('shows the Support pane body when the support tab is active', () => {
@@ -77,7 +69,7 @@ describe('HubPage', () => {
 
     rerender(<HubPage pane="chat" onPaneChange={() => undefined} {...panes} />);
     expect(screen.getByText('chat-body')).toBeInTheDocument();
-    expect(screen.getByTestId('hub-pane-chat')).toHaveTextContent('Chat');
+    expect(screen.queryByTestId('hub-pane-chat')).not.toBeInTheDocument();
 
     rerender(<HubPage pane="todos" onPaneChange={() => undefined} {...panes} />);
     expect(screen.getByText('todos-body')).toBeInTheDocument();
@@ -108,16 +100,6 @@ describe('HubPage', () => {
     expect(screen.getByText('hub-clear-slot')).toBeInTheDocument();
   });
 
-  it('shows an unread badge on the Chat tab only when there is something unread', () => {
-    const { rerender } = render(
-      <HubPage pane="today" onPaneChange={vi.fn()} {...panes} paneBadges={{ chat: 120 }} />,
-    );
-    expect(screen.getByTestId('hub-pane-chat-badge').textContent).toBe('99+');
-    expect(screen.queryByTestId('hub-pane-mail-badge')).toBeNull();
-    rerender(<HubPage pane="today" onPaneChange={vi.fn()} {...panes} paneBadges={{ chat: 0 }} />);
-    expect(screen.queryByTestId('hub-pane-chat-badge')).toBeNull();
-  });
-
   describe('assistant close', () => {
     beforeEach(() => window.localStorage.removeItem(HUB_ASSISTANT_COLLAPSED_KEY));
 
@@ -145,8 +127,7 @@ describe('HubPage', () => {
       expect(screen.getByTestId('hub-assistant-open')).toBeInTheDocument();
     });
 
-    it('still shows the assistant on the mobile Assistant tab when closed on desktop', () => {
-      window.localStorage.setItem(HUB_ASSISTANT_COLLAPSED_KEY, '1');
+    it('does not offer an Assistant tab', () => {
       render(
         <HubPage
           pane="today"
@@ -156,9 +137,8 @@ describe('HubPage', () => {
           mobileTab="assistant"
         />,
       );
-      const cls = screen.getByTestId('hub-assistant-pane').className.split(/\s+/);
-      expect(cls).toContain('flex');
-      expect(cls).toContain('lg:hidden');
+      expect(screen.queryByTestId('hub-pane-assistant')).not.toBeInTheDocument();
+      expect(screen.queryByRole('navigation', { name: 'Hub sections' })).not.toBeInTheDocument();
     });
   });
 });

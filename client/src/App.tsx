@@ -121,6 +121,7 @@ import HubClearChatButton from './components/HubClearChatButton';
 import {
   parseHubPane,
   hubPaneFromLegacyView,
+  isHubWorkspacePane,
   HUB_ASSISTANT_AGENT_ID,
   type HubWorkspacePane,
 } from '@shared/utils/hub';
@@ -6841,8 +6842,13 @@ export default function App({ initialView }: any = {}) {
             deletingBulk={deletingBulk}
             onRenameSession={handleRenameSession}
             onOpenOrganizationChat={handleOpenOrganizationChat}
+            hubPane={currentView === 'hub' ? hubPane : hubPaneFromLegacyView(currentView)}
             onNavigate={(view: any, extra: any) => {
               setCurrentView(view);
+              if (view === 'hub' && isHubWorkspacePane(extra)) {
+                setHubPane(extra);
+                setHubMobileTab(extra);
+              }
               if (view === 'organizations') {
                 const routed =
                   typeof extra === 'string' && extra && extra !== 'independent' ? extra : null;
