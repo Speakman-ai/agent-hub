@@ -166,6 +166,7 @@ describe('Sidebar — Hub nav (global home)', () => {
     const destinations: Record<Exclude<HubWorkspacePane, 'support'>, string> = {
       today: 'sidebar-home-dashboard',
       chat: 'sidebar-chat',
+      'google-chat': 'sidebar-google-chat',
       todos: 'sidebar-home-todos',
       reminders: 'sidebar-home-reminders',
       calendar: 'sidebar-home-calendar',
@@ -174,7 +175,7 @@ describe('Sidebar — Hub nav (global home)', () => {
     };
     const onNavigate = vi.fn();
     const onOpenChat = vi.fn();
-    render(<Sidebar {...buildProps({ onNavigate, onOpenChat })} />);
+    render(<Sidebar {...buildProps({ onNavigate, onOpenChat, googleChatAvailable: true })} />);
     for (const pane of HUB_WORKSPACE_PANES) {
       if (pane === 'support') continue;
       fireEvent.click(screen.getByTestId(destinations[pane]));
@@ -1915,6 +1916,50 @@ describe('Sidebar Chat link', () => {
     render(<Sidebar {...buildProps({ onOpenChat: vi.fn(), chatUnread: 0 })} />);
     expect(screen.getByTestId('sidebar-chat')).toBeInTheDocument();
     expect(screen.queryByTestId('sidebar-chat-badge')).toBeNull();
+  });
+});
+
+describe('Sidebar Google Chat link', () => {
+  it('is hidden when Google Chat is not available', () => {
+    render(<Sidebar {...buildProps({ onOpenChat: vi.fn(), googleChatUnread: 4 })} />);
+    expect(screen.queryByTestId('sidebar-google-chat')).toBeNull();
+  });
+
+  it('sits right after Chat, opens its own page, and keeps its own badge', () => {
+    const onNavigate = vi.fn();
+    render(
+      <Sidebar
+        {...buildProps({
+          onOpenChat: vi.fn(),
+          onNavigate,
+          chatUnread: 2,
+          googleChatAvailable: true,
+          googleChatUnread: 7,
+        })}
+      />,
+    );
+    const link = screen.getByTestId('sidebar-google-chat');
+    expect(link).toHaveTextContent(/^Google Chat/);
+    expect(link.previousElementSibling).toBe(screen.getByTestId('sidebar-chat'));
+    expect(screen.getByTestId('sidebar-chat-badge')).toHaveTextContent('2');
+    expect(screen.getByTestId('sidebar-google-chat-badge')).toHaveTextContent('7');
+    fireEvent.click(link);
+    expect(onNavigate).toHaveBeenCalledWith('hub', 'google-chat');
+  });
+
+  it('is the active row on the Google Chat page, not Chat', () => {
+    render(
+      <Sidebar
+        {...buildProps({
+          onOpenChat: vi.fn(),
+          googleChatAvailable: true,
+          currentView: 'hub',
+          hubPane: 'google-chat',
+        })}
+      />,
+    );
+    expect(screen.getByTestId('sidebar-google-chat').className).toContain('bg-gray-800 text-white');
+    expect(screen.getByTestId('sidebar-chat').className).not.toContain('bg-gray-800 text-white');
   });
 });
 

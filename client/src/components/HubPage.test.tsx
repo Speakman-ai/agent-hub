@@ -10,6 +10,7 @@ const panes = {
   calendar: <span>calendar-body</span>,
   mail: <span>mail-body</span>,
   chat: <span>chat-body</span>,
+  googleChat: <span>google-chat-body</span>,
   support: <span>support-body</span>,
 };
 
@@ -40,6 +41,10 @@ describe('HubPage', () => {
     rerender(<HubPage pane="chat" onPaneChange={() => undefined} {...panes} />);
     expect(screen.getByText('chat-body')).toBeInTheDocument();
     expect(screen.queryByTestId('hub-pane-chat')).not.toBeInTheDocument();
+
+    rerender(<HubPage pane="google-chat" onPaneChange={() => undefined} {...panes} />);
+    expect(screen.getByText('google-chat-body')).toBeInTheDocument();
+    expect(screen.queryByText('chat-body')).not.toBeInTheDocument();
 
     rerender(<HubPage pane="todos" onPaneChange={() => undefined} {...panes} />);
     expect(screen.getByText('todos-body')).toBeInTheDocument();

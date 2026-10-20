@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
+import { useState } from 'react';
 
 vi.mock('../utils/api', () => ({
   api: {
@@ -28,9 +29,7 @@ vi.mock('../utils/api', () => ({
 }));
 
 import HubChatPage from './HubChatPage';
-import ChatPane from './ChatPane';
 import { api } from '../utils/api';
-import { requestOpenChatSpace, takePendingOpenChatSpace } from '../utils/googleChatNotifications';
 import type { HubChatChannel, HubChatMessage } from '../utils/hubChat';
 import {
   getHubChatSession,
@@ -43,7 +42,6 @@ import {
   markHubAssistantReplyUnseen,
   resetHubAssistantUnreadForTests,
 } from '../utils/hubAssistantChat';
-import { CHAT_PANE_SIDE_KEY, resetChatPaneSideForTests } from '../utils/chatPaneSide';
 
 const chat = (api as unknown as { hubChat: Record<string, ReturnType<typeof vi.fn>> }).hubChat;
 
@@ -100,8 +98,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   resetHubChatSessionForTests();
   resetHubAssistantUnreadForTests();
-  window.localStorage.removeItem(CHAT_PANE_SIDE_KEY);
-  resetChatPaneSideForTests();
   chat.members.mockResolvedValue({
     members: [
       { userId: 'alice', username: 'alice', role: 'User' },
@@ -118,6 +114,18 @@ beforeEach(() => {
   chat.markRead.mockResolvedValue({ lastReadSeq: 0 });
   chat.pins.mockResolvedValue({ pins: [] });
 });
+
+/** Sidebar navigation between Chat and Google Chat: each is its own page, so Chat unmounts. */
+function PageSwitch() {
+  const [page, setPage] = useState<'hub' | 'google'>('hub');
+  return (
+    <>
+      <button type="button" data-testid="open-hub-chat" onClick={() => setPage('hub')} />
+      <button type="button" data-testid="open-google-chat" onClick={() => setPage('google')} />
+      {page === 'hub' ? <HubChatPage /> : <div data-testid="google-side" />}
+    </>
+  );
+}
 
 describe('HubChatPage rail', () => {
   it('shows sections and unread badges, and updates them from live events', async () => {
@@ -200,9 +208,12 @@ describe('HubChatPage pinned Agent Hub DM', () => {
     expect(getHubChatSession().selectedId).toBe('dm1');
   });
 
-  it('renders the assistant through ChatPane', async () => {
+  it('renders the assistant in the pinned DM', async () => {
     render(
-      <ChatPane assistantEnabled assistant={<div data-testid="assistant-transcript">hub</div>} />,
+      <HubChatPage
+        assistantEnabled
+        assistant={<div data-testid="assistant-transcript">hub</div>}
+      />,
     );
     fireEvent.click(await screen.findByTestId('hub-chat-assistant'));
     expect(await screen.findByTestId('assistant-transcript')).toBeTruthy();
@@ -1006,9 +1017,9 @@ describe('HubChatPage own responses and unmount', () => {
   it('does not mark read a history page that lands after switching to Google Chat', async () => {
     const page = deferred<{ messages: HubChatMessage[]; hasMore: boolean }>();
     chat.messages.mockReturnValueOnce(page.promise);
-    render(<ChatPane google={<div data-testid="google-side" />} />);
+    render(<PageSwitch />);
     await waitFor(() => expect(chat.messages).toHaveBeenCalledTimes(1));
-    fireEvent.click(screen.getByTestId('chat-pane-google'));
+    fireEvent.click(screen.getByTestId('open-google-chat'));
     await act(async () => {
       page.resolve({ messages: [message(1)], hasMore: false });
     });
@@ -1016,7 +1027,7 @@ describe('HubChatPage own responses and unmount', () => {
   });
 
   it('does not mark read a reconnect catch-up that lands after switching to Google Chat', async () => {
-    render(<ChatPane google={<div data-testid="google-side" />} />);
+    render(<PageSwitch />);
     await screen.findByText('hello 1');
     await waitFor(() => expect(chat.markRead).toHaveBeenCalledTimes(1));
     const catchUp = deferred<{ messages: HubChatMessage[]; hasMore: boolean }>();
@@ -1024,7 +1035,7 @@ describe('HubChatPage own responses and unmount', () => {
     act(() => {
       window.dispatchEvent(new CustomEvent('agenthub:ws_reconnected'));
     });
-    fireEvent.click(screen.getByTestId('chat-pane-google'));
+    fireEvent.click(screen.getByTestId('open-google-chat'));
     await act(async () => {
       catchUp.resolve({ messages: [message(1), message(2)], hasMore: false });
     });
@@ -1218,7 +1229,7 @@ describe('HubChatPage settings saves in flight', () => {
   });
 });
 
-describe('ChatPane', () => {
+describe('HubChatPage across a switch to the Google Chat page', () => {
   it('keeps the open channel, drafts and an open edit across a switch to Google Chat', async () => {
     chat.messages.mockImplementation((id: string) =>
       Promise.resolve({
@@ -1229,7 +1240,7 @@ describe('ChatPane', () => {
         hasMore: false,
       }),
     );
-    render(<ChatPane google={<div data-testid="google-side" />} />);
+    render(<PageSwitch />);
     await screen.findByTestId('hub-chat-channel-gen');
     fireEvent.click(screen.getByTestId('hub-chat-channel-gen'));
     await screen.findByText('mine');
@@ -1239,9 +1250,9 @@ describe('ChatPane', () => {
       target: { value: 'mine, fixing' },
     });
 
-    fireEvent.click(screen.getByTestId('chat-pane-google'));
+    fireEvent.click(screen.getByTestId('open-google-chat'));
     expect(screen.queryByTestId('hub-chat-page')).toBeNull();
-    fireEvent.click(screen.getByTestId('chat-pane-hub'));
+    fireEvent.click(screen.getByTestId('open-hub-chat'));
 
     await screen.findByRole('textbox', { name: 'Edit message' });
     expect((screen.getByTestId('hub-chat-composer') as HTMLTextAreaElement).value).toBe(
@@ -1255,62 +1266,18 @@ describe('ChatPane', () => {
   it('clears a sent draft even if the page unmounted before the send finished', async () => {
     const post = deferred<{ message: HubChatMessage }>();
     chat.post.mockReturnValue(post.promise);
-    render(<ChatPane google={<div data-testid="google-side" />} />);
+    render(<PageSwitch />);
     await screen.findByText('hello 1');
     fireEvent.change(screen.getByTestId('hub-chat-composer'), { target: { value: 'bye' } });
     fireEvent.keyDown(screen.getByTestId('hub-chat-composer'), { key: 'Enter' });
-    fireEvent.click(screen.getByTestId('chat-pane-google'));
+    fireEvent.click(screen.getByTestId('open-google-chat'));
     await act(async () => {
       post.resolve({ message: message(2, { authorUserId: 'alice', body: 'bye' }) });
     });
-    fireEvent.click(screen.getByTestId('chat-pane-hub'));
+    fireEvent.click(screen.getByTestId('open-hub-chat'));
     await screen.findByText('hello 1');
     expect((screen.getByTestId('hub-chat-composer') as HTMLTextAreaElement).value).toBe('');
     expect(screen.getByTestId('hub-chat-send').hasAttribute('disabled')).toBe(true);
-  });
-
-  it('defaults to Agent Hub and flips to Google Chat for a notification', async () => {
-    render(<ChatPane google={<div data-testid="google-side" />} />);
-    expect(screen.getByTestId('chat-pane-hub').getAttribute('aria-selected')).toBe('true');
-    await screen.findByTestId('hub-chat-page');
-    act(() => requestOpenChatSpace('AAAA'));
-    expect(screen.getByTestId('google-side')).toBeTruthy();
-    takePendingOpenChatSpace();
-  });
-
-  it('shows each side its own unread badge', async () => {
-    render(
-      <ChatPane google={<div data-testid="google-side" />} hubUnread={3} googleUnread={120} />,
-    );
-    expect(screen.getByTestId('chat-pane-hub-badge').textContent).toBe('3');
-    expect(screen.getByTestId('chat-pane-google-badge').textContent).toBe('99+');
-    await screen.findByTestId('hub-chat-page');
-  });
-
-  it('hides badges at zero', async () => {
-    render(<ChatPane google={<div data-testid="google-side" />} />);
-    expect(screen.queryByTestId('chat-pane-hub-badge')).toBeNull();
-    expect(screen.queryByTestId('chat-pane-google-badge')).toBeNull();
-    await screen.findByTestId('hub-chat-page');
-  });
-
-  it('hides the Google side when Google Chat is not connected', async () => {
-    window.localStorage.setItem(CHAT_PANE_SIDE_KEY, 'google');
-    resetChatPaneSideForTests();
-    render(<ChatPane hubUnread={2} />);
-    expect(screen.queryByTestId('chat-pane-google')).toBeNull();
-    await screen.findByTestId('hub-chat-page');
-  });
-
-  it('remembers the last side chosen', async () => {
-    const first = render(<ChatPane google={<div data-testid="google-side" />} />);
-    fireEvent.click(screen.getByTestId('chat-pane-google'));
-    expect(window.localStorage.getItem(CHAT_PANE_SIDE_KEY)).toBe('google');
-    first.unmount();
-    resetChatPaneSideForTests();
-    render(<ChatPane google={<div data-testid="google-side" />} />);
-    expect(screen.getByTestId('chat-pane-google').getAttribute('aria-selected')).toBe('true');
-    expect(screen.getByTestId('google-side')).toBeTruthy();
   });
 });
 

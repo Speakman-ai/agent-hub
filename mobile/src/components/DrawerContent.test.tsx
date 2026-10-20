@@ -85,6 +85,8 @@ vi.mock('../utils/projectMenu', () => ({
 vi.mock('../utils/googleSurface', () => ({
   shouldShowCalendarNav: () => false,
   shouldShowGmailNav: () => false,
+  isGoogleConnected: (status: any) => !!status?.connected,
+  hasChatReadScope: (status: any) => !!status?.chatRead,
 }));
 vi.mock('../utils/time', () => ({ daysUntilPurge: () => null, parseDate: () => null }));
 vi.mock('../utils/navGroupCollapse', () => ({
@@ -397,6 +399,26 @@ describe('mobile DrawerContent — web sidebar order', () => {
     expect(texts).not.toContain('Support');
     expect(texts).not.toContain("What's new");
     expect(texts.filter((text) => text === 'Skills')).toHaveLength(0);
+  });
+
+  it('hides Google Chat until the account can read it', async () => {
+    testState.api.getGoogleStatus.mockResolvedValue({ connected: true, chatRead: false });
+    const renderer = await renderDrawer(navigation());
+    await TestRenderer.act(async () => {});
+    expect(collectText(renderer.toJSON())).not.toContain('Google Chat');
+  });
+
+  it('lists Google Chat right after Chat and opens it as its own Hub pane', async () => {
+    testState.api.getGoogleStatus.mockResolvedValue({ connected: true, chatRead: true });
+    const nav = navigation();
+    const renderer = await renderDrawer(nav);
+    await TestRenderer.act(async () => {});
+    const texts = collectText(renderer.toJSON());
+    expect(texts.indexOf('Google Chat')).toBe(texts.indexOf('Chat') + 1);
+    await TestRenderer.act(async () =>
+      renderer.root.findByProps({ testID: 'drawer-google-chat' }).props.onPress(),
+    );
+    expect(nav.navigate).toHaveBeenCalledWith('Hub', { pane: 'google-chat', tab: undefined });
   });
 });
 

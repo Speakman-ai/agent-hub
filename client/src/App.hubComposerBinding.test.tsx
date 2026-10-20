@@ -116,11 +116,9 @@ const PROJECT_SESSION = [{ id: 'proj-sess-1', name: 'P1', engine: 'claude-code' 
 import App from './App';
 import { selectHubAssistantDm } from './utils/hubAssistantChat';
 import { resetHubChatSessionForTests } from './utils/hubChatSession';
-import { setChatPaneSide } from './utils/chatPaneSide';
 
 /** The Hub assistant composer lives in Chat, on the pinned Agent Hub DM. */
 function openHubAssistantChat() {
-  setChatPaneSide('hub');
   selectHubAssistantDm();
   window.location.hash = '#/hub/chat';
 }
@@ -284,7 +282,6 @@ describe('App — Hub assistant composer binds only to the live Hub session', ()
     // The Hub is also reached via legacy views (home/dashboard/todos/calendar/
     // gmail). The late-restore guard must fire on those too, or a project-session
     // restore there locks the assistant once the user opens Chat.
-    setChatPaneSide('hub');
     selectHubAssistantDm();
     window.location.hash = '#/dashboard';
     render(<App />);

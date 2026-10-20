@@ -60,7 +60,7 @@ import { initialPinnedList } from '@shared/utils/hubChatPins';
 import { plainChatText } from '@shared/utils/hubChatUnread';
 import { badgeText, hubChatRefTarget } from '../utils/hubChatMobile';
 import { mergeNotices } from '../utils/hubChatMentions';
-import { useAccountScoped, useHubChatBadge, useHubChatSnapshot } from '../hooks/useHubChat';
+import { useAccountScoped, useHubChatSnapshot } from '../hooks/useHubChat';
 import { useApp } from '../context/AppContext';
 import { HubChatComposer, HubChatMessageBody } from '../components/HubChatRefs';
 import HubIcon from '../components/HubIcon';
@@ -71,10 +71,7 @@ import HubChatSearch from '../components/HubChatSearch';
 import type { HubChatSearchResult } from '@shared/utils/hubChatSearch';
 import { readChatTriggerCard } from '@shared/utils/chatTriggers';
 import { colors } from '../theme/colors';
-import GoogleChatPane from './GoogleChatScreen';
 import ChatScreen from './ChatScreen';
-
-type Side = 'hub' | 'google';
 
 /** A request to show one message in a channel; `token` makes each request distinct. */
 export interface HubChatFocus {
@@ -112,8 +109,8 @@ function useUsernames(account: number): ReadonlyMap<string, string> & { list: Hu
 }
 
 /**
- * Agent Hub chat on mobile: the Agent Hub | Google Chat toggle, the channel
- * rail, and one open channel. Peer of the web `ChatPane` + `HubChatPage`.
+ * Agent Hub chat on mobile: the channel rail and one open channel. Google Chat
+ * is its own Hub pane. Peer of the web `HubChatPage`.
  */
 export default function HubChatScreen({
   initialChannelId,
@@ -131,7 +128,6 @@ export default function HubChatScreen({
   onChannelChange?: (channelId: string | null) => void;
   navigation?: any;
 }) {
-  const [side, setSide] = useState<Side>('hub');
   const [assistantOpen, setAssistantOpen] = useState(initialAssistant);
   const { handleOpenHandoffSession, clearHubChat } = useApp();
   // The open channel belongs to the account it was opened under.
@@ -145,7 +141,6 @@ export default function HubChatScreen({
     },
     [setChannelIdState],
   );
-  const badge = useHubChatBadge();
   const { account } = useHubChatSnapshot();
   const usernames = useUsernames(account);
   const [focus, setFocus] = useState<HubChatFocus | null>(null);
@@ -167,7 +162,6 @@ export default function HubChatScreen({
 
   useEffect(() => {
     if (initialAssistant) {
-      setSide('hub');
       setAssistantOpen(true);
       // A channel retained from an earlier visit arrives with the assistant
       // request. The assistant wins; only a later channel request opens one.
@@ -180,7 +174,6 @@ export default function HubChatScreen({
     if (!initialChannelId || !channelRequest) return;
     if (handledChannelRequestRef.current === channelRequest) return;
     handledChannelRequestRef.current = channelRequest;
-    setSide('hub');
     setAssistantOpen(false);
     setChannelIdState(initialChannelId);
   }, [channelRequest, initialChannelId, setChannelIdState]);
@@ -201,25 +194,7 @@ export default function HubChatScreen({
 
   return (
     <View style={styles.root}>
-      <View style={styles.toggle} accessibilityRole="tablist">
-        <SideButton
-          label="Agent Hub"
-          active={side === 'hub'}
-          count={badge}
-          onPress={() => setSide('hub')}
-          testID="chat-side-hub"
-        />
-        <SideButton
-          label="Google Chat"
-          active={side === 'google'}
-          count={0}
-          onPress={() => setSide('google')}
-          testID="chat-side-google"
-        />
-      </View>
-      {side === 'google' ? (
-        <GoogleChatPane />
-      ) : assistantOpen ? (
+      {assistantOpen ? (
         <View style={styles.flex}>
           <TouchableOpacity
             testID="hub-chat-assistant-back"
@@ -267,33 +242,6 @@ export default function HubChatScreen({
         />
       )}
     </View>
-  );
-}
-
-function SideButton({
-  label,
-  active,
-  count,
-  onPress,
-  testID,
-}: {
-  label: string;
-  active: boolean;
-  count: number;
-  onPress: () => void;
-  testID: string;
-}) {
-  return (
-    <TouchableOpacity
-      testID={testID}
-      onPress={onPress}
-      style={[styles.sideButton, active && styles.sideButtonActive]}
-      accessibilityRole="tab"
-      accessibilityState={{ selected: active }}
-    >
-      <Text style={[styles.sideLabel, active && styles.sideLabelActive]}>{label}</Text>
-      {count > 0 ? <CountBadge count={count} /> : null}
-    </TouchableOpacity>
   );
 }
 
@@ -1816,26 +1764,6 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   chipActive: { backgroundColor: colors.blue600, borderColor: colors.blue600 },
-  toggle: {
-    flexDirection: 'row',
-    marginHorizontal: 12,
-    marginBottom: 8,
-    padding: 2,
-    borderRadius: 8,
-    backgroundColor: colors.gray900,
-  },
-  sideButton: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 6,
-    borderRadius: 6,
-  },
-  sideButtonActive: { backgroundColor: colors.gray800 },
-  sideLabel: { color: colors.gray400, fontSize: 13, fontWeight: '500' },
-  sideLabelActive: { color: colors.white },
   badge: {
     minWidth: 18,
     height: 18,

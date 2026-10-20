@@ -45,6 +45,7 @@ import {
   PanelLeftClose,
   Sparkles,
   MessagesSquare,
+  MessageCircle,
   FolderInput,
 } from 'lucide-react';
 import { formatUnreadCount } from '../utils/googleChatPush';
@@ -241,8 +242,11 @@ export default function Sidebar({
   /** Opens the Hub's Chat pane. The link renders only when provided. */
   onOpenChat,
   chatActive = false,
-  /** Agent Hub plus Google Chat unread, shown as one badge. */
+  /** Agent Hub chat unread (DMs, mentions, the assistant). */
   chatUnread = 0,
+  /** Shows the Google Chat link; true once the user can read Google Chat. */
+  googleChatAvailable = false,
+  googleChatUnread = 0,
   /** Kanban board: project id when `currentView` is `kanban:<id>`. */
   kanbanProjectId = null,
   kanbanProjectName = null,
@@ -656,6 +660,16 @@ export default function Sidebar({
     ...(onOpenChat
       ? [{ pane: 'chat' as const, label: 'Chat', icon: MessagesSquare, testId: 'sidebar-chat' }]
       : []),
+    ...(googleChatAvailable
+      ? [
+          {
+            pane: 'google-chat' as const,
+            label: 'Google Chat',
+            icon: MessageCircle,
+            testId: 'sidebar-google-chat',
+          },
+        ]
+      : []),
     { pane: 'todos', label: 'Todos', icon: ListTodo, testId: 'sidebar-home-todos' },
     { pane: 'reminders', label: 'Reminders', icon: BellRing, testId: 'sidebar-home-reminders' },
     { pane: 'calendar', label: 'Calendar', icon: CalendarDays, testId: 'sidebar-home-calendar' },
@@ -856,6 +870,12 @@ export default function Sidebar({
           {homeLinks.map((item) => {
             const Icon = item.icon;
             const active = item.pane === 'chat' ? chatActive : activeHubPane === item.pane;
+            const unread =
+              item.pane === 'chat'
+                ? chatUnread
+                : item.pane === 'google-chat'
+                  ? googleChatUnread
+                  : 0;
             return (
               <button
                 key={item.pane}
@@ -866,13 +886,13 @@ export default function Sidebar({
               >
                 <Icon size={14} className="shrink-0" />
                 <span className="truncate">{item.label}</span>
-                {item.pane === 'chat' && chatUnread > 0 && (
+                {unread > 0 && (
                   <span
-                    data-testid="sidebar-chat-badge"
-                    aria-label={`${chatUnread} unread`}
+                    data-testid={`${item.testId}-badge`}
+                    aria-label={`${unread} unread`}
                     className="ml-auto min-w-[1.25rem] rounded-full bg-blue-600 px-1.5 text-center text-[11px] font-semibold leading-5 text-white"
                   >
-                    {formatUnreadCount(chatUnread)}
+                    {formatUnreadCount(unread)}
                   </span>
                 )}
               </button>

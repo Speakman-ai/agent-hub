@@ -15,6 +15,7 @@ import CalendarScreen from './CalendarScreen';
 import GmailScreen from './GmailScreen';
 import SupportOverviewScreen from './SupportOverviewScreen';
 import HubChatScreen from './HubChatScreen';
+import GoogleChatPane from './GoogleChatScreen';
 import { useAccountScoped } from '../hooks/useHubChat';
 import {
   DEFAULT_HUB_PANE,
@@ -91,6 +92,8 @@ function HubBody({
           navigation={navigation}
         />
       );
+    case 'google-chat':
+      return <GoogleChatPane />;
     case 'support':
       return <SupportOverviewScreen />;
     default: {

@@ -109,7 +109,7 @@ import SupportOverviewPage from './components/SupportOverviewPage';
 import CalendarAgendaPage from './components/CalendarAgendaPage';
 import GmailPage from './components/GmailPage';
 import GoogleChatPage from './components/GoogleChatPage';
-import ChatPane from './components/ChatPane';
+import HubChatPage from './components/HubChatPage';
 import { HubChatRefOpenContext, type HubChatRefOpenHandler } from './components/HubChatRefs';
 import { useGoogleChatPush, useGoogleChatPushBootstrap } from './utils/googleChatPush';
 import TodosPage from './components/TodosPage';
@@ -137,14 +137,7 @@ import {
 } from './utils/googleChatMutes';
 import { getOpenChatSpace, requestOpenChatSpace } from './utils/googleChatNotifications';
 import { useHubChatUnread } from './hooks/useHubChatUnread';
-import { combinedChatBadge } from './utils/hubChatUnread';
 import { unreadSpacesStore, useGoogleChatUnreadSpaces } from './utils/googleChatUnreadSpaces';
-import {
-  effectiveChatPaneSide,
-  getChatPaneSide,
-  setChatPaneSide,
-  useChatPaneSide,
-} from './utils/chatPaneSide';
 import {
   clearHubAssistantUnread,
   getHubAssistantUnread,
@@ -1111,11 +1104,9 @@ export default function App({ initialView }: any = {}) {
       setHubPane(pane);
       setHubMobileTab(pane);
       if (pane === 'chat' && route?.chatChannelId) {
-        setChatPaneSide('hub');
         focusHubChatMessage(route.chatChannelId, route.chatMessageId || null);
         consumeChatFocusRoute();
       } else if (pane === 'chat' && route?.openSummaries) {
-        setChatPaneSide('hub');
         consumeChatFocusRoute();
         void openSummariesChannel();
       }
@@ -1154,11 +1145,9 @@ export default function App({ initialView }: any = {}) {
     const route = initialNavigationRef.current;
     if (initialView || route?.hubPane !== 'chat') return;
     if (route.chatChannelId) {
-      setChatPaneSide('hub');
       focusHubChatMessage(route.chatChannelId, route.chatMessageId || null);
       consumeChatFocusRoute();
     } else if (route.openSummaries) {
-      setChatPaneSide('hub');
       consumeChatFocusRoute();
       void openSummariesChannel();
     }
@@ -3896,7 +3885,8 @@ export default function App({ initialView }: any = {}) {
   // New Google Chat messages for the signed-in user only: the proxy reads with
   // the caller's own Google connection, and pushed events for any other Hub
   // user are dropped inside the notifier.
-  const chatPaneOpen = currentView === 'hub' && (hubPane === 'chat' || hubMobileTab === 'chat');
+  const chatPaneOpen =
+    currentView === 'hub' && (hubPane === 'google-chat' || hubMobileTab === 'google-chat');
   const chatPaneOpenRef = useRef(chatPaneOpen);
   chatPaneOpenRef.current = chatPaneOpen;
   // Messages announced since the Chat pane was last open, per space, so a later
@@ -3942,8 +3932,8 @@ export default function App({ initialView }: any = {}) {
           onClick: () => {
             requestOpenChatSpace(notice.spaceId);
             setCurrentView('hub');
-            setHubPane('chat');
-            setHubMobileTab('chat');
+            setHubPane('google-chat');
+            setHubMobileTab('google-chat');
           },
         },
       ]);
@@ -3952,10 +3942,7 @@ export default function App({ initialView }: any = {}) {
   });
 
   // Agent Hub chat: badge counts and desktop notices for DMs and mentions.
-  const chatEnabledRef = useRef(chatEnabled);
-  chatEnabledRef.current = chatEnabled;
   const openHubChatChannel = useCallback((channelId: string) => {
-    setChatPaneSide('hub');
     updateHubChatSession((s) => (s.selectedId === channelId ? s : { ...s, selectedId: channelId }));
     setCurrentView('hub');
     setHubPane('chat');
@@ -3972,9 +3959,11 @@ export default function App({ initialView }: any = {}) {
   useEffect(() => {
     if (connected) loadNotificationPrefs();
   }, [connected]);
+  const hubChatPaneOpen = currentView === 'hub' && (hubPane === 'chat' || hubMobileTab === 'chat');
+  const hubChatPaneOpenRef = useRef(hubChatPaneOpen);
+  hubChatPaneOpenRef.current = hubChatPaneOpen;
   isViewingHubChatChannelRef.current = (channelId: string) =>
-    chatPaneOpenRef.current &&
-    effectiveChatPaneSide(getChatPaneSide(), chatEnabledRef.current) === 'hub' &&
+    hubChatPaneOpenRef.current &&
     document.visibilityState !== 'hidden' &&
     getHubChatSession().selectedId === channelId;
   const hubChatUnread = useHubChatUnread({
@@ -4000,16 +3989,13 @@ export default function App({ initialView }: any = {}) {
   // The pinned Agent Hub DM renders the Hub assistant session while that
   // conversation is the visible Chat view.
   const hubAssistantSelected = useHubAssistantSelected();
-  const chatPaneSideChoice = useChatPaneSide();
   const hubAssistantInChat =
     hubAssistantSelected &&
     currentView === 'hub' &&
     hubPane === 'chat' &&
-    hubMobileTab !== 'assistant' &&
-    effectiveChatPaneSide(chatPaneSideChoice, chatEnabled) === 'hub';
+    hubMobileTab !== 'assistant';
   const hubAssistantUnread = useHubAssistantUnread();
   const agentHubChatBadge = hubChatUnread.badge + hubAssistantUnread;
-  const chatButtonBadge = combinedChatBadge(agentHubChatBadge, googleChatBadge);
   // Moving the transcript between the column and the DM remounts its scroll
   // container at the top; snap it back to the latest turn.
   useEffect(() => {
@@ -6802,7 +6788,9 @@ export default function App({ initialView }: any = {}) {
               setSidebarOpen(false);
             }}
             chatActive={currentView === 'hub' && hubPane === 'chat'}
-            chatUnread={chatButtonBadge}
+            chatUnread={agentHubChatBadge}
+            googleChatAvailable={chatEnabled}
+            googleChatUnread={googleChatBadge}
             onCollapseSidebar={() => setSidebarCollapsed(true)}
             onOpenNotificationTarget={openNotificationTarget}
             onOpenNotificationSettings={openNotificationSettings}
@@ -7474,23 +7462,19 @@ export default function App({ initialView }: any = {}) {
                     />
                   }
                   chat={
-                    <ChatPane
-                      hubUnread={agentHubChatBadge}
+                    <HubChatPage
+                      onOpenRef={handleOpenChatRef}
+                      onSessionStarted={handleOpenCreatedSession}
                       assistantEnabled
                       assistant={hubAssistantChat}
-                      googleUnread={googleChatBadge}
+                    />
+                  }
+                  googleChat={
+                    <GoogleChatPage
+                      onOpenAccountSettings={() => setCurrentView('settings:account')}
                       onSessionStarted={handleOpenCreatedSession}
-                      onOpenRef={handleOpenChatRef}
-                      google={
-                        chatEnabled ? (
-                          <GoogleChatPage
-                            onOpenAccountSettings={() => setCurrentView('settings:account')}
-                            onSessionStarted={handleOpenCreatedSession}
-                            onOpenSession={({ sessionId, agentId }) =>
-                              focusAgentSession(agentId, sessionId)
-                            }
-                          />
-                        ) : undefined
+                      onOpenSession={({ sessionId, agentId }) =>
+                        focusAgentSession(agentId, sessionId)
                       }
                     />
                   }

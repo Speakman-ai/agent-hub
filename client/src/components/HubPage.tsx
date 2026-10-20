@@ -11,6 +11,7 @@ export interface HubPageProps {
   calendar: ReactNode;
   mail: ReactNode;
   chat: ReactNode;
+  googleChat: ReactNode;
   support: ReactNode;
 }
 
@@ -18,7 +19,15 @@ function workspaceBody(
   active: HubWorkspacePane,
   panes: Pick<
     HubPageProps,
-    'today' | 'org' | 'todos' | 'reminders' | 'calendar' | 'mail' | 'chat' | 'support'
+    | 'today'
+    | 'org'
+    | 'todos'
+    | 'reminders'
+    | 'calendar'
+    | 'mail'
+    | 'chat'
+    | 'googleChat'
+    | 'support'
   >,
 ): ReactNode {
   switch (active) {
@@ -36,6 +45,8 @@ function workspaceBody(
       return panes.mail;
     case 'chat':
       return panes.chat;
+    case 'google-chat':
+      return panes.googleChat;
     case 'support':
       return panes.support;
     default: {
@@ -59,6 +70,7 @@ export default function HubPage({
   calendar,
   mail,
   chat,
+  googleChat,
   support,
 }: HubPageProps) {
   const workspace = workspaceBody(parseHubPane(pane), {
@@ -69,6 +81,7 @@ export default function HubPage({
     calendar,
     mail,
     chat,
+    googleChat,
     support,
   });
 

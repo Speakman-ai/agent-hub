@@ -52,6 +52,7 @@ import BugReportButton from './BugReportButton';
 import NotificationBell from './NotificationBell';
 import BrandLogo from './BrandLogo';
 import { useHubChatBadge } from '../hooks/useHubChat';
+import { useGoogleChatAvailable } from '../hooks/useGoogleChatAvailable';
 import { parseHubPane, type HubWorkspacePane } from '@shared/utils/hub';
 
 /**
@@ -64,6 +65,7 @@ const putCollapsedProject = (projectId: string, collapsed: boolean) =>
 
 export default function DrawerContent({ navigation }: any) {
   const chatBadge = useHubChatBadge();
+  const googleChatAvailable = useGoogleChatAvailable();
   const {
     showAiSignInGuide,
     dismissAiSignInGuide,
@@ -888,6 +890,16 @@ export default function DrawerContent({ navigation }: any) {
   const homeLinks: { pane: HubWorkspacePane; label: string; icon: string; testID: string }[] = [
     { pane: 'today', label: 'Dashboard', icon: 'LayoutGrid', testID: 'drawer-home-dashboard' },
     { pane: 'chat', label: 'Chat', icon: 'MessageSquare', testID: 'drawer-chat' },
+    ...(googleChatAvailable
+      ? [
+          {
+            pane: 'google-chat' as const,
+            label: 'Google Chat',
+            icon: 'MessageCircle',
+            testID: 'drawer-google-chat',
+          },
+        ]
+      : []),
     { pane: 'todos', label: 'Todos', icon: 'ListTodo', testID: 'drawer-home-todos' },
     { pane: 'reminders', label: 'Reminders', icon: 'Clock', testID: 'drawer-home-reminders' },
     { pane: 'calendar', label: 'Calendar', icon: 'CalendarDays', testID: 'drawer-home-calendar' },
