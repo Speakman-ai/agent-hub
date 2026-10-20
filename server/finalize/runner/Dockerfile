@@ -242,6 +242,24 @@ RUN chmod +x /usr/local/bin/install-chromedriver.sh \
 COPY server/finalize/runner/entrypoint.sh /usr/local/bin/runner-entrypoint.sh
 RUN chmod +x /usr/local/bin/runner-entrypoint.sh
 
+# Firecracker root helpers. This image doubles as the privileged helper the Hub
+# runs microVM setup in (AGENT_HUB_FIRECRACKER_PRIVILEGED_IMAGE), and it ships
+# with the same release tag as the server. Baking the helpers in keeps their
+# CLI in lockstep with the server that calls them; copies installed on the host
+# by setup-firecracker-host.sh only change when someone reruns that script, so a
+# server upgrade that added a flag would hit "unknown argument" on every boot.
+COPY server/session-env/firecracker/build/fc-prepare-disks.sh \
+     server/session-env/firecracker/build/fc-launch-vmm.sh \
+     server/session-env/firecracker/build/fc-jail-manage.sh \
+     server/session-env/firecracker/build/fc-netctl.sh \
+     server/session-env/firecracker/build/fc-path-guard.sh \
+     /usr/local/lib/agent-hub/
+RUN chmod 0755 /usr/local/lib/agent-hub/fc-prepare-disks.sh \
+      /usr/local/lib/agent-hub/fc-launch-vmm.sh \
+      /usr/local/lib/agent-hub/fc-jail-manage.sh \
+      /usr/local/lib/agent-hub/fc-netctl.sh \
+  && chmod 0644 /usr/local/lib/agent-hub/fc-path-guard.sh
+
 # Pull-based runner agent (bundled single-file ESM via esbuild). Used by the
 # `agent` entrypoint mode; harmless in `daemon` (job) containers.
 COPY --from=runner-agent-build /src/server/finalize/runner/runner-agent.mjs /usr/local/bin/runner-agent.mjs

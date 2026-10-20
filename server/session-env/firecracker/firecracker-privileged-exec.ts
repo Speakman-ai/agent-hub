@@ -580,6 +580,33 @@ export function resolveFirecrackerExecConfig(
   };
 }
 /**
+ * Root helpers the runner image ships at these exact paths (see
+ * server/finalize/runner/Dockerfile). The image is released under the same tag
+ * as the server, so its copies always accept the flags this server passes.
+ * Mounting the host's copies over them would bring back the skew: those are
+ * only refreshed when an operator reruns setup-firecracker-host.sh, and a stale
+ * fc-prepare-disks.sh rejected `--no-worktree`, so the computer never booted.
+ */
+export const IMAGE_BUNDLED_HELPERS: ReadonlySet<string> = new Set([
+  '/usr/local/lib/agent-hub/fc-prepare-disks.sh',
+  '/usr/local/lib/agent-hub/fc-launch-vmm.sh',
+  '/usr/local/lib/agent-hub/fc-jail-manage.sh',
+  '/usr/local/lib/agent-hub/fc-netctl.sh',
+  '/usr/local/lib/agent-hub/fc-path-guard.sh',
+]);
+
+/**
+ * Break-glass: `AGENT_HUB_FIRECRACKER_HOST_HELPERS=1` mounts the host's helper
+ * copies over the image's, for testing an edited helper without rebuilding the
+ * runner image. A helper path overridden to a non-default location is always
+ * mounted, since the image has nothing there.
+ */
+function useHostHelperCopies(env: NodeJS.ProcessEnv): boolean {
+  const raw = env.AGENT_HUB_FIRECRACKER_HOST_HELPERS?.trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'on';
+}
+
+/**
  * Everything a helper container must see, at its host path.
  *
  * The worktrees directory is included because disk preparation copies the
@@ -602,11 +629,13 @@ export function resolveHelperMounts(
     { path: paths.controlDir },
     { path: env.AGENT_HUB_FIRECRACKER_BIN?.trim() || '/usr/bin/firecracker', readOnly: true },
     { path: env.AGENT_HUB_JAILER_BIN?.trim() || '/usr/bin/jailer', readOnly: true },
-    { path: launchHelper, readOnly: true },
-    { path: jailHelper, readOnly: true },
-    { path: netctlHelper, readOnly: true },
-    { path: pathGuard, readOnly: true },
   ];
+  const hostHelpers = useHostHelperCopies(env);
+  for (const helper of [launchHelper, jailHelper, netctlHelper, pathGuard, paths.diskHelper]) {
+    if (!helper) continue;
+    if (!hostHelpers && IMAGE_BUNDLED_HELPERS.has(helper)) continue;
+    mounts.push({ path: helper, readOnly: true });
+  }
   // Finalize-runner helpers often lack kmod/procps; bind the host tools the
   // netctl helper needs so `modprobe` / `sysctl` are not mysterious PATH misses.
   for (const hostTool of [
@@ -618,7 +647,6 @@ export function resolveHelperMounts(
     if (existsSync(hostTool)) mounts.push({ path: hostTool, readOnly: true });
   }
   if (paths.jailerChrootBase) mounts.push({ path: paths.jailerChrootBase });
-  if (paths.diskHelper) mounts.push({ path: paths.diskHelper, readOnly: true });
   const worktrees = env.AGENT_HUB_HOST_WORKSPACES_DIR?.trim();
   if (worktrees) mounts.push({ path: worktrees });
   for (const extra of (env.AGENT_HUB_FIRECRACKER_EXTRA_MOUNTS ?? '').split(',')) {

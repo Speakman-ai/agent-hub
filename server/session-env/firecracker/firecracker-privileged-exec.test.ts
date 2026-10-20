@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
 import {
   buildVmmLaunchArgv,
   buildVmmDockerArgv,
@@ -6,6 +8,7 @@ import {
   buildPrivilegedArgv,
   buildStopVmmArgv,
   resolveFirecrackerExecConfig,
+  IMAGE_BUNDLED_HELPERS,
   resolveHelperMounts,
   vmmContainerName,
   type FirecrackerExecConfig,
@@ -255,14 +258,48 @@ describe('resolveFirecrackerExecConfig', () => {
 });
 
 describe('resolveHelperMounts', () => {
-  it('mounts the artifact directory, the VMM binary, and the disk helper', () => {
+  it('mounts the artifact directory and the VMM binary', () => {
     const mounts = resolveHelperMounts(paths, {});
     const byPath = new Map(mounts.map((m) => [m.path, m]));
     expect(byPath.has('/var/lib/agent-hub/firecracker')).toBe(true);
     expect(byPath.get('/usr/bin/firecracker')?.readOnly).toBe(true);
-    expect(byPath.get('/usr/local/lib/agent-hub/fc-prepare-disks.sh')?.readOnly).toBe(true);
-    expect(byPath.get('/usr/local/lib/agent-hub/fc-netctl.sh')?.readOnly).toBe(true);
-    expect(byPath.get('/usr/local/lib/agent-hub/fc-path-guard.sh')?.readOnly).toBe(true);
+  });
+
+  // Regression: a host fc-prepare-disks.sh older than the server rejected
+  // `--no-worktree`, so the computer failed before it could boot. The runner
+  // image ships helpers matching the server; host copies must not shadow them.
+  it('uses the image-bundled helpers instead of mounting stale host copies', () => {
+    const list = resolveHelperMounts(paths, {}).map((m) => m.path);
+    for (const helper of IMAGE_BUNDLED_HELPERS) expect(list).not.toContain(helper);
+    expect(IMAGE_BUNDLED_HELPERS.has(paths.diskHelper!)).toBe(true);
+  });
+
+  it('mounts host helper copies read-only when the break-glass env is set', () => {
+    const mounts = resolveHelperMounts(paths, { AGENT_HUB_FIRECRACKER_HOST_HELPERS: '1' });
+    const byPath = new Map(mounts.map((m) => [m.path, m]));
+    for (const helper of IMAGE_BUNDLED_HELPERS) expect(byPath.get(helper)?.readOnly).toBe(true);
+  });
+
+  it('mounts a helper overridden to a path the image does not provide', () => {
+    const mounts = resolveHelperMounts(
+      { ...paths, diskHelper: '/opt/custom/fc-prepare-disks.sh' },
+      { AGENT_HUB_FIRECRACKER_NETCTL_HELPER: '/opt/custom/fc-netctl.sh' },
+    );
+    const byPath = new Map(mounts.map((m) => [m.path, m]));
+    expect(byPath.get('/opt/custom/fc-prepare-disks.sh')?.readOnly).toBe(true);
+    expect(byPath.get('/opt/custom/fc-netctl.sh')?.readOnly).toBe(true);
+  });
+
+  it('bundles every helper the runner image copies in', () => {
+    const dockerfile = readFileSync(
+      fileURLToPath(new URL('../../finalize/runner/Dockerfile', import.meta.url)),
+      'utf8',
+    );
+    for (const helper of IMAGE_BUNDLED_HELPERS) {
+      const name = helper.split('/').pop()!;
+      expect(dockerfile).toContain(`server/session-env/firecracker/build/${name}`);
+      expect(dockerfile).toContain(helper);
+    }
   });
 
   it('drops the run directory when the artifact mount already covers it', () => {
