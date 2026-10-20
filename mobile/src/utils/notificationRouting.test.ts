@@ -353,6 +353,14 @@ describe('routeInboxNotification — bell inbox rows', () => {
     );
   });
 
+  it('opens the PR when its preview is ready', () => {
+    expect(routeInboxNotification(row('pr_environment_ready', { prNumber: 12 }))).toEqual({
+      kind: 'pulls',
+      projectId: 'p1',
+      prNumber: 12,
+    });
+  });
+
   it('opens Deployments for deploy outcomes', () => {
     const route = routeInboxNotification(row('deploy_outcome', {}));
     expect(route).toEqual({ kind: 'deployments', projectId: 'p1' });

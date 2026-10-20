@@ -106,6 +106,12 @@ export const NOTIFICATION_SECTIONS = [
         defaults: LOUD,
       },
       {
+        id: 'pr_environment_ready',
+        label: 'PR preview ready',
+        description: 'A PR environment finished building and its preview is up',
+        defaults: LOUD,
+      },
+      {
         id: 'pr_merged',
         label: 'PR merged',
         description: 'A linked PR was merged',

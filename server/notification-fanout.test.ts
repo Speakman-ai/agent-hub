@@ -547,6 +547,81 @@ describe('mapBroadcastToNotification: new producers', () => {
   });
 });
 
+describe('mapBroadcastToNotification: PR environment ready', () => {
+  const env = {
+    id: 'env1',
+    projectId: 'p1',
+    prNumber: 12,
+    headBranch: 'feat/x',
+    url: 'https://pr-12--p1.example.com',
+    readyAt: '2026-10-20T10:00:00.000Z',
+  };
+
+  it('ignores every status but ready', () => {
+    for (const status of ['queued', 'building', 'failed', 'stopped']) {
+      expect(
+        mapBroadcastToNotification({
+          type: 'pr_environment_update',
+          projectId: 'p1',
+          prNumber: 12,
+          status,
+          environment: { ...env, readyAt: null },
+        }),
+      ).toBe(null);
+    }
+  });
+
+  it('notifies the addressed users once per build, linking the PR', () => {
+    const intent = mapBroadcastToNotification({
+      type: 'pr_environment_update',
+      projectId: 'p1',
+      prNumber: 12,
+      status: 'ready',
+      environment: env,
+      notifyUserIds: ['u1', 'u2'],
+    });
+    expect(intent).toMatchObject({
+      category: 'pr_environment_ready',
+      title: 'PR #12 preview is ready',
+      body: 'https://pr-12--p1.example.com',
+      data: { projectId: 'p1', prNumber: 12, type: 'pr_environment_ready' },
+      sourceKey: 'pr_env_ready:env1:2026-10-20T10:00:00.000Z',
+      recipients: { kind: 'users', userIds: ['u1', 'u2'] },
+      deviceScope: 'recipients',
+    });
+  });
+
+  it('falls back to project viewers when nobody is addressed', () => {
+    expect(
+      mapBroadcastToNotification({
+        type: 'pr_environment_update',
+        projectId: 'p1',
+        prNumber: 12,
+        status: 'ready',
+        environment: env,
+      }),
+    ).toMatchObject({ recipients: { kind: 'project' } });
+  });
+
+  it('a rebuild that becomes ready gets a new key', () => {
+    const a = mapBroadcastToNotification({
+      type: 'pr_environment_update',
+      projectId: 'p1',
+      prNumber: 12,
+      status: 'ready',
+      environment: env,
+    });
+    const b = mapBroadcastToNotification({
+      type: 'pr_environment_update',
+      projectId: 'p1',
+      prNumber: 12,
+      status: 'ready',
+      environment: { ...env, readyAt: '2026-10-20T11:00:00.000Z' },
+    });
+    expect(a?.sourceKey).not.toBe(b?.sourceKey);
+  });
+});
+
 describe('tokenWantsPush', () => {
   it('stored choice wins, else enabled_events for legacy events, else catalog default', () => {
     const t = token('x', 'u1', ['pushed']);

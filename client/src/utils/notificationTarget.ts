@@ -61,6 +61,8 @@ export function notificationTarget(n: InboxNotification): NotificationTarget | n
     case 'escalation':
       if (cardId) return card();
       return pull() ?? card();
+    case 'pr_environment_ready':
+      return pull();
     case 'card_assigned_to_you':
       return card();
     case 'support_ticket_created':

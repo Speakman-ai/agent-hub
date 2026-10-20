@@ -89,6 +89,12 @@ describe('notificationTarget', () => {
     });
   });
 
+  it('opens the PR when its preview is ready', () => {
+    expect(
+      notificationTarget(row({ category: 'pr_environment_ready', data: { prNumber: 12 } })),
+    ).toEqual({ kind: 'route', route: { view: 'pulls', projectId: 'acme', prNumber: 12 } });
+  });
+
   it('opens a routine run session, or the cron jobs when the run never got one', () => {
     expect(
       notificationTarget(

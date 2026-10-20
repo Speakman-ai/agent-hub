@@ -129,6 +129,7 @@ describe('NotificationPreferencesSection', () => {
       pushed: on,
       finalize_failed: on,
       review_assigned_to_you: on,
+      pr_environment_ready: on,
       pr_merged: on,
     });
     expect(all).toHaveAttribute('aria-checked', 'true');

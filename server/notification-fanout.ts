@@ -569,6 +569,34 @@ export function mapBroadcastToNotification(data: BroadcastData): NotificationInt
       };
     }
 
+    case 'pr_environment_update': {
+      if (data.status !== 'ready') return null;
+      const env = (data.environment ?? {}) as Record<string, unknown>;
+      const envId = str(env.id);
+      const readyAt = str(env.readyAt);
+      const prNumber = typeof data.prNumber === 'number' ? data.prNumber : Number(env.prNumber);
+      const projectId = str(data.projectId) ?? str(env.projectId) ?? null;
+      // Every save of a ready row re-broadcasts; readyAt changes only when a
+      // build becomes ready, so the key dedupes to one row per build.
+      if (!envId || !readyAt || !projectId || !Number.isFinite(prNumber)) return null;
+      const url = str(env.url);
+      const branch = str(env.headBranch);
+      const notify = Array.isArray(data.notifyUserIds)
+        ? data.notifyUserIds.filter((id): id is string => typeof id === 'string' && id.length > 0)
+        : [];
+      return {
+        category: 'pr_environment_ready',
+        pushEvent: null,
+        deviceScope: 'recipients',
+        title: `PR #${prNumber} preview is ready`,
+        body: url ?? (branch ? `Environment for ${branch} is up` : 'The PR environment is up'),
+        data: { projectId, prNumber, url, type: 'pr_environment_ready' },
+        projectId,
+        sourceKey: `pr_env_ready:${envId}:${readyAt}`,
+        recipients: notify.length ? { kind: 'users', userIds: notify } : { kind: 'project' },
+      };
+    }
+
     default:
       return fromLegacyPush(data);
   }

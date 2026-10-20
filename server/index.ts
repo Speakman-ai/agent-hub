@@ -165,7 +165,7 @@ import {
 import { ensureReviewerGhConfigDir } from './spawn-github-credentials.js';
 import { authMiddleware } from './auth.js';
 import { initOrgsDb, orgDataDir, getActiveOrgId } from './orgs.js';
-import { migrateAuthRecordIfNeeded } from './users-store.js';
+import { getUserById, migrateAuthRecordIfNeeded } from './users-store.js';
 import { maybeAutoProvisionOwner } from './auth-bootstrap.js';
 import { getProjectMode, sessionUsesWorktree } from './project-mode.js';
 import { resolveSessionWorktreePath } from './session-env/workflow-session-env.js';
@@ -431,6 +431,7 @@ import {
   prEnvironmentShareStoreFor,
 } from './preview/pr-environment-share.js';
 import { createPrEnvironmentReadyHandler } from './preview/pr-environment-comment.js';
+import { resolvePrEnvironmentNotifyUserIds } from './preview/pr-environment-notify.js';
 import { buildPrEnvironmentPublicUrl } from './preview/preview-subdomain-host.js';
 import {
   githubRepoOf,
@@ -1183,6 +1184,19 @@ const prEnvironments = createOrgScopedPrEnvironmentService({
                   config.previewSubdomainBase,
                   config.publicUrl,
                 ),
+                // Addressees for the "preview ready" notification.
+                ...(data.status === 'ready'
+                  ? {
+                      notifyUserIds: resolvePrEnvironmentNotifyUserIds(
+                        {
+                          db: org.db,
+                          isUser: (id) => getUserById(id) != null,
+                          agentProjectId: (agentId) => findAgent(agentId)?.project?.id ?? null,
+                        },
+                        data.environment as PrEnvironmentDto,
+                      ),
+                    }
+                  : {}),
               }
             : data,
         ),

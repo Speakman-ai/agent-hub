@@ -102,6 +102,11 @@ export function routeNotificationTap(data: any, ctx: any = {}) {
       if (projectId) return { kind: 'kanban', projectId, cardId: null };
       return null;
     }
+    case 'pr_environment_ready': {
+      const projectId = typeof data.projectId === 'string' ? data.projectId : null;
+      const prNumber = typeof data.prNumber === 'number' ? data.prNumber : null;
+      return projectId && prNumber != null ? { kind: 'pulls', projectId, prNumber } : null;
+    }
     case 'pr_merged':
     case 'card_assigned_to_you': {
       return {
