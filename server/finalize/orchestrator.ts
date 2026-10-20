@@ -128,6 +128,7 @@ import {
   writeFinalizeReadyToPushTimeline,
   writeFinalizeRebaseResultTimeline,
   annotateFinalizeRebaseReusedJobs,
+  annotateFinalizeRebaseFullRerun,
   type FinalizeRebaseResultArgs,
   writeFinalizeRunStartedTimeline,
   writeFinalizeRunTerminalTimeline,
@@ -150,6 +151,7 @@ import { computeIdempotencyKey, DEFAULT_CI_CONFIG_RELATIVE_PATH } from './finali
 import { inspectBaseDrift, resolveBaseSha } from './base-drift.js';
 import {
   decideBaseDriftAction,
+  fastFallbackNote,
   jobInstanceKey,
   resolveBaseDriftPolicy,
 } from './base-drift-policy.js';
@@ -1080,6 +1082,9 @@ export async function runFinalize(
     // (a fix, another reloop) starts from a full job set again.
     let pendingJobReuse: { keys: Set<string>; jobIds: string[]; ciFingerprint: string } | null =
       null;
+    // Why a base-drift re-loop under the `fast` policy re-runs every job
+    // anyway. Without it the timeline reads as if the kept jobs were ignored.
+    let pendingFullRerunNote: string | null = null;
     const baseDriftPolicy = resolveBaseDriftPolicy(opts.project.baseDrift);
     // §6 no-progress reruns: how many same-SHA reruns we've already spent this
     // streak. Reset to 0 whenever HEAD advances (a real commit landed). Bounds
@@ -1402,6 +1407,7 @@ export async function runFinalize(
         conflict: (rebaseOutcome.conflictsDispatchedCount ?? 0) > 0,
         headSha: headValidatedAgainst,
         reloopReason: pendingReloopReason,
+        fullRerunNote: pendingFullRerunNote,
       };
       const rebaseMessageId = writeFinalizeRebaseResultTimeline(
         orchestratorTimelineDeps(deps),
@@ -1411,6 +1417,7 @@ export async function runFinalize(
       // Consumed by this round's rebase message; clear so a later fix-driven
       // round is not mislabeled as a push-gate re-loop.
       pendingReloopReason = null;
+      pendingFullRerunNote = null;
 
       // No-progress guard (§6)
       // If we re-entered the loop after a fix dispatch but the post-rebase
@@ -1870,6 +1877,16 @@ export async function runFinalize(
                 `run=${runId}; dropping reuse of ${roundJobReuse.jobIds.join(', ')}`,
             );
             reuseInstances = undefined;
+            if (roundRebaseMessage) {
+              annotateFinalizeRebaseFullRerun(
+                { ...orchestratorTimelineDeps(deps), stmts: deps.stmts, log },
+                {
+                  messageId: roundRebaseMessage.id,
+                  rebase: roundRebaseMessage.args,
+                  fullRerunNote: fastFallbackNote('the CI config changed since the previous round'),
+                },
+              );
+            }
           } else if (roundJobReuse) {
             reuseInstances = roundJobReuse.keys;
             if (roundRebaseMessage) {
@@ -2212,6 +2229,12 @@ export async function runFinalize(
               ? collectJobReuse(deps.stmts, runId, driftAction.reuseJobs, parsedCi)
               : null;
           pendingJobReuse = reuse;
+          pendingFullRerunNote =
+            reuse || baseDriftPolicy.mode !== 'fast'
+              ? null
+              : driftAction.kind === 'rerun_full'
+                ? (driftAction.fastFallbackNote ?? null)
+                : fastFallbackNote('none of the kept jobs passed in the previous round');
           trace('push_gate', {
             round: loopCount,
             decision: 'refuse',

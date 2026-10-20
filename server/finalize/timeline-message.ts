@@ -195,6 +195,11 @@ export interface FinalizeRebaseResultArgs {
    * confirmed.
    */
   reusedJobs?: string[] | null;
+  /**
+   * Set when the base-drift `fast` policy fell back to re-running every job,
+   * explaining why the jobs it normally keeps ran again.
+   */
+  fullRerunNote?: string | null;
 }
 
 function buildRebaseResultMessage(args: FinalizeRebaseResultArgs): {
@@ -211,8 +216,11 @@ function buildRebaseResultMessage(args: FinalizeRebaseResultArgs): {
   const reuseNote = reusedJobs
     ? ` · keeping the earlier passing result for ${reusedJobs.join(', ')}`
     : '';
+  const fullRerunNote = reusedJobs ? null : (args.fullRerunNote ?? null);
   const content = args.reloopReason
-    ? `${roundLabel} · ${reloopReasonText(args.reloopReason)}${reuseNote}`
+    ? `${roundLabel} · ${reloopReasonText(args.reloopReason)}${reuseNote}${
+        fullRerunNote ? ` · ${fullRerunNote}` : ''
+      }`
     : roundLabel;
   return {
     content,
@@ -225,6 +233,7 @@ function buildRebaseResultMessage(args: FinalizeRebaseResultArgs): {
       detail: args.detail ?? null,
       reloopReason: args.reloopReason ?? null,
       reusedJobs,
+      fullRerunNote,
     },
   };
 }
@@ -248,28 +257,55 @@ export function writeFinalizeRebaseResultTimeline(
  * Called only after the round confirmed the reuse against its ci config.
  */
 export function annotateFinalizeRebaseReusedJobs(
-  deps: TimelineMessageDeps & {
-    stmts: Pick<Stmts, 'updateMessageContentAndMetadata'>;
-  },
+  deps: RebaseRewriteDeps,
   args: { messageId: string; rebase: FinalizeRebaseResultArgs; reusedJobs: string[] },
 ): boolean {
-  if (!args.rebase.sessionId || args.reusedJobs.length === 0) return false;
-  const { content, payload } = buildRebaseResultMessage({
+  if (args.reusedJobs.length === 0) return false;
+  return rewriteRebaseMessage(deps, args.messageId, {
     ...args.rebase,
     reusedJobs: args.reusedJobs,
   });
+}
+
+/**
+ * Rewrite a round's rebase message to say why the base-drift `fast` policy
+ * re-ran every job, for reasons only known once the round's ci config is
+ * parsed (a rebase that pulled in a ci.yaml change).
+ */
+export function annotateFinalizeRebaseFullRerun(
+  deps: RebaseRewriteDeps,
+  args: { messageId: string; rebase: FinalizeRebaseResultArgs; fullRerunNote: string },
+): boolean {
+  return rewriteRebaseMessage(deps, args.messageId, {
+    ...args.rebase,
+    reusedJobs: null,
+    fullRerunNote: args.fullRerunNote,
+  });
+}
+
+type RebaseRewriteDeps = TimelineMessageDeps & {
+  stmts: Pick<Stmts, 'updateMessageContentAndMetadata'>;
+};
+
+function rewriteRebaseMessage(
+  deps: RebaseRewriteDeps,
+  messageId: string,
+  rebase: FinalizeRebaseResultArgs,
+): boolean {
+  if (!rebase.sessionId) return false;
+  const { content, payload } = buildRebaseResultMessage(rebase);
   const metadata = JSON.stringify({ kind: 'finalize_rebase_result', ...payload });
   const log = deps.log ?? (() => {});
   try {
-    deps.stmts.updateMessageContentAndMetadata.run(content, metadata, args.messageId);
-    const updated = deps.stmts.getMessageById.get(args.messageId) as MessageRow | undefined;
+    deps.stmts.updateMessageContentAndMetadata.run(content, metadata, messageId);
+    const updated = deps.stmts.getMessageById.get(messageId) as MessageRow | undefined;
     if (updated) {
-      deps.broadcast({ type: 'message', sessionId: args.rebase.sessionId, message: updated });
+      deps.broadcast({ type: 'message', sessionId: rebase.sessionId, message: updated });
     }
     return true;
   } catch (err) {
     log(
-      `[finalize-timeline] rebase reuse annotation failed message=${args.messageId}: ${
+      `[finalize-timeline] rebase message rewrite failed message=${messageId}: ${
         err instanceof Error ? err.message : String(err)
       }`,
     );

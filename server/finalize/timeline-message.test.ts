@@ -8,6 +8,7 @@ import {
   writeFinalizeFlakeRecoveredTimeline,
   writeFinalizeRebaseResultTimeline,
   annotateFinalizeRebaseReusedJobs,
+  annotateFinalizeRebaseFullRerun,
   writeFinalizeReviewRoundTimeline,
   writeFinalizeRunTerminalTimeline,
   writeFinalizeTimelineMessage,
@@ -301,6 +302,51 @@ describe('timeline-message', () => {
       kind: 'finalize_rebase_result',
       reloopReason: 'base_branch_moved',
       reusedJobs: ['e2e'],
+    });
+    expect(broadcast).toHaveBeenLastCalledWith({
+      type: 'message',
+      sessionId: 'sess-1',
+      message: row,
+    });
+  });
+
+  it('records why a fast base-drift round re-ran every job', () => {
+    const row = { id: 'mr1', session_id: 'sess-1', role: 'system' };
+    const stmts = {
+      addMessage: { run: vi.fn() },
+      touchSession: { run: vi.fn() },
+      getMessageById: { get: vi.fn(() => row) },
+      updateMessageContentAndMetadata: { run: vi.fn() },
+    };
+    const broadcast = vi.fn();
+    const deps = { stmts: stmts as never, broadcast, newId: () => 'mr1' };
+    const note = 'Fast mode re-ran every job: the base branch and this branch both changed a.py.';
+    const rebase = {
+      sessionId: 'sess-1',
+      runId: 'run-1',
+      round: 2,
+      ok: true,
+      reloopReason: 'base_branch_moved' as const,
+      fullRerunNote: note,
+    };
+    writeFinalizeRebaseResultTimeline(deps, rebase);
+    const [, , , content, , , , metadataJson] = stmts.addMessage.run.mock.calls[0];
+    expect(String(content)).toContain(note);
+    expect(JSON.parse(String(metadataJson)).fullRerunNote).toBe(note);
+
+    const ciNote = 'Fast mode re-ran every job: the CI config changed since the previous round.';
+    expect(
+      annotateFinalizeRebaseFullRerun(deps, {
+        messageId: 'mr1',
+        rebase: { ...rebase, fullRerunNote: null },
+        fullRerunNote: ciNote,
+      }),
+    ).toBe(true);
+    const [updated, updatedMeta] = stmts.updateMessageContentAndMetadata.run.mock.calls[0];
+    expect(String(updated)).toContain(ciNote);
+    expect(JSON.parse(String(updatedMeta))).toMatchObject({
+      fullRerunNote: ciNote,
+      reusedJobs: null,
     });
     expect(broadcast).toHaveBeenLastCalledWith({
       type: 'message',

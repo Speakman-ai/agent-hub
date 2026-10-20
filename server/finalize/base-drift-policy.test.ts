@@ -65,6 +65,28 @@ describe('decideBaseDriftAction', () => {
     expect(action).toMatchObject({ kind: 'rerun_full', reason: 'same_file' });
   });
 
+  it('explains a fast fallback so kept jobs re-running does not look inverted', () => {
+    const sameFile = decideBaseDriftAction(
+      stale(['app/views/a.py'], ['app/views/a.py']),
+      resolveBaseDriftPolicy({ mode: 'fast', reuseJobs: ['e2e'] }),
+    );
+    expect(sameFile).toMatchObject({
+      fastFallbackNote:
+        'Fast mode re-ran every job: the base branch and this branch both changed app/views/a.py.',
+    });
+
+    const hazard = decideBaseDriftAction(
+      stale(['jobs/migrations/0088_foo.py'], ['jobs/migrations/0088_bar.py']),
+      resolveBaseDriftPolicy({ mode: 'fast', reuseJobs: ['e2e'] }),
+    );
+    expect(hazard.kind === 'rerun_full' && hazard.fastFallbackNote).toContain(
+      'the overlapping changes touch jobs/migrations/0088_bar.py, jobs/migrations/0088_foo.py',
+    );
+
+    const full = decideBaseDriftAction(sameDir, resolveBaseDriftPolicy({ mode: 'full' }));
+    expect(full.kind === 'rerun_full' && full.fastFallbackNote).toBeFalsy();
+  });
+
   it('fast escalates to full on the sibling-migration collision', () => {
     const action = decideBaseDriftAction(
       stale(['jobs/migrations/0088_foo.py'], ['jobs/migrations/0088_bar.py']),

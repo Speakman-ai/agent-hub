@@ -4344,9 +4344,14 @@ describe('runFinalize — base drift policy', () => {
     const calls = (steps as unknown as ReturnType<typeof vi.fn>).mock.calls;
     expect(calls).toHaveLength(2);
     expect(calls[1][1].reuseInstances).toBeUndefined();
-    expect(
-      (stmts.stmts.updateMessageContentAndMetadata.run as ReturnType<typeof vi.fn>).mock.calls,
-    ).toHaveLength(0);
+    // The round's rebase message is rewritten to say why the kept jobs ran again.
+    const rewrites = (stmts.stmts.updateMessageContentAndMetadata.run as ReturnType<typeof vi.fn>)
+      .mock.calls;
+    expect(rewrites).toHaveLength(1);
+    expect(JSON.parse(String(rewrites[0][1]))).toMatchObject({
+      reusedJobs: null,
+      fullRerunNote: 'Fast mode re-ran every job: the CI config changed since the previous round.',
+    });
     const rebaseMsgs = timelineMetas(stmts).filter((m) => m.kind === 'finalize_rebase_result');
     expect(rebaseMsgs.every((m) => m.reusedJobs === null)).toBe(true);
   });

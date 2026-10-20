@@ -100,7 +100,30 @@ export function parseFinalizeRebaseMetadata(metadataString: any) {
     reusedJobs: Array.isArray(parsed.reusedJobs)
       ? parsed.reusedJobs.filter((j: unknown): j is string => typeof j === 'string')
       : [],
+    fullRerunNote:
+      typeof parsed.fullRerunNote === 'string' && parsed.fullRerunNote
+        ? parsed.fullRerunNote
+        : null,
   };
+}
+
+/** Why a Finalize round re-ran, worded for the rebase block. Null when it needs no note. */
+export function describeFinalizeRebaseReloop(
+  meta: ReturnType<typeof parseFinalizeRebaseMetadata>,
+): string | null {
+  if (!meta) return null;
+  if (meta.reloopReason === 'head_sha_moved') {
+    return 'Re-running because a new commit landed, so the previous review and checks were validated against an older commit.';
+  }
+  if (meta.reloopReason !== 'base_branch_moved') return null;
+  if (meta.reusedJobs.length > 0) {
+    return `Re-running because the base branch advanced. ${meta.reusedJobs.join(', ')} ${
+      meta.reusedJobs.length === 1 ? 'keeps its' : 'keep their'
+    } passing result from the previous round; review and the other checks run again.`;
+  }
+  const base =
+    'Re-running because the base branch advanced, so the previous review and checks were validated against older code.';
+  return meta.fullRerunNote ? `${base} ${meta.fullRerunNote}` : base;
 }
 
 export function parseFinalizeRunStartedMetadata(metadataString: any) {

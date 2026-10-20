@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   parseFinalizeTimelineKind,
   parseFinalizeRebaseMetadata,
+  describeFinalizeRebaseReloop,
   parseFinalizeReviewRoundMetadata,
   parseFinalizeTerminalMetadata,
   isFinalizeStepOutputMessage,
@@ -68,6 +69,40 @@ describe('finalizeTimeline utils', () => {
       JSON.stringify({ kind: 'finalize_rebase_result', round: 1, ok: true, reloopReason: 'nope' }),
     );
     expect(garbage?.reloopReason).toBeNull();
+  });
+
+  it('tells the user why a fast base-drift round re-ran the kept jobs', () => {
+    const note = 'Fast mode re-ran every job: the base branch and this branch both changed a.py.';
+    const fallback = parseFinalizeRebaseMetadata(
+      JSON.stringify({
+        kind: 'finalize_rebase_result',
+        round: 2,
+        ok: true,
+        reloopReason: 'base_branch_moved',
+        reusedJobs: null,
+        fullRerunNote: note,
+      }),
+    );
+    expect(fallback?.fullRerunNote).toBe(note);
+    expect(describeFinalizeRebaseReloop(fallback)).toContain(note);
+
+    const kept = parseFinalizeRebaseMetadata(
+      JSON.stringify({
+        kind: 'finalize_rebase_result',
+        round: 2,
+        ok: true,
+        reloopReason: 'base_branch_moved',
+        reusedJobs: ['e2e', 'component'],
+      }),
+    );
+    expect(describeFinalizeRebaseReloop(kept)).toContain(
+      'e2e, component keep their passing result',
+    );
+
+    const plain = parseFinalizeRebaseMetadata(
+      JSON.stringify({ kind: 'finalize_rebase_result', round: 1, ok: true }),
+    );
+    expect(describeFinalizeRebaseReloop(plain)).toBeNull();
   });
 
   it('parses terminal metadata with bypassedGates flag', () => {

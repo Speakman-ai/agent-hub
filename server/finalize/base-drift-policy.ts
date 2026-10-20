@@ -75,6 +75,11 @@ export type BaseDriftAction =
       kind: 'rerun_full';
       reason: 'policy_full' | 'same_file' | 'hazard_path' | 'no_reuse_jobs';
       detail: string;
+      /**
+       * Why `fast` mode re-runs every job this time, worded for the timeline.
+       * Absent under `full`, where re-running everything is the setting.
+       */
+      fastFallbackNote?: string;
     }
   | { kind: 'rerun_fast'; reuseJobs: string[]; detail: string };
 
@@ -110,6 +115,9 @@ export function decideBaseDriftAction(
       kind: 'rerun_full',
       reason: 'same_file',
       detail: `base and branch both changed ${sameFiles.slice(0, 5).join(', ')}; full re-run`,
+      fastFallbackNote: fastFallbackNote(
+        `the base branch and this branch both changed ${summarizePaths(sameFiles)}`,
+      ),
     };
   }
 
@@ -123,6 +131,9 @@ export function decideBaseDriftAction(
       kind: 'rerun_full',
       reason: 'hazard_path',
       detail: `overlap touches hazard path ${hazardHits.slice(0, 5).join(', ')}; full re-run`,
+      fastFallbackNote: fastFallbackNote(
+        `the overlapping changes touch ${summarizePaths(hazardHits)}`,
+      ),
     };
   }
 
@@ -131,6 +142,7 @@ export function decideBaseDriftAction(
       kind: 'rerun_full',
       reason: 'no_reuse_jobs',
       detail: 'fast mode has no jobs marked for reuse; full re-run',
+      fastFallbackNote: fastFallbackNote('no jobs are set to keep their earlier result'),
     };
   }
 
@@ -141,6 +153,16 @@ export function decideBaseDriftAction(
       `${outcome.detail}; re-running review and checks except ` +
       `${policy.reuseJobs.join(', ')}, which keep their earlier passing result`,
   };
+}
+
+/** Timeline copy for a `fast` round that re-runs every job anyway. */
+export function fastFallbackNote(why: string): string {
+  return `Fast mode re-ran every job: ${why}.`;
+}
+
+function summarizePaths(paths: string[]): string {
+  const shown = paths.slice(0, 3).join(', ');
+  return paths.length > 3 ? `${shown} and ${paths.length - 3} more` : shown;
 }
 
 /** Key for one expanded job instance; matches the job runner's instance identity. */
