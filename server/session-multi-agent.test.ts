@@ -320,4 +320,103 @@ describe('advisor EngineAuthRequiredError does not crash the round', () => {
     );
     expect(addMessage).toHaveBeenCalled();
   });
+
+  it('skips the executor follow-up when the advisor turn failed', async () => {
+    const sessionId = 'sess-advisor-failed-followup';
+    const primary = {
+      id: 'primary',
+      name: 'Lead',
+      color: '#f00',
+      engine: 'claude-code',
+      projectId: 'p1',
+      cwd: '/tmp',
+    } as EnrichedAgent;
+    const advisor = {
+      id: 'advisor',
+      name: 'Reviewer',
+      color: '#0f0',
+      engine: 'claude-code',
+      projectId: 'p1',
+      cwd: '/tmp',
+    } as EnrichedAgent;
+    const session = {
+      id: sessionId,
+      agent_id: 'primary',
+      use_worktree: 0,
+      max_turns: 10,
+    } as SessionRow;
+
+    // Mirror the real store: the advisor's error row lands in the transcript,
+    // which is exactly what the follow-up used to read back as "feedback".
+    const messages: Array<{ role: string; agent_id: string | null; content: string }> = [];
+    const addMessage = vi.fn(
+      (
+        _id: string,
+        _sessionId: string,
+        role: string,
+        content: string,
+        _engine: string,
+        _model: string,
+        _a: unknown,
+        _b: unknown,
+        agentId: string | null,
+      ) => {
+        messages.push({ role, agent_id: agentId, content });
+      },
+    );
+    const runExecutorTurn = vi.fn(async () => undefined);
+    vi.mocked(resolveSessionCliSpawnEnv).mockImplementationOnce(() => {
+      throw new EngineAuthRequiredError('cursor-agent', 'user-1');
+    });
+
+    initSessionMultiAgent({
+      stmts: {
+        getSession: { get: vi.fn(() => session) },
+        getSessionAgents: {
+          all: vi.fn(() => [
+            { id: 'participant-1', agent_id: 'advisor', model: null, engine: null },
+          ]),
+        },
+        getMessages: { all: vi.fn(() => messages) },
+        addMessage: { run: addMessage },
+        touchSession: { run: vi.fn() },
+        getQueuedMessages: { all: vi.fn(() => []) },
+        getNextQueuedMessage: { get: vi.fn(() => undefined) },
+        dequeueMessage: { run: vi.fn() },
+      } as unknown as Stmts,
+      broadcast: vi.fn(),
+      getEnrichedAgent: vi.fn((id: string) => (id === 'advisor' ? advisor : primary)),
+      buildEnrichedPrompt: vi.fn(() => 'sys'),
+      getClaudeBin: vi.fn(() => '/bin/claude'),
+      getCursorBin: vi.fn(() => '/bin/cursor'),
+      getGeminiBin: vi.fn(() => '/bin/gemini'),
+      getCodexBin: vi.fn(() => '/bin/codex'),
+      getGrokBin: vi.fn(() => '/bin/grok'),
+      getConfig: vi.fn(
+        () =>
+          ({
+            dataDir: '/tmp',
+            conferenceTimeoutMs: 1000,
+          }) as AppConfig,
+      ),
+      getMaxQueueSize: vi.fn(() => 10),
+      runExecutorTurn,
+    });
+
+    await handleMultiAgentChat(null, {
+      type: 'chat',
+      agentId: 'primary',
+      sessionId,
+      content: 'please review',
+    });
+
+    expect(messages.some((m) => m.agent_id === 'advisor' && /^Error:/.test(m.content))).toBe(true);
+    // Only the initial executor turn runs; the error row never becomes a
+    // "The advisor said: Error: ..." follow-up prompt.
+    expect(runExecutorTurn).toHaveBeenCalledTimes(1);
+    expect(runExecutorTurn).toHaveBeenCalledWith(
+      null,
+      expect.objectContaining({ content: 'please review', _advisorFeedback: undefined }),
+    );
+  });
 });

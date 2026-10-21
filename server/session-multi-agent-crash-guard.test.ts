@@ -19,7 +19,7 @@ describe('multi-agent advisor auth must not crash the Hub process', () => {
     expect(window).toContain('try {');
     expect(window).toContain('EngineAuthRequiredError');
     expect(window).toContain('persistAdvisorFailure');
-    expect(window).toContain('return;');
+    expect(window).toContain('return false;');
   });
 
   it('absorbs leftover round throws instead of rejecting handleMultiAgentChat', () => {

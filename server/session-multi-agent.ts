@@ -362,12 +362,21 @@ export async function handleMultiAgentChat(
   d.broadcast({ type: 'session_round_start', sessionId, agentCount: plan.length });
 
   try {
+    let prevAdvisorFailed = false;
     for (let i = 0; i < plan.length; i++) {
       if (roundState.cancelled) break;
       let turn = plan[i]!;
 
       if (turn.kind === 'executor_followup' && !turn.advisorFeedback) {
         const prevAdvisor = plan[i - 1];
+        if (prevAdvisor?.kind === 'advisor' && prevAdvisorFailed) {
+          // The advisor produced an error row, not feedback. Handing that to
+          // the executor spawns a turn whose whole input is "Error: ...".
+          console.warn(
+            `[multi-agent] skipping executor follow-up session=${sessionId}: advisor ${prevAdvisor.agent.id} failed`,
+          );
+          continue;
+        }
         if (prevAdvisor?.kind === 'advisor') {
           const lastAssistant = (S.getMessages.all(sessionId) as MessageRow[])
             .filter((m) => m.role === 'assistant' && m.agent_id === prevAdvisor.agent.id)
@@ -400,7 +409,7 @@ export async function handleMultiAgentChat(
       }
 
       // Advisor turn (read-only)
-      await runAdvisorTurn(ws, session, primary, turn.agent, roundState);
+      prevAdvisorFailed = !(await runAdvisorTurn(ws, session, primary, turn.agent, roundState));
     }
   } catch (err: unknown) {
     // Advisor spawn used to throw EngineAuthRequiredError out of this round
@@ -500,7 +509,7 @@ async function runAdvisorTurn(
   primary: EnrichedAgent,
   advisor: PlannedAgent,
   roundState: RoundState,
-): Promise<void> {
+): Promise<boolean> {
   const d = getDeps();
   const S = d.stmts;
   const config = d.getConfig();
@@ -591,7 +600,7 @@ You are an **advisory participant** in a multi-agent session. The primary agent 
       errMsg,
       cancelled: roundState.cancelled,
     });
-    return;
+    return false;
   }
   if (sessionProject && actingUserId) {
     mergeSkillCredentialSpawnEnv(spawnEnv, {
@@ -603,6 +612,7 @@ You are an **advisory participant** in a multi-agent session. The primary agent 
     mergeProjectAwsSpawnEnv(spawnEnv, sessionProject);
   }
 
+  let failed = false;
   const result = await new Promise<string>((resolve, reject) => {
     const timeout = config.conferenceTimeoutMs;
 
@@ -765,6 +775,7 @@ You are an **advisory participant** in a multi-agent session. The primary agent 
       reject(err instanceof Error ? err : new Error(String(err)));
     });
   }).catch((err: unknown) => {
+    failed = true;
     const errMsg = err instanceof Error ? err.message : String(err);
     if (roundState.cancelled) return '(cancelled)';
     d.broadcast({
@@ -786,4 +797,5 @@ You are an **advisory participant** in a multi-agent session. The primary agent 
     model,
     result,
   });
+  return !failed;
 }
