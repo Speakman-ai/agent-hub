@@ -1,4 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
+import { finalizeJunitReporter } from './finalize-junit.js';
 
 /**
  * Organization acceptance flow (`npm run test:e2e:organizations`).
@@ -24,6 +25,7 @@ export default defineConfig({
   reporter: [
     [process.env.CI ? 'github' : 'list'],
     ['html', { open: 'never', outputFolder: 'playwright-report-organizations' }],
+    ...finalizeJunitReporter('e2e-organizations'),
   ],
   outputDir: 'test-results-organizations',
   use: {

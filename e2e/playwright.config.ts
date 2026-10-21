@@ -2,6 +2,7 @@ import { defineConfig, devices } from '@playwright/test';
 import { mkdirSync, writeFileSync, existsSync } from 'fs';
 import path from 'path';
 import os from 'os';
+import { finalizeJunitReporter } from './finalize-junit.js';
 
 /**
  * Playwright E2E test configuration for Agent Hub.
@@ -32,9 +33,12 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
   workers: 1,
-  reporter: process.env.CI
-    ? [['github'], ['html', { open: 'never' }]]
-    : [['list'], ['html', { open: 'on-failure' }]],
+  reporter: [
+    ...(process.env.CI
+      ? ([['github'], ['html', { open: 'never' }]] as const)
+      : ([['list'], ['html', { open: 'on-failure' }]] as const)),
+    ...finalizeJunitReporter('e2e'),
+  ],
 
   use: {
     baseURL: `http://localhost:${CLIENT_PORT}`,

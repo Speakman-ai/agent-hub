@@ -4,6 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(__dirname, '..');
 
 export default defineConfig({
   plugins: [react()],
@@ -32,6 +33,19 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./src/test/setup.ts'],
+    // Finalize test inventory (see ci.yaml): name each JUnit testcase by its
+    // repo-relative file so a report maps back to the file a session ran.
+    // ci.yaml turns the reporter on from the CLI; this only supplies its
+    // options. The key is omitted outside Finalize because an explicit
+    // `reporters: undefined` crashes vitest startup.
+    ...(process.env.FINALIZE_JUNIT_DIR
+      ? {
+          reporters: [
+            'default',
+            ['junit', { classnameTemplate: ({ filepath }) => path.relative(repoRoot, filepath) }],
+          ],
+        }
+      : {}),
     include: ['src/**/*.test.{ts,tsx}'],
     coverage: {
       reporter: ['text', 'lcov'],

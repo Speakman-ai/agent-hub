@@ -30,7 +30,9 @@ jobs:
   # Strict mirror: the gitleaks working-tree scan runs identically on both sides.
   secret-scan: ci.yml:secret-scan
   # No GitHub counterpart: the PR gate runs build+typecheck only, the full test
-  # suite is Finalize-exclusive. This is the intentional divergence.
+  # suite is Finalize-exclusive. This is the intentional divergence. Its JUnit
+  # flags (FINALIZE_JUNIT_DIR, for the dynamic-test-selection inventory) are
+  # Finalize-only too, so there is nothing on the GitHub side to mirror.
   test: finalize-only
   # Loose: assert the GHA lint job still exists, but don't compare commands.
   # main-checks.yml `lint` also runs `npm run format:check`, which Finalize

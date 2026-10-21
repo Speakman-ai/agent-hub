@@ -1,4 +1,5 @@
 import path from 'path';
+import process from 'process';
 import { fileURLToPath } from 'url';
 import { defineConfig } from 'vitest/config';
 
@@ -19,6 +20,19 @@ export default defineConfig({
     // Stub static image assets (require('./x.png')) so image-loading components
     // are importable — see vitest.setup.assets.cjs.
     setupFiles: ['./vitest.setup.assets.cjs'],
+    // Finalize test inventory (see ci.yaml): name each JUnit testcase by its
+    // repo-relative file so a report maps back to the file a session ran.
+    // ci.yaml turns the reporter on from the CLI; this only supplies its
+    // options. The key is omitted outside Finalize because an explicit
+    // `reporters: undefined` crashes vitest startup.
+    ...(process.env.FINALIZE_JUNIT_DIR
+      ? {
+          reporters: [
+            'default',
+            ['junit', { classnameTemplate: ({ filepath }) => path.relative(repoRoot, filepath) }],
+          ],
+        }
+      : {}),
     include: [
       'src/utils/**/*.test.ts',
       'src/hooks/**/*.test.ts',
