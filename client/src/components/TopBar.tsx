@@ -280,9 +280,6 @@ export default function TopBar({
                   <HubChatBacklinks kind="session" targetId={activeSessionId} variant="menu" />
                 )}
               </div>
-              <p className="text-xs text-gray-500 font-mono truncate hidden sm:block">
-                {agent.cwd}
-              </p>
             </div>
           </>
         )}

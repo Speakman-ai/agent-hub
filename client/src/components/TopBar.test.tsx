@@ -123,6 +123,11 @@ describe('<TopBar /> engine picker', () => {
     expect(sessionId!).toHaveAttribute('title', 'Copy session id: session-debug-123');
   });
 
+  it('does not show the agent working directory in the header', () => {
+    renderTopBar();
+    expect(screen.queryByText('/tmp/agent-hub')).toBeNull();
+  });
+
   it('hides the session lifecycle icon when no session is active', () => {
     renderTopBar({ activeSessionId: null });
     expect(screen.queryByTestId('topbar-session-state-icon')).toBeNull();
