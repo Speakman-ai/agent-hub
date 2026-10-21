@@ -8,6 +8,9 @@ import {
   selectHubAssistantDm,
   HUB_ASSISTANT_CHANNEL_ID,
   HUB_ASSISTANT_SCROLL_TESTID,
+  isHubAssistantSessionActive,
+  hubAssistantSessionToRestore,
+  shouldReplaceMissingActiveSession,
 } from './hubAssistantChat';
 import { getHubChatSession, resetHubChatSessionForTests } from './hubChatSession';
 
@@ -50,5 +53,57 @@ describe('isHubAssistantTranscriptVisible', () => {
     expect(isHubAssistantTranscriptVisible()).toBe(false);
     el.getClientRects = () => [{}] as unknown as DOMRectList;
     expect(isHubAssistantTranscriptVisible()).toBe(true);
+  });
+});
+
+describe('hub assistant session isolation', () => {
+  it('shows the transcript only while the Hub session is active', () => {
+    expect(isHubAssistantSessionActive('hub-1', 'hub-1')).toBe(true);
+    expect(isHubAssistantSessionActive('project-1', 'hub-1')).toBe(false);
+    expect(isHubAssistantSessionActive('project-1', null)).toBe(false);
+    expect(isHubAssistantSessionActive(null, null)).toBe(false);
+  });
+
+  it('re-selects the Hub session when a project session took over the DM', () => {
+    expect(
+      hubAssistantSessionToRestore({
+        inChat: true,
+        activeSessionId: 'project-1',
+        hubSessionId: 'hub-1',
+      }),
+    ).toBe('hub-1');
+    expect(
+      hubAssistantSessionToRestore({ inChat: true, activeSessionId: null, hubSessionId: 'hub-1' }),
+    ).toBe('hub-1');
+    expect(
+      hubAssistantSessionToRestore({
+        inChat: true,
+        activeSessionId: 'hub-1',
+        hubSessionId: 'hub-1',
+      }),
+    ).toBeNull();
+    expect(
+      hubAssistantSessionToRestore({
+        inChat: false,
+        activeSessionId: 'project-1',
+        hubSessionId: 'hub-1',
+      }),
+    ).toBeNull();
+    expect(
+      hubAssistantSessionToRestore({
+        inChat: true,
+        activeSessionId: 'project-1',
+        hubSessionId: null,
+      }),
+    ).toBeNull();
+  });
+
+  it('keeps the Hub session when a project agent list refresh omits it', () => {
+    expect(shouldReplaceMissingActiveSession('hub-1', ['project-1', 'project-2'], 'hub-1')).toBe(
+      false,
+    );
+    expect(shouldReplaceMissingActiveSession('gone', ['project-1'], 'hub-1')).toBe(true);
+    expect(shouldReplaceMissingActiveSession('project-1', ['project-1'], 'hub-1')).toBe(false);
+    expect(shouldReplaceMissingActiveSession(null, ['project-1'], 'hub-1')).toBe(false);
   });
 });

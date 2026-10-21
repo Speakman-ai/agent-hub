@@ -147,8 +147,11 @@ import { unreadSpacesStore, useGoogleChatUnreadSpaces } from './utils/googleChat
 import {
   clearHubAssistantUnread,
   getHubAssistantUnread,
+  hubAssistantSessionToRestore,
+  isHubAssistantSessionActive,
   isHubAssistantTranscriptVisible,
   noteHubAssistantTurnDone,
+  shouldReplaceMissingActiveSession,
   useHubAssistantSelected,
   useHubAssistantUnread,
 } from './utils/hubAssistantChat';
@@ -1910,7 +1913,13 @@ export default function App({ initialView }: any = {}) {
       });
 
       const cur = activeSessionIdRef.current;
-      if (cur && !data.some((s: any) => s.id === cur)) {
+      if (
+        shouldReplaceMissingActiveSession(
+          cur,
+          data.map((s: any) => s.id),
+          hubSessionIdRef.current,
+        )
+      ) {
         const target = data[0];
         if (target) {
           setActiveSessionId(target.id);
@@ -4014,6 +4023,20 @@ export default function App({ initialView }: any = {}) {
     currentView === 'hub' &&
     hubPane === 'chat' &&
     hubMobileTab !== 'assistant';
+  // Anything that swaps the shared active session while the Agent Hub DM is
+  // open (a late project restore, a list refresh) hands the DM back to the Hub
+  // session instead of rendering the project transcript there.
+  const hubSessionToRestore = hubAssistantSessionToRestore({
+    inChat: hubAssistantInChat,
+    activeSessionId,
+    hubSessionId,
+  });
+  useEffect(() => {
+    if (!hubSessionToRestore) return;
+    pendingSessionIdRef.current = hubSessionToRestore;
+    if (hubAgent?.id) setActiveAgentId(hubAgent.id);
+    setActiveSessionId(hubSessionToRestore);
+  }, [hubSessionToRestore, hubAgent, setActiveAgentId]);
   const hubAssistantUnread = useHubAssistantUnread();
   const agentHubChatBadge = hubChatUnread.badge + hubAssistantUnread;
   // Moving the transcript between the column and the DM remounts its scroll
@@ -6632,6 +6655,9 @@ export default function App({ initialView }: any = {}) {
     }
   };
 
+  // Another session can be active for a moment (before the Hub GET resolves,
+  // or until the restore effect re-selects the Hub session); never show it here.
+  const hubAssistantTranscriptLive = isHubAssistantSessionActive(activeSessionId, hubSessionId);
   const hubAssistantChat = (
     <HubChatRefOpenContext.Provider value={handleOpenChatRef}>
       <div className="flex-1 flex flex-col min-h-0">
@@ -6643,52 +6669,60 @@ export default function App({ initialView }: any = {}) {
           style={{ overflowAnchor: 'none' }}
         >
           <div ref={messagesColumnRef}>
-            {messages.length === 0 && !thinking && !streamingMsgId && !streamingContent && (
-              <p className="text-sm text-gray-500 px-1">
-                Ask Hub what to focus on next, to kick off an agent, or to configure Agent Hub. It
-                reads your boards, todos, support, and calendar through the API — not by scraping
-                pages.
-              </p>
+            {hubAssistantTranscriptLive &&
+              messages.length === 0 &&
+              !thinking &&
+              !streamingMsgId &&
+              !streamingContent && (
+                <p className="text-sm text-gray-500 px-1">
+                  Ask Hub what to focus on next, to kick off an agent, or to configure Agent Hub. It
+                  reads your boards, todos, support, and calendar through the API — not by scraping
+                  pages.
+                </p>
+              )}
+            {hubAssistantTranscriptLive && (
+              <>
+                {messages.map((msg: any) =>
+                  msg.role === 'assistant' ? (
+                    <SessionTail
+                      key={msg.id}
+                      message={msg}
+                      events={eventsByMessage[msg.id]}
+                      agentColor={msg.agent_color || chatAccentColor}
+                      agentName={activeAgent?.name || 'Hub'}
+                      onEventsLoaded={handleEventsLoaded}
+                      onAskSubmit={handleAskSubmit}
+                      onCredentialSubmit={handleCredentialSubmit}
+                      askSubmittedIds={askSubmitted}
+                      fromAgent={activeAgent}
+                      agents={agents}
+                      sessionHandoffs={sessionHandoffs}
+                      sessionDelegations={delegations[activeSessionId]}
+                      delegationDispatchError={delegationDispatchErrors[activeSessionId]}
+                      onOpenSession={handleOpenHandoffSession}
+                      browserScreenshots={browserScreensBySession[activeSessionId]?.[msg.id] ?? {}}
+                    />
+                  ) : (
+                    <ChatMessage
+                      key={msg.id}
+                      message={msg}
+                      agentColor={chatAccentColor}
+                      projectId={activeChatProject?.id}
+                      hosted={activeChatProject?.gitHost === 'agenthub'}
+                      onOpenPrDetail={handleOpenPrDetail}
+                      onStartFollowUp={() => handleStartFollowUpSession(activeSessionId)}
+                    />
+                  ),
+                )}
+                {(reactLoopStepsBySession[activeSessionId] || []).length > 0 && (
+                  <ReactLoopObservabilityPanel
+                    steps={reactLoopStepsBySession[activeSessionId]}
+                    streaming={Boolean(streamingMsgId || activeTasks[activeSessionId])}
+                  />
+                )}
+                {liveStreamingAssistantTurn}
+              </>
             )}
-            {messages.map((msg: any) =>
-              msg.role === 'assistant' ? (
-                <SessionTail
-                  key={msg.id}
-                  message={msg}
-                  events={eventsByMessage[msg.id]}
-                  agentColor={msg.agent_color || chatAccentColor}
-                  agentName={activeAgent?.name || 'Hub'}
-                  onEventsLoaded={handleEventsLoaded}
-                  onAskSubmit={handleAskSubmit}
-                  onCredentialSubmit={handleCredentialSubmit}
-                  askSubmittedIds={askSubmitted}
-                  fromAgent={activeAgent}
-                  agents={agents}
-                  sessionHandoffs={sessionHandoffs}
-                  sessionDelegations={delegations[activeSessionId]}
-                  delegationDispatchError={delegationDispatchErrors[activeSessionId]}
-                  onOpenSession={handleOpenHandoffSession}
-                  browserScreenshots={browserScreensBySession[activeSessionId]?.[msg.id] ?? {}}
-                />
-              ) : (
-                <ChatMessage
-                  key={msg.id}
-                  message={msg}
-                  agentColor={chatAccentColor}
-                  projectId={activeChatProject?.id}
-                  hosted={activeChatProject?.gitHost === 'agenthub'}
-                  onOpenPrDetail={handleOpenPrDetail}
-                  onStartFollowUp={() => handleStartFollowUpSession(activeSessionId)}
-                />
-              ),
-            )}
-            {(reactLoopStepsBySession[activeSessionId] || []).length > 0 && (
-              <ReactLoopObservabilityPanel
-                steps={reactLoopStepsBySession[activeSessionId]}
-                streaming={Boolean(streamingMsgId || activeTasks[activeSessionId])}
-              />
-            )}
-            {liveStreamingAssistantTurn}
           </div>
         </div>
         <div className="shrink-0">

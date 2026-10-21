@@ -79,3 +79,44 @@ export function resetHubAssistantUnreadForTests(): void {
   unread = 0;
   emit();
 }
+
+/**
+ * The Agent Hub DM renders the shared active-session transcript, so it must
+ * only do so while that session is the user's Hub session. Any other active
+ * session (a project session restored or refreshed in behind the Hub) would
+ * otherwise show its messages inside the Hub assistant pane.
+ */
+export function isHubAssistantSessionActive(
+  activeSessionId: string | null | undefined,
+  hubSessionId: string | null | undefined,
+): boolean {
+  return !!hubSessionId && activeSessionId === hubSessionId;
+}
+
+/**
+ * Session id to re-select when the Agent Hub DM is on screen but a different
+ * session became active, or null when nothing needs to change.
+ */
+export function hubAssistantSessionToRestore(opts: {
+  inChat: boolean;
+  activeSessionId: string | null | undefined;
+  hubSessionId: string | null | undefined;
+}): string | null {
+  if (!opts.inChat || !opts.hubSessionId) return null;
+  return opts.activeSessionId === opts.hubSessionId ? null : opts.hubSessionId;
+}
+
+/**
+ * When a session-list refresh no longer contains the active session, the
+ * caller falls back to the newest row. The Hub session never appears in a
+ * project agent's list, so it must be kept rather than replaced.
+ */
+export function shouldReplaceMissingActiveSession(
+  activeSessionId: string | null | undefined,
+  listedIds: readonly string[],
+  hubSessionId: string | null | undefined,
+): boolean {
+  if (!activeSessionId) return false;
+  if (hubSessionId && activeSessionId === hubSessionId) return false;
+  return !listedIds.includes(activeSessionId);
+}
