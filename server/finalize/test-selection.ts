@@ -35,8 +35,8 @@ const execFileP = promisify(execFile);
 
 /**
  * Why an instance runs. `diff` is a test file the change edits; `unmapped` is
- * a whole job pulled in because a test file it owns is new to the inventory,
- * or was added, deleted or renamed (sharding may have moved files around).
+ * a suite's shards pulled in because a test file it owns is new to the
+ * inventory, or was added, deleted or renamed (sharding may have moved files).
  */
 export type SelectionSource = 'session' | 'reviewer' | 'always' | 'needs' | 'unmapped' | 'diff';
 
@@ -84,6 +84,8 @@ export interface SelectionJobInstance {
   matrixKey: string;
   needs: string[];
   warmup: boolean;
+  /** Suite this instance belongs to, from the job's `shard-by` matrix variable. */
+  shardGroup?: string;
 }
 
 export interface ComputeTestSelectionInput {
@@ -193,8 +195,20 @@ function select(input: ComputeTestSelectionInput): TestSelection {
   const byFile = new Map<string, TestInventoryEntry[]>();
   const jobsByDir = new Map<string, Set<string>>();
   const inventoriedJobs = new Set<string>();
+  const groupByInstance = new Map<string, string | undefined>(
+    instances.map((i) => [jobInstanceKey(i.jobId, i.matrixKey), i.shardGroup]),
+  );
+  // Suites (`shard-by` values) per job and directory, for files new to the inventory.
+  const groupsByJobDir = new Map<string, Set<string>>();
   for (const e of inventory.entries) {
     inventoriedJobs.add(e.jobId);
+    const group = groupByInstance.get(jobInstanceKey(e.jobId, e.matrixKey));
+    if (group !== undefined) {
+      const k = `${e.jobId}\0${path.posix.dirname(e.testFile)}`;
+      const groups = groupsByJobDir.get(k);
+      if (groups) groups.add(group);
+      else groupsByJobDir.set(k, new Set([group]));
+    }
     const list = byFile.get(e.testFile);
     if (list) list.push(e);
     else byFile.set(e.testFile, [e]);
@@ -239,6 +253,38 @@ function select(input: ComputeTestSelectionInput): TestSelection {
       if (i.jobId === jobId) mark(jobInstanceKey(i.jobId, i.matrixKey), source, opts);
     }
   };
+  /**
+   * A test file was added, deleted or renamed, so hash- and count-based
+   * sharding may move files between shards. Run every instance of the job,
+   * or, when the job declares `shard-by`, every instance of the suites that
+   * own the file (or, for a file new to the inventory, its directory).
+   */
+  const markSuite = (
+    jobId: string,
+    file: string,
+    opts: { file?: string; reason?: string },
+  ): void => {
+    const jobInstances = instances.filter((i) => i.jobId === jobId);
+    const groups = new Set<string>();
+    if (jobInstances.every((i) => i.shardGroup !== undefined)) {
+      for (const e of byFile.get(file) ?? []) {
+        const g = groupByInstance.get(jobInstanceKey(e.jobId, e.matrixKey));
+        if (e.jobId === jobId && g !== undefined) groups.add(g);
+      }
+      if (groups.size === 0) {
+        for (const g of groupsByJobDir.get(`${jobId}\0${path.posix.dirname(file)}`) ?? []) {
+          groups.add(g);
+        }
+      }
+    }
+    if (groups.size === 0) {
+      markJob(jobId, 'unmapped', opts);
+      return;
+    }
+    for (const i of jobInstances) {
+      if (groups.has(i.shardGroup!)) mark(jobInstanceKey(i.jobId, i.matrixKey), 'unmapped', opts);
+    }
+  };
   /** The single job owning a file the inventory has never seen, by directory. */
   const ownerByDir = (file: string, why: string): string => {
     const jobs = jobsByDir.get(path.posix.dirname(file));
@@ -262,7 +308,7 @@ function select(input: ComputeTestSelectionInput): TestSelection {
       return;
     }
     const job = ownerByDir(file, 'selected test');
-    markJob(job, 'unmapped', { file, reason: `${file} is not in the test inventory` });
+    markSuite(job, file, { file, reason: `${file} is not in the test inventory` });
   };
 
   // Jobs that always run.
@@ -304,8 +350,7 @@ function select(input: ComputeTestSelectionInput): TestSelection {
   }
 
   // Test files the diff touches. Edited ones run their own instances; added,
-  // deleted or renamed ones run every instance of the owning job, since
-  // hash- and count-based sharding can move files between shards.
+  // deleted or renamed ones run their suite's instances (see markSuite).
   for (const c of changed) {
     const status = c.status.charAt(0).toUpperCase();
     const churn = status === 'A' || status === 'D' || status === 'R' || status === 'C';
@@ -323,7 +368,7 @@ function select(input: ComputeTestSelectionInput): TestSelection {
         ? [...new Set(known.map((e) => e.jobId))]
         : [ownerByDir(p, `${verb} test file`)];
       for (const job of owners) {
-        markJob(job, 'unmapped', { file: p, reason: `test file ${verb}: ${p}` });
+        markSuite(job, p, { file: p, reason: `test file ${verb}: ${p}` });
       }
     }
   }
@@ -477,6 +522,7 @@ export function selectionInstancesFor(config: CiConfig): SelectionJobInstance[] 
     matrixKey: i.matrixKey,
     needs: i.needs,
     warmup: i.warmup,
+    ...(i.shardGroup !== undefined ? { shardGroup: i.shardGroup } : {}),
   }));
 }
 

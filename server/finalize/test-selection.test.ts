@@ -204,6 +204,72 @@ describe('computeTestSelection', () => {
         expect(selectedKeys(sel)).toEqual(['client', 'server/group=1', 'server/group=2']);
       },
     );
+
+    describe('one matrix job holding several suites', () => {
+      // backend shards server/ and shared/ tests together; backend 2 currently
+      // owns only shared/ tests.
+      const ROWS = [
+        { matrixKey: 'suite=backend,shard=1', shardGroup: 'backend' },
+        { matrixKey: 'suite=backend,shard=2', shardGroup: 'backend' },
+        { matrixKey: 'suite=client,shard=1', shardGroup: 'client' },
+        { matrixKey: 'suite=client,shard=2', shardGroup: 'client' },
+        { matrixKey: 'suite=mobile', shardGroup: 'mobile' },
+      ];
+      const inventory: TestInventoryLookup = {
+        ...OK,
+        entries: [
+          { jobId: 'test', matrixKey: 'suite=backend,shard=1', testFile: 'server/a.test.ts' },
+          { jobId: 'test', matrixKey: 'suite=backend,shard=1', testFile: 'server/r/b.test.ts' },
+          { jobId: 'test', matrixKey: 'suite=backend,shard=2', testFile: 'shared/s.test.ts' },
+          { jobId: 'test', matrixKey: 'suite=client,shard=1', testFile: 'client/src/x.test.ts' },
+          { jobId: 'test', matrixKey: 'suite=client,shard=2', testFile: 'client/src/y.test.ts' },
+          { jobId: 'test', matrixKey: 'suite=mobile', testFile: 'mobile/src/m.test.ts' },
+        ],
+      };
+      const instances = (shardBy: boolean): SelectionJobInstance[] =>
+        ROWS.map((r) => ({
+          jobId: 'test',
+          matrixKey: r.matrixKey,
+          needs: [],
+          warmup: false,
+          ...(shardBy ? { shardGroup: r.shardGroup } : {}),
+        }));
+      const run = (shardBy: boolean, over: Partial<ComputeTestSelectionInput>) =>
+        computeTestSelection(
+          input({ instances: instances(shardBy), inventory, sessionRan: [], ...over }),
+        );
+      const ALL = ROWS.map((r) => `test/${r.matrixKey}`).sort();
+      const BACKEND = ['test/suite=backend,shard=1', 'test/suite=backend,shard=2'];
+
+      it.each([
+        ['added', { status: 'A', path: 'server/r/new.test.ts' }],
+        ['deleted', { status: 'D', path: 'server/a.test.ts' }],
+        ['renamed', { status: 'R', oldPath: 'server/a.test.ts', path: 'server/aa.test.ts' }],
+      ] as Array<[string, ChangedPath]>)(
+        'runs every shard of the shard-by suite for a %s test file, across directories',
+        (_, change) => {
+          expect(selectedKeys(run(true, { changed: [change] }))).toEqual(BACKEND);
+        },
+      );
+
+      it('scopes a file new to the inventory the session ran the same way', () => {
+        const sel = run(true, { sessionRan: [ran('client/src/new.test.ts')] });
+        expect(selectedKeys(sel)).toEqual([
+          'test/suite=client,shard=1',
+          'test/suite=client,shard=2',
+        ]);
+      });
+
+      it('runs the whole job when it declares no shard-by', () => {
+        const sel = run(false, { changed: [{ status: 'A', path: 'server/r/new.test.ts' }] });
+        expect(selectedKeys(sel)).toEqual(ALL);
+      });
+
+      it('still runs only the owning shard for an edited test file', () => {
+        const sel = run(true, { changed: [{ status: 'M', path: 'shared/s.test.ts' }] });
+        expect(selectedKeys(sel)).toEqual(['test/suite=backend,shard=2']);
+      });
+    });
   });
 
   describe('forced full runs', () => {
@@ -448,6 +514,49 @@ jobs:
       ['test', ['build']],
     ]);
     expect(new Set(out.map((i) => i.matrixKey)).size).toBe(3);
+  });
+
+  it('carries the shard-by matrix value as the shard group', () => {
+    const parsed = parseCiConfig(`
+version: 2
+on: [finalize]
+jobs:
+  test:
+    runs-on: host
+    shard-by: suite
+    matrix:
+      include:
+        - { suite: server, shard: "1" }
+        - { suite: server, shard: "2" }
+        - { suite: mobile }
+    steps:
+      - run: echo test
+`);
+    if (!parsed.ok) throw new Error(parsed.error.message);
+    expect(selectionInstancesFor(parsed.config).map((i) => i.shardGroup)).toEqual([
+      'server',
+      'server',
+      'mobile',
+    ]);
+  });
+
+  it('rejects a shard-by variable a matrix row does not set', () => {
+    const parsed = parseCiConfig(`
+version: 2
+on: [finalize]
+jobs:
+  test:
+    runs-on: host
+    shard-by: suite
+    matrix:
+      include:
+        - { suite: server }
+        - { shard: "2" }
+    steps:
+      - run: echo test
+`);
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok) expect(parsed.error.code).toBe('invalid_shard_by');
   });
 });
 

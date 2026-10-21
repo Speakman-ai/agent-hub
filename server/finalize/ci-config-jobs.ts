@@ -83,6 +83,14 @@ export interface CiJob {
   /** One entry per parallel matrix shard (GHA `matrix.include`). */
   matrixInclude: Array<Record<string, string>>;
   /**
+   * Matrix variable naming the suite each instance belongs to (e.g. `suite`
+   * when one `test` job holds server, client and mobile shards). Instances
+   * with different values never share test files, so dynamic test selection
+   * can rerun only one suite's shards when a test file is added, deleted or
+   * renamed. Without it, that rerun covers the whole job.
+   */
+  shardBy?: string;
+  /**
    * Optional code-path globs this job covers (e.g. `['server/**', 'e2e/**']`).
    * Used only by the flake-recovery classifier (see
    * `server/finalize/flake-recovery.ts`): when a job fails on one fix-loop
@@ -158,6 +166,8 @@ export interface JobInstance {
   failFast: boolean;
   /** Run to completion (barrier) before non-warmup instances start. */
   warmup: boolean;
+  /** This instance's value of the job's `shard-by` matrix variable. */
+  shardGroup?: string;
   /** Job ids that must complete successfully before this instance runs. */
   needs: string[];
   /** Extra same-commit re-runs of this shard on a genuine test failure (see CiJob.retries). */
@@ -178,6 +188,7 @@ const JOB_KEYS = new Set([
   'retries',
   'cache',
   'matrix',
+  'shard-by',
   'env',
   'steps',
 ]);
@@ -194,6 +205,7 @@ export type CiConfigJobsErrorCode =
   | 'invalid_matrix_shape'
   | 'empty_matrix'
   | 'invalid_matrix_entry'
+  | 'invalid_shard_by'
   | 'invalid_env_shape'
   | 'invalid_env_entry'
   | 'invalid_fail_fast'
@@ -536,6 +548,27 @@ function parseJob(
   if (!cacheParsed.ok) return cacheParsed;
   const matrixParsed = parseMatrixInclude(jobObj.matrix, jobPath);
   if (!matrixParsed.ok) return matrixParsed;
+  let shardBy: string | undefined;
+  if ('shard-by' in jobObj && jobObj['shard-by'] !== null && jobObj['shard-by'] !== undefined) {
+    const raw = jobObj['shard-by'];
+    const name = typeof raw === 'string' ? raw.trim() : '';
+    if (!name) {
+      return err(
+        'invalid_shard_by',
+        `'${jobPath}.shard-by' must be the name of a matrix variable.`,
+        `${jobPath}.shard-by`,
+      );
+    }
+    const missing = matrixParsed.include.findIndex((row) => !(name in row));
+    if (missing >= 0) {
+      return err(
+        'invalid_shard_by',
+        `'${jobPath}.shard-by' names '${name}', which '${jobPath}.matrix.include[${missing}]' does not set.`,
+        `${jobPath}.shard-by`,
+      );
+    }
+    shardBy = name;
+  }
   let jobEnv: Record<string, string> | undefined;
   if ('env' in jobObj) {
     const parsed = parseEnvMap(jobObj.env, `${jobPath}.env`);
@@ -557,6 +590,7 @@ function parseJob(
       retries,
       ...(cacheParsed.cache.length > 0 ? { cache: cacheParsed.cache } : {}),
       matrixInclude: matrixParsed.include,
+      ...(shardBy ? { shardBy } : {}),
       ...(paths ? { paths } : {}),
       ...(jobEnv ? { env: jobEnv } : {}),
       steps: stepsParsed.steps,
@@ -838,6 +872,7 @@ export function expandJobInstances(
         runsOn: job.runsOn,
         failFast: job.failFast,
         warmup: job.warmup,
+        ...(job.shardBy ? { shardGroup: matrixRow[job.shardBy] } : {}),
         needs: job.needs,
         retries: job.retries,
         ...(job.cache ? { cache: job.cache } : {}),

@@ -71,6 +71,7 @@ into a separate phase.
 | `steps` | Yes | Non-empty list of step objects. |
 | `fail-fast` | No | **Finalize default `false`** (unlike GHA's `true`): every matrix shard runs to completion so the fix agent sees the full failure set instead of collateral `context canceled` shards. Set `true` per-job to cancel siblings on first failure, or flip the global default back with `FINALIZE_MATRIX_FAIL_FAST_DEFAULT=true`. |
 | `needs` | No | String or list of job ids this job depends on. Cycles are rejected. A failed/skipped dependency skips the dependent. |
+| `shard-by` | No | Name of a matrix variable every `matrix.include` row sets (e.g. `suite`). Instances with different values are separate suites that never share test files. Dynamic test selection then reruns only the affected suite's shards when a test file is added, deleted or renamed, instead of the whole job. |
 | `warmup` | No | `true` makes the job an implicit prerequisite of every non-warmup job (e.g. seed a shared image cache once). |
 | `matrix` | No | `{ include: [ {k: "v"}, ... ] }`. Each row spawns a concurrent instance; **all values must be quoted strings**. |
 | `paths` | No | List of path globs this job covers. Read only by the flake-recovery classifier, which uses it to tell a real fix from a laundered flake. |
@@ -225,6 +226,7 @@ invalid_env_shape       — an `env` block is not a mapping
 invalid_env_entry       — an `env` value is not a string
 invalid_fail_fast       — `fail-fast` is not a boolean
 invalid_warmup          — `warmup` is not a boolean
+invalid_shard_by        — `shard-by` is not a string, or names a variable a matrix row does not set
 invalid_needs           — `needs` is not a job id / list of job ids
 invalid_paths           — `paths` is not a list of non-empty strings
 invalid_retries         — `retries` outside [0, 10]
