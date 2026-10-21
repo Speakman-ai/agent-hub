@@ -79,6 +79,69 @@ export async function performTicketDelete({
     return false;
   }
 }
+// Convert-flow state machine for a support-ticket card, with the optional
+// "assign an agent now" step (mobile parity with the web ConvertControl).
+//
+// The comment is assignment instructions. With an agent chosen it rides only on
+// the /assign call, so a failed assign never leaves it on an unassigned card
+// looking like it reached someone. With no agent it is stored as a card note by
+// convert.
+//
+//   - Convert fails: surface the error, re-enable the button.
+//   - Convert lands but assign fails: the card exists and the ticket is already
+//     converted server-side, so the row will leave the open queue on the WS
+//     echo and take the inline error with it. Raise `notify` too, so the
+//     partial failure is still seen. `onConverted` is not called.
+//   - Full success: hand the converted ticket to `onConverted` right away
+//     instead of waiting on the support_ticket_updated echo.
+//
+// `convertTicket` / `assignCard` are injected api wrappers to keep this pure.
+export async function performTicketConvert({
+  projectId,
+  ticketId,
+  agentId,
+  autoMerge,
+  comment,
+  item,
+  convertTicket,
+  assignCard,
+  setConverting,
+  setConvertError,
+  onConverted,
+  notify,
+}: any) {
+  setConverting(true);
+  setConvertError(null);
+  const note = typeof comment === 'string' && comment.trim() ? comment.trim() : undefined;
+  let res: any;
+  try {
+    res = await convertTicket(projectId, ticketId, {
+      autoMerge,
+      comment: agentId ? undefined : note,
+    });
+  } catch (err: any) {
+    setConvertError(err?.message || 'Failed to convert');
+    setConverting(false);
+    return false;
+  }
+  const cardId = res?.card?.id;
+  if (agentId && cardId) {
+    try {
+      await assignCard(projectId, cardId, agentId, { autoMerge, comment: note });
+    } catch (err: any) {
+      const msg = `Converted to a card, but assigning the agent failed: ${
+        err?.message || 'unknown error'
+      }. You can assign it (and re-add your note) on the board.`;
+      setConvertError(msg);
+      setConverting(false);
+      notify?.(msg);
+      return false;
+    }
+  }
+  setConverting(false);
+  onConverted?.(res?.ticket ?? { ...item, status: 'converted', converted_card_id: cardId ?? null });
+  return true;
+}
 // Link-flow state machine for a support-ticket card, factored out of the RN
 // component (same rationale as performTicketDelete).
 //

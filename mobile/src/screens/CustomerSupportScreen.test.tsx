@@ -43,7 +43,14 @@ function host(tag: string) {
         'data-testid': testID,
         'data-selected': accessibilityState?.selected ? 'true' : undefined,
         disabled: disabled || undefined,
-        onClick: onPress,
+        // RN gives the press to the innermost touchable only; DOM clicks bubble,
+        // so stop at the first handler or a nested button also opens the card.
+        onClick: onPress
+          ? (e: any) => {
+              e.stopPropagation();
+              onPress(e);
+            }
+          : undefined,
         style: Array.isArray(style) ? undefined : style,
       },
       children,
@@ -116,6 +123,7 @@ vi.mock('../utils/supportTickets', async (importOriginal) => ({
   resolveUploadUrl: () => null,
   performTicketDelete: vi.fn(),
   performTicketLink: vi.fn(),
+  performTicketConvert: vi.fn(),
   releaseStateLabel: () => '',
   mergeTicketDetail: (_cur: any, next: any) => next,
 }));
@@ -140,6 +148,7 @@ vi.mock('../context/AppContext', () => ({
 
 import { Alert } from 'react-native';
 import CustomerSupportScreen, { VotingTab, CommentThread } from './CustomerSupportScreen';
+import { performTicketConvert } from '../utils/supportTickets';
 
 function mount() {
   const container = document.createElement('div');
@@ -878,6 +887,62 @@ describe('CustomerSupportScreen — voting toggle & approval filter', () => {
     await flush();
     expect(container.textContent).not.toContain('Stale gated');
     expect(container.textContent).toContain('Fresh classic');
+    flushSync(() => root.unmount());
+  });
+});
+
+describe('CustomerSupportScreen — assign an agent at convert time', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    appState.lastSupportTicketEvent = null;
+    appState.projects = [{ id: 'proj-1', name: 'Hub' }];
+    appState.agents = [
+      { id: 'hub-dev', name: 'Hub Dev', projectId: 'proj-1' },
+      { id: 'other-dev', name: 'Other Dev', projectId: 'proj-2' },
+    ];
+    apiMocks.getSupportTickets.mockResolvedValue([
+      {
+        id: 't1',
+        type: 'bug',
+        subject: 'Login broken',
+        severity: 'high',
+        status: 'new',
+        created_at: '2026-01-01 00:00:00',
+      },
+    ]);
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = '';
+    appState.agents = [];
+  });
+
+  it("lists only this project's agents and passes the picked one to convert", async () => {
+    const { container, root } = mount();
+    flushSync(() =>
+      root.render(
+        <CustomerSupportScreen
+          route={{ params: { projectId: 'proj-1' } }}
+          navigation={{ navigate: vi.fn() }}
+        />,
+      ),
+    );
+    await flush();
+    expect(container.querySelector('[data-testid="convert-assign-agent-hub-dev"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="convert-assign-agent-other-dev"]')).toBeNull();
+
+    click(container.querySelector('[data-testid="convert-assign-agent-hub-dev"]'));
+    await flush();
+    // The card itself is a touchable whose text includes every child label, so
+    // match the button whose own label is the convert action.
+    const button = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent?.trim() === '▤ Convert & assign',
+    );
+    click(button);
+    await flush();
+    expect(performTicketConvert).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: 'proj-1', ticketId: 't1', agentId: 'hub-dev' }),
+    );
     flushSync(() => root.unmount());
   });
 });

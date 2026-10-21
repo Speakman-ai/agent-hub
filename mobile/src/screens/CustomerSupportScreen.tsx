@@ -25,6 +25,7 @@ import {
   resolveUploadUrl,
   performTicketDelete,
   performTicketLink,
+  performTicketConvert,
   freshLinkTargetOptions,
   releaseStateLabel,
   mergeTicketDetail,
@@ -135,6 +136,7 @@ function TicketCard({
   onReclassify,
   onReRate,
   onConverted,
+  agents = [],
 }: any) {
   const severityColor = SEVERITY_COLOR[item.severity] || colors.gray500;
   const title = item.subject?.trim() || item.body?.trim() || '(no subject)';
@@ -152,6 +154,8 @@ function TicketCard({
   const [convertAutoMerge, setConvertAutoMerge] = useState(false);
   const [convertAutoMergeTouched, setConvertAutoMergeTouched] = useState(false);
   const [convertComment, setConvertComment] = useState('');
+  // Optional agent to assign the new card to at convert time ('' = none).
+  const [convertAgentId, setConvertAgentId] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<any>(null);
   // Link-to-existing-card state (the sibling of convert). The picker searches
@@ -212,20 +216,20 @@ function TicketCard({
   };
   const handleConvert = async () => {
     if (converting || isConverted) return;
-    setConverting(true);
-    setConvertError(null);
-    try {
-      await api.convertSupportTicketToCard(projectId, item.id, {
-        autoMerge: convertAutoMergeTouched ? convertAutoMerge : undefined,
-        comment: convertComment.trim() || undefined,
-      });
-      // The support_ticket_updated WebSocket event re-renders this card as
-      // converted; no local state mutation needed.
-    } catch (err: any) {
-      setConvertError(err.message || 'Failed to convert');
-    } finally {
-      setConverting(false);
-    }
+    await performTicketConvert({
+      projectId,
+      ticketId: item.id,
+      agentId: convertAgentId || undefined,
+      autoMerge: convertAutoMergeTouched ? convertAutoMerge : undefined,
+      comment: convertComment,
+      item,
+      convertTicket: api.convertSupportTicketToCard,
+      assignCard: api.assignCard,
+      setConverting,
+      setConvertError,
+      onConverted,
+      notify: (msg: string) => Alert.alert('Customer Support', msg),
+    });
   };
   const performDelete = async () => {
     if (deleting) return;
@@ -318,6 +322,36 @@ function TicketCard({
 
       {!isConverted ? (
         <View style={styles.convertOptions}>
+          {agents.length > 0 ? (
+            <View style={styles.assignAgentRow} testID="convert-assign-agent">
+              <Text style={styles.autoMergeLabel}>Assign</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                {[{ id: '', name: 'No agent' }, ...agents].map((a: any) => {
+                  const active = convertAgentId === a.id;
+                  return (
+                    <TouchableOpacity
+                      key={a.id || 'none'}
+                      testID={`convert-assign-agent-${a.id || 'none'}`}
+                      accessibilityState={{ selected: active }}
+                      disabled={converting}
+                      onPress={() => setConvertAgentId(a.id)}
+                      style={[styles.assignAgentChip, active && styles.assignAgentChipActive]}
+                    >
+                      <Text
+                        style={[
+                          styles.assignAgentChipText,
+                          active && styles.assignAgentChipTextActive,
+                        ]}
+                        numberOfLines={1}
+                      >
+                        {a.name || a.id}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            </View>
+          ) : null}
           <View style={styles.autoMergeRow}>
             <Text style={styles.autoMergeLabel}>Auto-merge</Text>
             <Switch
@@ -420,7 +454,11 @@ function TicketCard({
             style={[styles.convertButton, converting && styles.convertButtonDisabled]}
           >
             <Text style={styles.convertButtonText}>
-              {converting ? 'Converting…' : '▤ Convert to card'}
+              {converting
+                ? 'Converting…'
+                : convertAgentId
+                  ? '▤ Convert & assign'
+                  : '▤ Convert to card'}
             </Text>
           </TouchableOpacity>
         )}
@@ -975,7 +1013,9 @@ export function VotingTab({ projectId, onOpen, onOpenReplay, ticketHandlers = {}
     void flushVotes(item.id);
   };
 
-  const removeItem = (ticketId: any) => {
+  // onDeleted passes an id; onConverted (convert/link) passes the ticket row.
+  const removeItem = (ticketOrId: any) => {
+    const ticketId = typeof ticketOrId === 'object' ? ticketOrId?.id : ticketOrId;
     setItems((prev: any) => prev.filter((it: any) => it.id !== ticketId));
   };
 
@@ -1098,6 +1138,10 @@ export default function CustomerSupportScreen({ route, navigation }: any) {
   const { openSidebar } = useContext(SidebarContext);
   const projectId = route?.params?.projectId || projects?.[0]?.id;
   const project = projects?.find((p: any) => p.id === projectId);
+  const projectAgents = useMemo(
+    () => (agents || []).filter((agent: any) => agent.projectId === projectId),
+    [agents, projectId],
+  );
   const [tickets, setTickets] = useState<any[]>([]);
   // Which surface is showing: the issue queue or the score-ranked Voting feed.
   // Both live under the Customer Support screen (spec `ui-placement`).
@@ -1405,6 +1449,7 @@ export default function CustomerSupportScreen({ route, navigation }: any) {
       onReclassify={setReclassifyTicket}
       onReRate={setSeverityTicket}
       onConverted={upsertOrDrop}
+      agents={projectAgents}
     />
   );
   if (selectedTicket) {
@@ -1462,7 +1507,7 @@ export default function CustomerSupportScreen({ route, navigation }: any) {
           <TicketInvestigationControl
             projectId={projectId}
             ticket={selectedTicket}
-            agents={(agents || []).filter((agent: any) => agent.projectId === projectId)}
+            agents={projectAgents}
             onUpdated={upsertOrDrop}
           />
           <View style={styles.notificationSection}>
@@ -1685,6 +1730,7 @@ export default function CustomerSupportScreen({ route, navigation }: any) {
             onWontDo: handleWontDo,
             onReclassify: setReclassifyTicket,
             onReRate: setSeverityTicket,
+            agents: projectAgents,
           }}
         />
       ) : (
@@ -2086,6 +2132,18 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   autoMergeLabel: { fontSize: 13, color: colors.gray300 },
+  assignAgentRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  assignAgentChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    marginRight: 6,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+  },
+  assignAgentChipActive: { backgroundColor: colors.gray700, borderColor: colors.gray500 },
+  assignAgentChipText: { fontSize: 12, color: colors.gray300 },
+  assignAgentChipTextActive: { color: colors.white, fontWeight: '600' },
   convertComment: {
     backgroundColor: colors.gray800,
     borderRadius: 6,

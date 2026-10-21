@@ -6,6 +6,7 @@ import {
   resolveUploadUrl,
   performTicketDelete,
   performTicketLink,
+  performTicketConvert,
   linkTargetOptions,
   freshLinkTargetOptions,
   releaseStateLabel,
@@ -324,5 +325,80 @@ describe('freshLinkTargetOptions', () => {
     expect(freshLinkTargetOptions({ query: 'old', targets }, 'old')).toHaveLength(1);
     expect(freshLinkTargetOptions({ query: 'old', targets }, 'new')).toEqual([]);
     expect(freshLinkTargetOptions(null, '')).toEqual([]);
+  });
+});
+
+describe('performTicketConvert', () => {
+  function harness(o: any = {}) {
+    const calls: any = { converting: [], error: [], converted: [], notify: [] };
+    const convertTicket =
+      o.convertTicket ??
+      vi.fn().mockResolvedValue({
+        card: { id: 'card-1' },
+        ticket: { id: 'tkt-1', status: 'converted', converted_card_id: 'card-1' },
+      });
+    const assignCard = o.assignCard ?? vi.fn().mockResolvedValue({});
+    const args = {
+      projectId: 'proj-1',
+      ticketId: 'tkt-1',
+      agentId: o.agentId,
+      autoMerge: o.autoMerge,
+      comment: o.comment ?? '  fix the login bug  ',
+      item: { id: 'tkt-1', status: 'new' },
+      convertTicket,
+      assignCard,
+      setConverting: (v: any) => calls.converting.push(v),
+      setConvertError: (v: any) => calls.error.push(v),
+      onConverted: (t: any) => calls.converted.push(t),
+      notify: (m: any) => calls.notify.push(m),
+    };
+    return { args, calls, convertTicket, assignCard };
+  }
+
+  it('assigns the chosen agent to the new card and sends the note only on /assign', async () => {
+    const { args, calls, convertTicket, assignCard } = harness({ agentId: 'dev', autoMerge: true });
+    expect(await performTicketConvert(args)).toBe(true);
+    expect(convertTicket).toHaveBeenCalledWith('proj-1', 'tkt-1', {
+      autoMerge: true,
+      comment: undefined,
+    });
+    expect(assignCard).toHaveBeenCalledWith('proj-1', 'card-1', 'dev', {
+      autoMerge: true,
+      comment: 'fix the login bug',
+    });
+    expect(calls.converting).toEqual([true, false]);
+    expect(calls.converted).toEqual([
+      { id: 'tkt-1', status: 'converted', converted_card_id: 'card-1' },
+    ]);
+    expect(calls.notify).toEqual([]);
+  });
+
+  it('without an agent: stores the note via convert and never assigns', async () => {
+    const { args, convertTicket, assignCard } = harness();
+    expect(await performTicketConvert(args)).toBe(true);
+    expect(convertTicket).toHaveBeenCalledWith('proj-1', 'tkt-1', {
+      autoMerge: undefined,
+      comment: 'fix the login bug',
+    });
+    expect(assignCard).not.toHaveBeenCalled();
+  });
+
+  it('assign failure: surfaces a durable warning and does not report success', async () => {
+    const assignCard = vi.fn().mockRejectedValue(new Error('agent busy'));
+    const { args, calls } = harness({ agentId: 'dev', assignCard });
+    expect(await performTicketConvert(args)).toBe(false);
+    expect(calls.converted).toEqual([]);
+    expect(calls.converting).toEqual([true, false]);
+    expect(calls.error.at(-1)).toMatch(/assigning the agent failed: agent busy/);
+    expect(calls.notify).toHaveLength(1);
+  });
+
+  it('convert failure: shows the error and skips assign', async () => {
+    const convertTicket = vi.fn().mockRejectedValue(new Error('nope'));
+    const { args, calls, assignCard } = harness({ agentId: 'dev', convertTicket });
+    expect(await performTicketConvert(args)).toBe(false);
+    expect(assignCard).not.toHaveBeenCalled();
+    expect(calls.error).toEqual([null, 'nope']);
+    expect(calls.converting).toEqual([true, false]);
   });
 });
