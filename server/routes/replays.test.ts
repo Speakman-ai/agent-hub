@@ -1786,6 +1786,97 @@ describe('POST /api/replays/:id/events (chunked append)', () => {
     expect(res.body.error).toMatch(/uncompressed bytes/);
   });
 
+  it('caps a continuous capture at 15 minutes: stores the in-window prefix, then 413s', async () => {
+    // Regression: a tab left open overnight appended to one id for 19h because
+    // only the event and byte caps were enforced, and an idle tab trips neither.
+    const MIN = 60 * 1000;
+    await supertest(app)
+      .post(`/api/replays/${ID}/events`)
+      .send({ events: [META, SNAPSHOT] })
+      .expect(201);
+    await supertest(app)
+      .post(`/api/replays/${ID}/events`)
+      .send({ events: [{ type: 3, timestamp: 1000 + 10 * MIN, data: {} }] })
+      .expect(200);
+
+    // The next flush straddles an 8-hour idle gap.
+    const res = await supertest(app)
+      .post(`/api/replays/${ID}/events`)
+      .send({
+        events: [
+          { type: 3, timestamp: 1000 + 12 * MIN, data: {} },
+          { type: 3, timestamp: 1000 + 8 * 60 * MIN, data: {} },
+        ],
+      })
+      .expect(413);
+    expect(res.body.error).toMatch(/duration cap/);
+
+    const row = stmts.getSessionReplay.get(ID) as { duration_ms: number; event_count: number };
+    expect(row.event_count).toBe(4);
+    expect(row.duration_ms).toBeLessThanOrEqual(15 * MIN);
+
+    // A capture already at the bound refuses further appends outright.
+    await supertest(app)
+      .post(`/api/replays/${ID}/events`)
+      .send({ events: [{ type: 3, timestamp: 1000 + 15 * MIN, data: {} }] })
+      .expect(200);
+    const again = await supertest(app)
+      .post(`/api/replays/${ID}/events`)
+      .send({ events: [{ type: 3, timestamp: 1000 + 15 * MIN + 1, data: {} }] })
+      .expect(413);
+    expect(again.body.error).toMatch(/duration cap/);
+    expect((stmts.getSessionReplay.get(ID) as { event_count: number }).event_count).toBe(5);
+  });
+
+  it('truncates an overlong creating chunk with only an old snapshot, then 413s the next append', async () => {
+    const HOUR = 60 * 60 * 1000;
+    const created = await supertest(app)
+      .post(`/api/replays/${ID}/events`)
+      .send({ events: [META, SNAPSHOT, INCREMENTAL, { type: 3, timestamp: 19 * HOUR, data: {} }] })
+      .expect(201);
+    // The 19h event is dropped; the stored replay is the replayable head only.
+    expect(created.body.eventCount).toBe(3);
+    expect(created.body.durationMs).toBeLessThanOrEqual(15 * 60 * 1000);
+
+    // The recorder's next flush is past the bound: refused, so it rotates from a
+    // fresh snapshot instead of resending the stale one.
+    const next = await supertest(app)
+      .post(`/api/replays/${ID}/events`)
+      .send({ events: [{ type: 3, timestamp: 19 * HOUR + 1000, data: {} }] })
+      .expect(413);
+    expect(next.body.error).toMatch(/duration cap/);
+    expect((stmts.getSessionReplay.get(ID) as { event_count: number }).event_count).toBe(3);
+  });
+
+  it('caps a one-shot capture whose only snapshot is older than 15 minutes', async () => {
+    const HOUR = 60 * 60 * 1000;
+    const res = await supertest(app)
+      .post('/api/replays')
+      .send({ events: [META, SNAPSHOT, INCREMENTAL, { type: 3, timestamp: 19 * HOUR, data: {} }] })
+      .expect(201);
+    expect(res.body.eventCount).toBe(3);
+    expect(res.body.durationMs).toBeLessThanOrEqual(15 * 60 * 1000);
+  });
+
+  it('trims a one-shot capture to its most recent checkout inside 15 minutes', async () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    const res = await supertest(app)
+      .post('/api/replays')
+      .send({
+        events: [
+          META,
+          SNAPSHOT,
+          INCREMENTAL,
+          { type: 4, timestamp: 5 * DAY, data: {} },
+          { type: 2, timestamp: 5 * DAY + 1, data: { node: {} } },
+          { type: 3, timestamp: 5 * DAY + 40_000, data: {} },
+        ],
+      })
+      .expect(201);
+    expect(res.body.eventCount).toBe(3);
+    expect(res.body.durationMs).toBe(40_000);
+  });
+
   it('serializes concurrent appends to the same id without dropping a chunk', async () => {
     await storeReplay({ stmts, config }, { id: ID, events: [META, SNAPSHOT] });
     // Fire many overlapping appends at the SAME id. The read-modify-write would

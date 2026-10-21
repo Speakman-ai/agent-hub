@@ -25,6 +25,7 @@ import { v4 as uuidv4 } from 'uuid';
 // freezing the event loop. The synchronous `gzipSync`/`gunzipSync` on the
 // per-chunk replay-append path were ~21% of the Hub's event-loop CPU (and O(n²)
 // as a capture grows), the dominant cause of API latency under active sessions.
+import { capCapture, splitAtDurationCap } from './replay-duration-cap.js';
 const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);
 import type { AppConfig, SessionReplayRow, Stmts } from '../types.js';
@@ -250,6 +251,22 @@ export class ReplayByteCapError extends Error {
 }
 
 /**
+ * Thrown by `appendReplayEvents` when a capture already spans its duration cap,
+ * so no event of the batch can be stored. The route maps this to a 413 and the
+ * recorder rotates to a fresh id, exactly as for the byte cap.
+ */
+export class ReplayDurationCapError extends Error {
+  readonly durationMs: number;
+  readonly cap: number;
+  constructor(durationMs: number, cap: number) {
+    super(`replay spans ${durationMs} ms, reaching the ${cap} ms duration cap`);
+    this.name = 'ReplayDurationCapError';
+    this.durationMs = durationMs;
+    this.cap = cap;
+  }
+}
+
+/**
  * Thrown by `appendReplayEvents` when `rejectIfFinalized` is set and the replay
  * (re-read inside the per-id lock) is already attributed to a project / ticket /
  * card. The route maps this to a 409 anti-tamper guard. Because the check runs
@@ -321,6 +338,14 @@ export interface AppendReplayOptions {
    * captures of 200+ MB whose per-append decode/encode froze the process.
    */
   totalUncompressedByteCap?: number;
+  /**
+   * Upper bound on the capture's span (first to last event timestamp). The
+   * creating chunk is trimmed to its most recent checkout inside the bound; an
+   * append keeps only the events inside the bound and reports `durationCapped`
+   * so the caller can tell the recorder to rotate. A capture already at the
+   * bound throws ReplayDurationCapError before the blob is decoded.
+   */
+  maxDurationMs?: number;
   /** Reject (ReplayFinalizedError) when the under-lock row is triage-linked to a
    *  support ticket or card. A bare project attribution does NOT block the
    *  matching project's chunks — see `isReplayFinalized`. */
@@ -333,6 +358,8 @@ export interface AppendReplayResult {
   row: SessionReplayRow;
   /** True when this batch created the replay (first chunk), false on append. */
   created: boolean;
+  /** True when `maxDurationMs` cut events off the end of this batch. */
+  durationCapped: boolean;
 }
 
 /**
@@ -458,19 +485,28 @@ async function appendReplayEventsUnlocked(
     ) {
       throw new ReplayNeedsSnapshotError();
     }
-    if (input.events.length > totalEventCap) {
-      throw new ReplayEventCapError(input.events.length, totalEventCap);
+    // Truncated, but answered as a success rather than a rotate: the recorder
+    // rebuilds a rotated replay from the latest checkout in the refused batch,
+    // which here is the same stale snapshot, so a 413 would mint a duplicate
+    // replay on every flush. The next append lands past the bound, 413s with no
+    // snapshot in its batch, and the recorder rotates from a fresh one.
+    const events =
+      options.maxDurationMs != null
+        ? capCapture(input.events, options.maxDurationMs).events
+        : input.events;
+    if (events.length > totalEventCap) {
+      throw new ReplayEventCapError(events.length, totalEventCap);
     }
     // The creating chunk stamps the verified project (null = anonymous), so a
     // token-authenticated stream is attributed from its very first batch — the
     // fix for recorder captures landing as orphans.
     const row = await storeReplay(deps, {
       id: input.id,
-      events: input.events,
+      events,
       meta: input.meta ?? null,
       projectId: incomingProjectId,
     });
-    return { row, created: true };
+    return { row, created: true, durationCapped: false };
   }
 
   // Attribution integrity: a chunk may only EXTEND a capture owned by the same
@@ -490,13 +526,27 @@ async function appendReplayEventsUnlocked(
   if (existing.uncompressed_size >= byteCap) {
     throw new ReplayByteCapError(existing.uncompressed_size, byteCap);
   }
+  const durationCap = options.maxDurationMs ?? Infinity;
+  if (existing.duration_ms >= durationCap) {
+    throw new ReplayDurationCapError(existing.duration_ms, durationCap);
+  }
   if (existing.event_count + input.events.length > totalEventCap) {
     throw new ReplayEventCapError(existing.event_count + input.events.length, totalEventCap);
   }
 
   const store = getArtifactStoreForLocation(existing, config);
   const prev = await decodeReplayBlob(await store.getBuffer(existing.storage_key));
-  const mergedEvents = prev.events.concat(input.events);
+  let batch = input.events;
+  let durationCapped = false;
+  if (Number.isFinite(durationCap) && prev.events.length > 0) {
+    const split = splitAtDurationCap(prev.events[0].timestamp, batch, durationCap);
+    batch = split.accepted;
+    durationCapped = split.overflow;
+    if (batch.length === 0) {
+      throw new ReplayDurationCapError(existing.duration_ms, durationCap);
+    }
+  }
+  const mergedEvents = prev.events.concat(batch);
   // Backstop on the true merged length in case the stamped count drifted.
   if (mergedEvents.length > totalEventCap) {
     throw new ReplayEventCapError(mergedEvents.length, totalEventCap);
@@ -580,7 +630,11 @@ async function appendReplayEventsUnlocked(
     throw err;
   }
 
-  return { row: stmts.getSessionReplay.get(input.id) as SessionReplayRow, created: false };
+  return {
+    row: stmts.getSessionReplay.get(input.id) as SessionReplayRow,
+    created: false,
+    durationCapped,
+  };
 }
 
 /**

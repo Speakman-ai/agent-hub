@@ -1892,9 +1892,9 @@ describe('ContinuousReplayFlusher', () => {
     expect(f._pending.length).toBe(1); // re-queued for the next interval
   });
 
-  // 30-min chunk rotation (age-based)
+  // 15-min chunk rotation (age-based)
   // A capture that runs past the chunk bound rotates to a fresh replay id so no
-  // stored blob spans more than ~30 min — a 4-hour session → ~8 chunks.
+  // stored blob spans more than ~15 min — a 4-hour session → ~16 chunks.
 
   it('rotates to a fresh id without uploading post-boundary events to the old chunk', async () => {
     let clock = 1_000;
@@ -2074,10 +2074,10 @@ describe('ContinuousReplayFlusher', () => {
     expect(f._created).toBe(true);
   });
 
-  it('defaults the chunk bound to REPLAY_MAX_CHUNK_MS (30 min)', () => {
+  it('defaults the chunk bound to REPLAY_MAX_CHUNK_MS (15 min)', () => {
     const f = new ContinuousReplayFlusher({ replayId: 'x', submitBatch: vi.fn() });
     expect(f.maxChunkDurationMs).toBe(REPLAY_MAX_CHUNK_MS);
-    expect(REPLAY_MAX_CHUNK_MS).toBe(30 * 60 * 1000);
+    expect(REPLAY_MAX_CHUNK_MS).toBe(15 * 60 * 1000);
   });
 
   it('clears only the confirmed creating events, keeping ones queued mid-flight', async () => {
@@ -3396,7 +3396,13 @@ describe('RumSessionManager', () => {
 
   it('keeps the same session while activity stays inside the inactivity window', () => {
     let t = 0;
-    const m = new RumSessionManager({ now: () => t, generateId: counterIds() });
+    // The max-duration bound equals the inactivity window, so lift it here to
+    // isolate the inactivity rule across two near-timeout gaps.
+    const m = new RumSessionManager({
+      now: () => t,
+      generateId: counterIds(),
+      maxDurationMs: 4 * SESSION_INACTIVITY_TIMEOUT_MS,
+    });
     const first = m.notifyActivity();
 
     // Advance just under the timeout, repeatedly — the session must persist.
@@ -3430,7 +3436,7 @@ describe('RumSessionManager', () => {
     expect(rolled.viewId).toBe('id-4');
   });
 
-  it('rolls over to a fresh session.id after the 30-min chunk cap, even while active', () => {
+  it('rolls over to a fresh session.id after the 15-min chunk cap, even while active', () => {
     let t = 0;
     const m = new RumSessionManager({ now: () => t, generateId: counterIds() });
     const first = m.notifyActivity();
@@ -3448,12 +3454,12 @@ describe('RumSessionManager', () => {
     expect(last.sessionId).not.toBe(first.sessionId);
   });
 
-  it('chunks a 4-hour continuous session into 8 sessions at the 30-min cap', () => {
+  it('chunks a 4-hour continuous session into 16 sessions at the 15-min cap', () => {
     let t = 0;
     const m = new RumSessionManager({ now: () => t, generateId: counterIds() });
     const ids = new Set<string>();
     // Drive continuous activity in 1-min steps (well inside the 15-min
-    // inactivity window and an even divisor of the 30-min cap) so ONLY the
+    // inactivity window and an even divisor of the 15-min cap) so ONLY the
     // max-duration chunk bound rolls the session, landing exactly on each cap.
     const step = 60_000;
     const fourHours = 4 * 60 * 60 * 1000;
@@ -3461,7 +3467,7 @@ describe('RumSessionManager', () => {
       ids.add(m.notifyActivity().sessionId);
       t += step;
     }
-    // 4h / 30-min chunks = 8 distinct session ids rather than one 4h blob.
+    // 4h / 15-min chunks = 16 distinct session ids rather than one 4h blob.
     expect(ids.size).toBe(fourHours / REPLAY_MAX_CHUNK_MS);
   });
 
@@ -3524,11 +3530,11 @@ describe('RumSessionManager', () => {
     expect(m.viewId).toBeNull();
   });
 
-  it('uses the default constants when none are injected (30-min chunk cap)', () => {
+  it('uses the default constants when none are injected (15-min chunk cap)', () => {
     expect(SESSION_INACTIVITY_TIMEOUT_MS).toBe(15 * 60 * 1000);
-    // Max session duration is the 30-min replay chunk bound, not Datadog's 4h —
-    // a long session is stored as consecutive 30-min chunks.
-    expect(REPLAY_MAX_CHUNK_MS).toBe(30 * 60 * 1000);
+    // Max session duration is the 15-min replay chunk bound, not Datadog's 4h —
+    // a long session is stored as consecutive 15-min chunks.
+    expect(REPLAY_MAX_CHUNK_MS).toBe(15 * 60 * 1000);
     expect(SESSION_MAX_DURATION_MS).toBe(REPLAY_MAX_CHUNK_MS);
     const m = new RumSessionManager({});
     expect(m.inactivityTimeoutMs).toBe(SESSION_INACTIVITY_TIMEOUT_MS);

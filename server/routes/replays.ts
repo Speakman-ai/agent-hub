@@ -13,6 +13,7 @@ import {
   appendReplayEvents,
   ReplayEventCapError,
   ReplayByteCapError,
+  ReplayDurationCapError,
   ReplayFinalizedError,
   ReplayNeedsSnapshotError,
   ReplayAttributionMismatchError,
@@ -28,6 +29,7 @@ import {
   setSessionRetention,
   isRelocationPending,
 } from '../replays/segment-store.js';
+import { REPLAY_MAX_DURATION_MS, capCapture } from '../replays/replay-duration-cap.js';
 import { computeEnrichment } from '../replays/rum-enrichment.js';
 import { readAllReplayEvents } from '../replays/replay-context-loader.js';
 import { buildReplayTranscript } from '../replays/replay-transcript.js';
@@ -457,6 +459,12 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
           return res.status(400).json({ error: parsed.error });
         }
 
+        // A capture opens on its most recent checkout inside the duration cap, so
+        // an on-error buffer from a tab left open for days stores the last few
+        // minutes before the report, not the whole idle stretch. With only an old
+        // checkout, the span past the cap is cut off the end.
+        const { events } = capCapture(parsed.value.events, REPLAY_MAX_DURATION_MS);
+
         const replayId = uuidv4();
         const filename = `replay-${replayId}.json`;
         const dest = path.join(UPLOADS_DIR, filename);
@@ -464,7 +472,7 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
           replayId,
           createdAt: new Date().toISOString(),
           meta: parsed.value.meta ?? null,
-          events: parsed.value.events,
+          events,
         };
         // Legacy plain-JSON companion that `resolveReplayContext` reads back.
         // Async write: synchronous `writeFileSync` of the (uncompressed,
@@ -485,7 +493,7 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
             { stmts, config },
             {
               id: replayId,
-              events: parsed.value.events,
+              events,
               meta: parsed.value.meta ?? null,
               projectId: attributedProjectId,
             },
@@ -639,6 +647,7 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
             {
               totalEventCap: MAX_EVENTS,
               totalUncompressedByteCap: MAX_UNCOMPRESSED_BYTES,
+              maxDurationMs: REPLAY_MAX_DURATION_MS,
               rejectIfFinalized: true,
               requireSnapshotOnFirstChunk: true,
             },
@@ -656,7 +665,7 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
           if (err instanceof ReplayEventCapError) {
             return res.status(413).json({ error: err.message });
           }
-          if (err instanceof ReplayByteCapError) {
+          if (err instanceof ReplayByteCapError || err instanceof ReplayDurationCapError) {
             return res.status(413).json({ error: err.message });
           }
           if (err instanceof ArtifactStoreUnavailableError) {
@@ -665,7 +674,16 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
           throw err;
         }
 
-        const { row, created } = result;
+        const { row, created, durationCapped } = result;
+        if (durationCapped) {
+          // The in-window prefix was stored; the rest is refused so the recorder
+          // rotates to a fresh id and resends from a new full snapshot.
+          return res.status(413).json({
+            error: `replay reached the ${REPLAY_MAX_DURATION_MS} ms duration cap`,
+            replayId: row.id,
+            durationMs: row.duration_ms,
+          });
+        }
         return res.status(created ? 201 : 200).json({
           replayId: row.id,
           created,

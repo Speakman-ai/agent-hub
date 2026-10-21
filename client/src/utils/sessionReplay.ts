@@ -110,16 +110,16 @@ export const MIN_CONTINUOUS_FLUSH_INTERVAL_MS = 60 * 1000;
 export const MAX_CONTINUOUS_FLUSH_INTERVAL_MS = 60 * 60 * 1000;
 
 /**
- * Hard cap on how long any single stored replay chunk may span (30 min). A
+ * Hard cap on how long any single stored replay chunk may span (15 min). A
  * continuous capture that runs longer is broken into fresh chunks so a long
- * working session is stored as consecutive ~30-minute replays instead of one
- * unbounded multi-hour blob (a 4-hour session → ~8 chunks). Both continuous
+ * working session is stored as consecutive ~15-minute replays instead of one
+ * unbounded multi-hour blob (a 4-hour session → ~16 chunks). Both continuous
  * tiers honour it: the segmented tier rolls a fresh session id at this bound
  * (see `SESSION_MAX_DURATION_MS`), and the monolithic tier rotates to a fresh
  * replay id (see `ContinuousReplayFlusher`). This also bounds how far back the
- * bug-report button's continuous session can reach — the last 30 minutes.
+ * bug-report button's continuous session can reach — the last 15 minutes.
  */
-export const REPLAY_MAX_CHUNK_MS = 30 * 60 * 1000;
+export const REPLAY_MAX_CHUNK_MS = 15 * 60 * 1000;
 
 /**
  * Clamp a continuous-flush cadence into the deliverable range. A non-finite /
@@ -929,7 +929,7 @@ export class ContinuousReplayFlusher {
     this._now = now;
     // Clamp here too so a caller-supplied cadence can't sneak under the floor.
     this.flushIntervalMs = clampContinuousFlushInterval(flushIntervalMs);
-    // 30-min chunk bound: once the current capture has spanned this long, a
+    // 15-min chunk bound: once the current capture has spanned this long, a
     // periodic tick rotates to a fresh replay id so no stored blob exceeds it
     // (a 4-hour session → ~8 chunks). <=0 / non-finite disables age rotation.
     this.maxChunkDurationMs =
@@ -959,7 +959,7 @@ export class ContinuousReplayFlusher {
     this._pending = [];
     this._created = false; // true once the creating (first) chunk lands
     // Wall-clock at which the CURRENT capture was created (its first chunk
-    // confirmed); null before creation and after a rotation. Drives the 30-min
+    // confirmed); null before creation and after a rotation. Drives the 15-min
     // chunk rotation in the periodic tick.
     this._captureStartedAt = null;
     this.active = false;
@@ -986,7 +986,7 @@ export class ContinuousReplayFlusher {
   }
 
   /**
-   * True when the current (created) capture has spanned the 30-min chunk bound
+   * True when the current (created) capture has spanned the 15-min chunk bound
    * and should rotate to a fresh replay id so no stored blob exceeds it. False
    * before creation, after a rotation, or when the bound is disabled (<=0).
    */
@@ -1000,7 +1000,7 @@ export class ContinuousReplayFlusher {
   }
 
   /**
-   * Periodic tick: when the current capture has reached the 30-min chunk bound,
+   * Periodic tick: when the current capture has reached the 15-min chunk bound,
    * close it without appending events that fall after the boundary. The in-bound
    * leading prefix (if any) is uploaded to the old id first; the over-bound tail
    * is dropped because it cannot replay in the fresh capture until a new snapshot
@@ -2143,12 +2143,12 @@ export class SegmentReplayFlusher {
 /** End a session after this long with no activity (Datadog parity: 15 min). */
 export const SESSION_INACTIVITY_TIMEOUT_MS = 15 * 60 * 1000;
 /**
- * Hard cap on one session's continuous duration. Set to the 30-minute replay
+ * Hard cap on one session's continuous duration. Set to the 15-minute replay
  * chunk bound (`REPLAY_MAX_CHUNK_MS`): a session that runs longer rolls to a
  * fresh session id, so a long working session is stored as consecutive
- * ~30-minute chunks rather than one multi-hour blob. Datadog's own parity value
+ * ~15-minute chunks rather than one multi-hour blob. Datadog's own parity value
  * is 4h; we deliberately chunk tighter so a stored replay — and the bug-report
- * button's continuous session — stays bounded at 30 minutes. Inactivity still
+ * button's continuous session — stays bounded at 15 minutes. Inactivity still
  * ends a session at 15 min (`SESSION_INACTIVITY_TIMEOUT_MS`).
  */
 export const SESSION_MAX_DURATION_MS = REPLAY_MAX_CHUNK_MS;

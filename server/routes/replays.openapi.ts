@@ -225,7 +225,7 @@ registerPath({
   tags: ['Bug Reports'],
   summary: 'Public chunked session-replay ingest',
   description:
-    'Rate-limited (600 / hour per IP for anonymous ingest). Appends one batch of rrweb events to the replay `id`. The first chunk creates the replay and must include a full snapshot (type 2); later chunks append incremental events. The body is `{ events, meta? }` as raw JSON or gzip-compressed (≤2 MB on the wire, ≤16 MB decompressed). A capture is capped at 20,000 total events. Auth is optional and mirrors the one-shot path: with no `X-RUM-Token` the stream is anonymous and the row left unattributed; with a valid per-project token (minted via `POST /api/projects/{projectId}/rum/clients`) the creating chunk attributes the whole stream to that project and the request is rate-limited 6000 / hour per project instead. Every chunk of a stream should carry the same token. A chunk whose project disagrees with an already-attributed capture (anonymous or foreign token) is rejected 403. Once a replay is triage-linked to a support ticket or card it is finalized and rejects all further chunks (409).',
+    'Rate-limited (600 / hour per IP for anonymous ingest). Appends one batch of rrweb events to the replay `id`. The first chunk creates the replay and must include a full snapshot (type 2); later chunks append incremental events. The body is `{ events, meta? }` as raw JSON or gzip-compressed (≤2 MB on the wire, ≤16 MB decompressed). A capture is capped at 20,000 total events and a 15-minute span (first to last event timestamp): a chunk that crosses the span is stored up to the bound and answered 413, the signal to rotate to a fresh replay id. Auth is optional and mirrors the one-shot path: with no `X-RUM-Token` the stream is anonymous and the row left unattributed; with a valid per-project token (minted via `POST /api/projects/{projectId}/rum/clients`) the creating chunk attributes the whole stream to that project and the request is rate-limited 6000 / hour per project instead. Every chunk of a stream should carry the same token. A chunk whose project disagrees with an already-attributed capture (anonymous or foreign token) is rejected 403. Once a replay is triage-linked to a support ticket or card it is finalized and rejects all further chunks (409).',
   request: {
     ...replayIdParam,
     headers: z.object({
@@ -251,7 +251,9 @@ registerPath({
     409: errorResponse(
       'Replay is finalized (triage-linked to a support ticket or card) and cannot accept more events.',
     ),
-    413: errorResponse('Decompressed payload or total event count exceeds its cap.'),
+    413: errorResponse(
+      'Decompressed payload, total event count, stored size, or 15-minute span exceeds its cap. Rotate to a fresh replay id.',
+    ),
     429: errorResponse('Per-IP (anonymous) or per-project (token) rate limit exceeded.'),
     503: errorResponse('The replay’s storage backend could not be resolved.'),
   },
