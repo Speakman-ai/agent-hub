@@ -12,7 +12,6 @@ import type { AuthenticatedRequest } from '../auth.js';
 import type {
   FinalizeRunMode,
   FinalizeRunRow,
-  FinalizeRunStatus,
   KanbanCardRow,
   KanbanEpicRow,
   Project,
@@ -44,16 +43,9 @@ import {
   POST_FINALIZE_PUSH_LOCK_MESSAGE,
 } from './post-push-session-lock.js';
 import { suppressBackgroundShellWakesForFinalize } from './pre-finalize-background-shells.js';
+import { FINALIZE_TERMINAL_STATUSES as TERMINAL_STATUS_LIST } from './terminal-statuses.js';
 
-const TERMINAL_STATUSES: ReadonlySet<FinalizeRunStatus> = new Set<FinalizeRunStatus>([
-  'pushed',
-  'failed',
-  'timed_out',
-  'infra_error',
-  'cancelled',
-  'stalled_no_response',
-  'disputed',
-]);
+const TERMINAL_STATUSES: ReadonlySet<string> = new Set<string>(TERMINAL_STATUS_LIST);
 
 const ROW_VISIBILITY_POLL_INTERVAL_MS = 20;
 const ROW_VISIBILITY_POLL_MAX_ATTEMPTS = 15;

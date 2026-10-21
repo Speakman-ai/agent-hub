@@ -2,9 +2,9 @@ import { describe, it, expect } from 'vitest';
 import Database from 'better-sqlite3';
 import type { Stmts } from './../types.js';
 import { failStuckFinalizeRunsOnBoot } from './boot-recovery.js';
+import { FINALIZE_SETTLED_STATUSES_SQL } from './terminal-statuses.js';
 
-const TERM =
-  "('pushed','failed','timed_out','infra_error','cancelled','stalled_no_response','ready_to_push')";
+const TERM = FINALIZE_SETTLED_STATUSES_SQL;
 
 // Minimal in-memory tables exposing only the columns the boot sweep touches.
 function setup() {

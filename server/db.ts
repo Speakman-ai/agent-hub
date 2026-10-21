@@ -30,6 +30,10 @@ import { TEST_INVENTORY_SCHEMA_SQL } from './finalize/test-inventory-schema.js';
 import { FINALIZE_PARITY_SCHEMA } from './finalize/parity-store.js';
 import { FINALIZE_SERVER_CI_SCHEMA } from './finalize/ci-config-store.js';
 import { stuckRunProgressClockSql } from './finalize/stuck-run-clock-sql.js';
+import {
+  FINALIZE_SETTLED_STATUSES_SQL,
+  FINALIZE_TERMINAL_STATUSES_SQL,
+} from './finalize/terminal-statuses.js';
 import { DEPLOYMENT_SCHEMA } from './deploy/deployment-schema.js';
 import { DEPLOYMENT_ENV_RUNTIME_CONFIG_SCHEMA } from './deploy/deployment-env-config-schema.js';
 import { DEPLOYMENT_ENV_TRIGGER_SCHEMA } from './deploy/deployment-trigger-schema.js';
@@ -55,6 +59,7 @@ import { backfillEpicStates } from './migrations/backfill-epic-states.js';
 import { ensureUserNotificationPrefsSchema } from './migrations/user-notification-prefs.js';
 import { ensureOrganizationDispatchSchema } from './organization-dispatch-schema.js';
 import { repairCardSessionLinks } from './migrations/repair-card-session-links.js';
+import { repairPushCiSucceededRuns } from './migrations/repair-push-ci-succeeded-runs.js';
 import {
   deriveCardPrefix,
   KANBAN_CARD_SHORT_ID_TRIGGER_SQL,
@@ -1261,8 +1266,9 @@ function initDb(dataDir: string): void {
     -- definition, so adding a terminal status means a new name (CREATE INDEX
     -- IF NOT EXISTS would otherwise keep the stale predicate on existing DBs).
     DROP INDEX IF EXISTS idx_finalize_runs_active;
-    CREATE INDEX IF NOT EXISTS idx_finalize_runs_open ON finalize_runs(started_at DESC, id DESC)
-      WHERE status NOT IN ('pushed','failed','timed_out','infra_error','cancelled','stalled_no_response','disputed');
+    DROP INDEX IF EXISTS idx_finalize_runs_open;
+    CREATE INDEX IF NOT EXISTS idx_finalize_runs_unsettled ON finalize_runs(started_at DESC, id DESC)
+      WHERE status NOT IN ${FINALIZE_TERMINAL_STATUSES_SQL};
     -- One landing at a time per (project, base branch). Held across the
     -- base-drift check, the push, and (under Merge Automatically) the merge,
     -- so two sessions cannot both read the same base as clean and then both
@@ -3992,6 +3998,17 @@ function initDb(dataDir: string): void {
     }
   } catch (e) {
     console.error(`[migration] repair-card-session-links failed: ${(e as Error).message}`);
+  }
+
+  // Restore green push-CI runs a restart rewrote to infra_error. See
+  // migrations/repair-push-ci-succeeded-runs.ts.
+  try {
+    const r = repairPushCiSucceededRuns({ db, dataDir });
+    if (r.ran && r.restored > 0) {
+      console.log(`[migration] repair-push-ci-succeeded-runs: restored ${r.restored} run(s).`);
+    }
+  } catch (e) {
+    console.error(`[migration] repair-push-ci-succeeded-runs failed: ${(e as Error).message}`);
   }
 
   {
@@ -6882,7 +6899,7 @@ function initDb(dataDir: string): void {
     selectStuckActiveFinalizeRunsOnBoot: db.prepare(
       `SELECT id, session_id, card_id, project_id, head_sha
          FROM finalize_runs
-        WHERE status NOT IN ('pushed','failed','timed_out','infra_error','cancelled','stalled_no_response','disputed','ready_to_push')
+        WHERE status NOT IN ${FINALIZE_SETTLED_STATUSES_SQL}
         ORDER BY started_at DESC, id DESC`,
     ),
     // Crash-loop guard for boot retrigger: how many times this exact
@@ -6911,7 +6928,7 @@ function initDb(dataDir: string): void {
            failure_reason = 'Finalize run interrupted (server restart or crash)',
            phase = NULL,
            ended_at = COALESCE(ended_at, unixepoch() * 1000)
-       WHERE status NOT IN ('pushed','failed','timed_out','infra_error','cancelled','stalled_no_response','disputed','ready_to_push')`,
+       WHERE status NOT IN ${FINALIZE_SETTLED_STATUSES_SQL}`,
     ),
     failStuckActiveFinalizeRunStepsOnBoot: db.prepare(
       `UPDATE finalize_run_steps
@@ -7336,7 +7353,7 @@ function initDb(dataDir: string): void {
       `SELECT *
          FROM finalize_runs
         WHERE session_id = ?
-          AND status NOT IN ('pushed', 'failed', 'timed_out', 'infra_error', 'cancelled', 'stalled_no_response', 'disputed', 'ready_to_push')
+          AND status NOT IN ${FINALIZE_SETTLED_STATUSES_SQL}
         ORDER BY started_at DESC, id DESC
         LIMIT 1`,
     ),
@@ -7352,7 +7369,7 @@ function initDb(dataDir: string): void {
       `SELECT *
          FROM finalize_runs
         WHERE session_id = ?
-          AND status NOT IN ('pushed', 'failed', 'timed_out', 'infra_error', 'cancelled', 'stalled_no_response', 'disputed')
+          AND status NOT IN ${FINALIZE_TERMINAL_STATUSES_SQL}
         ORDER BY started_at DESC, id DESC
         LIMIT 1`,
     ),
@@ -7360,7 +7377,7 @@ function initDb(dataDir: string): void {
       `SELECT id, session_id, phase, status
          FROM finalize_runs
         WHERE session_id IS NOT NULL
-          AND status NOT IN ('pushed', 'failed', 'timed_out', 'infra_error', 'cancelled', 'stalled_no_response', 'disputed')
+          AND status NOT IN ${FINALIZE_TERMINAL_STATUSES_SQL}
         ORDER BY started_at DESC, id DESC`,
     ),
     getActiveFinalizeRunForSessionBranch: db.prepare(
@@ -7368,7 +7385,7 @@ function initDb(dataDir: string): void {
          FROM finalize_runs
         WHERE session_id = ?
           AND branch = ?
-          AND status NOT IN ('pushed', 'failed', 'timed_out', 'infra_error', 'cancelled', 'stalled_no_response', 'disputed', 'ready_to_push')
+          AND status NOT IN ${FINALIZE_SETTLED_STATUSES_SQL}
         ORDER BY started_at DESC, id DESC
         LIMIT 1`,
     ),

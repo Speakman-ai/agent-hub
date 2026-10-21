@@ -44,8 +44,9 @@
  * `BroadcastFn`) while still surfacing the count to the UI.
  */
 import { v4 as uuidv4 } from 'uuid';
-import type { BroadcastFn, FinalizeRunRow, FinalizeRunStatus, Stmts } from '../types.js';
+import type { BroadcastFn, FinalizeRunRow, Stmts } from '../types.js';
 import { classifyFailureReason } from './infra-retry.js';
+import { FINALIZE_TERMINAL_STATUSES } from './terminal-statuses.js';
 import type { StepTimeoutDetails } from './step-runner.js';
 
 /** Hard ceiling on the active-time budget (seconds). 4 hours at v0. */
@@ -58,23 +59,8 @@ export const FINALIZE_BUDGET_HARD_CEILING_SECONDS = 4 * 60 * 60;
  */
 export const FINALIZE_BUDGET_DEFAULT_SECONDS = 4 * 60 * 60;
 
-/**
- * Terminal statuses on `finalize_runs`. The "active run for a session"
- * lookup excludes these — a row in any other status is considered
- * in-flight and the session's turn-ends should bill to it.
- *
- * Mirrors {@link FinalizeRunStatus}; if a new status lands, update both
- * here and the SQL `NOT IN (...)` literal in db.ts.
- */
-export const FINALIZE_TERMINAL_STATUSES: ReadonlyArray<FinalizeRunStatus> = [
-  'pushed',
-  'failed',
-  'timed_out',
-  'infra_error',
-  'cancelled',
-  'stalled_no_response',
-  'disputed',
-];
+// Terminal statuses live in terminal-statuses.ts so db.ts can share them.
+export { FINALIZE_TERMINAL_STATUSES };
 
 /**
  * Convert a minute-valued cap to seconds, clamped to

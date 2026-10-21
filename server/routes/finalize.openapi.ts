@@ -20,6 +20,7 @@ const FINALIZE_RUN_STATUSES = [
   'pushing',
   'ready_to_push',
   'pushed',
+  'succeeded',
   'failed',
   'timed_out',
   'infra_error',

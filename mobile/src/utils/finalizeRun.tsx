@@ -18,6 +18,7 @@
 /** Terminal status codes — see `FinalizeRunStatus` in server/types.ts. */
 const TERMINAL_STATUSES = new Set([
   'pushed',
+  'succeeded',
   'failed',
   'timed_out',
   'infra_error',

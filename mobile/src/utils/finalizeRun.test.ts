@@ -33,6 +33,7 @@ describe('isTerminalStatus', () => {
     expect([...TERMINAL_STATUSES].sort()).toEqual(
       [
         'pushed',
+        'succeeded',
         'failed',
         'timed_out',
         'infra_error',

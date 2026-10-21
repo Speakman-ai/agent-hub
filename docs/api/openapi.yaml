@@ -1087,6 +1087,7 @@ components:
             - pushing
             - ready_to_push
             - pushed
+            - succeeded
             - failed
             - timed_out
             - infra_error
@@ -1356,6 +1357,7 @@ components:
             - pushing
             - ready_to_push
             - pushed
+            - succeeded
             - failed
             - timed_out
             - infra_error
@@ -1416,6 +1418,7 @@ components:
             - pushing
             - ready_to_push
             - pushed
+            - succeeded
             - failed
             - timed_out
             - infra_error
@@ -1509,6 +1512,7 @@ components:
             - pushing
             - ready_to_push
             - pushed
+            - succeeded
             - failed
             - timed_out
             - infra_error

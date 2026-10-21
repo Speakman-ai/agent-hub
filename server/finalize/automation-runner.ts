@@ -43,6 +43,7 @@ import { resolveFinalizeGateBase } from './resolve-base-branch.js';
 import { flakeGateBlocksAutoPush, parseFlakeGate } from './flake-recovery.js';
 import { sessionBlocksFinalize } from '../project-mode-guards.js';
 import { isAutopilotModeActive } from '../session-mode.js';
+import { FINALIZE_TERMINAL_STATUSES as TERMINAL_STATUS_LIST } from './terminal-statuses.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -514,15 +515,7 @@ export function decideMainlineAbsentRestart(
   return 'start';
 }
 
-const FINALIZE_TERMINAL_STATUSES: ReadonlySet<string> = new Set([
-  'pushed',
-  'failed',
-  'timed_out',
-  'infra_error',
-  'cancelled',
-  'stalled_no_response',
-  'disputed',
-]);
+const FINALIZE_TERMINAL_STATUSES: ReadonlySet<string> = new Set<string>(TERMINAL_STATUS_LIST);
 
 /**
  * An owed restart that found a parked run is settled by what the push did,

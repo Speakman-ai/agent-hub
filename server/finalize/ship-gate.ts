@@ -3,16 +3,9 @@ import type { FinalizeRunRow, SessionRow, Stmts } from '../types.js';
 import { sessionWorktreeIoFor } from '../session-worktree-io.js';
 import { computeIdempotencyKey, DEFAULT_CI_CONFIG_RELATIVE_PATH } from './finalize-keys.js';
 import { worktreeHasFinalizeCi } from './worktree-has-ci.js';
+import { FINALIZE_TERMINAL_STATUSES as TERMINAL_STATUS_LIST } from './terminal-statuses.js';
 
-const TERMINAL_STATUSES = new Set([
-  'pushed',
-  'failed',
-  'timed_out',
-  'infra_error',
-  'cancelled',
-  'stalled_no_response',
-  'disputed',
-]);
+const TERMINAL_STATUSES: ReadonlySet<string> = new Set<string>(TERMINAL_STATUS_LIST);
 
 /**
  * Defensive ceiling on the attempt walk that finds the newest full-mode run

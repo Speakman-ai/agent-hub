@@ -711,21 +711,9 @@ describe('postTimeoutDispatchMessage', () => {
   });
 });
 
-describe('FINALIZE_TERMINAL_STATUSES — invariant with db.ts SQL literal', () => {
-  it('lists exactly the statuses the SQL NOT IN clause excludes', () => {
-    // db.ts uses: status NOT IN
-    //   ('pushed', 'failed', 'timed_out', 'infra_error', 'cancelled', 'stalled_no_response', 'disputed')
-    // The two MUST agree — keep this assertion locked to the SQL string.
-    expect([...FINALIZE_TERMINAL_STATUSES].sort()).toEqual(
-      [
-        'cancelled',
-        'disputed',
-        'failed',
-        'infra_error',
-        'pushed',
-        'stalled_no_response',
-        'timed_out',
-      ].sort(),
-    );
+describe('FINALIZE_TERMINAL_STATUSES', () => {
+  it('re-exports the shared list db.ts builds its SQL from', async () => {
+    const shared = await import('./terminal-statuses.js');
+    expect(FINALIZE_TERMINAL_STATUSES).toBe(shared.FINALIZE_TERMINAL_STATUSES);
   });
 });

@@ -839,6 +839,7 @@ describe('useFinalizeRun — helpers', () => {
   it('isTerminalStatus matches the documented set', () => {
     for (const s of [
       'pushed',
+      'succeeded',
       'failed',
       'timed_out',
       'infra_error',
