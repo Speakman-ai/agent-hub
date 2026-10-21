@@ -16,6 +16,9 @@ import { useFinalizeRun, describeRunPhase, formatDuration } from '../../hooks/us
 import ReviewerThreadsPanel from './ReviewerThreadsPanel';
 import FinalizeStepLogModal from './FinalizeStepLogModal';
 import FinalizeResourceUsage from './FinalizeResourceUsage';
+import { TestSelectionManifest } from './TestSelectionManifest';
+import { notSelectedStepReason } from '../../utils/finalizeStepDisplay';
+import { readTestSelection } from '@shared/utils/testSelectionDisplay';
 
 /**
  * GitHub-Actions-style checks panel for a Finalize Code Changes run.
@@ -53,6 +56,7 @@ export default function ChecksPanel({
   const { run, steps, phase, status, isPaused, isTerminal, activeSeconds, wallSeconds } =
     useFinalizeRun({ sessionId });
   const [logStep, setLogStep] = useState<any>(null);
+  const selection = readTestSelection(run);
 
   if (!run) {
     if (variant === 'embedded') return null;
@@ -92,7 +96,13 @@ export default function ChecksPanel({
         isTerminal={isTerminal}
         phase={phase}
         onOpenLog={setLogStep}
+        selection={selection}
       />
+      {selection ? (
+        <div className="border-t border-slate-700/60 px-4 py-1.5">
+          <TestSelectionManifest selection={selection} testIdPrefix="finalize-test-selection" />
+        </div>
+      ) : null}
       <FinalizeResourceUsage projectId={projectId ?? run.project_id} runId={run.id} />
       <ReviewerThreadsPanel sessionId={sessionId} prefetchedRun={run} />
       <FinalizeStepLogModal
@@ -219,7 +229,7 @@ function RunHeader({
   );
 }
 
-function StepsList({ runId, projectId, steps, run, isTerminal, phase, onOpenLog }: any) {
+function StepsList({ runId, projectId, steps, run, isTerminal, phase, onOpenLog, selection }: any) {
   if (steps.length === 0) {
     const hint = describeEmptySteps(run, isTerminal, phase);
     return (
@@ -242,6 +252,7 @@ function StepsList({ runId, projectId, steps, run, isTerminal, phase, onOpenLog 
             runId={runId}
             projectId={projectId}
             onOpenLog={onOpenLog}
+            selection={selection}
           />
         ))}
       </ol>
@@ -249,7 +260,7 @@ function StepsList({ runId, projectId, steps, run, isTerminal, phase, onOpenLog 
   );
 }
 
-function StepRow({ step, dependencyName, runId, projectId, onOpenLog }: any) {
+function StepRow({ step, dependencyName, runId, projectId, onOpenLog, selection }: any) {
   const duration = computeStepDuration(step);
   const tone = stepToneFor(step.state);
   const Icon = stepIconFor(step.state);
@@ -259,6 +270,7 @@ function StepRow({ step, dependencyName, runId, projectId, onOpenLog }: any) {
     onOpenLog?.({ index: step.index, name: step.name, state: step.state });
   };
   const isFailed = step.state === 'failed';
+  const notSelectedReason = notSelectedStepReason(step, selection);
   return (
     <li
       data-testid="finalize-step-row"
@@ -266,7 +278,8 @@ function StepRow({ step, dependencyName, runId, projectId, onOpenLog }: any) {
       data-step-state={step.state}
       className={`flex items-center gap-2 px-4 py-1.5 text-xs ${
         canOpenLog ? 'cursor-pointer hover:bg-slate-800/40' : ''
-      } ${isFailed ? 'bg-red-950/20' : ''}`}
+      } ${isFailed ? 'bg-red-950/20' : ''} ${notSelectedReason ? 'opacity-60' : ''}`}
+      title={notSelectedReason ?? undefined}
       onClick={canOpenLog ? openLog : undefined}
       onKeyDown={
         canOpenLog
@@ -287,6 +300,14 @@ function StepRow({ step, dependencyName, runId, projectId, onOpenLog }: any) {
       <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5">
         <span className="truncate font-mono text-slate-200">{step.name}</span>
         <span className="shrink-0 text-slate-500">{labelForState(step.state)}</span>
+        {notSelectedReason ? (
+          <span
+            className="min-w-0 truncate text-slate-500"
+            data-testid="finalize-step-not-selected-reason"
+          >
+            {notSelectedReason}
+          </span>
+        ) : null}
         {dependencyName ? (
           <span
             className="min-w-0 truncate text-slate-500"

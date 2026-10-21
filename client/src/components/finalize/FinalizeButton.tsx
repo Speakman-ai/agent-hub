@@ -15,6 +15,11 @@ import {
 } from '../../utils/committableChanges';
 import { SESSION_ACTION_MENU_ITEM_CLASS } from '../../utils/sessionActionMenu';
 import { inheritedFailuresCardPath, inheritedFailuresLabel } from '@shared/utils/inheritedFailures';
+import {
+  forcedFullLabel,
+  readTestSelection,
+  selectedRunLabel,
+} from '@shared/utils/testSelectionDisplay';
 
 const OPTIMISTIC_BLOCK_MS = 1500;
 const WORKTREE_POLL_MS = 15_000;
@@ -333,6 +338,10 @@ export default function FinalizeButton({
   // without a fix turn; say so and link the breakage card.
   const inheritedLabel = !inFlight && phasePassed(run) ? inheritedFailuresLabel(run) : null;
   const inheritedHref = inheritedLabel ? inheritedFailuresCardPath(projectId, run) : null;
+  // A pass from a dynamic run that skipped job instances says how much ran.
+  const runPassed = !inFlight && phasePassed(run);
+  const selectedLabel = runPassed ? selectedRunLabel(run) : null;
+  const forcedFull = runPassed && !selectedLabel ? forcedFullLabel(readTestSelection(run)) : null;
 
   return (
     <div
@@ -394,6 +403,24 @@ export default function FinalizeButton({
             {inheritedLabel}
           </span>
         )
+      ) : null}
+      {selectedLabel ? (
+        <span
+          data-testid="finalize-selected-run"
+          title="Only the selected job instances ran; the full suite runs after merge on the default branch"
+          className="text-[11px] text-sky-300"
+        >
+          {selectedLabel}
+        </span>
+      ) : null}
+      {forcedFull ? (
+        <span
+          data-testid="finalize-forced-full"
+          title={forcedFull}
+          className="max-w-[16rem] truncate text-[11px] text-slate-400"
+        >
+          {forcedFull}
+        </span>
       ) : null}
       {showPush ? (
         <button

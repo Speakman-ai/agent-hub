@@ -6040,6 +6040,99 @@ components:
         - scope
         - deleted
       description: Delete outcome.
+    DefaultBranchHealthError:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+    DefaultBranchFailure:
+      type: object
+      properties:
+        job_id:
+          type: string
+        matrix_key:
+          type: string
+          description: Matrix shard key; empty for a plain job.
+        first_failing_sha:
+          type: string
+        last_failing_sha:
+          type: string
+        last_run_id:
+          type: string
+          nullable: true
+      required:
+        - job_id
+        - matrix_key
+        - first_failing_sha
+        - last_failing_sha
+        - last_run_id
+      description: A job instance failing on the default branch.
+    DefaultBranchHealthResponse:
+      type: object
+      properties:
+        project_id:
+          type: string
+        state:
+          type: string
+          enum:
+            - green
+            - red
+            - unknown
+          description: "`red` while any instance is failing or a breakage is open; `green` once CI has reported on the default branch with nothing failing; `unknown` before the first report."
+        branch:
+          type: string
+          nullable: true
+        last_sha:
+          type: string
+          nullable: true
+        last_status:
+          type: string
+          nullable: true
+          enum:
+            - succeeded
+            - failed
+            - null
+        updated_at:
+          type: integer
+          nullable: true
+        breakage:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: string
+            card_id:
+              type: string
+              nullable: true
+              description: Kanban card tracking it.
+            first_failing_sha:
+              type: string
+            last_failing_sha:
+              type: string
+            created_at:
+              type: integer
+          required:
+            - id
+            - card_id
+            - first_failing_sha
+            - last_failing_sha
+            - created_at
+        failures:
+          type: array
+          items:
+            $ref: "#/components/schemas/DefaultBranchFailure"
+      required:
+        - project_id
+        - state
+        - branch
+        - last_sha
+        - last_status
+        - updated_at
+        - breakage
+        - failures
+      description: Default-branch CI health from the full run after each merge.
     ParityError:
       type: object
       properties:
@@ -32148,6 +32241,37 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/FinalizeCiConfigErrorResponse"
+  /api/projects/{projectId}/finalize/default-branch-health:
+    get:
+      tags:
+        - Finalize
+      summary: Read default-branch CI health
+      description: Instances failing on the default branch and the open breakage card, recorded by the full push-CI run on every merge. Read-only; merges are never blocked on it.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Health snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DefaultBranchHealthResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DefaultBranchHealthError"
+        "500":
+          description: Health could not be read.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DefaultBranchHealthError"
   /api/projects/{projectId}/finalize/parity:
     get:
       tags:

@@ -2469,6 +2469,8 @@ export const api = {
     fetchJSON(`/projects/${projectId}/ci-runs/runner-options`),
   getCiRunDetail: (projectId: any, runId: any) =>
     fetchJSON(`/projects/${projectId}/ci-runs/${runId}`),
+  getDefaultBranchHealth: (projectId: any) =>
+    fetchJSON(`/projects/${encodeURIComponent(projectId)}/finalize/default-branch-health`),
   // Per-project Stats page — daily/weekly/monthly product metrics.
   getProjectStats: (projectId: any, { granularity = 'day', buckets }: any = {}) => {
     const qs = new URLSearchParams({ granularity });

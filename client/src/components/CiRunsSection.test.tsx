@@ -14,6 +14,7 @@ import { api } from '../utils/api';
     getCiRunStats: vi.fn(),
     getCiRunnerOptions: vi.fn(),
     getCiRunDetail: vi.fn(),
+    getDefaultBranchHealth: vi.fn(),
     getFinalizeStepOutput: vi.fn(),
     getFinalizeRunResources: vi.fn(),
     updateProject: vi.fn(),
@@ -107,6 +108,12 @@ beforeEach(() => {
       },
     ],
     ci_config: { found: true, version: 2, error: null },
+  });
+  (api.getDefaultBranchHealth as any).mockResolvedValue({
+    state: 'green',
+    branch: 'main',
+    breakage: null,
+    failures: [],
   });
   (api.getCiRunDetail as any).mockResolvedValue({
     run: runs[0],
@@ -735,5 +742,93 @@ describe('CiRunsSection', () => {
     await waitFor(() => expect(api.cancelFinalizeRun).toHaveBeenCalledWith('proj-1', 'run-3'));
     // The click must not bubble to the row toggle (which would fetch detail).
     expect(api.getCiRunDetail).not.toHaveBeenCalled();
+  });
+});
+
+describe('CiRunsSection test selection', () => {
+  const selectedRun = {
+    ...runs[0],
+    id: 'run-sel',
+    trigger_source: 'ui_button',
+    status: 'ready_to_push',
+    jobs: [
+      { job_id: 'server', matrix_key: 'shard=1', state: 'passed', exit_code: 0 },
+      { job_id: 'client', matrix_key: 'default', state: 'not_selected', exit_code: null },
+    ],
+    test_selection: {
+      mode: 'dynamic',
+      forcedFullReason: null,
+      inventorySha: 'abc',
+      instances: [
+        {
+          jobId: 'server',
+          matrixKey: 'shard=1',
+          selected: true,
+          sources: ['reviewer'],
+          files: [],
+          reasons: ['route contract changed'],
+        },
+        {
+          jobId: 'client',
+          matrixKey: 'default',
+          selected: false,
+          sources: [],
+          files: [],
+          reasons: [],
+        },
+      ],
+    },
+  };
+
+  it('labels a selected run, greys skipped jobs with the reason and shows the manifest', async () => {
+    (api.getCiRuns as any).mockResolvedValue({ runs: [selectedRun] });
+    (api.getCiRunDetail as any).mockResolvedValue({ run: selectedRun, steps: [] });
+    render(<CiRunsSection project={hostedProject} />);
+    expect(await screen.findByTestId('ci-run-selection-run-sel')).toHaveTextContent(
+      'selected 1 of 2 jobs',
+    );
+    fireEvent.click(screen.getByTestId('ci-run-run-sel'));
+    const skipped = await screen.findByTestId('ci-run-job-client-default');
+    expect(skipped.className).toContain('opacity-60');
+    expect(within(skipped).getByTestId('ci-run-job-not-selected-reason')).toHaveTextContent(
+      'not selected · No test in this instance',
+    );
+    expect(screen.getByTestId('ci-run-job-server-shard=1').className).not.toContain('opacity-60');
+    fireEvent.click(screen.getByTestId('ci-run-run-sel-manifest-toggle'));
+    expect(screen.getAllByTestId('ci-run-run-sel-manifest-row')[0]).toHaveTextContent(
+      'route contract changed',
+    );
+  });
+
+  it('shows the default-branch red banner with failing instances and the breakage card', async () => {
+    (api.getCiRuns as any).mockResolvedValue({ runs: [] });
+    (api.getDefaultBranchHealth as any).mockResolvedValue({
+      state: 'red',
+      branch: 'main',
+      breakage: { id: 'b1', card_id: 'card-9', first_failing_sha: 'c'.repeat(40) },
+      failures: [
+        {
+          job_id: 'server',
+          matrix_key: 'shard=2',
+          first_failing_sha: 'c'.repeat(40),
+          last_failing_sha: 'd'.repeat(40),
+        },
+      ],
+    });
+    render(<CiRunsSection project={hostedProject} />);
+    const banner = await screen.findByTestId('default-branch-red-banner');
+    expect(banner).toHaveTextContent('main is red: 1 failing instance');
+    expect(banner).toHaveTextContent('server · shard=2');
+    expect(within(banner).getByTestId('default-branch-breakage-card')).toHaveAttribute(
+      'href',
+      '/projects/proj-1/board?card=card-9',
+    );
+  });
+
+  it('hides the banner when the default branch is green', async () => {
+    (api.getCiRuns as any).mockResolvedValue({ runs: [] });
+    render(<CiRunsSection project={hostedProject} />);
+    await waitFor(() => expect(api.getDefaultBranchHealth).toHaveBeenCalledWith('proj-1'));
+    expect(screen.queryByTestId('default-branch-red-banner')).not.toBeInTheDocument();
   });
 });

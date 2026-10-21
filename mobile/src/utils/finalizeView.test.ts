@@ -21,6 +21,20 @@ describe('summarizeChecks', () => {
     });
     expect(summarizeChecks([])).toMatchObject({ total: 0, headline: 'No checks yet' });
   });
+  it('leaves not_selected steps out of the pass count', () => {
+    const r = summarizeChecks([
+      { state: 'passed' },
+      { state: 'not_selected' },
+      { state: 'not_selected' },
+    ]);
+    expect(r).toMatchObject({
+      total: 3,
+      passed: 1,
+      notSelected: 2,
+      allPassed: true,
+      headline: '1/1 passed · 2 not selected',
+    });
+  });
   it('counts all passed', () => {
     const r = summarizeChecks([{ state: 'passed' }, { state: 'passed' }]);
     expect(r).toMatchObject({

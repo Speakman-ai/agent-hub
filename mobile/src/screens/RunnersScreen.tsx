@@ -14,6 +14,16 @@ import { relativeTime } from '../utils/time';
 import ProjectScreenHeader from '../components/ProjectScreenHeader';
 import FinalizeSection from '../components/FinalizeSection';
 import TestSelectionSection from '../components/settings/TestSelectionSection';
+import {
+  DefaultBranchHealthBanner,
+  TestSelectionManifestView,
+} from '../components/TestSelectionViews';
+import {
+  defaultBranchHealthRefreshKey,
+  notSelectedStepReason,
+  readTestSelection,
+  selectionChipLabel,
+} from '@shared/utils/testSelectionDisplay';
 const STATUS_COLOR: Record<string, any> = {
   success: colors.emerald400,
   failure: colors.red400,
@@ -124,6 +134,14 @@ export default function RunnersScreen({ route, navigation }: any) {
         <FinalizeSection navigation={navigation} fixedProjectId={projectId} />
 
         {projectId ? (
+          <DefaultBranchHealthBanner
+            projectId={projectId}
+            refreshKey={defaultBranchHealthRefreshKey(runs)}
+            onOpenCard={(cardId) => navigation.navigate('Kanban', { projectId, project, cardId })}
+          />
+        ) : null}
+
+        {projectId ? (
           <TestSelectionSection
             settings={project?.testSelection}
             ciOnPushEnabled={project?.ciOnPush?.enabled === true}
@@ -163,6 +181,11 @@ export default function RunnersScreen({ route, navigation }: any) {
                   >
                     <View style={[styles.statusDot, { backgroundColor: color }]} />
                     <Text style={styles.runStatus}>{run.status || 'unknown'}</Text>
+                    {selectionChipLabel(readTestSelection(run)) ? (
+                      <Text style={styles.selectionChip} testID={`ci-run-selection-${run.id}`}>
+                        {selectionChipLabel(readTestSelection(run))}
+                      </Text>
+                    ) : null}
                     <Text style={styles.runTime}>
                       {relativeTime(run.started_at || run.created_at)}
                     </Text>
@@ -216,14 +239,42 @@ export default function RunnersScreen({ route, navigation }: any) {
             ) : detail?.error ? (
               <Text style={styles.error}>{detail.error}</Text>
             ) : (
-              <Text style={styles.detailJson}>
-                {JSON.stringify(detail || selectedRun, null, 2)}
-              </Text>
+              <RunDetailBody run={detail?.run || selectedRun} detail={detail} />
             )}
           </View>
         )}
       </ScrollView>
     </SafeAreaView>
+  );
+}
+/**
+ * Selection manifest, the jobs a dynamic run left out (greyed, with the
+ * reason), then the raw payload for everything else.
+ */
+function RunDetailBody({ run, detail }: any) {
+  const selection = readTestSelection(run) ?? readTestSelection(detail?.run);
+  const jobs: any[] = Array.isArray(run?.jobs) ? run.jobs : [];
+  const skipped = jobs.filter((j) => j?.state === 'not_selected');
+  return (
+    <View>
+      <TestSelectionManifestView selection={selection} />
+      {skipped.length > 0 ? (
+        <View style={styles.skippedList} testID="ci-run-not-selected-jobs">
+          {skipped.map((j) => (
+            <View key={`${j.job_id}::${j.matrix_key}`} style={styles.skippedRow}>
+              <Text style={styles.skippedName}>
+                {j.job_id}
+                {j.matrix_key && j.matrix_key !== 'default' ? ` · ${j.matrix_key}` : ''}
+              </Text>
+              <Text style={styles.skippedReason}>
+                not selected · {notSelectedStepReason(j, selection)}
+              </Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
+      <Text style={styles.detailJson}>{JSON.stringify(detail || run, null, 2)}</Text>
+    </View>
   );
 }
 const styles = StyleSheet.create({
@@ -273,5 +324,17 @@ const styles = StyleSheet.create({
   },
   detailHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
   detailTitle: { fontSize: 14, fontWeight: '600', color: colors.white },
+  selectionChip: {
+    fontSize: 11,
+    color: colors.sky300,
+    backgroundColor: colors.sky500_15,
+    borderRadius: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+  },
+  skippedList: { marginTop: 8, marginBottom: 8 },
+  skippedRow: { opacity: 0.6, marginTop: 4 },
+  skippedName: { fontSize: 12, color: colors.gray300, fontFamily: 'monospace' },
+  skippedReason: { fontSize: 11, color: colors.gray500 },
   detailJson: { fontSize: 11, color: colors.gray400, fontFamily: 'monospace' },
 });

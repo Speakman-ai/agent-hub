@@ -1,5 +1,6 @@
 import { CheckCircle2, XCircle, Loader2, Clock, ChevronRight, MinusCircle } from 'lucide-react';
 import { formatDuration } from '../hooks/useFinalizeRun';
+export { notSelectedStepReason } from '@shared/utils/testSelectionDisplay';
 
 export function computeStepDuration(step: any) {
   if (step.startedAt == null) return null;

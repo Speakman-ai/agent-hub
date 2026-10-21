@@ -41,6 +41,16 @@ import {
   testSelectionSaveError,
   toggleAlwaysRunJob,
 } from '@shared/utils/testSelection';
+import {
+  NOT_SELECTED_REASON,
+  defaultBranchHealthRefreshKey,
+  findSelectionInstance,
+  forcedFullLabel,
+  readTestSelection,
+  selectionChipLabel,
+  selectionInstanceReason,
+} from '@shared/utils/testSelectionDisplay';
+import { DefaultBranchHealthBanner, TestSelectionManifest } from './finalize/TestSelectionManifest';
 
 const TERMINAL_STATUSES = new Set([
   'ready_to_push',
@@ -418,6 +428,8 @@ export function RunRow({ projectId, run, onRerun = null, onStop = null }: any) {
   // (e.g. `failed` from one red shard) but other jobs are still running. As
   // long as tests are running there must be a way to terminate them.
   const stoppable = typeof onStop === 'function' && runHasWorkInFlight(run);
+  const selection = readTestSelection(run);
+  const selectionChip = selectionChipLabel(selection);
 
   useEffect(() => {
     if (!expanded || steps) return;
@@ -477,6 +489,15 @@ export function RunRow({ projectId, run, onRerun = null, onStop = null }: any) {
             </>
           )}
         </span>
+        {selectionChip && (
+          <span
+            className="text-[10px] px-1.5 py-0.5 rounded border border-sky-800/60 bg-sky-950/40 text-sky-300 flex-shrink-0"
+            title={forcedFullLabel(selection) ?? 'Dynamic test selection'}
+            data-testid={`ci-run-selection-${run.id}`}
+          >
+            {selectionChip}
+          </span>
+        )}
         {run.failure_reason && (
           <span
             className="text-[11px] text-red-400/80 truncate"
@@ -546,6 +567,7 @@ export function RunRow({ projectId, run, onRerun = null, onStop = null }: any) {
 
       {expanded && (
         <div className="border-t border-gray-700/60 px-3 py-2 space-y-2">
+          <TestSelectionManifest selection={selection} testIdPrefix={`ci-run-${run.id}`} />
           {groups.length === 0 && steps === null && (
             <p className="text-[11px] text-gray-500 flex items-center gap-1.5">
               <Loader2 size={11} className="animate-spin" /> Loading jobs…
@@ -556,10 +578,19 @@ export function RunRow({ projectId, run, onRerun = null, onStop = null }: any) {
               resources?.[jobResourceKey(job.job_id, job.matrix_key)],
             );
             const jobDur = durationFromTimes(job.started_at, job.ended_at);
+            const selectionEntry =
+              job.state === 'not_selected'
+                ? findSelectionInstance(selection, job.job_id, job.matrix_key)
+                : null;
+            const notSelected = job.state === 'not_selected';
             return (
               <div
                 key={`${job.job_id}-${job.matrix_key}`}
-                className="rounded-lg border border-gray-800/70 bg-gray-900/30"
+                className={`rounded-lg border border-gray-800/70 bg-gray-900/30 ${
+                  notSelected ? 'opacity-60' : ''
+                }`}
+                data-testid={`ci-run-job-${job.job_id}-${job.matrix_key || 'default'}`}
+                data-state={job.state}
               >
                 <div className="flex items-center gap-2 px-2.5 py-1.5 text-xs text-gray-200">
                   {jobStateIcon(job.state)}
@@ -577,6 +608,15 @@ export function RunRow({ projectId, run, onRerun = null, onStop = null }: any) {
                     {jobDur && <span>{jobDur}</span>}
                   </span>
                 </div>
+                {notSelected && (
+                  <p
+                    className="px-2.5 pb-1.5 text-[11px] text-gray-500"
+                    data-testid="ci-run-job-not-selected-reason"
+                  >
+                    not selected ·{' '}
+                    {selectionEntry ? selectionInstanceReason(selectionEntry) : NOT_SELECTED_REASON}
+                  </p>
+                )}
                 {jobSteps.length > 0 && (
                   <div className="border-t border-gray-800/70 px-2.5 py-1 space-y-0.5">
                     {jobSteps.map((s: any) => {
@@ -1102,6 +1142,10 @@ export default function CiRunsSection({ project, onProjectsChange, showToast }: 
 
   return (
     <div className="bg-gray-800 rounded-xl p-4 space-y-4" data-testid="ci-runs-section">
+      <DefaultBranchHealthBanner
+        projectId={projectId}
+        refreshKey={defaultBranchHealthRefreshKey(runs)}
+      />
       <div className="flex items-center justify-between gap-3">
         <div className="flex-1 min-w-0">
           <span className="text-sm text-gray-200 flex items-center gap-1.5">

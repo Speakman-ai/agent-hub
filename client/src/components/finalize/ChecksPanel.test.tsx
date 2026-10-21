@@ -410,3 +410,77 @@ describe('<ChecksPanel />', () => {
     expect(screen.getByTestId('finalize-checks-panel')).toHaveAttribute('data-variant', 'embedded');
   });
 });
+
+describe('<ChecksPanel /> test selection', () => {
+  const selection = {
+    mode: 'dynamic',
+    forcedFullReason: null,
+    inventorySha: 'abc',
+    instances: [
+      {
+        jobId: 'server',
+        matrixKey: 'shard=1',
+        selected: true,
+        sources: ['session'],
+        files: ['server/a.test.ts'],
+        reasons: [],
+      },
+      { jobId: 'client', matrixKey: '', selected: false, sources: [], files: [], reasons: [] },
+    ],
+  };
+
+  it('greys not_selected steps with the reason and opens the manifest', () => {
+    setHook({
+      run: fakeRun({ status: 'ready_to_push', test_selection: JSON.stringify(selection) }),
+      status: 'ready_to_push',
+      isTerminal: true,
+      steps: [
+        { index: 0, name: 'server / test', state: 'passed', jobId: 'server', matrixKey: 'shard=1' },
+        { index: 1, name: 'client / test', state: 'not_selected', jobId: 'client', matrixKey: '' },
+      ],
+    });
+    render(<ChecksPanel sessionId="s1" />);
+    const rows = screen.getAllByTestId('finalize-step-row');
+    expect(rows[0].className).not.toContain('opacity-60');
+    expect(rows[1].className).toContain('opacity-60');
+    expect(screen.getByTestId('finalize-step-not-selected-reason')).toHaveTextContent(
+      'No test in this instance was run by the session',
+    );
+
+    expect(screen.getByTestId('finalize-test-selection-manifest-toggle')).toHaveTextContent(
+      'selected 1 of 2 jobs',
+    );
+    expect(screen.queryByTestId('finalize-test-selection-manifest-list')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('finalize-test-selection-manifest-toggle'));
+    const manifestRows = screen.getAllByTestId('finalize-test-selection-manifest-row');
+    expect(manifestRows.map((r) => r.getAttribute('data-selected'))).toEqual(['true', 'false']);
+    expect(manifestRows[0]).toHaveTextContent('the session ran its tests');
+    expect(manifestRows[0]).toHaveTextContent('server/a.test.ts');
+  });
+
+  it('shows the forced-full reason without opening the manifest', () => {
+    setHook({
+      run: fakeRun({
+        status: 'ready_to_push',
+        test_selection: JSON.stringify({
+          ...selection,
+          forcedFullReason: 'changed path matches fullRunPaths: package.json',
+          instances: selection.instances.map((i) => ({ ...i, selected: true })),
+        }),
+      }),
+      status: 'ready_to_push',
+      isTerminal: true,
+      steps: [],
+    });
+    render(<ChecksPanel sessionId="s1" />);
+    expect(screen.getByTestId('finalize-test-selection-forced-full')).toHaveTextContent(
+      'Full run: changed path matches fullRunPaths: package.json',
+    );
+  });
+
+  it('renders no manifest for a full-mode run', () => {
+    setHook({ run: fakeRun({ test_selection: null }), steps: [] });
+    render(<ChecksPanel sessionId="s1" />);
+    expect(screen.queryByTestId('finalize-test-selection-manifest')).not.toBeInTheDocument();
+  });
+});

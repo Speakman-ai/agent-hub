@@ -16,21 +16,26 @@ export function summarizeChecks(steps: any) {
   let passed = 0;
   let failed = 0;
   let running = 0;
+  let notSelected = 0;
   let failedName = null;
   for (const s of list) {
     if (s?.state === 'passed') passed += 1;
+    else if (s?.state === 'not_selected') notSelected += 1;
     else if (s?.state === 'failed') {
       failed += 1;
       if (!failedName) failedName = s?.name || 'A step';
     } else if (s?.state === 'running' || s?.state === 'queued') running += 1;
   }
-  const allPassed = total > 0 && passed === total;
+  // Steps a dynamic run left out count as neither passed nor pending.
+  const considered = total - notSelected;
+  const allPassed = considered > 0 && passed === considered;
+  const skippedSuffix = notSelected > 0 ? ` · ${notSelected} not selected` : '';
   let headline;
   if (total === 0) headline = 'No checks yet';
   else if (failed > 0) headline = `${failedName} failed`;
-  else if (running > 0) headline = `${passed}/${total} passed · running`;
-  else headline = `${passed}/${total} passed`;
-  return { total, passed, failed, running, failedName, allPassed, headline };
+  else if (running > 0) headline = `${passed}/${considered} passed · running${skippedSuffix}`;
+  else headline = `${passed}/${considered} passed${skippedSuffix}`;
+  return { total, passed, failed, running, notSelected, failedName, allPassed, headline };
 }
 /**
  * Group reviewer threads by file path, preserving first-seen order, so the

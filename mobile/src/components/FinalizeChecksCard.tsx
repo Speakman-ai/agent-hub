@@ -11,11 +11,14 @@ import { View, Text, StyleSheet, ActivityIndicator, Platform } from 'react-nativ
 import AppIcon from './AppIcon';
 import { colors } from '../theme/colors';
 import { summarizeChecks } from '../utils/finalizeView';
+import { notSelectedStepReason, type TestSelectionWire } from '@shared/utils/testSelectionDisplay';
+import { TestSelectionManifestView } from './TestSelectionViews';
 const MONO = Platform.select({ ios: 'Menlo', default: 'monospace' });
 const STATE_ICON: Record<string, any> = {
   passed: { name: 'checkmark-circle', color: colors.emerald400 },
   failed: { name: 'close-circle', color: colors.red400 },
   skipped: { name: 'remove-circle-outline', color: colors.gray500 },
+  not_selected: { name: 'remove-circle-outline', color: colors.gray600 },
 };
 function StepIcon({ state }: any) {
   if (state === 'running' || state === 'queued') {
@@ -24,7 +27,15 @@ function StepIcon({ state }: any) {
   const meta = STATE_ICON[state] || { name: 'ellipse-outline', color: colors.gray500 };
   return <AppIcon name={meta.name} size={16} color={meta.color} />;
 }
-export default function FinalizeChecksCard({ steps, round }: any) {
+export default function FinalizeChecksCard({
+  steps,
+  round,
+  selection = null,
+}: {
+  steps: any;
+  round?: number;
+  selection?: TestSelectionWire | null;
+}) {
   const list = Array.isArray(steps) ? steps : [];
   if (list.length === 0) return null;
   const sum = summarizeChecks(list);
@@ -39,18 +50,36 @@ export default function FinalizeChecksCard({ steps, round }: any) {
         <Text style={[styles.headline, { color: tone }]}>{sum.headline}</Text>
       </View>
       <View style={styles.steps}>
-        {list.map((s: any, i: any) => (
-          <View key={`${s.name || 'step'}-${i}`} style={styles.stepRow}>
-            <StepIcon state={s.state} />
-            <Text style={styles.stepName} numberOfLines={1}>
-              {s.name || `Step ${i + 1}`}
-            </Text>
-            {typeof s.exitCode === 'number' && s.state === 'failed' ? (
-              <Text style={styles.exit}>exit {s.exitCode}</Text>
-            ) : null}
-          </View>
-        ))}
+        {list.map((s: any, i: any) => {
+          const reason = notSelectedStepReason(s, selection);
+          return (
+            <View
+              key={`${s.name || 'step'}-${i}`}
+              style={[styles.stepRow, reason ? styles.stepDim : null]}
+            >
+              <StepIcon state={s.state} />
+              <View style={styles.stepText}>
+                <Text style={styles.stepName} numberOfLines={1}>
+                  {s.name || `Step ${i + 1}`}
+                </Text>
+                {reason ? (
+                  <Text style={styles.stepReason} testID="finalize-step-not-selected-reason">
+                    not selected · {reason}
+                  </Text>
+                ) : null}
+              </View>
+              {typeof s.exitCode === 'number' && s.state === 'failed' ? (
+                <Text style={styles.exit}>exit {s.exitCode}</Text>
+              ) : null}
+            </View>
+          );
+        })}
       </View>
+      {selection ? (
+        <View style={styles.manifestWrap}>
+          <TestSelectionManifestView selection={selection} />
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -92,8 +121,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
   },
+  stepDim: { opacity: 0.6 },
+  stepText: { flex: 1 },
+  stepReason: { fontSize: 11, color: colors.gray500, marginTop: 2 },
+  manifestWrap: {
+    paddingHorizontal: 12,
+    paddingBottom: 10,
+    borderTopWidth: 1,
+    borderTopColor: colors.gray800,
+  },
   stepName: {
-    flex: 1,
     fontSize: 13,
     color: colors.gray300,
     fontFamily: MONO,

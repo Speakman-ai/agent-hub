@@ -3,6 +3,7 @@ import { Loader2 } from 'lucide-react';
 import { useFinalizeRun, isFinalizeInFlight } from '../../hooks/useFinalizeRun';
 import FinalizeStepLogModal from './FinalizeStepLogModal';
 import { FinalizeChecksStepList } from './blocks/FinalizeChecksStepList';
+import { readTestSelection } from '@shared/utils/testSelectionDisplay';
 
 /**
  * Live CI progress while a finalize run is in the tasks phase.
@@ -55,6 +56,7 @@ export default function FinalizeChecksLiveBlock({ sessionId, projectId }: any) {
             projectId={projectId}
             onOpenLog={setLogStep}
             testIdPrefix="finalize-checks-live"
+            selection={readTestSelection(run)}
           />
         </div>
       </div>

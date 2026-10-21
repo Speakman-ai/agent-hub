@@ -2,6 +2,7 @@ import { ChevronRight } from 'lucide-react';
 import {
   formatStepDuration,
   labelForStepState,
+  notSelectedStepReason,
   stepIconFor,
   stepToneFor,
 } from '../../../utils/finalizeStepDisplay';
@@ -12,6 +13,7 @@ export function FinalizeChecksStepList({
   projectId,
   onOpenLog,
   testIdPrefix = 'finalize-checks',
+  selection = null,
 }: any) {
   if (!steps?.length) {
     return <p className="text-xs text-slate-500">Starting checks…</p>;
@@ -30,18 +32,20 @@ export function FinalizeChecksStepList({
           projectId={projectId}
           onOpenLog={onOpenLog}
           testIdPrefix={testIdPrefix}
+          selection={selection}
         />
       ))}
     </ol>
   );
 }
 
-function StepRow({ step, runId, projectId, onOpenLog, testIdPrefix }: any) {
+function StepRow({ step, runId, projectId, onOpenLog, testIdPrefix, selection }: any) {
   const tone = stepToneFor(step.state);
   const Icon = stepIconFor(step.state);
   const duration = formatStepDuration(step);
   const canOpenLog = Boolean(projectId && runId);
   const isFailed = step.state === 'failed';
+  const notSelectedReason = notSelectedStepReason(step, selection);
   const jobLabel =
     step.jobId && step.matrixKey ? `${step.jobId} · ${step.matrixKey}` : (step.jobId ?? null);
 
@@ -57,7 +61,8 @@ function StepRow({ step, runId, projectId, onOpenLog, testIdPrefix }: any) {
       data-step-state={step.state}
       className={`flex items-center gap-2 px-3 py-1.5 text-xs ${
         canOpenLog ? 'cursor-pointer hover:bg-slate-800/40' : ''
-      } ${isFailed ? 'bg-red-950/20' : ''}`}
+      } ${isFailed ? 'bg-red-950/20' : ''} ${notSelectedReason ? 'opacity-60' : ''}`}
+      title={notSelectedReason ?? undefined}
       onClick={canOpenLog ? openLog : undefined}
       onKeyDown={
         canOpenLog
@@ -82,6 +87,14 @@ function StepRow({ step, runId, projectId, onOpenLog, testIdPrefix }: any) {
         </span>
       ) : null}
       <span className="text-slate-500">{labelForStepState(step.state)}</span>
+      {notSelectedReason ? (
+        <span
+          className="min-w-0 truncate text-slate-500"
+          data-testid={`${testIdPrefix}-step-not-selected-reason`}
+        >
+          {notSelectedReason}
+        </span>
+      ) : null}
       <span className="ml-auto flex items-center gap-3">
         {duration != null ? (
           <span className="font-mono text-slate-400" data-testid={`${testIdPrefix}-step-duration`}>

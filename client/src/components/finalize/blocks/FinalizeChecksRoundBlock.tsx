@@ -17,6 +17,7 @@ export default function FinalizeChecksRoundBlock({ message, projectId }: any) {
   const roundLabel = meta.round > 0 ? `Checks · round ${meta.round}` : 'Checks';
   const failed = meta.steps.find((s: any) => s.state === 'failed');
   const passed = meta.steps.filter((s: any) => s.state === 'passed').length;
+  const notSelected = meta.steps.filter((s: any) => s.state === 'not_selected').length;
 
   return (
     <>
@@ -34,7 +35,8 @@ export default function FinalizeChecksRoundBlock({ message, projectId }: any) {
                 ? `${failed.name} failed`
                 : meta.steps.length === 0
                   ? 'No steps'
-                  : `${passed}/${meta.steps.length} passed`}
+                  : `${passed}/${meta.steps.length - notSelected} passed` +
+                    (notSelected > 0 ? ` · ${notSelected} not selected` : '')}
             </span>
           </header>
 

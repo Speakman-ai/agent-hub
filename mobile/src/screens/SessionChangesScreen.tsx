@@ -23,6 +23,7 @@ import {
 } from '../utils/sessionChangesView';
 import { useFinalizeRunPoll } from '../hooks/useFinalizeRunPoll';
 import FinalizeChecksCard from '../components/FinalizeChecksCard';
+import { readTestSelection } from '@shared/utils/testSelectionDisplay';
 import ReviewerThreadsCard from '../components/ReviewerThreadsCard';
 // Same monospace handling as code blocks elsewhere in the app: Android's
 // generic 'monospace' family, Menlo on iOS (RN iOS has no generic alias).
@@ -179,7 +180,7 @@ export default function SessionChangesScreen({ navigation, route }: any) {
   // on the chat TopBar via FinalizeBar — not duplicated here.
   const finalizeCards = projectId ? (
     <>
-      <FinalizeChecksCard steps={finalize.steps} />
+      <FinalizeChecksCard steps={finalize.steps} selection={readTestSelection(finalize.run)} />
       <ReviewerThreadsCard
         projectId={projectId}
         runId={finalize.run?.id}

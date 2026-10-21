@@ -723,3 +723,92 @@ describe('pushConfirmMessage', () => {
     expect(msg!).not.toContain('open PR on GitHub');
   });
 });
+
+describe('FinalizeButton test selection badge', () => {
+  const manifest = (forcedFullReason: string | null) =>
+    JSON.stringify({
+      mode: 'dynamic',
+      forcedFullReason,
+      inventorySha: 'abc',
+      instances: [
+        {
+          jobId: 'lint',
+          matrixKey: '',
+          selected: true,
+          sources: ['always'],
+          files: [],
+          reasons: [],
+        },
+        {
+          jobId: 'server',
+          matrixKey: 'shard=1',
+          selected: !!forcedFullReason,
+          sources: [],
+          files: [],
+          reasons: [],
+        },
+        {
+          jobId: 'client',
+          matrixKey: '',
+          selected: !!forcedFullReason,
+          sources: [],
+          files: [],
+          reasons: [],
+        },
+      ],
+    });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (fetchMock as any).mockResolvedValue({ ok: true, json: async () => ({ connected: true }) });
+    (api.getSessionWorktreeChanges as any).mockResolvedValue({ committable: true });
+  });
+
+  it('reads Tested (selected: N of M jobs) on a passed selected run', () => {
+    setHookState({
+      run: { id: 'r1', status: 'ready_to_push', test_selection: manifest(null) },
+      status: 'ready_to_push',
+      isTerminal: true,
+    });
+    render(<FinalizeButton {...baseProps} />);
+    expect(screen.getByTestId('finalize-selected-run')).toHaveTextContent(
+      'Tested (selected: 1 of 3 jobs)',
+    );
+    expect(screen.queryByTestId('finalize-forced-full')).not.toBeInTheDocument();
+  });
+
+  it('shows the reason instead on a forced-full dynamic run', () => {
+    setHookState({
+      run: {
+        id: 'r1',
+        status: 'ready_to_push',
+        test_selection: manifest('test inventory missing'),
+      },
+      status: 'ready_to_push',
+      isTerminal: true,
+    });
+    render(<FinalizeButton {...baseProps} />);
+    expect(screen.queryByTestId('finalize-selected-run')).not.toBeInTheDocument();
+    expect(screen.getByTestId('finalize-forced-full')).toHaveTextContent(
+      'Full run: test inventory missing',
+    );
+  });
+
+  it('shows nothing for a failed run or a full-mode run', () => {
+    setHookState({
+      run: { id: 'r1', status: 'failed', test_selection: manifest(null) },
+      status: 'failed',
+      isTerminal: true,
+    });
+    const { unmount } = render(<FinalizeButton {...baseProps} />);
+    expect(screen.queryByTestId('finalize-selected-run')).not.toBeInTheDocument();
+    unmount();
+    setHookState({
+      run: { id: 'r1', status: 'ready_to_push', test_selection: null },
+      status: 'ready_to_push',
+      isTerminal: true,
+    });
+    render(<FinalizeButton {...baseProps} />);
+    expect(screen.queryByTestId('finalize-selected-run')).not.toBeInTheDocument();
+  });
+});

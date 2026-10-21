@@ -787,6 +787,8 @@ export const api = {
     fetchJSON(`/projects/${projectId}/ci-runs/stats?range=${encodeURIComponent(range)}`),
   getCiRunDetail: (projectId: any, runId: any) =>
     fetchJSON(`/projects/${projectId}/ci-runs/${runId}`),
+  getDefaultBranchHealth: (projectId: any) =>
+    fetchJSON(`/projects/${encodeURIComponent(projectId)}/finalize/default-branch-health`),
   getProjectStats: (projectId: any, { granularity = 'day', buckets }: any = {}) => {
     const qs = new URLSearchParams({ granularity });
     if (buckets != null) qs.set('buckets', String(buckets));

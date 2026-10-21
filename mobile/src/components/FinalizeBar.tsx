@@ -37,6 +37,11 @@ import { isResolvePrSessionTitle } from '@shared/utils/sessionTitlePr';
 import DiscardChangesButton from './DiscardChangesButton';
 import { useNavigation } from '@react-navigation/native';
 import { readInheritedFailures, inheritedFailuresLabel } from '@shared/utils/inheritedFailures';
+import {
+  forcedFullLabel,
+  readTestSelection,
+  selectedRunLabel,
+} from '@shared/utils/testSelectionDisplay';
 const PURPLE = '#7C3AED';
 
 function resolveSessionModeFromRow(session: any) {
@@ -144,6 +149,9 @@ export default function FinalizeBar({
   const runPassed = run?.status === 'ready_to_push' || run?.status === 'pushed';
   const inheritedLabel = !btn.inFlight && runPassed ? inheritedFailuresLabel(run) : null;
   const inheritedCardId = inheritedLabel ? readInheritedFailures(run)?.cardId : null;
+  const selectedLabel = !btn.inFlight && runPassed ? selectedRunLabel(run) : null;
+  const forcedFull =
+    !btn.inFlight && runPassed && !selectedLabel ? forcedFullLabel(readTestSelection(run)) : null;
   const pushEnabled = canPush({ status, hasChanges }) && !!run?.id;
   const pushLabel = 'Push changes';
   const selectedValue = sessionControlValueForProject(project, {
@@ -425,6 +433,21 @@ export default function FinalizeBar({
         </Text>
       ) : null}
 
+      {showFinalize && selectedLabel ? (
+        <Text style={[styles.statusLine, styles.selectedLine]} testID="finalize-selected-run">
+          {selectedLabel}
+        </Text>
+      ) : null}
+      {showFinalize && forcedFull ? (
+        <Text
+          style={[styles.statusLine, styles.forcedFullLine]}
+          numberOfLines={1}
+          testID="finalize-forced-full"
+        >
+          {forcedFull}
+        </Text>
+      ) : null}
+
       <SessionSummarySheet
         visible={showSummary}
         onClose={() => setShowSummary(false)}
@@ -610,6 +633,8 @@ const styles = StyleSheet.create({
   btnDisabled: {
     opacity: 0.45,
   },
+  selectedLine: { color: colors.sky300 },
+  forcedFullLine: { color: colors.gray400 },
   statusLine: {
     marginTop: 6,
     fontSize: 11,
