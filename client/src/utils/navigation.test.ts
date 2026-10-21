@@ -25,7 +25,7 @@ describe('navigation defaults', () => {
     expect(getInitialView('')).toBe('hub');
     expect(getInitialView('   ')).toBe('hub');
     expect(getInitialView(null)).toBe('hub');
-    expect(getInitialNavigation()).toEqual({ view: 'hub', hubPane: 'today' });
+    expect(getInitialNavigation()).toEqual({ view: 'hub', hubPane: 'agent' });
   });
 
   it('honors an explicit requested view', () => {
@@ -143,9 +143,15 @@ describe('navigation defaults', () => {
   });
 
   it('round-trips Hub panes', () => {
-    expect(buildNavigationHash({ view: 'hub', hubPane: 'today' })).toBe('');
+    // The Server Agent is Hub's landing pane; the dashboard keeps a link.
+    expect(buildNavigationHash({ view: 'hub', hubPane: 'agent' })).toBe('');
+    expect(buildNavigationHash({ view: 'hub', hubPane: 'today' })).toBe('#/hub/today');
+    expect(buildNavigationHash({ view: 'hub', hubPane: 'agent-settings' })).toBe(
+      '#/hub/agent-settings',
+    );
     expect(buildNavigationHash({ view: 'hub', hubPane: 'org' })).toBe('#/hub/org');
-    expect(parseNavigationHash('#/hub')).toMatchObject({ view: 'hub', hubPane: 'today' });
+    expect(parseNavigationHash('#/hub')).toMatchObject({ view: 'hub', hubPane: 'agent' });
+    expect(parseNavigationHash('#/hub/today')).toMatchObject({ view: 'hub', hubPane: 'today' });
     expect(parseNavigationHash('#/hub/mail')).toMatchObject({ view: 'hub', hubPane: 'mail' });
     // The removed Daily Summary pane opens the Summaries channel in Chat.
     expect(parseNavigationHash('#/hub/summary')).toMatchObject({
@@ -156,7 +162,7 @@ describe('navigation defaults', () => {
     expect(buildNavigationHash(parseNavigationHash('#/hub/summary')!)).toBe('#/hub/chat');
     expect(parseNavigationHash('#/hub/troubleshoot')).toMatchObject({
       view: 'hub',
-      hubPane: 'today',
+      hubPane: 'agent',
     });
   });
 
@@ -167,7 +173,7 @@ describe('navigation defaults', () => {
       prNumber: null,
       designId: null,
       ticketId: null,
-      hubPane: 'today',
+      hubPane: 'agent',
     });
     expect(parseNavigationHash('#/drive')).toMatchObject({ view: 'hub', projectId: null });
     expect(parseNavigationHash('#/autopilot/agent-hub')).toMatchObject({
@@ -180,7 +186,7 @@ describe('navigation defaults', () => {
     expect(parseNavigationHash('#/threads/agent-hub?thread=t1')).toMatchObject({
       view: 'hub',
       projectId: null,
-      hubPane: 'today',
+      hubPane: 'agent',
     });
   });
 

@@ -15,6 +15,7 @@ import CalendarScreen from './CalendarScreen';
 import GmailScreen from './GmailScreen';
 import SupportOverviewScreen from './SupportOverviewScreen';
 import HubChatScreen from './HubChatScreen';
+import { ServerAgentScreen, ServerAgentSettingsScreen } from './ServerAgentScreen';
 import GoogleChatPane from './GoogleChatScreen';
 import { useAccountScoped } from '../hooks/useHubChat';
 import {
@@ -25,8 +26,10 @@ import {
 } from '@shared/utils/hub';
 
 function parseHubTab(value: unknown): HubWorkspacePane {
-  // The assistant and the old Daily Summary tab both open inside Chat.
-  if (value === 'assistant' || isSummariesPaneAlias(value)) return 'chat';
+  // Links to the old assistant tab open the Server Agent; the old Daily
+  // Summary tab opens Chat.
+  if (value === 'assistant') return 'agent';
+  if (isSummariesPaneAlias(value)) return 'chat';
   return parseHubPane(value);
 }
 
@@ -36,7 +39,6 @@ function HubBody({
   setTab,
   chatChannelId,
   chatOpenRequest,
-  initialAssistant,
   onChatChannelChange,
 }: {
   tab: HubWorkspacePane;
@@ -44,10 +46,13 @@ function HubBody({
   setTab: (tab: HubWorkspacePane) => void;
   chatChannelId: string | null;
   chatOpenRequest: number;
-  initialAssistant: boolean;
   onChatChannelChange: (channelId: string | null) => void;
 }) {
   switch (tab) {
+    case 'agent':
+      return <ServerAgentScreen onOpenSettings={() => setTab('agent-settings')} />;
+    case 'agent-settings':
+      return <ServerAgentSettingsScreen onBack={() => setTab('agent')} />;
     case 'today':
       return (
         <DashboardHomeScreen
@@ -87,7 +92,6 @@ function HubBody({
         <HubChatScreen
           initialChannelId={chatChannelId}
           openRequest={chatOpenRequest}
-          initialAssistant={initialAssistant}
           onChannelChange={onChatChannelChange}
           navigation={navigation}
         />
@@ -104,8 +108,8 @@ function HubBody({
 }
 
 /**
- * Hub — mobile peer of the web Hub page. The drawer picks the pane. The
- * assistant opens inside Chat.
+ * Hub — mobile peer of the web Hub page. The drawer picks the pane; the
+ * Server Agent is the landing pane.
  */
 export default function HubScreen({ navigation, route }: any) {
   const sidebar = useContext(SidebarContext);
@@ -129,7 +133,7 @@ export default function HubScreen({ navigation, route }: any) {
   const [chatOpenRequest, setChatOpenRequest] = useState(0);
 
   // Mark the Hub as focused so the sessions loader won't retarget the active
-  // session to a project row while the assistant tab is open.
+  // session to a project row while the Server Agent is open.
   useFocusEffect(
     useCallback(() => {
       setHubFocused(true);
@@ -243,9 +247,6 @@ export default function HubScreen({ navigation, route }: any) {
           setTab={selectPane}
           chatChannelId={chatChannelId}
           chatOpenRequest={chatOpenRequest}
-          initialAssistant={
-            route?.params?.tab === 'assistant' || route?.params?.pane === 'assistant'
-          }
           onChatChannelChange={onChatChannelChange}
         />
       </View>

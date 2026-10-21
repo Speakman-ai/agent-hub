@@ -51,8 +51,10 @@ describe('augmentChatTurnForHubMode (hub-mode spawn wiring)', () => {
           status: 'loaded',
         }),
       );
-      expect(out.preamble).toContain('## Hub');
-      expect(out.preamble).toContain('Hub assistant');
+      expect(out.preamble).toContain('## Server Agent');
+      expect(out.preamble).toContain("this user's Server Agent");
+      // Acts with the owner's permissions, not the break-glass key.
+      expect(out.preamble).toContain('their own token');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -92,7 +94,44 @@ describe('augmentChatTurnForHubMode (hub-mode spawn wiring)', () => {
       expect(out.skillInjections.some((s) => /^## Loaded Skill: agent-hub$/m.test(s))).toBe(false);
       expect(out.skillInjections).toHaveLength(HUB_SKILL_IDS.length - 1);
       expect(invocations).toHaveLength(HUB_SKILL_IDS.length - 1);
-      expect(out.preamble).toContain('## Hub');
+      expect(out.preamble).toContain('## Server Agent');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('loads every Agent Hub skill, including the wiki', () => {
+    for (const id of [
+      'agent-hub',
+      'agent-hub-kanban',
+      'agent-hub-sessions',
+      'agent-hub-heartbeats-crons',
+      'agent-hub-wiki',
+    ]) {
+      expect(HUB_SKILL_IDS).toContain(id);
+    }
+  });
+
+  it("uses the owner's Server Agent name and instructions", () => {
+    const { tmp, skillsRoot, broadcast, stmts } = setup();
+    try {
+      const out = augmentChatTurnForHubMode({
+        session: { session_mode: 'hub' },
+        paths: { skillsDir: skillsRoot },
+        sessionId: 'hub-sess-4',
+        stmts,
+        broadcast,
+        loadSkills: false,
+        serverAgent: { name: 'Jarvis', instructions: 'Answer in one sentence.' },
+      });
+      expect(out.preamble).toContain('## Jarvis');
+      expect(out.preamble).toContain('You are **Jarvis**');
+      expect(out.preamble).toContain('### Instructions from the user');
+      expect(out.preamble).toContain('Answer in one sentence.');
+      // User instructions come after the built-in limits.
+      expect(out.preamble.indexOf('Answer in one sentence.')).toBeGreaterThan(
+        out.preamble.indexOf('### Hard limits'),
+      );
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

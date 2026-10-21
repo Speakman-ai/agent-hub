@@ -114,13 +114,11 @@ const PROJECT_FIXTURE = [
 const PROJECT_SESSION = [{ id: 'proj-sess-1', name: 'P1', engine: 'claude-code' }];
 
 import App from './App';
-import { selectHubAssistantDm } from './utils/hubAssistantChat';
 import { resetHubChatSessionForTests } from './utils/hubChatSession';
 
-/** The Hub assistant composer lives in Chat, on the pinned Agent Hub DM. */
+/** The Hub assistant composer lives on the Server Agent page. */
 function openHubAssistantChat() {
-  selectHubAssistantDm();
-  window.location.hash = '#/hub/chat';
+  window.location.hash = '#/hub/agent';
 }
 
 function mockFetch() {
@@ -281,8 +279,7 @@ describe('App — Hub assistant composer binds only to the live Hub session', ()
   it('keeps the composer usable on a LEGACY Hub entry point (currentView=dashboard)', async () => {
     // The Hub is also reached via legacy views (home/dashboard/todos/calendar/
     // gmail). The late-restore guard must fire on those too, or a project-session
-    // restore there locks the assistant once the user opens Chat.
-    selectHubAssistantDm();
+    // restore there locks the assistant once the user opens the Server Agent.
     window.location.hash = '#/dashboard';
     render(<App />);
 
@@ -307,10 +304,10 @@ describe('App — Hub assistant composer binds only to the live Hub session', ()
       ctl.resolveSessionsByAgent['agent-1'](PROJECT_SESSION);
     });
 
-    // The project restore must NOT stomp the Hub session: opening Chat afterwards
-    // finds the assistant composer bound and usable.
+    // The project restore must NOT stomp the Hub session: opening the Server
+    // Agent afterwards finds the composer bound and usable.
     await act(async () => {
-      window.location.hash = '#/hub/chat';
+      window.location.hash = '#/hub/agent';
       window.dispatchEvent(new HashChangeEvent('hashchange'));
     });
     const textarea = await screen.findByRole('textbox');

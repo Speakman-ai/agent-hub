@@ -21,7 +21,6 @@ import {
   AlertTriangle,
   BarChart3,
   BellRing,
-  Briefcase,
   CalendarDays,
   ListTodo,
   Mail,
@@ -140,7 +139,7 @@ export default function Sidebar({
   /** Open an organization agent's chat. Organization agents are not project agents. */
   onOpenOrganizationChat,
   currentView,
-  /** Active Hub pane, so Dashboard / Chat / Todos can show which one is open. */
+  /** Active Hub pane, so Server Agent / Chat / Todos can show which one is open. */
   hubPane = null,
   /** Organization open on the Organizations page, so its settings row can highlight. */
   activeOrganizationId = null,
@@ -245,8 +244,12 @@ export default function Sidebar({
   /** Opens the Hub's Chat pane. The link renders only when provided. */
   onOpenChat,
   chatActive = false,
-  /** Agent Hub chat unread (DMs, mentions, the assistant). */
+  /** Agent Hub chat unread (DMs, mentions). */
   chatUnread = 0,
+  /** Display name of the user's Server Agent. */
+  serverAgentName = 'Server Agent',
+  /** Server Agent replies that landed while its page was off screen. */
+  serverAgentUnread = 0,
   /** Shows the Google Chat link; true once the user can read Google Chat. */
   googleChatAvailable = false,
   googleChatUnread = 0,
@@ -656,10 +659,10 @@ export default function Sidebar({
   const homeLinks: Array<{
     pane: HubWorkspacePane;
     label: string;
-    icon: typeof Briefcase;
+    icon: typeof Bot;
     testId: string;
   }> = [
-    { pane: 'today', label: 'Dashboard', icon: Briefcase, testId: 'sidebar-home-dashboard' },
+    { pane: 'agent', label: serverAgentName, icon: Bot, testId: 'sidebar-home-server-agent' },
     ...(onOpenChat
       ? [{ pane: 'chat' as const, label: 'Chat', icon: MessagesSquare, testId: 'sidebar-chat' }]
       : []),
@@ -803,10 +806,10 @@ export default function Sidebar({
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => openHubPane('today')}
+            onClick={() => openHubPane('agent')}
             data-testid="sidebar-global-hub"
             aria-label="Hub"
-            title="Dashboard"
+            title={serverAgentName}
             className="shrink-0 rounded-lg p-1 hover:bg-gray-800 transition-colors"
           >
             <BrandLogo size="md" />
@@ -873,13 +876,20 @@ export default function Sidebar({
           </div>
           {homeLinks.map((item) => {
             const Icon = item.icon;
-            const active = item.pane === 'chat' ? chatActive : activeHubPane === item.pane;
+            const active =
+              item.pane === 'chat'
+                ? chatActive
+                : item.pane === 'agent'
+                  ? activeHubPane === 'agent' || activeHubPane === 'agent-settings'
+                  : activeHubPane === item.pane;
             const unread =
               item.pane === 'chat'
                 ? chatUnread
                 : item.pane === 'google-chat'
                   ? googleChatUnread
-                  : 0;
+                  : item.pane === 'agent'
+                    ? serverAgentUnread
+                    : 0;
             return (
               <button
                 key={item.pane}

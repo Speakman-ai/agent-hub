@@ -857,6 +857,13 @@ export interface BuildSpawnEnvOptions {
    * safe for a specific CLI are injected exclusively through this gate.
    */
   engine?: string | null;
+  /**
+   * Give the spawn the owner's own per-session `ahub_*` token as
+   * `AGENT_HUB_API_KEY`, never the global break-glass key. API calls then
+   * carry the owner's role and project visibility. With no owner or a failed
+   * mint the key is removed, so the spawn fails closed.
+   */
+  userScopedApiKey?: boolean;
 }
 
 /** Treat null / undefined / empty / whitespace-only as "not provided". */
@@ -1058,8 +1065,25 @@ export function buildSpawnEnv(
 
   const sessionId = presentString(opts.sessionId);
   const spawnCredsUserId = presentString(opts.spawnCredsUserId) ?? ownerUserId;
+  const userScopedApiKey = !organizationPolicy && opts.userScopedApiKey === true;
   if (!organizationPolicy && sessionId && spawnCredsUserId) {
-    ensureSpawnCredsForSession({ sessionId, ownerUserId: spawnCredsUserId, cfg });
+    ensureSpawnCredsForSession({
+      sessionId,
+      ownerUserId: spawnCredsUserId,
+      cfg,
+      force: userScopedApiKey,
+    });
+  }
+  if (userScopedApiKey) {
+    delete env.AGENT_HUB_API_KEY;
+    if (sessionId && spawnCredsUserId) {
+      try {
+        const tok = readSpawnCredsFile(sessionId, cfg.dataDir);
+        if (tok) env.AGENT_HUB_API_KEY = tok;
+      } catch {
+        /* fail closed: no key rather than the break-glass one */
+      }
+    }
   }
 
   // JWT-only deployments mint a per-session `ahub_*` token on disk but leave
@@ -1068,7 +1092,7 @@ export function buildSpawnEnv(
   // auth headers) hits 401 — kanban card creation silently fails. Inject the
   // freshly minted token here; `ah-api.sh` still re-reads the file on every
   // call for mid-flight `/api/auth/setup` recovery.
-  if (!organizationPolicy && !cfg.apiKey && sessionId) {
+  if (!organizationPolicy && !userScopedApiKey && !cfg.apiKey && sessionId) {
     try {
       const spawnTok = readSpawnCredsFile(sessionId, cfg.dataDir);
       if (spawnTok) {

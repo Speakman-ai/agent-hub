@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
-import { createApiKey } from './api-keys-store.js';
+import { createApiKey, verifyApiKey } from './api-keys-store.js';
 import { writeSpawnCredsFile } from './spawn-creds-file.js';
 import { initOrgsDb, setOrgsDbPathForTests } from './orgs.js';
 import { createUser } from './users-store.js';
@@ -65,5 +65,38 @@ describe('buildSpawnEnv — spawn-creds token in AGENT_HUB_API_KEY', () => {
       userId,
     });
     expect(env.AGENT_HUB_API_KEY).toBe('ahub_global_break_glass');
+  });
+
+  describe('userScopedApiKey (Server Agent)', () => {
+    const globalCfg = () => ({ ...cfg, apiKey: 'global_break_glass_key' }) as AppConfig;
+
+    it("replaces the break-glass key with the owner's own token", () => {
+      const env = buildSpawnEnv(globalCfg(), {
+        sessionId: 'sess-server-agent',
+        spawnCredsUserId: userId,
+        userId,
+        userScopedApiKey: true,
+      });
+      expect(env.AGENT_HUB_API_KEY).toMatch(/^ahub_/);
+      expect(env.AGENT_HUB_API_KEY).not.toBe('global_break_glass_key');
+      // The token authenticates as the owner, so the API applies their role
+      // and project visibility.
+      expect(verifyApiKey(env.AGENT_HUB_API_KEY!)?.userId).toBe(userId);
+    });
+
+    it('fails closed with no key when there is no owner', () => {
+      const prev = process.env.AGENT_HUB_API_KEY;
+      process.env.AGENT_HUB_API_KEY = 'inherited_break_glass';
+      try {
+        const env = buildSpawnEnv(globalCfg(), {
+          sessionId: 'sess-server-agent-orphan',
+          userScopedApiKey: true,
+        });
+        expect(env.AGENT_HUB_API_KEY).toBeUndefined();
+      } finally {
+        if (prev === undefined) delete process.env.AGENT_HUB_API_KEY;
+        else process.env.AGENT_HUB_API_KEY = prev;
+      }
+    });
   });
 });

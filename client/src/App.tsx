@@ -116,6 +116,8 @@ import CalendarAgendaPage from './components/CalendarAgendaPage';
 import GmailPage from './components/GmailPage';
 import GoogleChatPage from './components/GoogleChatPage';
 import HubChatPage from './components/HubChatPage';
+import { ServerAgentPage, ServerAgentSettingsPage } from './components/ServerAgentPage';
+import { serverAgentDisplayName, useServerAgentSettings } from './utils/serverAgentSettings';
 import { HubChatRefOpenContext, type HubChatRefOpenHandler } from './components/HubChatRefs';
 import { useGoogleChatPush, useGoogleChatPushBootstrap } from './utils/googleChatPush';
 import TodosPage from './components/TodosPage';
@@ -152,7 +154,6 @@ import {
   isHubAssistantTranscriptVisible,
   noteHubAssistantTurnDone,
   shouldReplaceMissingActiveSession,
-  useHubAssistantSelected,
   useHubAssistantUnread,
 } from './utils/hubAssistantChat';
 import {
@@ -4015,19 +4016,13 @@ export default function App({ initialView }: any = {}) {
       ]);
     },
   });
-  // The pinned Agent Hub DM renders the Hub assistant session while that
-  // conversation is the visible Chat view.
-  const hubAssistantSelected = useHubAssistantSelected();
-  const hubAssistantInChat =
-    hubAssistantSelected &&
-    currentView === 'hub' &&
-    hubPane === 'chat' &&
-    hubMobileTab !== 'assistant';
-  // Anything that swaps the shared active session while the Agent Hub DM is
-  // open (a late project restore, a list refresh) hands the DM back to the Hub
-  // session instead of rendering the project transcript there.
+  // The Server Agent page renders the user's Hub session.
+  const serverAgentOpen = currentView === 'hub' && hubPane === 'agent';
+  // Anything that swaps the shared active session while the Server Agent is
+  // open (a late project restore, a list refresh) hands the page back to the
+  // Hub session instead of rendering the project transcript there.
   const hubSessionToRestore = hubAssistantSessionToRestore({
-    inChat: hubAssistantInChat,
+    inChat: serverAgentOpen,
     activeSessionId,
     hubSessionId,
   });
@@ -4038,13 +4033,14 @@ export default function App({ initialView }: any = {}) {
     setActiveSessionId(hubSessionToRestore);
   }, [hubSessionToRestore, hubAgent, setActiveAgentId]);
   const hubAssistantUnread = useHubAssistantUnread();
-  const agentHubChatBadge = hubChatUnread.badge + hubAssistantUnread;
-  // Moving the transcript between the column and the DM remounts its scroll
-  // container at the top; snap it back to the latest turn.
+  const serverAgentSettings = useServerAgentSettings(connected);
+  const serverAgentName = serverAgentDisplayName(serverAgentSettings);
+  // Opening the Server Agent mounts its scroll container at the top; snap it
+  // back to the latest turn.
   useEffect(() => {
     const raf = requestAnimationFrame(() => scrollToBottom());
     return () => cancelAnimationFrame(raf);
-  }, [hubAssistantInChat, scrollToBottom]);
+  }, [serverAgentOpen, scrollToBottom]);
   // A reply counted while off screen is seen once the transcript shows again.
   useEffect(() => {
     if (getHubAssistantUnread() > 0 && isHubAssistantTranscriptVisible()) {
@@ -6674,10 +6670,10 @@ export default function App({ initialView }: any = {}) {
               !thinking &&
               !streamingMsgId &&
               !streamingContent && (
-                <p className="text-sm text-gray-500 px-1">
-                  Ask Hub what to focus on next, to kick off an agent, or to configure Agent Hub. It
-                  reads your boards, todos, support, and calendar through the API — not by scraping
-                  pages.
+                <p className="text-sm text-gray-500 px-1" data-testid="server-agent-empty">
+                  Ask {serverAgentName} anything about Agent Hub: what to focus on next, to start an
+                  agent, to manage cards, wiki, crons, or settings. It works through the API as you,
+                  so it sees only the projects you can access and can do what your role allows.
                 </p>
               )}
             {hubAssistantTranscriptLive && (
@@ -6689,7 +6685,7 @@ export default function App({ initialView }: any = {}) {
                       message={msg}
                       events={eventsByMessage[msg.id]}
                       agentColor={msg.agent_color || chatAccentColor}
-                      agentName={activeAgent?.name || 'Hub'}
+                      agentName={serverAgentName}
                       onEventsLoaded={handleEventsLoaded}
                       onAskSubmit={handleAskSubmit}
                       onCredentialSubmit={handleCredentialSubmit}
@@ -6747,7 +6743,7 @@ export default function App({ initialView }: any = {}) {
             agentColor={chatAccentColor}
             skills={skills}
             consultMode
-            consultHint="Hub assistant — server & account help, no code ship or Finalize"
+            consultHint={`${serverAgentName}, with your permissions. No code ship or Finalize`}
             readOnly={false}
             draftKey={activeSessionId || 'hub'}
             onFileError={(msg: any) => showToast(msg, 'error', 6000)}
@@ -6845,7 +6841,9 @@ export default function App({ initialView }: any = {}) {
               setSidebarOpen(false);
             }}
             chatActive={currentView === 'hub' && hubPane === 'chat'}
-            chatUnread={agentHubChatBadge}
+            chatUnread={hubChatUnread.badge}
+            serverAgentName={serverAgentName}
+            serverAgentUnread={hubAssistantUnread}
             googleChatAvailable={chatEnabled}
             googleChatUnread={googleChatBadge}
             onCollapseSidebar={() => setSidebarCollapsed(true)}
@@ -7453,6 +7451,26 @@ export default function App({ initialView }: any = {}) {
                     setHubPane(pane);
                     setHubMobileTab(pane);
                   }}
+                  agent={
+                    <ServerAgentPage
+                      onOpenSettings={() => {
+                        setCurrentView('hub');
+                        setHubPane('agent-settings');
+                        setHubMobileTab('agent-settings');
+                      }}
+                    >
+                      {hubAssistantChat}
+                    </ServerAgentPage>
+                  }
+                  agentSettings={
+                    <ServerAgentSettingsPage
+                      onBack={() => {
+                        setCurrentView('hub');
+                        setHubPane('agent');
+                        setHubMobileTab('agent');
+                      }}
+                    />
+                  }
                   today={
                     <PersonalDashboard
                       onNavigate={(view: any) => {
@@ -7523,8 +7541,6 @@ export default function App({ initialView }: any = {}) {
                     <HubChatPage
                       onOpenRef={handleOpenChatRef}
                       onSessionStarted={handleOpenCreatedSession}
-                      assistantEnabled
-                      assistant={hubAssistantChat}
                     />
                   }
                   googleChat={

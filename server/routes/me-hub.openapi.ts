@@ -3,6 +3,7 @@
  */
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
 import { SessionComponent } from './sessions.openapi.js';
+import { SERVER_AGENT_LIMITS } from '../../shared/utils/hub.js';
 
 const ErrorResponse = registerComponent(
   'MeHubErrorResponse',
@@ -139,6 +140,57 @@ registerPath({
       description: 'New empty Hub session.',
       content: jsonContent(HubSessionResponse),
     },
+    401: errorResponse('Authentication required.'),
+  },
+});
+
+const ServerAgentSettings = registerComponent(
+  'MeServerAgentSettings',
+  z
+    .object({
+      name: z.string().openapi({ description: 'Custom name, or empty when using the default.' }),
+      instructions: z
+        .string()
+        .openapi({ description: 'Extra instructions appended to the Server Agent prompt.' }),
+      defaultName: z.string(),
+      effectiveName: z.string().openapi({ description: 'The name the agent uses right now.' }),
+    })
+    .openapi({ description: "The caller's Server Agent name and instructions." }),
+);
+
+registerPath({
+  method: 'get',
+  path: '/api/me/server-agent',
+  tags: ['Hub'],
+  summary: "Read the caller's Server Agent settings",
+  description: 'Per-user name and instructions for the Server Agent (the Hub assistant).',
+  responses: {
+    200: { description: 'Server Agent settings.', content: jsonContent(ServerAgentSettings) },
+    401: errorResponse('Authentication required.'),
+  },
+});
+
+registerPath({
+  method: 'put',
+  path: '/api/me/server-agent',
+  tags: ['Hub'],
+  summary: "Update the caller's Server Agent settings",
+  description:
+    'Omitted fields keep their value; an empty string resets that field to the default. ' +
+    'Takes effect on the next turn of the Server Agent session.',
+  request: {
+    body: {
+      content: jsonContent(
+        z.object({
+          name: z.string().max(SERVER_AGENT_LIMITS.name).optional(),
+          instructions: z.string().max(SERVER_AGENT_LIMITS.instructions).optional(),
+        }),
+      ),
+    },
+  },
+  responses: {
+    200: { description: 'Saved settings.', content: jsonContent(ServerAgentSettings) },
+    400: errorResponse('Invalid name or instructions.'),
     401: errorResponse('Authentication required.'),
   },
 });

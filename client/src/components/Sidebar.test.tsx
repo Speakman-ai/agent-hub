@@ -146,7 +146,8 @@ describe('Sidebar — Hub nav (global home)', () => {
     ).not.toBeInTheDocument();
     expect(screen.getByTestId('sidebar-home-heading')).toHaveTextContent('Home');
     expect(screen.queryByTestId('sidebar-org-switch')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Dashboard' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Server Agent' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Dashboard' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Todos' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Calendar' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Mail' })).toBeInTheDocument();
@@ -163,8 +164,14 @@ describe('Sidebar — Hub nav (global home)', () => {
   it('reaches every Hub pane from the sidebar', () => {
     // Keyed by pane so adding a pane without a sidebar destination fails typecheck.
     // Support has no sidebar shortcut; per-project Support links cover it.
-    const destinations: Record<Exclude<HubWorkspacePane, 'support'>, string> = {
-      today: 'sidebar-home-dashboard',
+    // Server Agent settings opens from the Server Agent page, and the personal
+    // dashboard is only reachable by link.
+    const offSidebar = new Set<HubWorkspacePane>(['support', 'agent-settings', 'today']);
+    const destinations: Record<
+      Exclude<HubWorkspacePane, 'support' | 'agent-settings' | 'today'>,
+      string
+    > = {
+      agent: 'sidebar-home-server-agent',
       chat: 'sidebar-chat',
       'google-chat': 'sidebar-google-chat',
       todos: 'sidebar-home-todos',
@@ -177,8 +184,8 @@ describe('Sidebar — Hub nav (global home)', () => {
     const onOpenChat = vi.fn();
     render(<Sidebar {...buildProps({ onNavigate, onOpenChat, googleChatAvailable: true })} />);
     for (const pane of HUB_WORKSPACE_PANES) {
-      if (pane === 'support') continue;
-      fireEvent.click(screen.getByTestId(destinations[pane]));
+      if (offSidebar.has(pane)) continue;
+      fireEvent.click(screen.getByTestId(destinations[pane as keyof typeof destinations]));
       if (pane === 'chat') expect(onOpenChat).toHaveBeenCalled();
       else expect(onNavigate).toHaveBeenLastCalledWith('hub', pane);
     }
@@ -190,13 +197,30 @@ describe('Sidebar — Hub nav (global home)', () => {
     expect(screen.queryByTestId('sidebar-support-overview')).toBeNull();
   });
 
-  it('navigates to the dashboard', () => {
+  it('opens the Server Agent from the logo and its Home entry', () => {
     const onNavigate = vi.fn();
     render(<Sidebar {...buildProps({ onNavigate })} />);
     fireEvent.click(screen.getByTestId('sidebar-global-hub'));
-    expect(onNavigate).toHaveBeenCalledWith('hub', 'today');
-    fireEvent.click(screen.getByRole('button', { name: 'Dashboard' }));
-    expect(onNavigate).toHaveBeenLastCalledWith('hub', 'today');
+    expect(onNavigate).toHaveBeenCalledWith('hub', 'agent');
+    fireEvent.click(screen.getByRole('button', { name: 'Server Agent' }));
+    expect(onNavigate).toHaveBeenLastCalledWith('hub', 'agent');
+  });
+
+  it('shows the custom Server Agent name, its unread badge, and stays active on its settings', () => {
+    render(
+      <Sidebar
+        {...buildProps({
+          serverAgentName: 'Jarvis',
+          serverAgentUnread: 3,
+          currentView: 'hub',
+          hubPane: 'agent-settings',
+        })}
+      />,
+    );
+    const link = screen.getByTestId('sidebar-home-server-agent');
+    expect(link).toHaveTextContent('Jarvis');
+    expect(screen.getByTestId('sidebar-home-server-agent-badge')).toHaveTextContent('3');
+    expect(link.className).toContain('bg-gray-800');
   });
 });
 
@@ -1906,7 +1930,7 @@ describe('Sidebar Chat link', () => {
     const link = screen.getByTestId('sidebar-chat');
     expect(link).toHaveTextContent(/^Chat/);
     expect(link).not.toHaveTextContent('Google');
-    expect(link.previousElementSibling).toHaveTextContent('Dashboard');
+    expect(link.previousElementSibling).toHaveTextContent('Server Agent');
     expect(screen.getByTestId('sidebar-chat-badge')).toHaveTextContent('99+');
     fireEvent.click(link);
     expect(onOpenChat).toHaveBeenCalledTimes(1);
@@ -2018,7 +2042,7 @@ describe('Sidebar organization sections', () => {
       screen.getByTestId('sidebar-home-heading').compareDocumentPosition(select) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
-    expect(screen.getByTestId('sidebar-home-dashboard')).toHaveTextContent('Dashboard');
+    expect(screen.getByTestId('sidebar-home-server-agent')).toHaveTextContent('Server Agent');
     expect(screen.getByTestId(`sidebar-project-row-${PROJECT_ID}`)).toBeInTheDocument();
     expect(screen.queryByTestId('sidebar-project-row-proj-2')).not.toBeInTheDocument();
     expect(screen.getByTestId('sidebar-org-settings-org-1')).toBeInTheDocument();

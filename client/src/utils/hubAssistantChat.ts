@@ -1,31 +1,10 @@
 import { useSyncExternalStore } from 'react';
-import { getHubChatSession, subscribeHubChatSession, updateHubChatSession } from './hubChatSession';
-
-/**
- * Rail id of the pinned Agent Hub DM. It is not a hub_chat channel: selecting
- * it shows the user's Hub assistant session.
- */
-export const HUB_ASSISTANT_CHANNEL_ID = '__hub_assistant__';
 
 /** The testid on the assistant transcript's scroll container. */
 export const HUB_ASSISTANT_SCROLL_TESTID = 'hub-assistant-scroll';
 
-const isAssistantSelected = () => getHubChatSession().selectedId === HUB_ASSISTANT_CHANNEL_ID;
-
-/** True while the pinned Agent Hub DM is the selected Chat conversation. */
-export function useHubAssistantSelected(): boolean {
-  return useSyncExternalStore(subscribeHubChatSession, isAssistantSelected, isAssistantSelected);
-}
-
-export function selectHubAssistantDm(): void {
-  updateHubChatSession((s) =>
-    s.selectedId === HUB_ASSISTANT_CHANNEL_ID ? s : { ...s, selectedId: HUB_ASSISTANT_CHANNEL_ID },
-  );
-  clearHubAssistantUnread();
-}
-
-// Assistant replies that finished while the transcript was off screen. Kept
-// at module scope so the Chat rail and App's badges read one count.
+// Server Agent replies that finished while the transcript was off screen.
+// Kept at module scope so every badge reads one count.
 let unread = 0;
 const listeners = new Set<() => void>();
 
@@ -81,10 +60,10 @@ export function resetHubAssistantUnreadForTests(): void {
 }
 
 /**
- * The Agent Hub DM renders the shared active-session transcript, so it must
+ * The Server Agent page renders the shared active-session transcript, so it must
  * only do so while that session is the user's Hub session. Any other active
  * session (a project session restored or refreshed in behind the Hub) would
- * otherwise show its messages inside the Hub assistant pane.
+ * otherwise show its messages on the Server Agent page.
  */
 export function isHubAssistantSessionActive(
   activeSessionId: string | null | undefined,
@@ -94,7 +73,7 @@ export function isHubAssistantSessionActive(
 }
 
 /**
- * Session id to re-select when the Agent Hub DM is on screen but a different
+ * Session id to re-select when the Server Agent page is on screen but a different
  * session became active, or null when nothing needs to change.
  */
 export function hubAssistantSessionToRestore(opts: {

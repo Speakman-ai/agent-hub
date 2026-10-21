@@ -12680,6 +12680,26 @@ components:
         - engine
         - model
       description: Engine and model for Hub chats, chat digests, and other Hub-level generation.
+    MeServerAgentSettings:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Custom name, or empty when using the default.
+        instructions:
+          type: string
+          description: Extra instructions appended to the Server Agent prompt.
+        defaultName:
+          type: string
+        effectiveName:
+          type: string
+          description: The name the agent uses right now.
+      required:
+        - name
+        - instructions
+        - defaultName
+        - effectiveName
+      description: The caller's Server Agent name and instructions.
     NotificationPreferencesErrorResponse:
       type: object
       properties:
@@ -45314,6 +45334,61 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MeHubSessionResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeHubErrorResponse"
+  /api/me/server-agent:
+    get:
+      tags:
+        - Hub
+      summary: Read the caller's Server Agent settings
+      description: Per-user name and instructions for the Server Agent (the Hub assistant).
+      responses:
+        "200":
+          description: Server Agent settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeServerAgentSettings"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeHubErrorResponse"
+    put:
+      tags:
+        - Hub
+      summary: Update the caller's Server Agent settings
+      description: Omitted fields keep their value; an empty string resets that field to the default. Takes effect on the next turn of the Server Agent session.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  maxLength: 60
+                instructions:
+                  type: string
+                  maxLength: 8000
+      responses:
+        "200":
+          description: Saved settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeServerAgentSettings"
+        "400":
+          description: Invalid name or instructions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeHubErrorResponse"
         "401":
           description: Authentication required.
           content:

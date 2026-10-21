@@ -8,6 +8,7 @@ describe('hub-mode-prompt', () => {
       'agent-hub-kanban',
       'agent-hub-sessions',
       'agent-hub-heartbeats-crons',
+      'agent-hub-wiki',
       'google',
     ]);
     expect(requiredHubSkillIds({ session_mode: 'consult' })).toEqual([]);
@@ -15,11 +16,11 @@ describe('hub-mode-prompt', () => {
 
   it('forbids scraping Agent Hub and unbounded spawns', () => {
     const text = buildHubModePreamble({ browserToolsEnabled: true });
-    expect(text).toContain('## Hub');
+    expect(text).toContain('## Server Agent');
     expect(text).toContain('do not scrape Agent Hub itself');
     expect(text).toContain('more than one');
     expect(text).toContain('GET /api/me/dashboard');
-    expect(text).toContain('Dashboard (assigned work');
+    expect(text).toContain('assistant for everything Agent Hub');
   });
 
   it('teaches session dispatch, mail, chat posting and ref chips', () => {

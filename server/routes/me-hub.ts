@@ -2,6 +2,7 @@
  * GET/POST /api/me/hub-session — the caller's persistent Hub assistant session.
  * GET/PUT /api/me/hub-model — Hub engine/model used by Hub chats and Hub generation.
  * POST /api/me/hub-session/clear — archive Hub chat and start a fresh empty session.
+ * GET/PUT /api/me/server-agent — the caller's Server Agent name and instructions.
  */
 import { Router, type Request, type Response } from 'express';
 import type { AuthenticatedRequest } from '../auth.js';
@@ -13,7 +14,15 @@ import {
   resolveHubEngineAndModel,
 } from '../hub-assistant.js';
 import { getEnrichedAgent } from '../project-model.js';
-import { mutateUserPreferencesJson } from '../user-preferences-store.js';
+import {
+  getUserPreferencesRow,
+  mutateUserPreferencesJson,
+  normalizeServerAgentPrefs,
+  SERVER_AGENT_INSTRUCTIONS_MAX,
+  SERVER_AGENT_NAME_MAX,
+  type ServerAgentPrefs,
+} from '../user-preferences-store.js';
+import { DEFAULT_SERVER_AGENT_NAME } from '../hub-mode-prompt.js';
 import type { RouteDeps } from '../types.js';
 import './me-hub.openapi.js';
 import { HUB_ASSISTANT_AGENT_ID } from '../../shared/utils/hub.js';
@@ -118,6 +127,61 @@ export default function createMeHubRoutes(deps: RouteDeps): Router {
     res.json({ engine, model });
   }
 
+  function serverAgentBody(prefs: ServerAgentPrefs | undefined) {
+    return {
+      name: prefs?.name ?? '',
+      instructions: prefs?.instructions ?? '',
+      defaultName: DEFAULT_SERVER_AGENT_NAME,
+      effectiveName: prefs?.name || DEFAULT_SERVER_AGENT_NAME,
+    };
+  }
+
+  function handleGetServerAgent(req: Request, res: Response): void {
+    const areq = req as AuthenticatedRequest;
+    if (!areq.authUserId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    res.json(serverAgentBody(getUserPreferencesRow(areq.authUserId).serverAgent));
+  }
+
+  function handlePutServerAgent(req: Request, res: Response): void {
+    const areq = req as AuthenticatedRequest;
+    if (!areq.authUserId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    for (const key of ['name', 'instructions'] as const) {
+      if (body[key] !== undefined && typeof body[key] !== 'string') {
+        res.status(400).json({ error: `${key} must be a string` });
+        return;
+      }
+    }
+    const name = body.name as string | undefined;
+    const instructions = body.instructions as string | undefined;
+    if (name !== undefined && name.trim().length > SERVER_AGENT_NAME_MAX) {
+      res.status(400).json({ error: `name must be at most ${SERVER_AGENT_NAME_MAX} characters` });
+      return;
+    }
+    if (instructions !== undefined && instructions.trim().length > SERVER_AGENT_INSTRUCTIONS_MAX) {
+      res.status(400).json({
+        error: `instructions must be at most ${SERVER_AGENT_INSTRUCTIONS_MAX} characters`,
+      });
+      return;
+    }
+    const next = mutateUserPreferencesJson(areq.authUserId, (current) => ({
+      ...current,
+      serverAgent: normalizeServerAgentPrefs({
+        name: name ?? current.serverAgent?.name,
+        instructions: instructions ?? current.serverAgent?.instructions,
+      }),
+    }));
+    res.json(serverAgentBody(next.serverAgent));
+  }
+
+  router.get('/api/me/server-agent', handleGetServerAgent);
+  router.put('/api/me/server-agent', handlePutServerAgent);
   router.get('/api/me/hub-session', handleHubSession);
   router.post('/api/me/hub-session', handleHubSession);
   router.post('/api/me/hub-session/clear', handleClear);

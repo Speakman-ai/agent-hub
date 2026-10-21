@@ -34,6 +34,11 @@ describe('hub constants', () => {
 
   it('parses workspace panes and maps retired top-level views', () => {
     expect(parseHubPane('org')).toBe('org');
+    // The Server Agent replaced Dashboard as Hub's landing pane.
+    expect(DEFAULT_HUB_PANE).toBe('agent');
+    expect(parseHubPane(undefined)).toBe('agent');
+    expect(parseHubPane('agent-settings')).toBe('agent-settings');
+    expect(parseHubPane('today')).toBe('today');
     // The Daily Summary pane is gone; links to it are an alias for Summaries.
     expect(parseHubPane('summary')).toBe(DEFAULT_HUB_PANE);
     expect(isSummariesPaneAlias('summary')).toBe(true);

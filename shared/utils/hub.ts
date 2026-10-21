@@ -12,8 +12,18 @@ export const HUB_ASSISTANT_ROLE = 'hub-assistant';
 export const HUB_SESSION_MODE = 'hub';
 export const HUB_SESSION_NAME = 'Hub';
 
-/** Workspace panes inside Hub (the assistant is a sibling column / tab, not a pane). */
+/** Name the Server Agent (the per-user Hub assistant) uses until the user renames it. */
+export const DEFAULT_SERVER_AGENT_NAME = 'Server Agent';
+export const SERVER_AGENT_LIMITS = { name: 60, instructions: 8000 } as const;
+
+/**
+ * Workspace panes inside Hub. `agent` is the Server Agent (the user's Hub
+ * assistant) and `agent-settings` its name/instructions page; `today` is the
+ * personal dashboard, still reachable by link but no longer in the nav.
+ */
 export const HUB_WORKSPACE_PANES = [
+  'agent',
+  'agent-settings',
   'today',
   'org',
   'todos',
@@ -25,7 +35,7 @@ export const HUB_WORKSPACE_PANES = [
   'support',
 ] as const;
 export type HubWorkspacePane = (typeof HUB_WORKSPACE_PANES)[number];
-export const DEFAULT_HUB_PANE: HubWorkspacePane = 'today';
+export const DEFAULT_HUB_PANE: HubWorkspacePane = 'agent';
 
 /** Retired top-level views that now live inside Hub. */
 export const LEGACY_HUB_VIEWS: Record<string, HubWorkspacePane> = {

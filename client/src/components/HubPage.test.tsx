@@ -3,6 +3,8 @@ import { render, screen } from '@testing-library/react';
 import HubPage from './HubPage';
 
 const panes = {
+  agent: <span>agent-body</span>,
+  agentSettings: <span>agent-settings-body</span>,
   today: <span>today-body</span>,
   org: <span>org-body</span>,
   todos: <span>todos-body</span>,
@@ -25,6 +27,16 @@ describe('HubPage', () => {
     expect(screen.queryByRole('navigation', { name: 'Hub sections' })).not.toBeInTheDocument();
     expect(screen.getByText('today-body')).toBeInTheDocument();
     expect(onPaneChange).not.toHaveBeenCalled();
+  });
+
+  it('lands on the Server Agent when no pane is chosen', () => {
+    const { rerender } = render(<HubPage pane={null} onPaneChange={() => undefined} {...panes} />);
+    expect(screen.getByText('agent-body')).toBeInTheDocument();
+    expect(screen.queryByText('today-body')).not.toBeInTheDocument();
+
+    rerender(<HubPage pane="agent-settings" onPaneChange={() => undefined} {...panes} />);
+    expect(screen.getByText('agent-settings-body')).toBeInTheDocument();
+    expect(screen.queryByText('agent-body')).not.toBeInTheDocument();
   });
 
   it('shows the Support pane body when the support pane is active', () => {

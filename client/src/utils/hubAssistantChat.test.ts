@@ -5,14 +5,12 @@ import {
   noteHubAssistantTurnDone,
   clearHubAssistantUnread,
   resetHubAssistantUnreadForTests,
-  selectHubAssistantDm,
-  HUB_ASSISTANT_CHANNEL_ID,
   HUB_ASSISTANT_SCROLL_TESTID,
   isHubAssistantSessionActive,
   hubAssistantSessionToRestore,
   shouldReplaceMissingActiveSession,
 } from './hubAssistantChat';
-import { getHubChatSession, resetHubChatSessionForTests } from './hubChatSession';
+import { resetHubChatSessionForTests } from './hubChatSession';
 
 beforeEach(() => {
   resetHubAssistantUnreadForTests();
@@ -28,13 +26,6 @@ describe('hub assistant unread', () => {
     noteHubAssistantTurnDone(false);
     expect(getHubAssistantUnread()).toBe(2);
     clearHubAssistantUnread();
-    expect(getHubAssistantUnread()).toBe(0);
-  });
-
-  it('opening the DM selects it and clears the badge', () => {
-    noteHubAssistantTurnDone(false);
-    selectHubAssistantDm();
-    expect(getHubChatSession().selectedId).toBe(HUB_ASSISTANT_CHANNEL_ID);
     expect(getHubAssistantUnread()).toBe(0);
   });
 });

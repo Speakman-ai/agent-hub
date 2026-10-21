@@ -76,7 +76,7 @@ describe('/api/me/hub-session', () => {
   it('creates a per-user Hub session on the hidden assistant', async () => {
     const created = await request(mount(userA)).get('/api/me/hub-session').expect(201);
     expect(created.body.agent.id).toBe(HUB_ASSISTANT_AGENT_ID);
-    expect(created.body.agent.name).toBe('Hub');
+    expect(created.body.agent.name).toBe('Server Agent');
     expect(created.body.session.session_mode).toBe(HUB_SESSION_MODE);
     expect(created.body.session.agent_id).toBe(HUB_ASSISTANT_AGENT_ID);
 
@@ -100,6 +100,67 @@ describe('/api/me/hub-session', () => {
     saveProjects();
     const repaired = ensureHubAssistantAgent();
     expect(repaired.allowedSkills).toContain('agent-hub');
+  });
+});
+
+describe('/api/me/server-agent', () => {
+  it('requires authentication', async () => {
+    await request(mount(null)).get('/api/me/server-agent').expect(401);
+    await request(mount(null)).put('/api/me/server-agent').send({ name: 'x' }).expect(401);
+  });
+
+  it('defaults, saves per user, merges partial updates, and resets with empty strings', async () => {
+    const initial = await request(mount(userA)).get('/api/me/server-agent').expect(200);
+    expect(initial.body).toEqual({
+      name: '',
+      instructions: '',
+      defaultName: 'Server Agent',
+      effectiveName: 'Server Agent',
+    });
+
+    const saved = await request(mount(userA))
+      .put('/api/me/server-agent')
+      .send({ name: '  Jarvis  ', instructions: 'Be brief.' })
+      .expect(200);
+    expect(saved.body).toMatchObject({
+      name: 'Jarvis',
+      instructions: 'Be brief.',
+      effectiveName: 'Jarvis',
+    });
+
+    // Only the name changes; instructions stay.
+    await request(mount(userA)).put('/api/me/server-agent').send({ name: 'Friday' }).expect(200);
+    const read = await request(mount(userA)).get('/api/me/server-agent').expect(200);
+    expect(read.body).toMatchObject({ name: 'Friday', instructions: 'Be brief.' });
+
+    // Another user is unaffected.
+    const other = await request(mount(userB)).get('/api/me/server-agent').expect(200);
+    expect(other.body.effectiveName).toBe('Server Agent');
+
+    const reset = await request(mount(userA))
+      .put('/api/me/server-agent')
+      .send({ name: '', instructions: '' })
+      .expect(200);
+    expect(reset.body).toMatchObject({ name: '', instructions: '', effectiveName: 'Server Agent' });
+  });
+
+  it('rejects non-string and over-long fields', async () => {
+    await request(mount(userA)).put('/api/me/server-agent').send({ name: 5 }).expect(400);
+    await request(mount(userA))
+      .put('/api/me/server-agent')
+      .send({ name: 'x'.repeat(61) })
+      .expect(400);
+    await request(mount(userA))
+      .put('/api/me/server-agent')
+      .send({ instructions: 'x'.repeat(8001) })
+      .expect(400);
+  });
+
+  it('renames an existing agent row still called Hub', async () => {
+    await request(mount(userA)).get('/api/me/hub-session');
+    findAgent(HUB_ASSISTANT_AGENT_ID)!.agent.name = 'Hub';
+    saveProjects();
+    expect(ensureHubAssistantAgent().name).toBe('Server Agent');
   });
 });
 

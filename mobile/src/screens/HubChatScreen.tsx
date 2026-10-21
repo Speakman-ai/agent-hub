@@ -71,7 +71,6 @@ import HubChatSearch from '../components/HubChatSearch';
 import type { HubChatSearchResult } from '@shared/utils/hubChatSearch';
 import { readChatTriggerCard } from '@shared/utils/chatTriggers';
 import { colors } from '../theme/colors';
-import ChatScreen from './ChatScreen';
 
 /** A request to show one message in a channel; `token` makes each request distinct. */
 export interface HubChatFocus {
@@ -115,21 +114,17 @@ function useUsernames(account: number): ReadonlyMap<string, string> & { list: Hu
 export default function HubChatScreen({
   initialChannelId,
   openRequest,
-  initialAssistant = false,
   onChannelChange,
   navigation,
 }: {
   initialChannelId?: string | null;
   /** Bumped by the Hub screen when a push or link asks for a channel again. */
   openRequest?: number;
-  /** Open the Hub assistant inside this chat, instead of a separate pane. */
-  initialAssistant?: boolean;
   /** Reports the open channel so the Hub can restore it after a tab switch. */
   onChannelChange?: (channelId: string | null) => void;
   navigation?: any;
 }) {
-  const [assistantOpen, setAssistantOpen] = useState(initialAssistant);
-  const { handleOpenHandoffSession, clearHubChat } = useApp();
+  const { handleOpenHandoffSession } = useApp();
   // The open channel belongs to the account it was opened under.
   const [channelId, setChannelIdState] = useAccountScoped<string>(initialChannelId ?? null);
   const changeRef = useRef(onChannelChange);
@@ -156,25 +151,12 @@ export default function HubChatScreen({
   // A channel request is the channel plus the open counter, so a push for the
   // channel already shown still re-opens it.
   const channelRequest = initialChannelId ? `${initialChannelId}:${openRequest}` : null;
-  const channelRequestRef = useRef(channelRequest);
-  channelRequestRef.current = channelRequest;
   const handledChannelRequestRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    if (initialAssistant) {
-      setAssistantOpen(true);
-      // A channel retained from an earlier visit arrives with the assistant
-      // request. The assistant wins; only a later channel request opens one.
-      handledChannelRequestRef.current = channelRequestRef.current;
-      setChannelId(null);
-    }
-  }, [initialAssistant, setChannelId]);
 
   useEffect(() => {
     if (!initialChannelId || !channelRequest) return;
     if (handledChannelRequestRef.current === channelRequest) return;
     handledChannelRequestRef.current = channelRequest;
-    setAssistantOpen(false);
     setChannelIdState(initialChannelId);
   }, [channelRequest, initialChannelId, setChannelIdState]);
 
@@ -194,25 +176,7 @@ export default function HubChatScreen({
 
   return (
     <View style={styles.root}>
-      {assistantOpen ? (
-        <View style={styles.flex}>
-          <TouchableOpacity
-            testID="hub-chat-assistant-back"
-            onPress={() => setAssistantOpen(false)}
-            style={styles.assistantBack}
-            accessibilityRole="button"
-            accessibilityLabel="Back to conversations"
-          >
-            <Text style={styles.assistantBackLabel}>Conversations</Text>
-          </TouchableOpacity>
-          <ChatScreen
-            embedded
-            onClearChat={() => {
-              void clearHubChat();
-            }}
-          />
-        </View>
-      ) : channelId ? (
+      {channelId ? (
         <ChannelView
           key={`${account}:${channelId}`}
           channelId={channelId}
@@ -230,14 +194,7 @@ export default function HubChatScreen({
           // Remount per account so open dialogs drop lists fetched for the last one.
           key={account}
           usernames={usernames}
-          onOpen={(id) => {
-            setAssistantOpen(false);
-            setChannelId(id);
-          }}
-          onOpenAssistant={() => {
-            setChannelId(null);
-            setAssistantOpen(true);
-          }}
+          onOpen={(id) => setChannelId(id)}
           onPickResult={(r) => showMessage(r.channel.id, r.message.id)}
         />
       )}
@@ -289,12 +246,10 @@ export function ChannelRow({
 function ChannelRail({
   usernames,
   onOpen,
-  onOpenAssistant,
   onPickResult,
 }: {
   usernames: ReturnType<typeof useUsernames>;
   onOpen: (channelId: string) => void;
-  onOpenAssistant?: () => void;
   onPickResult: (result: HubChatSearchResult) => void;
 }) {
   const snapshot = useHubChatSnapshot();
@@ -319,17 +274,6 @@ function ChannelRail({
         onPick={onPickResult}
       >
         <ScrollView style={styles.flex} contentContainerStyle={styles.railContent}>
-          {onOpenAssistant ? (
-            <TouchableOpacity
-              testID="hub-chat-assistant"
-              style={styles.row}
-              onPress={onOpenAssistant}
-              accessibilityRole="button"
-            >
-              <HubIcon name="Bot" size={14} color={colors.blue400} />
-              <Text style={[styles.rowLabel, styles.rowLabelBold]}>Agent Hub</Text>
-            </TouchableOpacity>
-          ) : null}
           {!snapshot.loaded ? (
             <ActivityIndicator color={colors.gray400} style={styles.pad} />
           ) : null}
@@ -1737,13 +1681,6 @@ function ChannelSettingsDialog({
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.gray950 },
   flex: { flex: 1, minHeight: 0 },
-  assistantBack: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.gray800,
-  },
-  assistantBackLabel: { color: colors.blue400, fontSize: 14, fontWeight: '600' },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
   muted: { color: colors.gray400, fontSize: 12 },
   error: { color: colors.red400, fontSize: 13 },

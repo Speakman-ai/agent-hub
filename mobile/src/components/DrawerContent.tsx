@@ -54,6 +54,7 @@ import BrandLogo from './BrandLogo';
 import { useHubChatBadge } from '../hooks/useHubChat';
 import { useGoogleChatAvailable } from '../hooks/useGoogleChatAvailable';
 import { parseHubPane, type HubWorkspacePane } from '@shared/utils/hub';
+import { serverAgentDisplayName, useServerAgentSettings } from '../utils/serverAgentInstance';
 
 /**
  * The one API call the collapsed-project saver makes. Module scope so every
@@ -65,6 +66,7 @@ const putCollapsedProject = (projectId: string, collapsed: boolean) =>
 
 export default function DrawerContent({ navigation }: any) {
   const chatBadge = useHubChatBadge();
+  const serverAgentSettings = useServerAgentSettings();
   const googleChatAvailable = useGoogleChatAvailable();
   const {
     showAiSignInGuide,
@@ -884,14 +886,18 @@ export default function DrawerContent({ navigation }: any) {
   const currentRoute = navigation.getCurrentRoute?.();
   const routeName = currentRoute?.name;
   const requestedPane = currentRoute?.params?.pane || currentRoute?.params?.tab;
-  const activeHubPane: HubWorkspacePane | null =
+  const parsedHubPane: HubWorkspacePane | null =
     routeName === 'Hub'
       ? requestedPane === 'assistant'
-        ? 'chat'
+        ? 'agent'
         : parseHubPane(requestedPane)
       : null;
+  // The settings view belongs to the Server Agent entry.
+  const activeHubPane: HubWorkspacePane | null =
+    parsedHubPane === 'agent-settings' ? 'agent' : parsedHubPane;
+  const serverAgentName = serverAgentDisplayName(serverAgentSettings);
   const homeLinks: { pane: HubWorkspacePane; label: string; icon: string; testID: string }[] = [
-    { pane: 'today', label: 'Dashboard', icon: 'LayoutGrid', testID: 'drawer-home-dashboard' },
+    { pane: 'agent', label: serverAgentName, icon: 'Bot', testID: 'drawer-home-server-agent' },
     { pane: 'chat', label: 'Chat', icon: 'MessageSquare', testID: 'drawer-chat' },
     ...(googleChatAvailable
       ? [

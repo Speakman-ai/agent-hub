@@ -4,6 +4,8 @@ import { DEFAULT_HUB_PANE, parseHubPane, type HubWorkspacePane } from '@shared/u
 export interface HubPageProps {
   pane?: HubWorkspacePane | null;
   onPaneChange: (pane: HubWorkspacePane) => void;
+  agent: ReactNode;
+  agentSettings: ReactNode;
   today: ReactNode;
   org: ReactNode;
   todos: ReactNode;
@@ -19,6 +21,8 @@ function workspaceBody(
   active: HubWorkspacePane,
   panes: Pick<
     HubPageProps,
+    | 'agent'
+    | 'agentSettings'
     | 'today'
     | 'org'
     | 'todos'
@@ -31,6 +35,10 @@ function workspaceBody(
   >,
 ): ReactNode {
   switch (active) {
+    case 'agent':
+      return panes.agent;
+    case 'agent-settings':
+      return panes.agentSettings;
     case 'today':
       return panes.today;
     case 'org':
@@ -57,12 +65,14 @@ function workspaceBody(
 }
 
 /**
- * Hub — the org/user home. One workspace pane fills the page. The Hub
- * assistant lives in Chat.
+ * Hub — the org/user home. One workspace pane fills the page; the Server
+ * Agent is the landing pane.
  */
 export default function HubPage({
   pane,
   onPaneChange: _onPaneChange,
+  agent,
+  agentSettings,
   today,
   org,
   todos,
@@ -74,6 +84,8 @@ export default function HubPage({
   support,
 }: HubPageProps) {
   const workspace = workspaceBody(parseHubPane(pane), {
+    agent,
+    agentSettings,
     today,
     org,
     todos,

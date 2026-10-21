@@ -65,6 +65,8 @@ import { listEnabledSkills } from './agent-skills-list.js';
 import { summarizeTranscript, buildTranscript } from './routes/sessions.js';
 import { writeHooksConfig, removeStaleMcpConfigFile } from './hooks.js';
 import { getSessionOwner } from './session-ownership.js';
+import { serverAgentPrefsForUser } from './hub-assistant.js';
+import type { ServerAgentPrefs } from './user-preferences-store.js';
 import { isDevServerConfigured } from './dev-server-config.js';
 import { createUploadStore } from './upload-store.js';
 import { ensureLocalUpload } from './chat-image-staging.js';
@@ -2352,6 +2354,8 @@ export function augmentChatTurnForHubMode(args: {
   loadSkills: boolean;
   alreadyLoadedSkillIds?: Set<string>;
   browserToolsEnabled?: boolean;
+  /** The session owner's Server Agent name and instructions. */
+  serverAgent?: ServerAgentPrefs | null;
 }): HubModeTurnAugmentation {
   const { session, paths, sessionId, stmts, broadcast, loadSkills } = args;
   if (!isHubModeActive(session)) {
@@ -2379,6 +2383,8 @@ export function augmentChatTurnForHubMode(args: {
     skillInjections,
     preamble: buildHubModePreamble({
       browserToolsEnabled: args.browserToolsEnabled ?? true,
+      agentName: args.serverAgent?.name,
+      instructions: args.serverAgent?.instructions,
     }),
   };
 }
@@ -3549,6 +3555,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           loadSkills: !isAutoContinuation,
           alreadyLoadedSkillIds: loadedRoutedSkillIds,
           browserToolsEnabled: effectiveBrowserToolsEnabled(agent, project),
+          serverAgent: serverAgentPrefsForUser(getSessionOwner(sessionId)),
         });
         if (hubTurn.skillInjections.length > 0) {
           enrichedPrompt += `\n\n${hubTurn.skillInjections.join('\n\n')}`;
@@ -4040,6 +4047,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           credsOwnerId,
           sessionId,
           engine,
+          // The Server Agent acts as its owner: their role, their projects.
+          userScopedApiKey: isHubModeActive(session!),
         });
       } catch (err) {
         if (err instanceof EngineAuthRequiredError) {

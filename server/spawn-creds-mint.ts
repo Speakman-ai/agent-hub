@@ -40,6 +40,12 @@ export interface EnsureSpawnCredsOpts {
   sessionId: string;
   ownerUserId: string;
   cfg: AppConfig;
+  /**
+   * Mint even when the deployment has a global `cfg.apiKey`. Used by spawns
+   * that must act with the owner's own permissions instead of the Owner-level
+   * break-glass key (the Server Agent).
+   */
+  force?: boolean;
 }
 
 /**
@@ -49,7 +55,7 @@ export interface EnsureSpawnCredsOpts {
 export function ensureSpawnCredsForSession(opts: EnsureSpawnCredsOpts): void {
   const { sessionId, ownerUserId, cfg } = opts;
   if (getOrganizationSpawnPolicy(sessionId)) return;
-  if (cfg.apiKey) return;
+  if (cfg.apiKey && !opts.force) return;
   if (!sessionId.trim() || !ownerUserId.trim()) return;
 
   try {

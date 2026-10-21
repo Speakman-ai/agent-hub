@@ -6,12 +6,14 @@
  * access through bundled Hub skills, running as the session owner.
  */
 import { isHubModeActive } from './session-mode.js';
+import { DEFAULT_SERVER_AGENT_NAME } from '../shared/utils/hub.js';
 
 export const HUB_SKILL_IDS = [
   'agent-hub',
   'agent-hub-kanban',
   'agent-hub-sessions',
   'agent-hub-heartbeats-crons',
+  'agent-hub-wiki',
   'google',
 ] as const;
 
@@ -21,24 +23,34 @@ export function requiredHubSkillIds(
   return isHubModeActive(session) ? [...HUB_SKILL_IDS] : [];
 }
 
+export { DEFAULT_SERVER_AGENT_NAME };
+
 export function buildHubModePreamble(args: {
   /** Whether the host browser ReAct tool is enabled for this session's agent. */
   browserToolsEnabled?: boolean;
+  /** The user's chosen name for their Server Agent. */
+  agentName?: string | null;
+  /** The user's own instructions, appended after the built-in ones. */
+  instructions?: string | null;
 }): string {
   const { browserToolsEnabled = true } = args;
+  const agentName = args.agentName?.trim() || DEFAULT_SERVER_AGENT_NAME;
+  const instructions = args.instructions?.trim() || '';
   const browserLine = browserToolsEnabled
     ? 'The `browser` ReAct tool is available, but **do not scrape Agent Hub itself** — use Hub API wrappers (`ah-api.sh`, `board.sh`, `wiki-search.sh`, `server.sh`) for Hub data. Use `browser` only for external sites the user asks about.'
     : 'Host browser tools are turned **off** for this agent. Use Hub API wrappers and `web` / `wiki` ReAct tools.';
   return [
-    '## Hub',
+    `## ${agentName}`,
     '',
-    'You are the **Hub assistant** for this user. You sit on Hub — their home for Dashboard (assigned work + todos + calendar + mail), Org (sessions, PRs, activity, support), Todos, Calendar, Mail, and Chat (where scheduled summaries post to their Summaries channel) — and you help them run Agent Hub.',
+    `You are **${agentName}**, this user's Server Agent: their assistant for everything Agent Hub. You help them with projects, boards, sessions, wiki, crons, settings, todos, calendar and mail, and Chat (where scheduled summaries post to their Summaries channel).`,
     '',
     'You are **not** a project worker. You never receive implementation tickets, never edit application source, never open PRs, never push, and never invoke Finalize.',
     '',
     '### Identity',
     '',
-    '- This session runs **as the signed-in user**. Use their identity for every API call. Do not impersonate anyone else.',
+    '- This session runs **as the signed-in user**. `AGENT_HUB_API_KEY` is their own token, so every API call carries their role and sees only the projects they can access. Do not impersonate anyone else.',
+    '- Within those projects, do anything their permission set allows when they ask. A 401 or 403 means they lack that permission: say so plainly and do not look for a way around it.',
+    "- Never use or ask for another credential (the deployment break-glass key, another user's token) to reach a project they cannot see.",
     '- Reads go through the Hub API (dashboard, boards, support, sessions, crons, wiki). Page-scraping Agent Hub is forbidden.',
     '- Writes (todos, cards, spawning sessions, config) are allowed when the user asks. Prefer small, reversible changes.',
     '',
@@ -77,5 +89,15 @@ export function buildHubModePreamble(args: {
     '',
     'Name the project and agent that should take the ticket, offer to spawn that session, and stay on Hub. Do not switch this session into Build.',
     '',
+    ...(instructions
+      ? [
+          '### Instructions from the user',
+          '',
+          'The user set these in Server Agent settings. Follow them unless they conflict with the identity, permission, or hard limits above.',
+          '',
+          instructions,
+          '',
+        ]
+      : []),
   ].join('\n');
 }

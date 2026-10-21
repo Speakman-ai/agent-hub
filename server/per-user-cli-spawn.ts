@@ -79,6 +79,8 @@ export function perUserHomeHasMuseCache(userId: string, dataDir: string): boolea
  */
 export interface ResolveSessionCliSpawnEnvOpts {
   cfg: AppConfig;
+  /** See `BuildSpawnEnvOptions.userScopedApiKey`. */
+  userScopedApiKey?: boolean;
   ownerId: string | null;
   credsOwnerId: string | null;
   /**
@@ -298,6 +300,7 @@ export function resolveSessionCliSpawnEnv(opts: ResolveSessionCliSpawnEnvOpts): 
     sessionId: sessionId ?? null,
     spawnCredsUserId: actingUserId,
     engine,
+    userScopedApiKey: opts.userScopedApiKey === true,
   };
   return buildSpawnEnv(cfg, buildOpts);
 }

@@ -10,6 +10,7 @@ import { mkdirSync, writeFileSync, existsSync } from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import {
+  DEFAULT_SERVER_AGENT_NAME,
   HUB_ASSISTANT_AGENT_ID,
   HUB_ASSISTANT_ROLE,
   HUB_PROJECT_ID,
@@ -27,11 +28,14 @@ import {
   saveProjects,
 } from './project-model.js';
 import { setSessionOwner } from './session-ownership.js';
+import { getUserPreferencesRow, type ServerAgentPrefs } from './user-preferences-store.js';
 import { HUB_SKILL_IDS } from './hub-mode-prompt.js';
 import type { Agent, AppConfig, BroadcastFn, Project, SessionRow, Stmts } from './types.js';
 
 /** Retired Hub pane sessions — never treat these as the live Assistant chat. */
 const LEGACY_TROUBLESHOOT_SESSION_NAME = 'Troubleshooting';
+/** The agent row's name before it became the Server Agent. */
+const LEGACY_AGENT_NAME = 'Hub';
 
 const HUB_SOUL = `# SOUL.md — Hub
 
@@ -118,6 +122,10 @@ export function ensureHubAssistantAgent(): Agent {
       found.agent.isDev = false;
       dirty = true;
     }
+    if (found.agent.name === LEGACY_AGENT_NAME) {
+      found.agent.name = DEFAULT_SERVER_AGENT_NAME;
+      dirty = true;
+    }
     if (syncHubAllowedSkills(found.agent)) dirty = true;
     if (dirty) saveProjects();
     return found.agent;
@@ -126,7 +134,7 @@ export function ensureHubAssistantAgent(): Agent {
   const engine = 'claude-code';
   const agent: Agent = {
     id: HUB_ASSISTANT_AGENT_ID,
-    name: 'Hub',
+    name: DEFAULT_SERVER_AGENT_NAME,
     engine,
     role: HUB_ASSISTANT_ROLE,
     isDev: false,
@@ -171,6 +179,18 @@ function liveHubSessionForUser(stmts: Stmts, userId: string, agentId: string): S
         !row.deleted_at,
     ) ?? null
   );
+}
+
+/** The user's Server Agent name and instructions; null when unset or unreadable. */
+export function serverAgentPrefsForUser(
+  userId: string | null | undefined,
+): ServerAgentPrefs | null {
+  if (!userId) return null;
+  try {
+    return getUserPreferencesRow(userId).serverAgent ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export function resolveHubEngineAndModel(

@@ -37,6 +37,7 @@
  * ignored on read and dropped on the next write.
  */
 import { getOrgsDb } from './orgs.js';
+import { SERVER_AGENT_LIMITS } from '../shared/utils/hub.js';
 import {
   normalizeDailySummarySchedule,
   type HubDailySummarySchedule,
@@ -59,6 +60,28 @@ export interface UserPreferencesStored {
    * migration converts it into a digest on the user's Summaries channel.
    */
   hubDailySummarySchedule?: HubDailySummarySchedule;
+  /** The user's Server Agent display name and extra instructions. */
+  serverAgent?: ServerAgentPrefs;
+}
+
+export interface ServerAgentPrefs {
+  name?: string;
+  instructions?: string;
+}
+
+export const SERVER_AGENT_NAME_MAX = SERVER_AGENT_LIMITS.name;
+export const SERVER_AGENT_INSTRUCTIONS_MAX = SERVER_AGENT_LIMITS.instructions;
+
+/** Trimmed, length-capped Server Agent prefs, or undefined when nothing is set. */
+export function normalizeServerAgentPrefs(raw: unknown): ServerAgentPrefs | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const obj = raw as Record<string, unknown>;
+  const out: ServerAgentPrefs = {};
+  const name = typeof obj.name === 'string' ? obj.name.replace(/\s+/g, ' ').trim() : '';
+  if (name) out.name = name.slice(0, SERVER_AGENT_NAME_MAX);
+  const instructions = typeof obj.instructions === 'string' ? obj.instructions.trim() : '';
+  if (instructions) out.instructions = instructions.slice(0, SERVER_AGENT_INSTRUCTIONS_MAX);
+  return Object.keys(out).length ? out : undefined;
 }
 
 /**
@@ -136,6 +159,8 @@ function parsePrefsJson(raw: string | null): UserPreferencesStored {
     if (collapsed) result.sidebarCollapsedProjects = collapsed;
     const schedule = normalizeDailySummarySchedule(obj.hubDailySummarySchedule);
     if (schedule) result.hubDailySummarySchedule = schedule;
+    const serverAgent = normalizeServerAgentPrefs(obj.serverAgent);
+    if (serverAgent) result.serverAgent = serverAgent;
     return result;
   } catch {
     return {};
@@ -190,6 +215,8 @@ export function replaceUserPreferencesJson(userId: string, prefs: UserPreference
   if (prefs.hubDailySummarySchedule) {
     stored.hubDailySummarySchedule = prefs.hubDailySummarySchedule;
   }
+  const serverAgent = normalizeServerAgentPrefs(prefs.serverAgent);
+  if (serverAgent) stored.serverAgent = serverAgent;
   const json = Object.keys(stored).length > 0 ? JSON.stringify(stored) : null;
   getOrgsDb().prepare('UPDATE users SET preferences_json = ? WHERE id = ?').run(json, userId);
 }

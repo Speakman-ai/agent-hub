@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   BellOff,
@@ -61,11 +61,6 @@ import {
   dismissMentionNotices,
   type HubChatEditState,
 } from '../utils/hubChatSession';
-import {
-  HUB_ASSISTANT_CHANNEL_ID,
-  selectHubAssistantDm,
-  useHubAssistantUnread,
-} from '../utils/hubAssistantChat';
 import {
   BrowseChannelsDialog,
   ChannelSettingsDialog,
@@ -249,19 +244,10 @@ function AgentChannelHeaderState({
 export default function HubChatPage({
   onOpenRef,
   onSessionStarted,
-  assistantEnabled = false,
-  assistant = null,
 }: {
   onOpenRef?: HubChatRefOpenHandler;
   /** Called with the session Send to agent started, so the app can open it. */
   onSessionStarted?: (session: SessionWire) => void;
-  /** Shows the pinned Agent Hub DM at the top of the rail. */
-  assistantEnabled?: boolean;
-  /**
-   * The Hub assistant transcript and composer, rendered when the pinned DM is
-   * open.
-   */
-  assistant?: ReactNode;
 } = {}) {
   // Channel list, open view and viewer id each live in a ref that every
   // write updates synchronously; React state only mirrors the ref for
@@ -362,8 +348,6 @@ export default function HubChatPage({
   // The open channel's pinned list; every response below that changes a
   // message or its pin state is fed to it as well as to the view.
   const pinned = useHubChatPins(selected?.id ?? null);
-  const assistantSelected = assistantEnabled && selectedId === HUB_ASSISTANT_CHANNEL_ID;
-  const assistantUnread = useHubAssistantUnread();
 
   // The channel list is a server snapshot, while live events and the
   // user's own actions change channels in between. Local changes stamp the
@@ -645,7 +629,6 @@ export default function HubChatPage({
   // from a refresh), move to the first remaining one.
   useEffect(() => {
     if (loading) return;
-    if (assistantSelected) return;
     const open = viewRef.current;
     if (open && channels.some((c) => c.id === open.channelId)) return;
     const kept = !open && selectedId ? channels.find((c) => c.id === selectedId) : undefined;
@@ -656,14 +639,7 @@ export default function HubChatPage({
       setView(null);
       setSelectedId(null);
     }
-  }, [loading, view, selectedId, channels, sections, openChannel, setView, assistantSelected]);
-
-  const openAssistant = () => {
-    // Retire the open channel's view so its in-flight loads are dropped.
-    generationRef.current += 1;
-    setView(null);
-    selectHubAssistantDm();
-  };
+  }, [loading, view, selectedId, channels, sections, openChannel, setView]);
 
   /**
    * Brings the open conversation back in line with the server after the
@@ -1363,42 +1339,6 @@ export default function HubChatPage({
           viewerUserId={viewerUserId}
           onPick={(r) => focusHubChatMessage(r.channel.id, r.message.id)}
         >
-          {assistantEnabled && (
-            <>
-              <div className="px-4 pb-1 pt-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                Agent Hub
-              </div>
-              <button
-                type="button"
-                onClick={openAssistant}
-                data-testid="hub-chat-assistant"
-                aria-current={assistantSelected ? 'page' : undefined}
-                className={`flex w-full items-center gap-2 px-4 py-1.5 text-left text-sm ${
-                  assistantSelected
-                    ? 'bg-gray-800 text-white'
-                    : 'text-gray-300 hover:bg-gray-800/50'
-                }`}
-              >
-                <Bot size={13} className="shrink-0 text-cyan-400" />
-                <span
-                  className={`min-w-0 flex-1 truncate ${
-                    assistantUnread > 0 && !assistantSelected ? 'font-semibold text-white' : ''
-                  }`}
-                >
-                  Agent Hub
-                </span>
-                {assistantUnread > 0 && !assistantSelected && (
-                  <span
-                    data-testid="hub-chat-assistant-unread"
-                    aria-label={`${assistantUnread} unread`}
-                    className="shrink-0 rounded-full bg-blue-600 px-1.5 text-[10px] font-semibold leading-4 text-white"
-                  >
-                    {assistantUnread > 99 ? '99+' : assistantUnread}
-                  </span>
-                )}
-              </button>
-            </>
-          )}
           {RAIL_SECTIONS.map((section) => {
             const items = sections[section.id];
             const action = sectionAction[section.id];
@@ -1446,19 +1386,7 @@ export default function HubChatPage({
       </nav>
 
       <section className="flex min-h-0 min-w-0 flex-1 flex-col">
-        {assistantSelected ? (
-          <div className="flex min-h-0 flex-1 flex-col" data-testid="hub-chat-assistant-view">
-            <div className="flex shrink-0 items-center gap-2 border-b border-gray-800 px-4 py-2">
-              <Bot size={14} className="text-cyan-400" />
-              <div className="truncate text-sm font-medium text-gray-200">Agent Hub</div>
-            </div>
-            {assistant ?? (
-              <p className="m-4 text-sm text-gray-400" data-testid="hub-chat-assistant-elsewhere">
-                The assistant conversation is unavailable.
-              </p>
-            )}
-          </div>
-        ) : !selected ? (
+        {!selected ? (
           <div className="m-4 rounded-lg border border-gray-800 bg-gray-900 p-6">
             <h3 className="text-lg font-semibold text-white">Agent Hub chat</h3>
             <p className="mt-2 max-w-xl text-sm text-gray-400">

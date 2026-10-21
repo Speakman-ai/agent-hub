@@ -1506,6 +1506,9 @@ export const api = {
       fetchJSON(`/chat/backlinks?${new URLSearchParams({ kind, targetId }).toString()}`),
   },
   clearHubSession: () => fetchJSON('/me/hub-session/clear', { method: 'POST' }),
+  getServerAgentSettings: () => fetchJSON('/me/server-agent'),
+  putServerAgentSettings: (body: { name?: string; instructions?: string }) =>
+    fetchJSON('/me/server-agent', { method: 'PUT', body: JSON.stringify(body) }),
   getHubModel: () => fetchJSON('/me/hub-model'),
   putHubModel: (body: { engine: string; model: string }) =>
     fetchJSON('/me/hub-model', { method: 'PUT', body: JSON.stringify(body) }),

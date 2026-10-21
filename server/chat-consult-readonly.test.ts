@@ -9,6 +9,7 @@ import type { ActiveChatProcess } from './active-chat-process.js';
 import { getStmts } from './db.js';
 import createChatHandler, { type ChatHandlerDeps } from './chat.js';
 import type { Agent, EnrichedAgent, Project } from './types.js';
+import { resolveSessionCliSpawnEnv } from './per-user-cli-spawn.js';
 
 vi.mock('./per-user-cli-spawn.js', () => ({
   EngineAuthRequiredError: class EngineAuthRequiredError extends Error {},
@@ -183,5 +184,16 @@ describe('Consult session spawn permissions', () => {
 
     expect(args).toContain('--permission-mode');
     expect(args[args.indexOf('--permission-mode') + 1]).toBe('plan');
+  });
+
+  it("runs Server Agent (hub) turns with the owner's scoped API key, not the break-glass key", async () => {
+    const spawnEnv = vi.mocked(resolveSessionCliSpawnEnv);
+    spawnEnv.mockClear();
+    await spawnTurn('claude-code', { sessionMode: 'hub' });
+    expect(spawnEnv).toHaveBeenCalledWith(expect.objectContaining({ userScopedApiKey: true }));
+
+    spawnEnv.mockClear();
+    await spawnTurn('claude-code', { sessionMode: 'consult' });
+    expect(spawnEnv).toHaveBeenCalledWith(expect.objectContaining({ userScopedApiKey: false }));
   });
 });

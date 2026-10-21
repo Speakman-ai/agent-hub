@@ -195,6 +195,7 @@ describe('requiredSkillIdsForSession', () => {
       'agent-hub-kanban',
       'agent-hub-sessions',
       'agent-hub-heartbeats-crons',
+      'agent-hub-wiki',
       'google',
     ]);
   });

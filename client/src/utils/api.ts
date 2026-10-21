@@ -683,6 +683,14 @@ function infraQuery(params: Record<string, unknown>): string {
   return qs ? `?${qs}` : '';
 }
 
+/** The signed-in user's Server Agent name and instructions. */
+export interface ServerAgentSettingsWire {
+  name: string;
+  instructions: string;
+  defaultName: string;
+  effectiveName: string;
+}
+
 export const api = {
   organizations: createOrganizationApi(fetchJSON),
   organizationAgents: createOrganizationAgentApi(fetchJSON),
@@ -1161,6 +1169,12 @@ export const api = {
       agent: Record<string, unknown>;
       clearedSessionId: string | null;
     }>('/me/hub-session/clear', { method: 'POST' }),
+  getServerAgentSettings: () => fetchJSON<ServerAgentSettingsWire>('/me/server-agent'),
+  putServerAgentSettings: (body: { name?: string; instructions?: string }) =>
+    fetchJSON<ServerAgentSettingsWire>('/me/server-agent', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
   getHubModel: () => fetchJSON<{ engine: string; model: string }>('/me/hub-model'),
   putHubModel: (body: { engine: string; model: string }) =>
     fetchJSON<{ engine: string; model: string }>('/me/hub-model', {
