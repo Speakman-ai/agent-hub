@@ -278,6 +278,7 @@ import createSupportTicketsOverviewRoutes from './routes/support-tickets-overvie
 import createFinalizeRoutes from './routes/finalize.js';
 import createFinalizeParityRoutes from './routes/finalize-parity.js';
 import createFinalizeQuarantineRoutes from './routes/finalize-quarantine.js';
+import createFinalizeTestInventoryRoutes from './routes/finalize-test-inventory.js';
 import createFinalizeWizardRoutes from './routes/finalize-wizard.js';
 import createFinalizeCiConfigRoutes from './routes/finalize-ci-config.js';
 import createDeploymentRoutes from './routes/deployments.js';
@@ -2543,6 +2544,7 @@ app.use(
 app.use(createFinalizeRoutes(routeDeps));
 app.use(createFinalizeParityRoutes(routeDeps));
 app.use(createFinalizeQuarantineRoutes(routeDeps));
+app.use(createFinalizeTestInventoryRoutes(routeDeps));
 app.use(createFinalizeWizardRoutes(routeDeps));
 app.use(createFinalizeCiConfigRoutes(routeDeps));
 app.use(createDeploymentRoutes(routeDeps));

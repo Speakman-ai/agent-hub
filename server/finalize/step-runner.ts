@@ -83,6 +83,7 @@ import type {
   Stmts,
 } from '../types.js';
 import { FINALIZE_STEP_SHELL } from './ci-config.js';
+import { withJunitDirPrepare } from './runner-exec-args.js';
 import type { CiConfig, CiStep } from './ci-config.js';
 import { listFinalizeRunSteps } from './step-output.js';
 import {
@@ -1822,7 +1823,8 @@ export const defaultSpawnStep: SpawnStepFn = ({ step, cwd, env }) => {
   // bin + flags derived from `FINALIZE_STEP_SHELL` at module load. Appending
   // `step.run` as the trailing argv element preserves `bash -c` semantics —
   // the user's script is one argument, no word-splitting.
-  const child: ChildProcess = spawn(STEP_SHELL_BIN, [...STEP_SHELL_FLAGS, step.run], {
+  const run = withJunitDirPrepare(step.run, env);
+  const child: ChildProcess = spawn(STEP_SHELL_BIN, [...STEP_SHELL_FLAGS, run], {
     cwd,
     env: env ?? process.env,
     stdio: ['ignore', 'pipe', 'pipe'],

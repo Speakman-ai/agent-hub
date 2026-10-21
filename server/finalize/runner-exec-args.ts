@@ -260,11 +260,28 @@ export function buildStartJobContainerArgv(opts: JobContainerOptions): string[] 
   return ['docker', ...args];
 }
 
+/** Env var every Finalize step sees: the directory its JUnit XML goes in. */
+export const FINALIZE_JUNIT_DIR_ENV = 'FINALIZE_JUNIT_DIR';
+
+/**
+ * Prefix `run` with a `mkdir -p` of `FINALIZE_JUNIT_DIR` when the step env
+ * carries it, so `go-junit-report > "$FINALIZE_JUNIT_DIR/go.xml"` works
+ * without the job creating the directory. The step's own script is unchanged
+ * and the mkdir never fails the step. Used by every executor (DinD exec,
+ * native host, remote agent) so the contract is the same everywhere.
+ */
+export function withJunitDirPrepare(run: string, env: NodeJS.ProcessEnv | undefined): string {
+  const dir = env?.[FINALIZE_JUNIT_DIR_ENV];
+  if (!dir) return run;
+  return `mkdir -p "$${FINALIZE_JUNIT_DIR_ENV}" 2>/dev/null || true\n${run}`;
+}
+
 /** Build argv for `docker exec -u runner ... bash -c <run>`. */
 export function buildExecJobStepArgv(opts: ExecJobStepOptions): string[] {
   const args = ['exec', '-i', '-u', RUNNER_USER, '-w', FINALIZE_RUNNER_WORKSPACE];
-  pushEnvArgs(args, finalizeRunnerEnv(opts.env));
-  args.push(opts.containerName, ...STEP_SHELL_ARGV, opts.run);
+  const env = finalizeRunnerEnv(opts.env);
+  pushEnvArgs(args, env);
+  args.push(opts.containerName, ...STEP_SHELL_ARGV, withJunitDirPrepare(opts.run, env));
   return ['docker', ...args];
 }
 

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Readable } from 'stream';
+import { JUNIT_CLEANUP_SCRIPT } from './test-inventory.js';
 import { parseCiConfig } from './ci-config.js';
 import { expandJobInstances, buildFinalizeBuiltinEnv } from './ci-config-jobs.js';
 import {
@@ -341,7 +342,9 @@ jobs:
 
     expect(result.status).toBe('success');
     expect(acquired).toEqual([{ runsOn: 'macos-14', image: '' }]);
-    expect(leaseCalls).toEqual(['xcodebuild test -scheme App']); // ran on the fleet agent
+    // Ran on the fleet agent, then the agent's /tmp JUnit dir was cleaned
+    // through the same lease (a native runner keeps /tmp across jobs).
+    expect(leaseCalls).toEqual(['xcodebuild test -scheme App', JUNIT_CLEANUP_SCRIPT]);
     expect(localCalls).toEqual([]); // never ran on the Hub host
   });
 

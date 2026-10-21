@@ -5,7 +5,16 @@
  * containers (or host bash for `runs-on: host`) and schedules shards
  * with a bounded parallelism pool. DinD is the only container runner mode.
  */
+import {
+  cleanupJunitDir,
+  collectJunitFiles,
+  FINALIZE_JUNIT_DIR_ENV,
+  junitDirForInstance,
+  testFilesFromJunit,
+  type InstanceJunitReport,
+} from './test-inventory.js';
 import { randomUUID } from 'crypto';
+import { rm } from 'fs/promises';
 import type { CiConfig, CiStep, JobInstance } from './ci-config-jobs.js';
 import type { FinalizeRunStepRow } from '../types.js';
 import {
@@ -113,6 +122,13 @@ export interface JobRunnerOptions {
     matrixKey: string;
     status: 'failure' | 'timeout';
   }) => void;
+  /**
+   * When set, each instance's JUnit XML is read back from `FINALIZE_JUNIT_DIR`
+   * after its steps finish and reported here (only for a real result: not on
+   * infra errors or cancels). Push CI sets it to build the test inventory;
+   * session Finalize runs leave it unset, so they pay nothing.
+   */
+  onJunitReport?: (report: InstanceJunitReport) => void;
 }
 
 interface PlannedStep {
@@ -532,6 +548,13 @@ async function runJobInstance(
   const image = resolveRunsOnImage(instance.runsOn);
   let spawnStep: SpawnStepFn = deps.spawnStep ?? defaultSpawnStep;
   const mergedEnv = resolveMergedEnv(instance, opts.env);
+  // Set after the ci.yaml env so a job can't point it somewhere the collector
+  // won't look.
+  mergedEnv[FINALIZE_JUNIT_DIR_ENV] = junitDirForInstance(
+    opts.runId,
+    instance.jobId,
+    instance.matrixKey,
+  );
   const composeProjectName = sanitizeComposeProjectName(
     opts.runId,
     instance.jobId,
@@ -871,10 +894,75 @@ async function runJobInstance(
     return combineResults(main, ran);
   };
 
-  let result: StepRunResult;
+  // JUnit bookkeeping before the runner goes away. Container runners are
+  // destroyed with their /tmp; native and host runners keep it, so the dir is
+  // removed there on every path, collected or not (the collector removes it
+  // itself when it completes).
+  const persistentTmp = !isContainerRunsOn(instance.runsOn);
+  const finishJunit = async (res: StepRunResult | undefined): Promise<void> => {
+    const report = (r: Omit<InstanceJunitReport, 'jobId' | 'matrixKey'>): void => {
+      try {
+        opts.onJunitReport?.({ jobId: instance.jobId, matrixKey: instance.matrixKey, ...r });
+      } catch (err) {
+        console.warn(
+          `[finalize-job-runner] ${instance.jobId}/${instance.matrixKey} junit report failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    };
+    try {
+      // Only a passing instance is known to have run its whole test set: a
+      // failed one may have bailed early, so its report is partial.
+      if (opts.onJunitReport && res?.status === 'success' && !opts.signal?.aborted) {
+        const collection = await collectJunitFiles({
+          spawnStep,
+          cwd: worktreePath,
+          env: mergedEnv,
+        });
+        const attribution = collection.complete
+          ? testFilesFromJunit(collection.files, { workspaceRoots: [worktreePath] })
+          : { files: [], status: 'incomplete' as const, reason: collection.reason };
+        report({
+          testFiles: attribution.files,
+          status: attribution.status,
+          ...(attribution.reason ? { reason: attribution.reason } : {}),
+        });
+        if (collection.complete || !persistentTmp) return;
+      } else if (opts.onJunitReport) {
+        report({
+          testFiles: [],
+          status: 'incomplete',
+          reason: opts.signal?.aborted
+            ? 'cancelled'
+            : res
+              ? `instance ended ${res.status}`
+              : 'instance threw before finishing',
+        });
+      }
+      if (!persistentTmp) return;
+      if (lease) {
+        // A leased native runner (remote macOS): its /tmp is only reachable
+        // through the executor.
+        await cleanupJunitDir({ spawnStep, cwd: worktreePath, env: mergedEnv });
+      } else {
+        // In-process host job: the dir is on this machine.
+        await rm(mergedEnv[FINALIZE_JUNIT_DIR_ENV] ?? '', { recursive: true, force: true });
+      }
+    } catch (err) {
+      console.warn(
+        `[finalize-job-runner] ${instance.jobId}/${instance.matrixKey} junit bookkeeping failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  };
+
+  let result: StepRunResult | undefined;
   try {
     result = await runAll();
   } finally {
+    await finishJunit(result);
     if (lease) {
       await lease.release();
     }
@@ -1144,6 +1232,18 @@ export async function runJobPhase(
     };
   };
 
+  // One JUnit report per instance, the last attempt winning (infra and
+  // `retries:` reruns report again). Emitted after the phase, so an instance
+  // that was skipped, reused or never reported still reads as incomplete
+  // instead of silently missing from its job.
+  const junitReports = opts.onJunitReport ? new Map<string, InstanceJunitReport>() : null;
+  const instanceOpts: JobRunnerOptions = junitReports
+    ? {
+        ...opts,
+        onJunitReport: (r) => junitReports.set(jobInstanceKey(r.jobId, r.matrixKey), r),
+      }
+    : opts;
+
   const runInstance = async (instance: JobInstance): Promise<JobInstanceOutcome> => {
     if (isReused(instance)) {
       return {
@@ -1164,7 +1264,7 @@ export async function runJobPhase(
 
     let failureRerunCount = 0;
     const outcome = await runInstanceWithRetries(
-      () => runJobInstance(deps, opts, instance, planned, budgetStartedAt, budgetMs, now),
+      () => runJobInstance(deps, instanceOpts, instance, planned, budgetStartedAt, budgetMs, now),
       {
         maxInfraAttempts: MAX_INSTANCE_INFRA_ATTEMPTS,
         maxFailureRetries: instance.retries,
@@ -1272,6 +1372,27 @@ export async function runJobPhase(
     // Release the run-signal subscription so a shared signal doesn't accumulate
     // one listener per checks round across the run's lifetime.
     unsubscribeAbort?.();
+  }
+  if (junitReports && opts.onJunitReport) {
+    for (const instance of instances) {
+      const key = jobInstanceKey(instance.jobId, instance.matrixKey);
+      const report = junitReports.get(key) ?? {
+        jobId: instance.jobId,
+        matrixKey: instance.matrixKey,
+        testFiles: [],
+        status: 'incomplete',
+        reason: isReused(instance) ? 'carried over from an earlier round' : 'instance did not run',
+      };
+      try {
+        opts.onJunitReport(report);
+      } catch (err) {
+        console.warn(
+          `[finalize-job-runner] junit report failed for ${instance.jobId}/${instance.matrixKey}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
   }
 
   for (const outcome of outcomes) {

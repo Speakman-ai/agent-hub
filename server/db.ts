@@ -26,6 +26,7 @@ import { PR_ENVIRONMENT_SHARE_SCHEMA } from './preview/pr-environment-share.js';
 import { PR_ENVIRONMENT_COMMENTS_SCHEMA } from './preview/pr-environment-comment.js';
 import { BACKGROUND_SHELLS_SCHEMA } from './background-shells/background-shell-schema.js';
 import { FINALIZE_METRICS_SCHEMA } from './finalize/metrics-schema.js';
+import { TEST_INVENTORY_SCHEMA_SQL } from './finalize/test-inventory-schema.js';
 import { FINALIZE_PARITY_SCHEMA } from './finalize/parity-store.js';
 import { FINALIZE_SERVER_CI_SCHEMA } from './finalize/ci-config-store.js';
 import { stuckRunProgressClockSql } from './finalize/stuck-run-clock-sql.js';
@@ -1327,6 +1328,7 @@ function initDb(dataDir: string): void {
   // See `server/finalize/metrics-schema.ts` for the column contract and
   // `server/finalize/metrics.ts` for the emitter / aggregation surface.
   db.exec(FINALIZE_METRICS_SCHEMA);
+  db.exec(TEST_INVENTORY_SCHEMA_SQL);
 
   // Finalize↔GitHub parity harness — one row per (project, commit) recording
   // the Finalize verdict vs the GitHub Actions verdict + divergence class. See

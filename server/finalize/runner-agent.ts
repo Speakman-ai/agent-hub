@@ -16,7 +16,11 @@ import { stat } from 'fs/promises';
 import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
 import path from 'path';
-import { buildExecJobStepArgv, sanitizeJobContainerName } from './runner-exec-args.js';
+import {
+  buildExecJobStepArgv,
+  sanitizeJobContainerName,
+  withJunitDirPrepare,
+} from './runner-exec-args.js';
 import { startJobContainer, stopJobContainer } from './job-container.js';
 import {
   startHostSampler,
@@ -739,7 +743,7 @@ export function nativeHostOps(opts?: { spawnFn?: typeof spawn }): AgentDocker {
     },
     execStep(cwd, run, env, onLog, signal) {
       return runExecStepChild({
-        argv: ['bash', '-euo', 'pipefail', '-c', run],
+        argv: ['bash', '-euo', 'pipefail', '-c', withJunitDirPrepare(run, env)],
         cwd,
         // Host toolchain env (PATH to Xcode, Homebrew, Node) MINUS runner-control
         // and host-credential vars (fleet token, AWS keys, …), then the job's own

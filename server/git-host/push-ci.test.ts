@@ -1044,3 +1044,58 @@ describe('PR checks-failed hook (auto-resolve trigger)', () => {
     expect(fired).toBe(false);
   });
 });
+
+describe('push CI test inventory', () => {
+  const report = {
+    jobId: 'unit',
+    matrixKey: '',
+    testFiles: ['src/a.test.ts'],
+    status: 'reported' as const,
+  };
+
+  it('a full default-branch run collects JUnit and writes the inventory at its sha', async () => {
+    const { project, headSha } = await seedHostedProject();
+    const runJobPhase = vi.fn(async (_d: unknown, opts: Record<string, unknown>) => {
+      expect(typeof opts.onJunitReport).toBe('function');
+      (opts.onJunitReport as (r: typeof report) => void)(report);
+      return { status: 'failure' as const, stepResults: [], activeSecondsBilled: 1 };
+    });
+    await maybeRunPushCi(project, ['refs/heads/main'], {
+      stmts,
+      broadcast: () => {},
+      runJobPhase: runJobPhase as never,
+      mergeSecrets: () => {},
+      recordDefaultBranch: vi.fn() as never,
+    });
+    const { readTestInventory } = await import('../finalize/test-inventory.js');
+    const { getDb } = await import('../db.js');
+    const inv = readTestInventory(getDb(), project.id);
+    expect(inv?.state).toMatchObject({ sha: headSha, branch: 'main' });
+    expect(inv?.entries).toEqual([{ jobId: 'unit', matrixKey: '', testFile: 'src/a.test.ts' }]);
+  });
+
+  it('PR CI and per-job re-runs never collect or write it', async () => {
+    const { project, headSha } = await seedHostedProject();
+    const recordTestInventory = vi.fn(async () => true);
+    const ok = vi.fn(async (_d: unknown, opts: Record<string, unknown>) => {
+      expect(opts.onJunitReport).toBeUndefined();
+      return { status: 'success' as const, stepResults: [], activeSecondsBilled: 1 };
+    });
+    const deps = {
+      stmts,
+      broadcast: () => {},
+      runJobPhase: ok as never,
+      mergeSecrets: () => {},
+      recordTestInventory,
+    };
+    await maybeRunPrCi(project, { number: 3, head_branch: 'main', base_branch: 'main' }, deps);
+    await rerunCiRun(
+      project,
+      { branch: 'main', head_sha: headSha, trigger_source: 'git_push' },
+      deps,
+      { jobId: 'unit' },
+    );
+    expect(ok).toHaveBeenCalled();
+    expect(recordTestInventory).not.toHaveBeenCalled();
+  });
+});

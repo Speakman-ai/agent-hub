@@ -60,6 +60,11 @@ import type { CancelSignal } from '../finalize/fix-dispatch.js';
 import { resolvePushConcurrency } from './push-concurrency.js';
 import { recordDefaultBranchCiResult } from '../finalize/default-branch-health.js';
 import { originMirrorExists, originMirrorPath } from './origin-mirror.js';
+import {
+  recordTestInventoryFromRun,
+  type InstanceJunitReport,
+} from '../finalize/test-inventory.js';
+import { getDb } from '../db.js';
 
 const execFileP = promisify(execFile);
 
@@ -82,6 +87,10 @@ export interface PushCiDeps {
   onAdmissionHead?: (headSha: string) => Promise<void>;
   /** Test seam — defaults to {@link recordDefaultBranchCiResult}. */
   recordDefaultBranch?: typeof recordDefaultBranchCiResult;
+  /** Test seam — defaults to {@link recordTestInventoryFromRun} on the shared db. */
+  recordTestInventory?: (
+    args: Parameters<typeof recordTestInventoryFromRun>[1],
+  ) => Promise<boolean>;
 }
 
 /**
@@ -392,6 +401,7 @@ export function maybeRunPushCi(
           runCiForSha(project, deps, dataDir, {
             repoDir: bare,
             branch: defaultBranch,
+            defaultBranch,
             headSha,
             trigger: 'git_push',
             skipWhenNoConfig: false,
@@ -526,6 +536,7 @@ export function runMirroredDefaultBranchCi(
         runCiForSha(project, deps, dataDir, {
           repoDir,
           branch: source.branch,
+          defaultBranch: source.branch,
           headSha,
           trigger: 'git_push',
           skipWhenNoConfig: false,
@@ -571,9 +582,15 @@ export function rerunCiRun(
   if (realRunnerDisabled(deps)) return Promise.resolve();
   const dataDir = deps.dataDir ?? config.dataDir;
   let repoDir: string;
+  // A git_push run only ever covers the default branch, so a re-run of one
+  // keeps that branch; the mirror tracks the default branch alone.
+  let defaultBranch: Promise<string | null> = Promise.resolve(
+    original.trigger_source === 'git_push' ? original.branch : null,
+  );
   if (project.gitHost === 'agenthub') {
     if (!hostedRepoExists(project.id, dataDir)) return Promise.resolve();
     repoDir = gitHostRepoPath(project.id, dataDir);
+    defaultBranch = hostedRepoDefaultBranch(project.id, dataDir).catch(() => null);
   } else {
     // Another host: the watcher's mirror already holds every sha it ran.
     if (!originMirrorExists(project.id, dataDir)) return Promise.resolve();
@@ -583,17 +600,21 @@ export function rerunCiRun(
 
   const key = ciGroupKey(project.id, original.branch);
   const mode = resolvePushConcurrency(project, 'ci');
-  return enqueueInGroup(key, { supersede: false, mode, headSha: original.head_sha }, (signal) =>
-    runCiForSha(project, deps, dataDir, {
-      repoDir,
-      branch: original.branch,
-      headSha: original.head_sha,
-      trigger,
-      skipWhenNoConfig: false, // a re-run of a real run: failures surface
-      idempotencyKey: `rerun|${uuidv4()}`,
-      jobFilter: opts.jobId,
-      signal,
-    }),
+  return enqueueInGroup(
+    key,
+    { supersede: false, mode, headSha: original.head_sha },
+    async (signal) =>
+      runCiForSha(project, deps, dataDir, {
+        repoDir,
+        branch: original.branch,
+        defaultBranch: (await defaultBranch) ?? undefined,
+        headSha: original.head_sha,
+        trigger,
+        skipWhenNoConfig: false, // a re-run of a real run: failures surface
+        idempotencyKey: `rerun|${uuidv4()}`,
+        jobFilter: opts.jobId,
+        signal,
+      }),
   );
 }
 
@@ -606,6 +627,8 @@ async function runCiForSha(
     /** Local repo holding `headSha`: the hosted bare repo or an origin mirror. */
     repoDir: string;
     branch: string;
+    /** The repo's default branch, when known. Gates the test-inventory write. */
+    defaultBranch?: string;
     headSha: string;
     trigger: 'git_push' | 'pr_push';
     /** PR trigger: missing config skips silently instead of failing. */
@@ -762,6 +785,15 @@ async function runCiForSha(
     });
 
     const ciRunnerClass = resolveCiRunnerClass(project);
+    // Full default-branch runs learn the test inventory (which instance runs
+    // which test file) from the JUnit each instance wrote. Other runs skip
+    // collection entirely.
+    const collectInventory =
+      trigger === 'git_push' &&
+      !args.jobFilter &&
+      !!args.defaultBranch &&
+      branch === args.defaultBranch;
+    const junitReports: InstanceJunitReport[] = [];
     const result = await (deps.runJobPhase ?? runJobPhase)(
       { stmts: deps.stmts, broadcast: deps.broadcast },
       {
@@ -775,6 +807,7 @@ async function runCiForSha(
         projectId: project.id,
         ...(ciRunnerClass ? { runnerClass: ciRunnerClass } : {}),
         ...(signal ? { signal } : {}),
+        ...(collectInventory ? { onJunitReport: (r) => junitReports.push(r) } : {}),
         onInstanceFailed: ({ jobId, matrixKey }) =>
           firePrChecksFailed(
             project,
@@ -813,6 +846,42 @@ async function runCiForSha(
         );
       }
     };
+
+    const recordInventory = async (): Promise<void> => {
+      if (!collectInventory || signal?.aborted) return;
+      try {
+        const write =
+          deps.recordTestInventory ??
+          ((a: Parameters<typeof recordTestInventoryFromRun>[1]) =>
+            recordTestInventoryFromRun(getDb(), a));
+        const wrote = await write({
+          projectId: project.id,
+          trigger,
+          branch,
+          defaultBranch: args.defaultBranch ?? '',
+          fullRun: !args.jobFilter,
+          status: result.status,
+          headSha,
+          runId,
+          reports: junitReports,
+          repoDir: bare,
+        });
+        if (wrote) {
+          const files = junitReports.reduce((n, r) => n + r.testFiles.length, 0);
+          console.log(
+            `[push-ci] run=${runId} test inventory @${shortSha}: ${files} file(s) across ` +
+              `${junitReports.filter((r) => r.testFiles.length > 0).length} instance(s)`,
+          );
+        }
+      } catch (err: unknown) {
+        console.warn(
+          `[push-ci] run=${runId} test inventory write failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    };
+    await recordInventory();
 
     if (signal?.aborted) {
       cancelled();

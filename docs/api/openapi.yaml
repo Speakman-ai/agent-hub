@@ -6318,6 +6318,64 @@ components:
         - project_id
         - window_days
         - instances
+    TestInventoryError:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+      required:
+        - error
+    TestInventoryEntry:
+      type: object
+      properties:
+        job_id:
+          type: string
+        matrix_key:
+          type: string
+          description: Matrix shard key; empty for a plain job.
+        test_file:
+          type: string
+          description: Test file as the JUnit report named it (repo-relative when the runner gave an absolute path under the workspace; Go reports the package import path).
+      required:
+        - job_id
+        - matrix_key
+        - test_file
+      description: One test file and the job instance that ran it.
+    TestInventoryLookupResponse:
+      type: object
+      properties:
+        project_id:
+          type: string
+        base_sha:
+          type: string
+        status:
+          type: string
+          enum:
+            - ok
+            - stale
+            - missing
+        sha:
+          type: string
+          description: Head sha of the full default-branch run the inventory is from.
+        branch:
+          type: string
+        recorded_at:
+          type: integer
+        reason:
+          type: string
+          description: Why the inventory is stale.
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/TestInventoryEntry"
+          description: Present only when `status` is `ok`.
+      required:
+        - project_id
+        - base_sha
+        - status
+      description: "`ok`: the inventory sha is an ancestor of `base_sha` and `entries` is usable. `stale`: it is not (or ancestry could not be determined). `missing`: no full default-branch run has recorded an inventory. Selection treats `stale` and `missing` as a forced full run."
     FinalizeWizardErrorResponse:
       type: object
       properties:
@@ -32254,6 +32312,50 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/QuarantineError"
+  /api/projects/{projectId}/finalize/test-inventory:
+    get:
+      tags:
+        - Finalize
+      summary: Look up the test inventory for a base sha
+      description: Returns which job instance (job + matrix shard) runs which test file, learned from the JUnit XML of the last full CI run on the default branch. Only those runs write it; session and selected runs never do.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Session base commit to check staleness against.
+          required: true
+          description: Session base commit to check staleness against.
+          name: baseSha
+          in: query
+      responses:
+        "200":
+          description: Inventory lookup result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TestInventoryLookupResponse"
+        "400":
+          description: Missing or malformed baseSha.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TestInventoryError"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TestInventoryError"
+        "500":
+          description: Inventory could not be read.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TestInventoryError"
   /api/projects/{projectId}/finalize/environment-draft:
     get:
       tags:
