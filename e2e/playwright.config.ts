@@ -18,6 +18,7 @@ import { finalizeJunitReporter } from './finalize-junit.js';
 
 const SERVER_PORT = Number(process.env.E2E_SERVER_PORT) || 4051;
 const CLIENT_PORT = Number(process.env.E2E_CLIENT_PORT) || 4050;
+const TEST_DIR = './tests';
 const DATA_DIR = path.join(os.tmpdir(), 'agent-hub-e2e-data');
 
 // Ensure the data directory exists before the webServer processes start.
@@ -28,7 +29,7 @@ if (!existsSync(path.join(DATA_DIR, 'projects.json'))) {
 }
 
 export default defineConfig({
-  testDir: './tests',
+  testDir: TEST_DIR,
   fullyParallel: false, // run tests sequentially — they share a single server
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
@@ -37,7 +38,7 @@ export default defineConfig({
     ...(process.env.CI
       ? ([['github'], ['html', { open: 'never' }]] as const)
       : ([['list'], ['html', { open: 'on-failure' }]] as const)),
-    ...finalizeJunitReporter('e2e'),
+    ...finalizeJunitReporter('e2e', TEST_DIR),
   ],
 
   use: {

@@ -70,21 +70,24 @@ jobs:
         run: |
           npm ci --ignore-scripts --include=dev
           # JUnit feeds the Finalize test inventory (dynamic test selection).
-          # FINALIZE_JUNIT_DIR is injected per instance; the vitest configs
-          # name each testcase by its repo-relative file. A Hub that predates
-          # FINALIZE_JUNIT_DIR gets no flags rather than a report written to /.
+          # FINALIZE_JUNIT_DIR is injected per instance. vitest names files
+          # relative to its package, so `junit <report> <package>` writes a
+          # <report>.xml.path-root sidecar the inventory prefixes them with. A
+          # Hub that predates FINALIZE_JUNIT_DIR gets no flags rather than a
+          # report written to /.
           junit() {
             [ -n "$FINALIZE_JUNIT_DIR" ] || return 0
+            mkdir -p "$FINALIZE_JUNIT_DIR" && printf '%s\n' "$2" > "$FINALIZE_JUNIT_DIR/$1.xml.path-root"
             echo "--reporter=default --reporter=junit --outputFile.junit=$FINALIZE_JUNIT_DIR/$1.xml"
           }
           if [ "$FINALIZE_MATRIX_SUITE" = "server" ]; then
             npm rebuild better-sqlite3
             (cd server && npm ci --include=dev)
-            (cd server && npx vitest run --shard="$FINALIZE_MATRIX_SHARD/$FINALIZE_MATRIX_SHARDS" $(junit "server-$FINALIZE_MATRIX_SHARD"))
+            (cd server && npx vitest run --shard="$FINALIZE_MATRIX_SHARD/$FINALIZE_MATRIX_SHARDS" $(junit "server-$FINALIZE_MATRIX_SHARD" server))
           elif [ "$FINALIZE_MATRIX_SUITE" = "client" ]; then
             (cd shared && npm ci --include=dev)
             (cd client && npm ci --include=dev)
-            (cd client && npm test -- --shard="$FINALIZE_MATRIX_SHARD/$FINALIZE_MATRIX_SHARDS" $(junit "client-$FINALIZE_MATRIX_SHARD"))
+            (cd client && npm test -- --shard="$FINALIZE_MATRIX_SHARD/$FINALIZE_MATRIX_SHARDS" $(junit "client-$FINALIZE_MATRIX_SHARD" client))
           elif [ "$FINALIZE_MATRIX_SUITE" = "electron" ]; then
             (cd shared && npm ci --include=dev)
             # electron/ has no package.json, so `test:electron` runs vitest from
@@ -98,14 +101,14 @@ jobs:
             # --ignore-scripts means the electron binary / native rebuild stay
             # skipped (no scripts run for the pure-prebuilt binding package).
             npm install --include=optional --ignore-scripts --no-audit --no-fund --no-save
-            npm run test:electron -- $(junit electron-1)
+            npm run test:electron -- $(junit electron-1 electron)
           elif [ "$FINALIZE_MATRIX_SUITE" = "mobile" ]; then
             (cd shared && npm ci --include=dev)
             (cd mobile && npm ci --include=dev)
-            (cd mobile && npm test -- --shard="$FINALIZE_MATRIX_SHARD/$FINALIZE_MATRIX_SHARDS" $(junit "mobile-$FINALIZE_MATRIX_SHARD"))
+            (cd mobile && npm test -- --shard="$FINALIZE_MATRIX_SHARD/$FINALIZE_MATRIX_SHARDS" $(junit "mobile-$FINALIZE_MATRIX_SHARD" mobile))
           elif [ "$FINALIZE_MATRIX_SUITE" = "shared" ]; then
             (cd shared && npm ci --include=dev)
-            (cd shared && npm test -- $(junit shared-1))
+            (cd shared && npm test -- $(junit shared-1 shared))
           fi
 
   # ── GHA `lint` gate (main-checks.yml) ───────────────────────────────

@@ -1,13 +1,11 @@
 import { defineConfig } from 'vitest/config';
 import os from 'os';
 import path from 'path';
-import { fileURLToPath } from 'url';
 
 // Compute a per-process tmp data dir at config-load time so the env var is
 // present BEFORE any test module imports server/config.ts (which reads
 // AGENT_HUB_DATA_DIR at module load). Setting this inside test/setup.ts was
 // insufficient and caused a data-loss incident — see PR feature/designs-wipe-guard.
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const TEST_DATA_DIR = path.join(os.tmpdir(), `agent-hub-test-${process.pid}`);
 
 export default defineConfig({
@@ -20,19 +18,6 @@ export default defineConfig({
     // test run.
     exclude: ['**/node_modules/**', 'provisioning/templates/*/files/**'],
     setupFiles: ['./test/setup.ts'],
-    // Finalize test inventory (see ci.yaml): name each JUnit testcase by its
-    // repo-relative file so a report maps back to the file a session ran.
-    // ci.yaml turns the reporter on from the CLI; this only supplies its
-    // options. The key is omitted outside Finalize because an explicit
-    // `reporters: undefined` crashes vitest startup.
-    ...(process.env.FINALIZE_JUNIT_DIR
-      ? {
-          reporters: [
-            'default',
-            ['junit', { classnameTemplate: ({ filepath }) => path.relative(REPO_ROOT, filepath) }],
-          ],
-        }
-      : {}),
     // File-level parallelism is ON. Each test file gets a fresh random subdir
     // under TEST_DATA_DIR (set in test/setup.ts before any server module
     // loads), so SQLite files / projects.json / auth.json / etc. never leak

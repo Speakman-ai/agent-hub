@@ -16,6 +16,8 @@ import {
   collectJunitFiles,
   inventoriedJobs,
   JUNIT_MAX_FILES,
+  JUNIT_PATH_ROOT_SUFFIX,
+  parsePathRoot,
   ensureTestInventorySchema,
   JUNIT_COLLECT_SCRIPT,
   JUNIT_COLLECT_STEP_INDEX,
@@ -325,6 +327,92 @@ function fakeChild(stdout: string, code = 0, opts: { hang?: boolean } = {}): Spa
   }, 0);
   return child;
 }
+
+describe('path-root sidecars', () => {
+  const PW_E2E = `<testsuites id="" name="" tests="1" failures="0" skipped="0" errors="0" time="1">
+<testsuite name="x.spec.ts" timestamp="2026-10-20T10:00:00.000Z" hostname="chromium" tests="1">
+<testcase name="x › works" classname="x.spec.ts" time="1"></testcase>
+</testsuite>
+</testsuites>`;
+  const root = (report: string, dir: string) => ({
+    name: `${report}${JUNIT_PATH_ROOT_SUFFIX}`,
+    xml: `${dir}\n`,
+  });
+
+  it('a Playwright report for e2e/tests/x.spec.ts inventories as e2e/tests/x.spec.ts', () => {
+    expect(
+      testFilesFromJunit([{ name: 'e2e.xml', xml: PW_E2E }, root('e2e.xml', 'e2e/tests')]),
+    ).toEqual({ files: ['e2e/tests/x.spec.ts'], status: 'reported' });
+    // Without the sidecar the testDir-relative name is all there is.
+    expect(testFilesFromJunit([{ name: 'e2e.xml', xml: PW_E2E }]).files).toEqual(['x.spec.ts']);
+  });
+
+  it('prefixes vitest cases and empty suites alike, per report', () => {
+    expect(
+      testFilesFromJunit([
+        { name: 'server-1.xml', xml: VITEST },
+        root('server-1.xml', './server/'),
+        { name: 'nested/pw.xml', xml: PLAYWRIGHT },
+        root('nested/pw.xml', 'e2e/tests'),
+      ]),
+    ).toEqual({
+      files: [
+        'e2e/tests/auth/login.spec.ts',
+        'server/src/all-skipped.test.ts',
+        'server/src/b.test.tsx',
+        'server/src/utils/a.test.ts',
+      ],
+      status: 'reported',
+    });
+  });
+
+  it('leaves absolute file attributes to the workspace roots', () => {
+    expect(
+      testFilesFromJunit([{ name: 'j.xml', xml: JEST_JUNIT_FILE_ATTR }, root('j.xml', 'web')], {
+        workspaceRoots: ['/home/ci/repo'],
+      }).files,
+    ).toEqual(['web/src/Login.test.jsx']);
+  });
+
+  it('an invalid root voids the instance; a sidecar alone is no evidence', () => {
+    for (const bad of ['/abs', '../up', 'a/../../b', 'two\nlines']) {
+      const res = testFilesFromJunit([{ name: 'e2e.xml', xml: PW_E2E }, root('e2e.xml', bad)]);
+      expect(res.status, bad).toBe('incomplete');
+      expect(res.files).toEqual([]);
+    }
+    expect(testFilesFromJunit([root('e2e.xml', 'e2e/tests')])).toEqual({
+      files: [],
+      status: 'no_reports',
+    });
+  });
+
+  it('parsePathRoot normalizes to a repo-relative directory', () => {
+    expect(parsePathRoot('e2e/tests\n')).toBe('e2e/tests');
+    expect(parsePathRoot('./server//')).toBe('server');
+    expect(parsePathRoot('.')).toBe('');
+    expect(parsePathRoot('')).toBe('');
+    expect(parsePathRoot('C:/repo')).toBeNull();
+  });
+
+  it('the real collector script returns sidecars with their reports', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'junit-collect-root-'));
+    writeFileSync(path.join(dir, 'e2e.xml'), PW_E2E);
+    writeFileSync(path.join(dir, `e2e.xml${JUNIT_PATH_ROOT_SUFFIX}`), 'e2e/tests\n');
+    writeFileSync(path.join(dir, 'stray.path-root'), 'ignored');
+    try {
+      const res = await collectJunitFiles({
+        spawnStep: defaultSpawnStep,
+        cwd: os.tmpdir(),
+        env: { ...process.env, FINALIZE_JUNIT_DIR: dir },
+      });
+      expect(res.complete).toBe(true);
+      expect(res.files.map((f) => f.name).sort()).toEqual(['e2e.xml', 'e2e.xml.path-root']);
+      expect(testFilesFromJunit(res.files).files).toEqual(['e2e/tests/x.spec.ts']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('collector', () => {
   const block = (name: string, xml: string) =>

@@ -13,9 +13,10 @@ import { finalizeJunitReporter } from './finalize-junit.js';
 
 const SERVER_PORT = Number(process.env.E2E_ORG_SERVER_PORT) || 4061;
 const CLIENT_PORT = Number(process.env.E2E_ORG_CLIENT_PORT) || 4060;
+const TEST_DIR = './organizations';
 
 export default defineConfig({
-  testDir: './organizations',
+  testDir: TEST_DIR,
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: 0,
@@ -25,7 +26,7 @@ export default defineConfig({
   reporter: [
     [process.env.CI ? 'github' : 'list'],
     ['html', { open: 'never', outputFolder: 'playwright-report-organizations' }],
-    ...finalizeJunitReporter('e2e-organizations'),
+    ...finalizeJunitReporter('e2e-organizations', TEST_DIR),
   ],
   outputDir: 'test-results-organizations',
   use: {

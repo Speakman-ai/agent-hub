@@ -97,6 +97,15 @@ const END_MARKER = '@@FINALIZE_JUNIT_END';
 const DONE_MARKER = '@@FINALIZE_JUNIT_DONE ';
 const INCOMPLETE_MARKER = '@@FINALIZE_JUNIT_INCOMPLETE ';
 export const JUNIT_MAX_FILES = 500;
+
+/**
+ * Sidecar giving a report a path root: `<report>.xml.path-root` holds the
+ * repo-relative directory its relative file names start from. Reporters that
+ * name files relative to their own root (Playwright's testDir, vitest's
+ * package root) have no option to name them by repo path, so the job writes
+ * this next to the report instead.
+ */
+export const JUNIT_PATH_ROOT_SUFFIX = '.path-root';
 const MAX_FILE_MB = 16;
 /** Cap on captured collector stdout (base64 inflates the XML by a third). */
 export const JUNIT_MAX_CAPTURE_CHARS = 48 * 1024 * 1024;
@@ -104,7 +113,7 @@ const DEFAULT_COLLECT_TIMEOUT_MS = 120_000;
 const DEFAULT_CLEANUP_TIMEOUT_MS = 30_000;
 
 /**
- * Bash that prints every `*.xml` under the JUnit dir as base64 between
+ * Bash that prints every `*.xml` (and path-root sidecar) under the JUnit dir as base64 between
  * markers, then a DONE marker with the file count, then removes the dir.
  * Every command that could lose a report is checked: a `find` that could not
  * traverse a subdirectory, a report it can't size or read, more than the file
@@ -120,7 +129,7 @@ export const JUNIT_COLLECT_SCRIPT = [
   `inc() { printf '\\n${INCOMPLETE_MARKER}%s\\n' "$1"; }`,
   `if [ -z "$d" ] || [ ! -d "$d" ]; then printf '\\n${DONE_MARKER}0\\n'; exit 0; fi`,
   'list=$(mktemp 2>/dev/null) || { inc "could not create a temp file"; rm -rf "$d" 2>/dev/null; exit 0; }',
-  `if ! find "$d" -type f -name '*.xml' > "$list" 2>/dev/null; then`,
+  `if ! find "$d" -type f \\( -name '*.xml' -o -name '*.xml${JUNIT_PATH_ROOT_SUFFIX}' \\) > "$list" 2>/dev/null; then`,
   '  inc "could not read every directory under the JUnit dir"',
   '  rm -f "$list"; rm -rf "$d" 2>/dev/null; exit 0',
   'fi',
@@ -344,11 +353,20 @@ export interface ParseJunitOptions {
    * always included.
    */
   workspaceRoots?: string[];
+  /**
+   * Repo-relative directory prepended to every relative file name in the
+   * report (see {@link JUNIT_PATH_ROOT_SUFFIX}). Absolute names are still
+   * resolved against the workspace roots only.
+   */
+  pathRoot?: string;
 }
 
-function normalizePath(raw: string, roots: string[]): string | null {
+const isAbsolute = (p: string): boolean => p.startsWith('/') || /^[A-Za-z]:\//.test(p);
+
+function normalizePath(raw: string, roots: string[], pathRoot = ''): string | null {
   let p = raw.trim().replace(/\\/g, '/');
   if (!p) return null;
+  if (pathRoot && !isAbsolute(p)) p = `${pathRoot}/${p}`;
   for (const root of roots) {
     const r = root.replace(/\\/g, '/').replace(/\/+$/, '');
     if (r && (p === r || p.startsWith(`${r}/`))) {
@@ -357,7 +375,7 @@ function normalizePath(raw: string, roots: string[]): string | null {
     }
   }
   // Still absolute after stripping the workspace roots: outside the repo.
-  if (p.startsWith('/') || /^[A-Za-z]:\//.test(p)) return null;
+  if (isAbsolute(p)) return null;
   while (p.startsWith('./')) p = p.slice(2);
   p = p.replace(/\/{2,}/g, '/');
   if (!p || p.includes('\n') || p.split('/').includes('..')) return null;
@@ -572,7 +590,7 @@ export function analyzeJunitReport(xml: string, opts: ParseJunitOptions = {}): J
   const files = new Set<string>();
   const add = (raw: string | null | undefined): boolean => {
     if (!raw) return false;
-    const p = normalizePath(raw, roots);
+    const p = normalizePath(raw, roots, opts.pathRoot);
     if (!p) return false;
     files.add(p);
     return true;
@@ -633,6 +651,21 @@ export interface JunitAttribution {
 }
 
 /**
+ * A path-root sidecar's directory, repo-relative without a trailing slash
+ * (`''` for the repo root). Null when it is absolute, climbs out with `..`,
+ * or spans lines.
+ */
+export function parsePathRoot(raw: string): string | null {
+  let p = raw.trim().replace(/\\/g, '/');
+  if (p.includes('\n') || isAbsolute(p)) return null;
+  while (p.startsWith('./')) p = p.slice(2);
+  p = p.replace(/\/{2,}/g, '/').replace(/\/+$/, '');
+  if (p === '.') return '';
+  if (p.split('/').includes('..')) return null;
+  return p;
+}
+
+/**
  * Union of test files across every JUnit file one instance produced. All or
  * nothing: a report that isn't well-formed JUnit or has a testcase no file
  * could be attributed to (jest-junit without `addFileAttribute`, say) means
@@ -643,17 +676,29 @@ export function testFilesFromJunit(
   files: JunitFile[],
   opts: ParseJunitOptions = {},
 ): JunitAttribution {
-  if (files.length === 0) return { files: [], status: 'no_reports' };
+  const pathRoots = new Map<string, string>();
+  const reports: JunitFile[] = [];
+  for (const f of files) {
+    if (f.name.endsWith(JUNIT_PATH_ROOT_SUFFIX)) {
+      pathRoots.set(f.name.slice(0, -JUNIT_PATH_ROOT_SUFFIX.length), f.xml);
+    } else reports.push(f);
+  }
+  // A sidecar alone proves nothing: its report was never written.
+  if (reports.length === 0) return { files: [], status: 'no_reports' };
   const all = new Set<string>();
   const incomplete = (reason: string): JunitAttribution => ({
     files: [],
     status: 'incomplete',
     reason,
   });
-  for (const f of files) {
+  for (const f of reports) {
+    const rawRoot = pathRoots.get(f.name);
+    const pathRoot = rawRoot === undefined ? opts.pathRoot : parsePathRoot(rawRoot);
+    if (pathRoot === null)
+      return incomplete(`${f.name}: invalid path root ${JSON.stringify(rawRoot)}`);
     let a: JunitReportAnalysis;
     try {
-      a = analyzeJunitReport(f.xml, opts);
+      a = analyzeJunitReport(f.xml, { ...opts, pathRoot });
     } catch (err) {
       return incomplete(`${f.name}: ${err instanceof Error ? err.message : String(err)}`);
     }
