@@ -390,7 +390,7 @@ describe('prod.tfvars is committed config; tokens are individual GitHub secrets'
   it('commits prod.tfvars so fleet config is reviewable', () => {
     const tfvars = read(prodTfvarsPath);
     expect(tfvars.length).toBeGreaterThan(0);
-    expect(tfvars).toMatch(/finalize_runner_max_size\s*=\s*128/);
+    expect(tfvars).toMatch(/finalize_runner_max_size\s*=\s*190/);
     expect(tfvars).toMatch(/enable_finalize_runners\s*=\s*true/);
   });
 

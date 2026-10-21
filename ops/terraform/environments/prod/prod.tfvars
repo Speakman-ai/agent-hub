@@ -96,7 +96,7 @@ finalize_max_reclaim_retry_generations  = 5
 finalize_task_protection_expiry_minutes = 40
 finalize_fleet_dynamic_scale_down       = true
 finalize_runner_min_size                = 0
-finalize_runner_max_size                = 128
+finalize_runner_max_size                = 190
 # AMI id + cache/worktree bucket names are non-secret identifiers → overlay
 # (GitHub Variables; see secrets.tfvars.example).
 finalize_agent_desired_count            = 0
