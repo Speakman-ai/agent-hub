@@ -22,6 +22,7 @@ import { getRunnerJobLogsDb } from '../finalize/runner-logs-db.js';
 import type { AppConfig, FinalizeRunStepRow } from '../types.js';
 import { createFinalizeStepLogStore } from '../finalize/finalize-log-store.js';
 import { appendRunnerJobLog, enqueueRunnerJob } from '../finalize/runner-queue.js';
+import { TestSelectionComponent } from './finalize.openapi.js';
 
 let request: supertest.Agent;
 
@@ -239,6 +240,7 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest', () => {
       flakeRecovered: [],
       flakeGate: { status: 'clean', reason: null },
       inheritedFailures: null,
+      testSelection: null,
       phases: { checks: null, review: null },
     });
   });
@@ -277,6 +279,41 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest', () => {
     expect(res.body.run.id).not.toBe(older);
     expect(res.body.run.session_id).toBe(sessionId);
     expect(res.body.run.project_id).toBe(projectId);
+  });
+
+  it('exposes the parsed test selection manifest of the latest run', async () => {
+    const projectId = await freshProject();
+    const sessionId = `sess-${uuidv4().slice(0, 8)}`;
+    const runId = seedFinalizeRun({ projectId, sessionId, startedAt: 1_000 });
+    const selection = {
+      mode: 'dynamic' as const,
+      forcedFullReason: null,
+      inventorySha: 'inv-sha',
+      instances: [
+        {
+          jobId: 'unit',
+          matrixKey: 'shard-1',
+          selected: true,
+          sources: ['session' as const],
+          files: ['server/a.test.ts'],
+          reasons: [],
+        },
+        {
+          jobId: 'unit',
+          matrixKey: 'shard-2',
+          selected: false,
+          sources: [],
+          files: [],
+          reasons: [],
+        },
+      ],
+    };
+    getStmts().setFinalizeRunTestSelection.run(JSON.stringify(selection), runId);
+
+    const res = await request.get(`/api/sessions/${sessionId}/finalize-runs/latest`).expect(200);
+    expect(res.body.testSelection).toEqual(selection);
+    expect(TestSelectionComponent.parse(res.body.testSelection)).toEqual(selection);
+    expect(JSON.parse(res.body.run.test_selection)).toEqual(selection);
   });
 
   it('surfaces only the checks phase when a checks-only run reached ready_to_push', async () => {
@@ -359,6 +396,7 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest', () => {
       flakeRecovered: [],
       flakeGate: { status: 'clean', reason: null },
       inheritedFailures: null,
+      testSelection: null,
       phases: { checks: null, review: null },
     });
   });

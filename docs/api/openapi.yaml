@@ -1150,6 +1150,10 @@ components:
         pr_url:
           type: string
           nullable: true
+        test_selection:
+          type: string
+          nullable: true
+          description: Raw JSON of the dynamic test-selection manifest (see `FinalizeTestSelection`); `null` for full-mode runs. Endpoints that parse it expose `testSelection` / `test_selection` as an object.
       required:
         - id
         - card_id
@@ -1176,6 +1180,67 @@ components:
         - ended_at
         - pr_url
       description: A single finalize_runs row.
+    FinalizeTestSelection:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum:
+            - dynamic
+        forcedFullReason:
+          type: string
+          nullable: true
+          description: "Why every instance ran instead of a selection (fullRunPaths match, missing/stale inventory, reviewer `selection: full`, selection error, ...). `null` when the selection was applied."
+        inventorySha:
+          type: string
+          nullable: true
+          description: Default-branch commit of the JUnit test inventory used to map files to instances.
+        instances:
+          type: array
+          items:
+            type: object
+            properties:
+              jobId:
+                type: string
+              matrixKey:
+                type: string
+                description: Matrix shard key; empty for non-matrix jobs.
+              selected:
+                type: boolean
+                description: False when the instance was skipped (step rows read `not_selected`).
+              sources:
+                type: array
+                items:
+                  type: string
+                  enum:
+                    - session
+                    - reviewer
+                    - always
+                    - needs
+                    - unmapped
+                    - diff
+              files:
+                type: array
+                items:
+                  type: string
+                description: Test files that pulled the instance in.
+              reasons:
+                type: array
+                items:
+                  type: string
+            required:
+              - jobId
+              - matrixKey
+              - selected
+              - sources
+              - files
+              - reasons
+      required:
+        - mode
+        - forcedFullReason
+        - inventorySha
+        - instances
+      description: "Dynamic test-selection manifest for a Finalize run's latest checks round: which job instances ran, which were skipped, and why."
     FinalizeRunStep:
       type: object
       properties:
@@ -1294,6 +1359,11 @@ components:
         stale:
           type: boolean
           description: True when the latest run's `head_sha` no longer matches the worktree's current HEAD — i.e. the agent committed new work after this run finished, so the run's results predate the current code. Clients (and `finalize.sh latest`) should surface this and trigger a fresh run rather than acting on the stale results. Fail-safe `false` when HEAD cannot be resolved.
+        testSelection:
+          allOf:
+            - $ref: "#/components/schemas/FinalizeTestSelection"
+            - nullable: true
+              description: Parsed test-selection manifest of the latest run in dynamic mode; `null` for full-mode runs.
         inheritedFailures:
           allOf:
             - $ref: "#/components/schemas/FinalizeInheritedFailures"
@@ -1319,6 +1389,7 @@ components:
         - steps
         - currentHeadSha
         - stale
+        - testSelection
         - inheritedFailures
         - phases
       description: Latest Finalize run for a given session.
@@ -28113,6 +28184,11 @@ paths:
                               - exit_code
                               - started_at
                               - ended_at
+                        test_selection:
+                          allOf:
+                            - $ref: "#/components/schemas/FinalizeTestSelection"
+                            - nullable: true
+                              description: Dynamic test-selection manifest; `null` for full-mode runs.
                       required:
                         - id
                         - branch
@@ -28126,6 +28202,7 @@ paths:
                         - session_id
                         - session_title
                         - jobs
+                        - test_selection
                 required:
                   - runs
         "404":
@@ -28402,6 +28479,11 @@ paths:
                             - exit_code
                             - started_at
                             - ended_at
+                      test_selection:
+                        allOf:
+                          - $ref: "#/components/schemas/FinalizeTestSelection"
+                          - nullable: true
+                            description: Dynamic test-selection manifest; `null` for full-mode runs.
                     required:
                       - id
                       - branch
@@ -28415,6 +28497,7 @@ paths:
                       - session_id
                       - session_title
                       - jobs
+                      - test_selection
                   steps:
                     type: array
                     items:

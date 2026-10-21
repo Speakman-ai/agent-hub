@@ -101,8 +101,48 @@ export const FinalizeRunComponent = registerComponent(
       started_at: z.number().int(),
       ended_at: z.number().int().nullable(),
       pr_url: z.string().nullable(),
+      test_selection: z.string().nullable().optional().openapi({
+        description:
+          'Raw JSON of the dynamic test-selection manifest (see `FinalizeTestSelection`); `null` for full-mode runs. Endpoints that parse it expose `testSelection` / `test_selection` as an object.',
+      }),
     })
     .openapi({ description: 'A single finalize_runs row.' }),
+);
+
+export const TestSelectionComponent = registerComponent(
+  'FinalizeTestSelection',
+  z
+    .object({
+      mode: z.literal('dynamic'),
+      forcedFullReason: z.string().nullable().openapi({
+        description:
+          'Why every instance ran instead of a selection (fullRunPaths match, missing/stale inventory, reviewer `selection: full`, selection error, ...). `null` when the selection was applied.',
+      }),
+      inventorySha: z.string().nullable().openapi({
+        description:
+          'Default-branch commit of the JUnit test inventory used to map files to instances.',
+      }),
+      instances: z.array(
+        z.object({
+          jobId: z.string(),
+          matrixKey: z
+            .string()
+            .openapi({ description: 'Matrix shard key; empty for non-matrix jobs.' }),
+          selected: z.boolean().openapi({
+            description: 'False when the instance was skipped (step rows read `not_selected`).',
+          }),
+          sources: z.array(z.enum(['session', 'reviewer', 'always', 'needs', 'unmapped', 'diff'])),
+          files: z
+            .array(z.string())
+            .openapi({ description: 'Test files that pulled the instance in.' }),
+          reasons: z.array(z.string()),
+        }),
+      ),
+    })
+    .openapi({
+      description:
+        "Dynamic test-selection manifest for a Finalize run's latest checks round: which job instances ran, which were skipped, and why.",
+    }),
 );
 
 export const FinalizeRunStepComponent = registerComponent(
@@ -181,6 +221,10 @@ export const LatestFinalizeRunResponseSchema = registerComponent(
       stale: z.boolean().openapi({
         description:
           "True when the latest run's `head_sha` no longer matches the worktree's current HEAD — i.e. the agent committed new work after this run finished, so the run's results predate the current code. Clients (and `finalize.sh latest`) should surface this and trigger a fresh run rather than acting on the stale results. Fail-safe `false` when HEAD cannot be resolved.",
+      }),
+      testSelection: TestSelectionComponent.nullable().openapi({
+        description:
+          'Parsed test-selection manifest of the latest run in dynamic mode; `null` for full-mode runs.',
       }),
       inheritedFailures: InheritedFailuresComponent.nullable().openapi({
         description:

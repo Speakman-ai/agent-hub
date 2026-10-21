@@ -21,6 +21,8 @@ import { DEFAULT_CI_CONFIG_RELATIVE_PATH } from '../finalize/finalize-keys.js';
 import { isInfraFailureReason } from '../finalize/infra-retry.js';
 import { readRepoFile } from '../git-host/repo-read.js';
 import { ciSpotChoiceAvailable, projectCiUsesSpot } from '../finalize/runner-images.js';
+import { parseTestSelection } from '../finalize/test-selection.js';
+import { TestSelectionComponent } from './finalize.openapi.js';
 
 const DEFAULT_LIMIT = 30;
 const MAX_LIMIT = 100;
@@ -56,6 +58,9 @@ const CiRunSchema = z.object({
   /** Human-readable title of the run's session, when one is linked. */
   session_title: z.string().nullable(),
   jobs: z.array(CiRunJobSchema),
+  test_selection: TestSelectionComponent.nullable().openapi({
+    description: 'Dynamic test-selection manifest; `null` for full-mode runs.',
+  }),
 });
 
 const CiRunStepSchema = z.object({
@@ -242,6 +247,7 @@ function serializeRun(
     session_id: row.session_id,
     session_title: sessionTitle,
     jobs,
+    test_selection: parseTestSelection(row.test_selection),
   };
 }
 

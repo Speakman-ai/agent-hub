@@ -35,6 +35,7 @@ import type {
 import { getOrCreateBoard } from '../routes/board.js';
 import { loadFinalizeStepOutput, loadRunnerQueueStepOutput } from './step-output.js';
 import { jobInstanceKey } from './base-drift-policy.js';
+import { parseTestSelection } from './test-selection.js';
 
 const execFileP = promisify(execFile);
 
@@ -87,7 +88,7 @@ export interface DefaultBranchFailureRow {
 export interface RangeMerge {
   sha: string;
   subject: string;
-  pr: { number: number; title: string; headBranch: string } | null;
+  pr: { number: number; title: string; headBranch: string; headSha: string } | null;
   sessionIds: string[];
 }
 
@@ -446,7 +447,9 @@ export async function resolveRangeMerges(
     return {
       sha: c.sha,
       subject: c.subject,
-      pr: pr ? { number: pr.number, title: pr.title, headBranch: pr.head_branch } : null,
+      pr: pr
+        ? { number: pr.number, title: pr.title, headBranch: pr.head_branch, headSha: pr.head_sha }
+        : null,
       sessionIds: [...sessionIds],
     };
   });
@@ -462,6 +465,81 @@ function formatRange(from: string | null, to: string, merges: RangeMerge[]): str
     const pr = m.pr ? ` PR #${m.pr.number} "${m.pr.title}" (\`${m.pr.headBranch}\`)` : '';
     const sessions = m.sessionIds.length > 0 ? `, session ${m.sessionIds.join(', ')}` : '';
     lines.push(`- \`${short(m.sha)}\` ${m.subject}${pr}${sessions}`);
+  }
+  return lines;
+}
+
+/** A dynamic-selection Finalize run behind a merge that skipped a failing instance. */
+export interface SkippingSelectedRun {
+  runId: string;
+  sessionId: string;
+  headSha: string;
+  /** Failing instances (`jobInstanceKey`) the run left out. */
+  skipped: Array<{ jobId: string; matrixKey: string }>;
+}
+
+/**
+ * For each merge in range, the session Finalize run that validated the merged
+ * revision (the PR head, or the commit itself for a direct push) and the
+ * failing instances its manifest skipped. A validating run without a manifest
+ * (full mode) or with a forced full run tested everything and is left out.
+ */
+export function findSkippingSelectedRuns(
+  deps: Pick<DefaultBranchHealthDeps, 'stmts'>,
+  projectId: string,
+  merges: RangeMerge[],
+  failing: Array<Pick<FinalizeRunJobRow, 'job_id' | 'matrix_key'>>,
+): SkippingSelectedRun[] {
+  const stmt = deps.stmts.getValidatingSessionChecksRunForSha;
+  if (!stmt || failing.length === 0) return [];
+  const failingKeys = new Set(failing.map((j) => jobInstanceKey(j.job_id, j.matrix_key ?? '')));
+  const out: SkippingSelectedRun[] = [];
+  const seen = new Set<string>();
+  for (const m of merges) {
+    const shas = [...new Set([m.pr?.headSha, m.sha].filter((x): x is string => !!x))];
+    let run: ValidatingRunRow | undefined;
+    for (const sha of shas) {
+      try {
+        run = stmt.get(projectId, sha) as ValidatingRunRow | undefined;
+      } catch {
+        run = undefined;
+      }
+      if (run) break;
+    }
+    if (!run || seen.has(run.id)) continue;
+    seen.add(run.id);
+    const selection = parseTestSelection(run.test_selection);
+    if (!selection || selection.forcedFullReason) continue;
+    const skipped = selection.instances
+      .filter((i) => !i.selected && failingKeys.has(jobInstanceKey(i.jobId, i.matrixKey)))
+      .map((i) => ({ jobId: i.jobId, matrixKey: i.matrixKey }));
+    if (skipped.length === 0) continue;
+    out.push({
+      runId: run.id,
+      sessionId: run.session_id,
+      headSha: run.validated_head_sha,
+      skipped,
+    });
+  }
+  return out;
+}
+
+interface ValidatingRunRow {
+  id: string;
+  session_id: string;
+  validated_head_sha: string;
+  test_selection: string | null;
+}
+
+function formatSkippingRuns(runs: SkippingSelectedRun[], projectId: string): string[] {
+  if (runs.length === 0) return [];
+  const lines = ['', 'Selected Finalize runs that skipped a failing instance:'];
+  for (const r of runs) {
+    const skipped = r.skipped.map((i) => instanceLabel(i.jobId, i.matrixKey)).join(', ');
+    lines.push(
+      `- run ${r.runId} (session ${r.sessionId}, \`${short(r.headSha)}\`): skipped ${skipped}. ` +
+        `Manifest: \`/api/projects/${projectId}/ci-runs/${r.runId}\``,
+    );
   }
   return lines;
 }
@@ -533,6 +611,10 @@ async function ensureBreakageCard(
       '',
       `Failing on \`${args.branch}\` (CI run ${args.runId}):`,
       ...failingLines,
+      ...formatSkippingRuns(
+        findSkippingSelectedRuns(deps, args.projectId, merges, failing),
+        args.projectId,
+      ),
       '',
       '### Failing step logs',
       ...failingStepLogs(deps, args, failing),

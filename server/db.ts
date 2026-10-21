@@ -1868,6 +1868,15 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE finalize_runs ADD COLUMN inherited_failures TEXT');
   }
 
+  // test_selection: JSON TestSelection manifest (see finalize/test-selection.ts)
+  // for runs in dynamic test-selection mode, overwritten each checks round.
+  // NULL for full-mode runs.
+  try {
+    db.prepare('SELECT test_selection FROM finalize_runs LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE finalize_runs ADD COLUMN test_selection TEXT');
+  }
+
   try {
     db.prepare('SELECT next_run_at FROM crons LIMIT 1').get();
   } catch {
@@ -7852,6 +7861,23 @@ function initDb(dataDir: string): void {
 
     setFinalizeRunInheritedFailures: db.prepare(
       `UPDATE finalize_runs SET inherited_failures = ? WHERE id = ?`,
+    ),
+    setFinalizeRunTestSelection: db.prepare(
+      `UPDATE finalize_runs SET test_selection = ? WHERE id = ?`,
+    ),
+    // The session Finalize run that validated (and passed checks on) exactly
+    // `validated_head_sha`, any test-selection mode. Push / PR CI runs are
+    // excluded: they are not the gate a session shipped through.
+    getValidatingSessionChecksRunForSha: db.prepare(
+      `SELECT id, session_id, head_sha, validated_head_sha, status, test_selection
+         FROM finalize_runs
+        WHERE project_id = ? AND validated_head_sha = ?
+          AND session_id IS NOT NULL
+          AND trigger_source IN ('ui_button', 'agent_block')
+          AND mode IN ('checks', 'full')
+          AND status IN ('ready_to_push', 'pushing', 'pushed')
+        ORDER BY started_at DESC, id DESC
+        LIMIT 1`,
     ),
 
     // Default-branch CI health (see default-branch-health.ts).

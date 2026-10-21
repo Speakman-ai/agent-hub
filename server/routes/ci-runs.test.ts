@@ -13,6 +13,7 @@ import { execSync } from 'child_process';
 import { getRequest } from '../test/helpers.js';
 import { getDb } from '../db.js';
 import type { Stmts } from '../types.js';
+import { TestSelectionComponent } from './finalize.openapi.js';
 
 let request: supertest.Agent;
 let stmts: Stmts;
@@ -183,6 +184,44 @@ describe('GET /api/projects/:projectId/ci-runs', () => {
 
     const res = await request.get(`/api/projects/${projectId}/ci-runs/${runId}`).expect(200);
     expect(res.body.run).toMatchObject({ session_id: sessionId, session_title: 'Refactor auth' });
+  });
+
+  it('lists and details runs with their test selection manifest', async () => {
+    const projectId = await freshProject();
+    const plain = seedRun(projectId, { startedAt: 1_000 });
+    const selected = seedRun(projectId, { startedAt: 2_000 });
+    const selection = {
+      mode: 'dynamic' as const,
+      forcedFullReason: null,
+      inventorySha: 'inv-sha',
+      instances: [
+        {
+          jobId: 'unit',
+          matrixKey: 'shard-1',
+          selected: true,
+          sources: ['session' as const],
+          files: ['server/a.test.ts'],
+          reasons: [],
+        },
+        {
+          jobId: 'unit',
+          matrixKey: 'shard-2',
+          selected: false,
+          sources: [],
+          files: [],
+          reasons: [],
+        },
+      ],
+    };
+    stmts.setFinalizeRunTestSelection.run(JSON.stringify(selection), selected);
+
+    const list = await request.get(`/api/projects/${projectId}/ci-runs`).expect(200);
+    const byId = new Map(list.body.runs.map((r: { id: string }) => [r.id, r]));
+    expect(byId.get(selected)).toMatchObject({ test_selection: selection });
+    expect(byId.get(plain)).toMatchObject({ test_selection: null });
+
+    const detail = await request.get(`/api/projects/${projectId}/ci-runs/${selected}`).expect(200);
+    expect(TestSelectionComponent.parse(detail.body.run.test_selection)).toEqual(selection);
   });
 
   it('filters by trigger and caps limit', async () => {

@@ -15,6 +15,7 @@ import type Database from 'better-sqlite3';
 import { execFile } from 'child_process';
 import path from 'path';
 import { promisify } from 'util';
+import { z } from 'zod';
 import { jobInstanceKey } from './base-drift-policy.js';
 import { expandJobInstances, type CiConfig } from './ci-config-jobs.js';
 import {
@@ -530,6 +531,35 @@ export async function resolveTestSelection(args: ResolveTestSelectionArgs): Prom
       return fullSelection(instances, args.previous.forcedFullReason);
     }
     return fullSelection(instances, reason);
+  }
+}
+
+const SELECTION_SOURCES = ['session', 'reviewer', 'always', 'needs', 'unmapped', 'diff'] as const;
+
+const TestSelectionSchema = z.object({
+  mode: z.literal('dynamic'),
+  forcedFullReason: z.string().nullable(),
+  inventorySha: z.string().nullable(),
+  instances: z.array(
+    z.object({
+      jobId: z.string(),
+      matrixKey: z.string(),
+      selected: z.boolean(),
+      sources: z.array(z.enum(SELECTION_SOURCES)),
+      files: z.array(z.string()),
+      reasons: z.array(z.string()),
+    }),
+  ),
+});
+
+/** Parse `finalize_runs.test_selection`; null when absent or malformed. */
+export function parseTestSelection(raw: string | null | undefined): TestSelection | null {
+  if (!raw) return null;
+  try {
+    const parsed = TestSelectionSchema.safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
   }
 }
 

@@ -465,6 +465,7 @@ export interface OrchestratorDeps {
         | 'getDefaultBranchBreakage'
         | 'getOpenDefaultBranchBreakage'
         | 'setFinalizeRunInheritedFailures'
+        | 'setFinalizeRunTestSelection'
       >
     >;
   broadcast: BroadcastFn;
@@ -2035,6 +2036,7 @@ export async function runFinalize(
               env: spawnEnv,
             });
             lastTestSelection = selection;
+            writeTestSelection(deps, runId, selection, log);
             const skip = notSelectedInstanceKeys(selection);
             if (skip.size > 0) notSelectedInstances = skip;
             log(
@@ -3784,6 +3786,29 @@ function writeInheritedFailures(
       }`,
     );
     return summary === null;
+  }
+}
+
+/**
+ * Persist the round's selection manifest on the run row. Best effort: a
+ * failed write only loses the record, never changes what runs.
+ */
+function writeTestSelection(
+  deps: OrchestratorDeps,
+  runId: string,
+  selection: TestSelection,
+  log: (msg: string) => void,
+): void {
+  const stmt = deps.stmts.setFinalizeRunTestSelection;
+  if (!stmt) return;
+  try {
+    stmt.run(JSON.stringify(selection), runId);
+  } catch (err) {
+    log(
+      `[finalize-orchestrator] test_selection write failed run=${runId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
   }
 }
 

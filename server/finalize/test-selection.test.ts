@@ -7,6 +7,7 @@ import {
   isDocPath,
   notSelectedInstanceKeys,
   parseNameStatusZ,
+  parseTestSelection,
   resolveTestSelection,
   selectionInstancesFor,
   type ChangedPath,
@@ -447,5 +448,31 @@ jobs:
       ['test', ['build']],
     ]);
     expect(new Set(out.map((i) => i.matrixKey)).size).toBe(3);
+  });
+});
+
+describe('parseTestSelection', () => {
+  it('round-trips a computed selection through JSON', () => {
+    const sel = computeTestSelection(input());
+    expect(parseTestSelection(JSON.stringify(sel))).toEqual(sel);
+    const full = computeTestSelection(input({ reviewer: { kind: 'full', reason: 'asked' } }));
+    expect(parseTestSelection(JSON.stringify(full))).toEqual(full);
+  });
+
+  it('returns null for absent or malformed manifests', () => {
+    expect(parseTestSelection(null)).toBeNull();
+    expect(parseTestSelection('')).toBeNull();
+    expect(parseTestSelection('{not json')).toBeNull();
+    expect(parseTestSelection(JSON.stringify({ mode: 'full', instances: [] }))).toBeNull();
+    expect(
+      parseTestSelection(
+        JSON.stringify({
+          mode: 'dynamic',
+          forcedFullReason: null,
+          inventorySha: null,
+          instances: [{ jobId: 'unit', matrixKey: '', selected: 'yes' }],
+        }),
+      ),
+    ).toBeNull();
   });
 });

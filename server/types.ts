@@ -1857,6 +1857,11 @@ export interface FinalizeRunRow {
    * branch at its base. NULL otherwise (absent on rows read before the column).
    */
   inherited_failures?: string | null;
+  /**
+   * JSON {@link import('./finalize/test-selection.js').TestSelection} for runs
+   * in dynamic test-selection mode. NULL for full-mode runs.
+   */
+  test_selection?: string | null;
 }
 
 /**
@@ -3022,6 +3027,8 @@ export interface Stmts {
   upsertFinalizeTestHistory: Stmt;
   listFinalizeTestHistoryForProject: Stmt;
   setFinalizeRunInheritedFailures: Stmt;
+  setFinalizeRunTestSelection: Stmt;
+  getValidatingSessionChecksRunForSha: Stmt;
   // Default-branch CI health (server/finalize/default-branch-health.ts).
   getDefaultBranchCiState: Stmt;
   upsertDefaultBranchCiState: Stmt;

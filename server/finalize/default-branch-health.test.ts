@@ -14,18 +14,23 @@ import type { KanbanCardRow, Stmts } from '../types.js';
 import {
   classifyInheritedFailures,
   defaultIsAncestor,
+  findSkippingSelectedRuns,
   parseInheritedFailures,
   recordDefaultBranchCiResult,
   type DefaultBranchBreakageRow,
   type DefaultBranchFailureRow,
 } from './default-branch-health.js';
+import { parseTestSelection, type TestSelection } from './test-selection.js';
 
 let stmts: Stmts;
+let getDb: typeof import('../db.js').getDb;
 
 beforeAll(async () => {
   const helpers = await import('../test/helpers.js');
   await helpers.getRequest();
-  stmts = (await import('../db.js')).stmts!;
+  const db = await import('../db.js');
+  stmts = db.stmts!;
+  getDb = db.getDb;
 });
 
 function git(cwd: string, cmd: string): string {
@@ -308,6 +313,212 @@ describe('recordDefaultBranchCiResult', () => {
     });
     expect(res.kind).toBe('stale');
     expect(failures(projectId)).toHaveLength(1);
+  });
+});
+
+describe('recordDefaultBranchCiResult: selected runs that skipped a failing instance', () => {
+  /**
+   * A session Finalize run that validated `validatedSha`. `instances` null is
+   * a full-mode run (no manifest).
+   */
+  function seedSessionRun(
+    projectId: string,
+    sessionId: string,
+    opts: {
+      validatedSha: string;
+      startedAt: number;
+      status?: string;
+      instances: Array<[jobId: string, matrixKey: string, selected: boolean]> | null;
+    },
+  ): { runId: string; selection: TestSelection | null } {
+    const runId = uuidv4();
+    stmts.insertFinalizeRun.run(
+      runId,
+      'card',
+      sessionId,
+      projectId,
+      'agent-hub/dev/session-sel',
+      opts.validatedSha,
+      `test|${runId}`,
+      opts.status ?? 'pushed',
+      null,
+      'ui_button',
+      null,
+      'u1',
+      'Dev',
+      'dev@example.com',
+      null,
+      opts.startedAt,
+      'full',
+    );
+    getDb()
+      .prepare('UPDATE finalize_runs SET validated_head_sha = ? WHERE id = ?')
+      .run(opts.validatedSha, runId);
+    if (!opts.instances) return { runId, selection: null };
+    const selection: TestSelection = {
+      mode: 'dynamic',
+      forcedFullReason: null,
+      inventorySha: 'inv',
+      instances: opts.instances.map(([jobId, matrixKey, selected]) => ({
+        jobId,
+        matrixKey,
+        selected,
+        sources: selected ? ['session'] : [],
+        files: [],
+        reasons: [],
+      })),
+    };
+    stmts.setFinalizeRunTestSelection.run(JSON.stringify(selection), runId);
+    return { runId, selection };
+  }
+
+  const SKIPS_SHARD_1: Array<[string, string, boolean]> = [
+    ['unit', 'shard-1', false],
+    ['unit', 'shard-2', true],
+  ];
+  const RUNS_SHARD_1: Array<[string, string, boolean]> = [
+    ['unit', 'shard-1', true],
+    ['unit', 'shard-2', true],
+  ];
+  const FAILING = [{ job_id: 'unit', matrix_key: 'shard-1' }];
+
+  function merge(prHeadSha: string, sessionId: string) {
+    return {
+      sha: 'merged-sha',
+      subject: 's',
+      pr: { number: 1, title: 't', headBranch: 'b', headSha: prHeadSha },
+      sessionIds: [sessionId],
+    };
+  }
+
+  function newSession(): string {
+    const sessionId = uuidv4();
+    stmts.createSession.run(sessionId, 'dev', 'work', 'claude-code', 'none', 0, 0, 1);
+    return sessionId;
+  }
+
+  it('persists the manifest and links the run that validated the merged PR head', async () => {
+    const projectId = newProject();
+    const { dir, shas } = linearRepo(['base', 'feat: selected']);
+    const [a, b] = shas;
+    const green = seedRun(projectId, a, [['unit', 'shard-1', 'passed']]);
+    await recordDefaultBranchCiResult(deps(), {
+      projectId,
+      branch: 'main',
+      headSha: a,
+      runId: green.runId,
+      logSessionId: green.sessionId,
+      outcome: 'succeeded',
+      repoDir: dir,
+    });
+
+    const sessionId = newSession();
+    stmts.updateSessionWorktreeBranch.run('agent-hub/dev/session-sel', sessionId);
+    const prId = uuidv4();
+    stmts.insertPullRequest.run(
+      prId,
+      projectId,
+      9,
+      'Selected change',
+      '',
+      'agent-hub/dev/session-sel',
+      'main',
+      'pr-head',
+      'u1',
+      1,
+      1,
+    );
+    stmts.markPullRequestMerged.run(b, 'u1', 'squash', 2, 2, prId);
+    const shipped = seedSessionRun(projectId, sessionId, {
+      validatedSha: 'pr-head',
+      startedAt: 1_000,
+      instances: SKIPS_SHARD_1,
+    });
+    const row = stmts.getFinalizeRun.get(shipped.runId) as { test_selection: string };
+    expect(parseTestSelection(row.test_selection)).toEqual(shipped.selection);
+
+    const red = seedRun(projectId, b, [
+      ['unit', 'shard-1', 'failed'],
+      ['unit', 'shard-2', 'passed'],
+    ]);
+    const res = await recordDefaultBranchCiResult(deps(), {
+      projectId,
+      branch: 'main',
+      headSha: b,
+      runId: red.runId,
+      logSessionId: red.sessionId,
+      outcome: 'failed',
+      repoDir: dir,
+    });
+    expect(res.kind === 'recorded' && res.cardId).toBeTruthy();
+    const card = stmts.getKanbanCard.get((res as { cardId: string }).cardId) as KanbanCardRow;
+    const desc = card.description ?? '';
+    expect(desc).toContain('Selected Finalize runs that skipped a failing instance:');
+    expect(desc).toContain(`run ${shipped.runId} (session ${sessionId}`);
+    expect(desc).toContain('skipped unit (shard-1)');
+    expect(desc).toContain(`/api/projects/${projectId}/ci-runs/${shipped.runId}`);
+  });
+
+  it('a later full-mode run that validated the merged head clears the attribution', () => {
+    const projectId = newProject();
+    const sessionId = newSession();
+    seedSessionRun(projectId, sessionId, {
+      validatedSha: 'old-head',
+      startedAt: 1_000,
+      instances: SKIPS_SHARD_1,
+    });
+    seedSessionRun(projectId, sessionId, {
+      validatedSha: 'pr-head',
+      startedAt: 2_000,
+      instances: null,
+    });
+    expect(
+      findSkippingSelectedRuns({ stmts }, projectId, [merge('pr-head', sessionId)], FAILING),
+    ).toEqual([]);
+  });
+
+  it('ignores newer dynamic runs that did not validate the merged head', () => {
+    const projectId = newProject();
+    const sessionId = newSession();
+    seedSessionRun(projectId, sessionId, {
+      validatedSha: 'pr-head',
+      startedAt: 1_000,
+      instances: RUNS_SHARD_1,
+    });
+    // Post-merge run on another head, and a failed run: neither shipped.
+    seedSessionRun(projectId, sessionId, {
+      validatedSha: 'later-head',
+      startedAt: 2_000,
+      instances: SKIPS_SHARD_1,
+    });
+    seedSessionRun(projectId, sessionId, {
+      validatedSha: 'pr-head',
+      startedAt: 3_000,
+      status: 'failed',
+      instances: SKIPS_SHARD_1,
+    });
+    expect(
+      findSkippingSelectedRuns({ stmts }, projectId, [merge('pr-head', sessionId)], FAILING),
+    ).toEqual([]);
+  });
+
+  it('matches a direct push by the merged commit sha', () => {
+    const projectId = newProject();
+    const sessionId = newSession();
+    const shipped = seedSessionRun(projectId, sessionId, {
+      validatedSha: 'merged-sha',
+      startedAt: 1_000,
+      instances: SKIPS_SHARD_1,
+    });
+    const direct = { sha: 'merged-sha', subject: 's', pr: null, sessionIds: [sessionId] };
+    expect(findSkippingSelectedRuns({ stmts }, projectId, [direct], FAILING)).toEqual([
+      {
+        runId: shipped.runId,
+        sessionId,
+        headSha: 'merged-sha',
+        skipped: [{ jobId: 'unit', matrixKey: 'shard-1' }],
+      },
+    ]);
   });
 });
 

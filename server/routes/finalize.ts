@@ -72,6 +72,7 @@ import {
 import { createFinalizeStepLogStore } from '../finalize/finalize-log-store.js';
 import { parseFlakeGate } from '../finalize/flake-recovery.js';
 import { parseInheritedFailures } from '../finalize/default-branch-health.js';
+import { parseTestSelection } from '../finalize/test-selection.js';
 import {
   sessionIsLockedAfterFinalizePush,
   POST_FINALIZE_PUSH_LOCK_ERROR,
@@ -307,6 +308,7 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
         flakeRecovered: flakeGate.jobs,
         flakeGate: { status: flakeGate.status, reason: flakeGate.reason ?? null },
         inheritedFailures,
+        testSelection: parseTestSelection(run?.test_selection),
         phases: {
           checks: summarizeFinalizePhase(checksRun),
           review: summarizeFinalizePhase(reviewRun),

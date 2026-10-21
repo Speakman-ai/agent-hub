@@ -4704,11 +4704,17 @@ describe('runFinalize — dynamic test selection', () => {
   it('runs only selected instances and still reaches ready_to_push', async () => {
     const steps = stepsMock(STEPS_OK);
     const resolveTestSelection = vi.fn(async () => selection(false));
-    const { deps } = makeDeps({ runJobPhase: steps as never, resolveTestSelection });
+    const harness = makeDeps({ runJobPhase: steps as never, resolveTestSelection });
+    const { deps } = harness;
+    const setSelection = vi.fn();
+    Object.assign(harness.stmts.stmts, { setFinalizeRunTestSelection: { run: setSelection } });
 
     const result = await runFinalize(deps, baseOpts({ mode: 'full', project: DYNAMIC }));
 
     expect(result.kind).toBe('ready_to_push');
+    expect(setSelection).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(setSelection.mock.calls[0][0] as string)).toEqual(selection(false));
+    expect(setSelection.mock.calls[0][1]).toBe(result.runId);
     expect([...steps.mock.calls[0][1].notSelectedInstances]).toEqual([
       jobInstanceKey('checks', ''),
     ]);
