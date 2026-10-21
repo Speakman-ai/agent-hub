@@ -1,7 +1,44 @@
+import {
+  applyNeedsInputEvent,
+  applyNeedsInputSnapshot,
+  reseedNeedsInputFromSessions,
+} from '@shared/utils/sessionState';
 import { describe, it, expect } from 'vitest';
 import { deriveSessionState } from './deriveSessionState';
 
 describe('deriveSessionState', () => {
+  it('shows needs_input over an active task while a turn waits on an approval or sign-in', () => {
+    expect(
+      deriveSessionState(
+        { id: 's1' },
+        {
+          activeTaskSessionIds: { s1: true },
+          needsInputBySession: { s1: { kind: 'approval', at: 1 } },
+        },
+      ),
+    ).toBe('needs_input');
+  });
+
+  it('seeds needs_input from the payload and lets a live null clear it', () => {
+    const session = { id: 's1', needs_input: 'credential', state: 'needs_input' };
+    expect(deriveSessionState(session)).toBe('needs_input');
+    expect(
+      deriveSessionState(session, { needsInputBySession: { s1: { kind: null, at: 1 } } }),
+    ).toBe('waiting_for_user_input');
+  });
+
+  it('treats a disputed Finalize run as needs_input until the human starts a turn', () => {
+    expect(deriveSessionState({ id: 's1' }, { finalizeStatusBySession: { s1: 'disputed' } })).toBe(
+      'needs_input',
+    );
+    expect(
+      deriveSessionState(
+        { id: 's1' },
+        { finalizeStatusBySession: { s1: 'disputed' }, activeTaskSessionIds: { s1: true } },
+      ),
+    ).toBe('working');
+  });
+
   it('defaults to waiting for an idle session with no signals', () => {
     expect(deriveSessionState({ id: 's1' })).toBe('waiting_for_user_input');
   });
@@ -60,5 +97,66 @@ describe('deriveSessionState', () => {
 
   it('is robust to a null session', () => {
     expect(deriveSessionState(null)).toBe('waiting_for_user_input');
+  });
+
+  it('reflects a request raised while disconnected once the payload or snapshot arrives', () => {
+    // Live clear recorded before the drop; the refreshed payload reports a question.
+    const stale = { s1: { kind: null, at: 1 } };
+    const session = {
+      id: 's1',
+      needs_input: 'question',
+      needs_input_at: 50,
+      state: 'needs_input',
+    };
+    // The payload (t=50) is newer than the stale clear (t=1), so it wins even
+    // before the map is reseeded.
+    expect(deriveSessionState(session, { needsInputBySession: stale })).toBe('needs_input');
+    expect(
+      deriveSessionState(session, {
+        needsInputBySession: reseedNeedsInputFromSessions(stale, [session]),
+      }),
+    ).toBe('needs_input');
+    expect(
+      deriveSessionState(
+        { id: 's1' },
+        {
+          needsInputBySession: applyNeedsInputSnapshot([
+            { sessionId: 's1', needsInput: 'approval' },
+          ]),
+        },
+      ),
+    ).toBe('needs_input');
+  });
+
+  it('drops a request resolved while disconnected', () => {
+    const stale = { s1: { kind: 'approval', at: 1 } };
+    const session = {
+      id: 's1',
+      needs_input: null,
+      needs_input_at: 50,
+      state: 'waiting_for_user_input',
+    };
+    expect(
+      deriveSessionState(session, {
+        needsInputBySession: reseedNeedsInputFromSessions(stale, [session]),
+      }),
+    ).toBe('waiting_for_user_input');
+  });
+
+  it('keeps a clear that arrived while a session fetch was in flight', () => {
+    // Fetch computed at t=100 with an approval pending; the null event (t=105)
+    // lands before the response.
+    const live = applyNeedsInputEvent({}, { sessionId: 's1', needsInput: null, at: 105 });
+    const session = {
+      id: 's1',
+      needs_input: 'approval',
+      needs_input_at: 100,
+      state: 'needs_input',
+    };
+    expect(
+      deriveSessionState(session, {
+        needsInputBySession: reseedNeedsInputFromSessions(live, [session]),
+      }),
+    ).toBe('waiting_for_user_input');
   });
 });

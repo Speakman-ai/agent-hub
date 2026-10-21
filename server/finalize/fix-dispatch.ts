@@ -46,6 +46,7 @@
  * is paused, so a slow human (or a long-running fixer turn) does not
  * burn the budget faster than its actual processing time.
  */
+import { REVIEW_DISPUTE_INSTRUCTIONS } from './review-dispute.js';
 import { v4 as uuidv4 } from 'uuid';
 import type {
   BroadcastFn,
@@ -808,6 +809,12 @@ export function composeDispatchBody(trigger: FixDispatchTrigger): string {
     lines.push('- (no anchored notes — verdict was changes_requested without per-file findings)');
   }
 
+  // The orchestrator reads disputes only after a changes_requested pass, so
+  // offer the option only then.
+  if (reviewerChangesRequested) {
+    lines.push('');
+    lines.push(REVIEW_DISPUTE_INSTRUCTIONS);
+  }
   lines.push('');
   lines.push(hasFailedStep ? DISPATCH_TRAILER : DISPATCH_TRAILER_REVIEWER);
 

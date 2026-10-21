@@ -1153,6 +1153,39 @@ describe('collectLocalDiffInputs', () => {
 });
 
 describe('buildLocalDiffReviewerPrompt', () => {
+  it('renders implementer disputes beside the contested finding', () => {
+    const prompt = buildLocalDiffReviewerPrompt({
+      inputs: {
+        ...fakeInputs,
+        implementerDisputes: [
+          {
+            file_path: 'server/foo.ts',
+            line_start: 4,
+            line_end: 4,
+            reason: 'The guard already runs in the caller.',
+            finding: '**[6/10]** Missing null guard.',
+          },
+        ],
+      },
+      card: fakeCard,
+      project: fakeProject,
+    });
+    expect(prompt).toContain('## Disputed findings');
+    expect(prompt).toContain('> **[6/10]** Missing null guard.');
+    expect(prompt).toContain('> The guard already runs in the caller.');
+    expect(prompt.indexOf('## Disputed findings')).toBeLessThan(prompt.indexOf('## Your task'));
+  });
+
+  it('omits the dispute section without disputes and never waits on CI evidence', () => {
+    const prompt = buildLocalDiffReviewerPrompt({
+      inputs: fakeInputs,
+      card: fakeCard,
+      project: fakeProject,
+    });
+    expect(prompt).not.toContain('## Disputed findings');
+    expect(prompt).toContain('Never withhold approval to wait for test');
+  });
+
   it('embeds the diff verbatim and forbids GitHub API calls', () => {
     const prompt = buildLocalDiffReviewerPrompt({
       inputs: fakeInputs,

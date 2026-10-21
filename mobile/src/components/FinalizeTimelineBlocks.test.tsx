@@ -151,6 +151,27 @@ describe('renderTimelineSystemMessage', () => {
     expect(onOpenPrDetail).toHaveBeenCalledWith('agent-hub', 42);
   });
 
+  it('renders the disputed review notice and terminal status', () => {
+    const notice = render(
+      renderTimelineSystemMessage(
+        systemMessage({ kind: 'finalize_review_disputed' }, 'The agent and the reviewer disagree.'),
+      ),
+    );
+    expect(allText(notice)).toContain('Review disputed: needs your decision');
+    expect(allText(notice)).toContain('The agent and the reviewer disagree.');
+    const terminal = render(
+      renderTimelineSystemMessage(
+        systemMessage({
+          kind: 'finalize_run_terminal',
+          runId: 'r1',
+          status: 'disputed',
+          failureReason: 'review_disputed',
+        }),
+      ),
+    );
+    expect(allText(terminal)).toContain('Review disputed: needs your decision');
+  });
+
   it('frames review notices and fix dispatches', () => {
     const notice = render(
       renderTimelineSystemMessage(

@@ -7,6 +7,7 @@ import {
   ArrowUpCircle,
   CloudUpload,
   GitMerge,
+  CircleAlert,
 } from 'lucide-react';
 import { sessionStateMeta } from '@shared/utils/sessionState';
 
@@ -21,6 +22,7 @@ const ICONS = {
   ArrowUpCircle,
   CloudUpload,
   GitMerge,
+  CircleAlert,
 } as Record<string, any>;
 
 // Semantic color token → Tailwind text class. Centralized so web stays in sync
@@ -33,6 +35,7 @@ const COLOR_CLASS = {
   slate: 'text-slate-400',
   teal: 'text-teal-400',
   emerald: 'text-emerald-400',
+  rose: 'text-rose-400',
 } as Record<string, any>;
 
 const ANIM_CLASS = {
@@ -46,15 +49,17 @@ const ANIM_CLASS = {
  * Renders one lucide icon (color + animation per the shared metadata) and never
  * returns null, so every session row carries a state icon.
  *
- * @param {{ state: string, size?: number, className?: string, testId?: string }} props
+ * @param {{ state: string, size?: number, className?: string, testId?: string, label?: string }} props
  */
 export default function SessionStateIcon({
   state,
   size = 12,
   className = '',
   testId = 'session-state-icon',
+  label,
 }: any) {
   const meta = sessionStateMeta(state);
+  const title = typeof label === 'string' && label ? label : meta.label;
   const Icon = ICONS[meta.icon] || MessageCircleQuestion;
   const color = COLOR_CLASS[meta.color] || 'text-gray-400';
   const anim = ANIM_CLASS[meta.anim] || '';
@@ -64,9 +69,9 @@ export default function SessionStateIcon({
       data-testid={testId}
       data-session-state={state}
       className={`flex-shrink-0 ${color} ${anim} ${className}`.trim()}
-      aria-label={meta.label}
+      aria-label={title}
     >
-      <title>{meta.label}</title>
+      <title>{title}</title>
     </Icon>
   );
 }

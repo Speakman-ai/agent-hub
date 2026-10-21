@@ -17,6 +17,7 @@ const CHECKS_READY_STATUSES = new Set([
   'infra_error',
   'cancelled',
   'stalled_no_response',
+  'disputed',
 ]);
 
 export function finalizeStatusMayHaveChecks(status: any) {

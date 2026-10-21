@@ -16,6 +16,8 @@ function labelForStatus(status: any, failureReason: any, hostLabel: any) {
       return 'Timed out';
     case 'stalled_no_response':
       return 'Stalled — no response';
+    case 'disputed':
+      return 'Review disputed: needs your decision';
     default:
       return failureReason ? `Failed (${failureReason})` : `Ended (${status})`;
   }
@@ -30,7 +32,8 @@ export default function FinalizeTerminalBlock({ message, hosted = false, onOpenP
   // review never ran.
   const bypassedPush = meta.status === 'pushed' && meta.bypassedGates;
   const isSuccess = !bypassedPush && (meta.status === 'pushed' || meta.status === 'ready_to_push');
-  const isWarn = bypassedPush || meta.status === 'stalled_no_response';
+  const isWarn =
+    bypassedPush || meta.status === 'stalled_no_response' || meta.status === 'disputed';
   const Icon = isSuccess ? CheckCircle2 : isWarn ? AlertTriangle : XCircle;
   const tone = isSuccess ? 'text-emerald-300' : isWarn ? 'text-amber-300' : 'text-red-300';
   const border = isSuccess

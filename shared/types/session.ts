@@ -1,6 +1,7 @@
 /** JSON wire shape for session lifecycle state (persisted in sessions.state). */
 export type SessionState =
   | 'waiting_for_user_input'
+  | 'needs_input'
   | 'working'
   | 'running_tests'
   | 'reviewing'
@@ -17,7 +18,12 @@ export interface SessionStateMeta {
   anim: 'spin' | 'pulse' | 'none';
 }
 
+/** Why a session in the `needs_input` state is waiting on the human. */
+export type NeedsInputKind = 'question' | 'credential' | 'approval' | 'sign_in' | 'review_disputed';
+
 export interface SessionStateSignals {
+  /** Set when the session has stopped to wait on the human; wins over every other signal. */
+  needsInput?: NeedsInputKind | null;
   finalizeStatus?: string | null;
   hasActiveTask?: boolean;
   merged?: boolean;

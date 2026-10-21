@@ -101,6 +101,17 @@ export function reviewNotConvergingPush(args: { sessionName?: string }): {
   };
 }
 
+export function reviewDisputedPush(args: { sessionName?: string }): {
+  title: string;
+  body: string;
+} {
+  const subject = args.sessionName ? `"${args.sessionName}"` : 'A session';
+  return {
+    title: 'Finalize stopped: review disputed',
+    body: `${subject}: the agent and the reviewer disagree on a finding. Decide who is right.`,
+  };
+}
+
 export function pushedPush(args: { sessionName?: string; prNumber?: number }): {
   title: string;
   body: string;
@@ -637,11 +648,17 @@ export function mapBroadcastToPush(data: BroadcastData): {
       // taxonomy the finalize notify surface already lives in) rather than
       // leaving the notice timeline-only. Keyed on failure_reason, NOT status,
       // so ordinary code failures do not push.
-      if (failureReason === 'review_stalled' || failureReason === 'review_not_converging') {
+      if (
+        failureReason === 'review_stalled' ||
+        failureReason === 'review_not_converging' ||
+        failureReason === 'review_disputed'
+      ) {
         const { title, body } =
           failureReason === 'review_stalled'
             ? reviewStalledPush({ sessionName })
-            : reviewNotConvergingPush({ sessionName });
+            : failureReason === 'review_disputed'
+              ? reviewDisputedPush({ sessionName })
+              : reviewNotConvergingPush({ sessionName });
         return {
           event: 'awaiting_feedback',
           payload: {

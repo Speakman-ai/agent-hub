@@ -1,6 +1,7 @@
 import type { Stmts } from './types.js';
 import { lookupFinalizeStatusForSession } from './session-checkpoint-rewind.js';
 import { isColumnDone } from './kanban-blockers.js';
+import { computeSessionNeedsInput } from './session-needs-input.js';
 import {
   SESSION_STATES,
   DEFAULT_SESSION_STATE,
@@ -59,6 +60,7 @@ function lookupMergedForSession(stmts: Stmts, sessionId: string): boolean {
 /** Gather the live signals for a session from the DB. */
 export function gatherSessionStateSignals(stmts: Stmts, sessionId: string): SessionStateSignals {
   return {
+    needsInput: computeSessionNeedsInput(stmts, sessionId),
     finalizeStatus: lookupFinalizeStatusForSession(stmts, sessionId),
     hasActiveTask: lookupHasActiveTask(stmts, sessionId),
     merged: lookupMergedForSession(stmts, sessionId),

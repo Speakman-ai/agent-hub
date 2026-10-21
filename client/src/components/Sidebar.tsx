@@ -59,7 +59,8 @@ import { parseNativePrUrl } from '../utils/prFormatting';
 import AgentAvatar from './AgentAvatar';
 import { daysUntilPurge } from '../utils/time';
 import SessionStateIcon from './SessionStateIcon';
-import { deriveSessionState } from '../utils/deriveSessionState';
+import { deriveSessionState, sessionNeedsInputKind } from '../utils/deriveSessionState';
+import { needsInputLabel } from '@shared/utils/sessionState';
 import { deriveWatchIndicator, watchIndicatorTitle } from '../utils/backgroundShells';
 import { derivePreviewIndicator, previewIndicatorTitle } from '../utils/sessionPreviewState';
 import BugReportButton from './BugReportButton';
@@ -213,6 +214,8 @@ export default function Sidebar({
    * ready to push to GitHub.
    */
   finalizeStatusBySession = {},
+  /** Live `session_needs_input` kinds; see `sessionNeedsInputKind`. */
+  needsInputBySession = {},
   deletingSessionIds = new Set(),
   deletingBulk = null,
   archivedSessions = [],
@@ -748,6 +751,7 @@ export default function Sidebar({
     const sessionState = deriveSessionState(cs, {
       activeTaskSessionIds,
       finalizeStatusBySession,
+      needsInputBySession,
     });
     return (
       <button
@@ -1690,6 +1694,7 @@ export default function Sidebar({
                                       const sessionState = deriveSessionState(session, {
                                         activeTaskSessionIds,
                                         finalizeStatusBySession,
+                                        needsInputBySession,
                                       });
                                       const isEditing = editingSessionId === session.id;
                                       const prReady = changesReadyBySession[session.id];
@@ -1803,6 +1808,15 @@ export default function Sidebar({
                                                   state={sessionState}
                                                   size={12}
                                                   testId={`session-state-icon-${session.id}`}
+                                                  label={
+                                                    sessionState === 'needs_input'
+                                                      ? needsInputLabel(
+                                                          sessionNeedsInputKind(session, {
+                                                            needsInputBySession,
+                                                          }),
+                                                        )
+                                                      : undefined
+                                                  }
                                                 />
                                                 {subagentsBySession[session.id]?.running > 0 && (
                                                   <span
@@ -2126,6 +2140,7 @@ export default function Sidebar({
                           const sessionState = deriveSessionState(session, {
                             activeTaskSessionIds,
                             finalizeStatusBySession,
+                            needsInputBySession,
                           });
                           const prReady = changesReadyBySession[session.id];
                           const resolvePrHref =
@@ -2153,6 +2168,13 @@ export default function Sidebar({
                                 state={sessionState}
                                 size={12}
                                 testId={`session-state-icon-${session.id}`}
+                                label={
+                                  sessionState === 'needs_input'
+                                    ? needsInputLabel(
+                                        sessionNeedsInputKind(session, { needsInputBySession }),
+                                      )
+                                    : undefined
+                                }
                               />
                               {resolvePrHref && (
                                 <span

@@ -31,6 +31,22 @@ describe('SessionStateIcon', () => {
     expect(tests.getByTestId('session-state-icon').classList.contains('animate-pulse')).toBe(true);
   });
 
+  it('renders needs_input as a red exclamation, with a specific label when given', () => {
+    const generic = render(<SessionStateIcon state="needs_input" />);
+    const el = generic.getByTestId('session-state-icon');
+    expect(el!.getAttribute('class')).toContain('text-rose-400');
+    expect(el!.getAttribute('class')).toContain('lucide-circle-alert');
+    expect(el!.getAttribute('aria-label')).toBe('Needs your input');
+    generic.unmount();
+
+    const specific = render(
+      <SessionStateIcon state="needs_input" label="Needs your input: approve an action" />,
+    );
+    expect(specific.getByTestId('session-state-icon').getAttribute('aria-label')).toBe(
+      'Needs your input: approve an action',
+    );
+  });
+
   it('does not animate settled states (merged)', () => {
     const { getByTestId } = render(<SessionStateIcon state="merged" />);
     const el = getByTestId('session-state-icon');

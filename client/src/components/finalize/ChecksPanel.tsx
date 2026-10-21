@@ -5,6 +5,7 @@ import {
   Clock,
   PauseCircle,
   AlertTriangle,
+  CircleAlert,
   ChevronRight,
   GitMerge,
   ExternalLink,
@@ -458,6 +459,8 @@ function headerToneFor(status: any, isPaused: any) {
       return 'bg-red-900/40 text-red-300';
     case 'stalled_no_response':
       return 'bg-amber-900/40 text-amber-300';
+    case 'disputed':
+      return 'bg-rose-900/40 text-rose-300';
     case 'rebasing':
     case 'reviewing':
     case 'running':
@@ -480,6 +483,8 @@ function headerIconFor(status: any, isPaused: any) {
       return XCircle;
     case 'stalled_no_response':
       return AlertTriangle;
+    case 'disputed':
+      return CircleAlert;
     case 'rebasing':
     case 'reviewing':
     case 'running':

@@ -26,6 +26,8 @@ const FINALIZE_FAILURE_REASON_DESCRIPTIONS = {
     'The reviewer step could not complete for an infrastructure reason (engine timeout, or every review engine was out of quota / failed to authenticate) — not a problem with your code. Re-run Finalize once a review engine is available again.',
   review_not_converging:
     'Review is not converging: the reviewer kept requesting changes round after round, so the run was handed back for a human to look at the root cause instead of burning the whole time budget.',
+  review_disputed:
+    'The agent disputed reviewer findings and the reviewer upheld them, so the run stopped for a human to decide. Push anyway if the agent is right, or tell the agent to make the change and run Finalize again.',
   infra_error:
     'A Finalize infrastructure problem interrupted the run. This is usually transient — try again.',
   container_unavailable:

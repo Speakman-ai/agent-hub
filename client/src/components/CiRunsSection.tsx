@@ -14,6 +14,7 @@ import {
   CheckCircle2,
   XCircle,
   CircleDashed,
+  CircleAlert,
   Loader2,
   RefreshCw,
   ChevronDown,
@@ -37,6 +38,7 @@ const TERMINAL_STATUSES = new Set([
   'timed_out',
   'infra_error',
   'cancelled',
+  'disputed',
 ]);
 
 // Job states that mean the job hasn't finished yet. The runner writes states
@@ -74,6 +76,9 @@ function statusVisual(status: any) {
   }
   if (status === 'failed' || status === 'timed_out' || status === 'infra_error') {
     return { Icon: XCircle, cls: 'text-red-400', label: status };
+  }
+  if (status === 'disputed') {
+    return { Icon: CircleAlert, cls: 'text-rose-400', label: 'disputed' };
   }
   if (status === 'cancelled') {
     return { Icon: CircleDashed, cls: 'text-gray-500', label: 'cancelled' };

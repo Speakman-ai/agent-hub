@@ -82,6 +82,9 @@ export const CI_FAILURE_REASONS = [
   // active-time budget. CI-class: deterministic on the current change set, so
   // never auto-retried — the human intervenes.
   'review_not_converging',
+  // The reviewer upheld findings the session agent disputed. A human rules on
+  // it; never auto-retried.
+  'review_disputed',
   'unsafe_base_branch',
   'no_worktree',
   'no_diff_inputs',

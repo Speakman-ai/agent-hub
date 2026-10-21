@@ -23,6 +23,7 @@ const TERMINAL_STATUSES = new Set([
   'infra_error',
   'cancelled',
   'stalled_no_response',
+  'disputed',
 ]);
 /**
  * Set of statuses during which a "Finalize" affordance must be disabled.
@@ -76,6 +77,8 @@ export function describeRunPhase(status: any, phase: any) {
       return 'cancelled';
     case 'stalled_no_response':
       return 'stalled';
+    case 'disputed':
+      return 'disputed';
     default:
       return String(status).replace(/_/g, ' ');
   }

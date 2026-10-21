@@ -967,3 +967,30 @@ describe('mapBroadcastToNotification: routine runs', () => {
     expect(mapBroadcastToNotification({ type: 'routine_run_finished', logId: 1 })).toBeNull();
   });
 });
+
+describe('mapBroadcastToNotification: needs-input credential card', () => {
+  it('notifies the owner when a session waits on a password or secret', () => {
+    const n = mapBroadcastToNotification({
+      type: 'session_needs_input',
+      sessionId: 's1',
+      agentId: 'a1',
+      ownerUserId: 'u1',
+      sessionName: 'Ship it',
+      needsInput: 'credential',
+    });
+    expect(n).toMatchObject({
+      category: 'awaiting_feedback',
+      title: 'Password or secret needed',
+      recipients: { kind: 'users', userIds: ['u1'] },
+    });
+    expect(n?.body).toContain('"Ship it"');
+  });
+
+  it('leaves other reasons to their own notifications', () => {
+    for (const needsInput of ['question', 'approval', 'sign_in', 'review_disputed', null]) {
+      expect(
+        mapBroadcastToNotification({ type: 'session_needs_input', sessionId: 's1', needsInput }),
+      ).toBeNull();
+    }
+  });
+});

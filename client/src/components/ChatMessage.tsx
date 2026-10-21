@@ -447,7 +447,8 @@ function ChatMessage({
     }
     if (
       finalizeKind === 'finalize_review_stalled' ||
-      finalizeKind === 'finalize_review_not_converging'
+      finalizeKind === 'finalize_review_not_converging' ||
+      finalizeKind === 'finalize_review_disputed'
     ) {
       return <FinalizeReviewNoticeBlock message={message} />;
     }

@@ -85,6 +85,7 @@ export default function DrawerContent({ navigation }: any) {
     cronSessions,
     activeTasks,
     finalizeStatusBySession,
+    needsInputBySession,
     unreadTicketCounts,
     openPullCounts,
     securityOpenCounts,
@@ -500,6 +501,7 @@ export default function DrawerContent({ navigation }: any) {
               state={deriveSessionState(cs, {
                 activeTaskSessionIds: activeTasks,
                 finalizeStatusBySession,
+                needsInputBySession,
               })}
               testID={`session-state-icon-${cs.id}`}
             />
@@ -600,6 +602,7 @@ export default function DrawerContent({ navigation }: any) {
                       state={deriveSessionState(session, {
                         activeTaskSessionIds: activeTasks,
                         finalizeStatusBySession,
+                        needsInputBySession,
                       })}
                       testID={`session-state-icon-${session.id}`}
                     />
@@ -1189,6 +1192,7 @@ export default function DrawerContent({ navigation }: any) {
                             state={deriveSessionState(session, {
                               activeTaskSessionIds: activeTasks,
                               finalizeStatusBySession,
+                              needsInputBySession,
                             })}
                             testID={`session-state-icon-${session.id}`}
                           />

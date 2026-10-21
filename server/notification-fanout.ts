@@ -32,6 +32,7 @@
  * inbox row and push. Other channel traffic (notify_level=all) never creates
  * an inbox row and keeps the device-level `chat_message` push check.
  */
+import { SESSION_NEEDS_INPUT_EVENT } from './session-needs-input.js';
 import { v4 as uuidv4 } from 'uuid';
 import {
   buildMessages,
@@ -398,6 +399,28 @@ export function mapBroadcastToNotification(data: BroadcastData): NotificationInt
         },
         projectId: str(data.projectId) ?? null,
         sourceKey: `browser_sign_in:${requestId}`,
+        recipients: owner ? { kind: 'users', userIds: [owner] } : { kind: 'session', sessionId },
+      };
+    }
+
+    case SESSION_NEEDS_INPUT_EVENT: {
+      // Questions, approvals, sign-ins and disputed reviews notify through
+      // their own events. A credential card has no other signal, so it
+      // notifies here.
+      if (data.needsInput !== 'credential') return null;
+      const sessionId = broadcastSessionId(data);
+      if (!sessionId) return null;
+      const owner = str(data.ownerUserId);
+      const name = str(data.sessionName);
+      return {
+        category: 'awaiting_feedback',
+        pushEvent: null,
+        deviceScope: 'recipients',
+        title: 'Password or secret needed',
+        body: `${name ? `"${name}"` : 'A session'} is waiting for you to enter a password or secret`,
+        data: { sessionId, agentId: data.agentId, type: 'awaiting_feedback' },
+        projectId: str(data.projectId) ?? null,
+        sourceKey: `needs_input:credential:${sessionId}:${String(data.at ?? uuidv4())}`,
         recipients: owner ? { kind: 'users', userIds: [owner] } : { kind: 'session', sessionId },
       };
     }

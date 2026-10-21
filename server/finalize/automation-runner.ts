@@ -521,6 +521,7 @@ const FINALIZE_TERMINAL_STATUSES: ReadonlySet<string> = new Set([
   'infra_error',
   'cancelled',
   'stalled_no_response',
+  'disputed',
 ]);
 
 /**

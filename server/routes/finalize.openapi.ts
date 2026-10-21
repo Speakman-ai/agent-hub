@@ -25,6 +25,7 @@ const FINALIZE_RUN_STATUSES = [
   'infra_error',
   'cancelled',
   'stalled_no_response',
+  'disputed',
 ] as const;
 
 const FINALIZE_RUN_PHASES = ['rebase', 'review', 'tasks', 'dispatching', 'push'] as const;

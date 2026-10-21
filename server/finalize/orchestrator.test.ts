@@ -4499,3 +4499,170 @@ describe('runFinalize — inherited default-branch failures', () => {
     expect(setInherited.mock.calls.at(-1)?.[0]).toBeNull();
   });
 });
+
+describe('runFinalize — implementer disputes a reviewer finding', () => {
+  const CHANGES: ReviewerDispatchOutcome = {
+    kind: 'success',
+    verdict: 'changes_requested',
+    threadCount: 1,
+    activeSecondsBilled: 30,
+  };
+  const FINDING = {
+    id: 't1',
+    run_id: 'r1',
+    file_path: 'server/foo.ts',
+    line_start: 10,
+    line_end: 12,
+    body: '**[6/10]** Show CI timings before this can merge.',
+    author: 'reviewer-agent',
+    created_at: 1,
+  };
+  const DISPUTE_REPLY =
+    'CI only runs after approval, so there is nothing to commit for this.\n' +
+    '<agenthub:review-dispute>{"disputes":[{"file_path":"server/foo.ts","line_start":10,' +
+    '"line_end":12,"reason":"CI runs after review approves; no commit can produce timings."}]}' +
+    '</agenthub:review-dispute>';
+
+  function wireFixReply(deps: OrchestratorDeps, reply: string) {
+    (deps.stmts.getMessages as unknown as { all: ReturnType<typeof vi.fn> }).all = vi.fn(() => [
+      { id: 'msg-1', role: 'system', content: 'Finalize Code Changes: phase=review' },
+      { id: 'a-1', role: 'assistant', content: reply },
+    ]);
+  }
+
+  it('re-reviews at the same HEAD with the dispute, and stops as disputed when the reviewer upholds it', async () => {
+    const runReview = vi
+      .fn<(...args: unknown[]) => Promise<ReviewerDispatchOutcome>>()
+      .mockResolvedValue(CHANGES);
+    const { deps, stmts, broadcast } = makeDeps({
+      runReviewerDispatch: runReview as never,
+      // HEAD never moves: the agent disputed instead of committing.
+      resolveHeadSha: vi.fn().mockResolvedValue('sha-same'),
+    });
+    (deps.stmts.listReviewerThreadsForRun as unknown as { all: ReturnType<typeof vi.fn> }).all = vi
+      .fn()
+      .mockReturnValueOnce([FINDING])
+      .mockReturnValue([{ ...FINDING, body: '**[6/10]** [upholds D1] Timings are still needed.' }]);
+    wireFixReply(deps, DISPUTE_REPLY);
+
+    const result = await runFinalize(deps, baseOpts());
+
+    expect(result.kind).toBe('failed');
+    expect(result.kind === 'failed' && result.status).toBe('disputed');
+    expect(result.kind === 'failed' && result.failureReason).toBe('review_disputed');
+    expect(runReview).toHaveBeenCalledTimes(2);
+    // The second pass carried the dispute next to the finding it contests.
+    const secondOpts = runReview.mock.calls[1][1] as { disputes?: Array<Record<string, unknown>> };
+    expect(secondOpts.disputes).toHaveLength(1);
+    expect(secondOpts.disputes?.[0]).toMatchObject({
+      file_path: 'server/foo.ts',
+      finding: FINDING.body,
+    });
+    // One fix dispatch only: no no-progress nudge burned on the dispute turn.
+    expect(deps.dispatchFixMessage).toHaveBeenCalledTimes(1);
+    expect(stmts.failCalls.at(-1)).toMatchObject({ status: 'disputed', reason: 'review_disputed' });
+    const notices = (stmts.stmts.addMessage.run as ReturnType<typeof vi.fn>).mock.calls
+      .map((call) => JSON.parse(call[7] as string))
+      .filter((m) => m.kind === 'finalize_review_disputed');
+    expect(notices).toHaveLength(1);
+    expect(notices[0].disputes[0]).toMatchObject({ file_path: 'server/foo.ts' });
+    expect(
+      broadcast.mock.calls.some(
+        ([m]) => m?.type === 'finalize_run_completed' && m.status === 'disputed',
+      ),
+    ).toBe(true);
+  });
+
+  it('stops as disputed when a mixed fix turn shifted the lines and the reviewer cites the dispute id', async () => {
+    const runReview = vi
+      .fn<(...args: unknown[]) => Promise<ReviewerDispatchOutcome>>()
+      .mockResolvedValue(CHANGES);
+    const { deps } = makeDeps({
+      runReviewerDispatch: runReview as never,
+      // The same turn committed a fix elsewhere, so HEAD moves.
+      resolveHeadSha: vi
+        .fn<(...args: unknown[]) => Promise<string>>()
+        .mockResolvedValueOnce('sha-1')
+        .mockResolvedValue('sha-2'),
+    });
+    (deps.stmts.listReviewerThreadsForRun as unknown as { all: ReturnType<typeof vi.fn> }).all = vi
+      .fn()
+      .mockReturnValueOnce([FINDING])
+      .mockReturnValue([
+        { ...FINDING, line_start: 40, line_end: 42, body: '**[6/10]** [upholds D1] Still needed.' },
+      ]);
+    wireFixReply(deps, DISPUTE_REPLY);
+
+    const result = await runFinalize(deps, baseOpts());
+
+    expect(result.kind === 'failed' && result.status).toBe('disputed');
+  });
+
+  it('dispatches a fix, not a dispute stop, when the reviewer accepts the dispute but keeps another finding at the same spot', async () => {
+    const runReview = vi
+      .fn<(...args: unknown[]) => Promise<ReviewerDispatchOutcome>>()
+      .mockResolvedValueOnce(CHANGES)
+      .mockResolvedValueOnce(CHANGES)
+      .mockResolvedValueOnce(REVIEW_OK);
+    const { deps } = makeDeps({
+      runReviewerDispatch: runReview as never,
+      runJobPhase: fakeRunSteps(STEPS_OK),
+      resolveHeadSha: vi
+        .fn<(...args: unknown[]) => Promise<string>>()
+        .mockResolvedValueOnce('sha-1') // round 1
+        .mockResolvedValueOnce('sha-1') // round 2: dispute only, no commit
+        .mockResolvedValue('sha-2'), // round 3: the remaining fix landed
+    });
+    (deps.stmts.listReviewerThreadsForRun as unknown as { all: ReturnType<typeof vi.fn> }).all = vi
+      .fn()
+      .mockReturnValueOnce([FINDING])
+      // D1 withdrawn; a different blocking defect in the same range, uncited.
+      .mockReturnValue([{ ...FINDING, body: '**[7/10]** Off-by-one in the same loop.' }]);
+    wireFixReply(deps, DISPUTE_REPLY);
+
+    const result = await runFinalize(deps, baseOpts());
+
+    expect(result.kind).toBe('ready_to_push');
+    expect(deps.dispatchFixMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it('continues to checks when the reviewer accepts the dispute', async () => {
+    const runReview = vi
+      .fn<(...args: unknown[]) => Promise<ReviewerDispatchOutcome>>()
+      .mockResolvedValueOnce(CHANGES)
+      .mockResolvedValueOnce(REVIEW_OK);
+    const runSteps = vi
+      .fn<(...args: unknown[]) => Promise<StepRunResult>>()
+      .mockResolvedValue(STEPS_OK);
+    const { deps } = makeDeps({
+      runReviewerDispatch: runReview as never,
+      runJobPhase: runSteps as never,
+      resolveHeadSha: vi.fn().mockResolvedValue('sha-same'),
+    });
+    (deps.stmts.listReviewerThreadsForRun as unknown as { all: ReturnType<typeof vi.fn> }).all =
+      vi.fn(() => [FINDING]);
+    wireFixReply(deps, DISPUTE_REPLY);
+
+    const result = await runFinalize(deps, baseOpts());
+
+    expect(result.kind).toBe('ready_to_push');
+    expect(runSteps).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the no-progress rules when the fix turn neither commits nor disputes', async () => {
+    const runReview = vi
+      .fn<(...args: unknown[]) => Promise<ReviewerDispatchOutcome>>()
+      .mockResolvedValue(CHANGES);
+    const { deps } = makeDeps({
+      runReviewerDispatch: runReview as never,
+      resolveHeadSha: vi.fn().mockResolvedValue('sha-same'),
+    });
+    (deps.stmts.listReviewerThreadsForRun as unknown as { all: ReturnType<typeof vi.fn> }).all =
+      vi.fn(() => [FINDING]);
+    wireFixReply(deps, 'I looked at it and changed nothing.');
+
+    const result = await runFinalize(deps, baseOpts());
+
+    expect(result.kind === 'failed' && result.failureReason).toBe('fix_no_progress');
+  });
+});

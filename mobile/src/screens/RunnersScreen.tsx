@@ -30,6 +30,7 @@ const TERMINAL_STATUSES = new Set([
   'timed_out',
   'infra_error',
   'cancelled',
+  'disputed',
 ]);
 export default function RunnersScreen({ route, navigation }: any) {
   const { projectId, project: routeProject } = route.params || {};

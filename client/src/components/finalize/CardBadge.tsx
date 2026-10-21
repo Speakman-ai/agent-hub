@@ -1,4 +1,12 @@
-import { GitMerge, Loader2, Check, XCircle, PauseCircle, AlertTriangle } from 'lucide-react';
+import {
+  GitMerge,
+  Loader2,
+  Check,
+  XCircle,
+  PauseCircle,
+  AlertTriangle,
+  CircleAlert,
+} from 'lucide-react';
 import {
   useFinalizeRun,
   describeRunPhase,
@@ -112,6 +120,8 @@ function pickIcon(status: any, isPaused: any) {
       return XCircle;
     case 'stalled_no_response':
       return AlertTriangle;
+    case 'disputed':
+      return CircleAlert;
     case 'rebasing':
     case 'reviewing':
     case 'running':
@@ -136,6 +146,8 @@ function pickTone(status: any, isPaused: any) {
       return 'bg-slate-700/60 text-slate-300';
     case 'stalled_no_response':
       return 'bg-amber-900/40 text-amber-300';
+    case 'disputed':
+      return 'bg-rose-900/40 text-rose-300';
     case 'queued':
       return 'bg-slate-700/60 text-slate-300';
     case 'rebasing':

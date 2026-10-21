@@ -1257,8 +1257,12 @@ function initDb(dataDir: string): void {
     -- match the query's status predicate verbatim) and the full ORDER BY
     -- tiebreak (started_at, then id) must be covered or SQLite falls back to a
     -- TEMP B-TREE for the last ORDER BY term.
-    CREATE INDEX IF NOT EXISTS idx_finalize_runs_active ON finalize_runs(started_at DESC, id DESC)
-      WHERE status NOT IN ('pushed','failed','timed_out','infra_error','cancelled','stalled_no_response');
+    -- Named for its predicate: the terminal-status list is part of the index
+    -- definition, so adding a terminal status means a new name (CREATE INDEX
+    -- IF NOT EXISTS would otherwise keep the stale predicate on existing DBs).
+    DROP INDEX IF EXISTS idx_finalize_runs_active;
+    CREATE INDEX IF NOT EXISTS idx_finalize_runs_open ON finalize_runs(started_at DESC, id DESC)
+      WHERE status NOT IN ('pushed','failed','timed_out','infra_error','cancelled','stalled_no_response','disputed');
     -- One landing at a time per (project, base branch). Held across the
     -- base-drift check, the push, and (under Merge Automatically) the merge,
     -- so two sessions cannot both read the same base as clean and then both
@@ -6878,7 +6882,7 @@ function initDb(dataDir: string): void {
     selectStuckActiveFinalizeRunsOnBoot: db.prepare(
       `SELECT id, session_id, card_id, project_id, head_sha
          FROM finalize_runs
-        WHERE status NOT IN ('pushed','failed','timed_out','infra_error','cancelled','stalled_no_response','ready_to_push')
+        WHERE status NOT IN ('pushed','failed','timed_out','infra_error','cancelled','stalled_no_response','disputed','ready_to_push')
         ORDER BY started_at DESC, id DESC`,
     ),
     // Crash-loop guard for boot retrigger: how many times this exact
@@ -6907,7 +6911,7 @@ function initDb(dataDir: string): void {
            failure_reason = 'Finalize run interrupted (server restart or crash)',
            phase = NULL,
            ended_at = COALESCE(ended_at, unixepoch() * 1000)
-       WHERE status NOT IN ('pushed','failed','timed_out','infra_error','cancelled','stalled_no_response','ready_to_push')`,
+       WHERE status NOT IN ('pushed','failed','timed_out','infra_error','cancelled','stalled_no_response','disputed','ready_to_push')`,
     ),
     failStuckActiveFinalizeRunStepsOnBoot: db.prepare(
       `UPDATE finalize_run_steps
@@ -7332,7 +7336,7 @@ function initDb(dataDir: string): void {
       `SELECT *
          FROM finalize_runs
         WHERE session_id = ?
-          AND status NOT IN ('pushed', 'failed', 'timed_out', 'infra_error', 'cancelled', 'stalled_no_response', 'ready_to_push')
+          AND status NOT IN ('pushed', 'failed', 'timed_out', 'infra_error', 'cancelled', 'stalled_no_response', 'disputed', 'ready_to_push')
         ORDER BY started_at DESC, id DESC
         LIMIT 1`,
     ),
@@ -7348,7 +7352,7 @@ function initDb(dataDir: string): void {
       `SELECT *
          FROM finalize_runs
         WHERE session_id = ?
-          AND status NOT IN ('pushed', 'failed', 'timed_out', 'infra_error', 'cancelled', 'stalled_no_response')
+          AND status NOT IN ('pushed', 'failed', 'timed_out', 'infra_error', 'cancelled', 'stalled_no_response', 'disputed')
         ORDER BY started_at DESC, id DESC
         LIMIT 1`,
     ),
@@ -7356,7 +7360,7 @@ function initDb(dataDir: string): void {
       `SELECT id, session_id, phase, status
          FROM finalize_runs
         WHERE session_id IS NOT NULL
-          AND status NOT IN ('pushed', 'failed', 'timed_out', 'infra_error', 'cancelled', 'stalled_no_response')
+          AND status NOT IN ('pushed', 'failed', 'timed_out', 'infra_error', 'cancelled', 'stalled_no_response', 'disputed')
         ORDER BY started_at DESC, id DESC`,
     ),
     getActiveFinalizeRunForSessionBranch: db.prepare(
@@ -7364,7 +7368,7 @@ function initDb(dataDir: string): void {
          FROM finalize_runs
         WHERE session_id = ?
           AND branch = ?
-          AND status NOT IN ('pushed', 'failed', 'timed_out', 'infra_error', 'cancelled', 'stalled_no_response', 'ready_to_push')
+          AND status NOT IN ('pushed', 'failed', 'timed_out', 'infra_error', 'cancelled', 'stalled_no_response', 'disputed', 'ready_to_push')
         ORDER BY started_at DESC, id DESC
         LIMIT 1`,
     ),

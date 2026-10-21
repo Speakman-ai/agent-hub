@@ -1899,7 +1899,14 @@ export type FinalizeRunStatus =
    * dispatcher; the stall path is live-only and gated by
    * `trigger_source === 'ui_button'`.
    */
-  | 'stalled_no_response';
+  | 'stalled_no_response'
+  /**
+   * Terminal: the session agent disputed reviewer findings and the reviewer
+   * upheld at least one after reading the rebuttal. A human rules on it (push
+   * anyway, or tell the agent to make the change). Drives the session's
+   * `disputed` state. See `server/finalize/review-dispute.ts`.
+   */
+  | 'disputed';
 
 /** Phase codes — UI surfaces these; some collapse onto the same status. */
 export type FinalizeRunPhase = 'rebase' | 'review' | 'tasks' | 'dispatching' | 'push';

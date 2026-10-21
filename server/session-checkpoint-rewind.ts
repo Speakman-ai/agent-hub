@@ -1,6 +1,12 @@
 import type { BroadcastFn, Project, SessionRow, Stmts } from './types.js';
 import { autopilotMainlineStartEnabled } from './autopilot-mainline-availability.js';
-import { computeSessionState, DEFAULT_SESSION_STATE, type SessionState } from './session-state.js';
+import {
+  DEFAULT_SESSION_STATE,
+  gatherSessionStateSignals,
+  resolveSessionState,
+  type SessionState,
+} from './session-state.js';
+import type { NeedsInputKind } from './session-needs-input.js';
 import { isWorkflowProject, sessionCanUseDesignMode } from './project-mode-guards.js';
 import { isFirecrackerBackendRegistered } from './session-env/firecracker/firecracker-backend-status.js';
 import {
@@ -51,6 +57,14 @@ export type SessionWireRow = SessionRow & {
    * per state, so this field is never null on the wire.
    */
   state: SessionState;
+  /**
+   * What the session is waiting on the human for (question, credential,
+   * approval, sign_in, review_disputed), or null. Seeds the client's live
+   * `session_needs_input` map. Null when `stmts` is omitted.
+   */
+  needs_input: NeedsInputKind | null;
+  /** Server ms when `needs_input` was computed; null when `stmts` is omitted. */
+  needs_input_at: number | null;
   /**
    * Whether this session can enter Design mode (`PUT /api/sessions/:id/mode`
    * with `design`). Computed from the SAME `sessionCanUseDesignMode` helper the
@@ -232,15 +246,21 @@ export function enrichSessionForClient(
   // Explicit project wins; otherwise resolve the owning project so capability
   // flags stay authoritative on broadcast paths that omit it.
   const resolvedProject = project ?? projectForSessionResolver?.(row) ?? null;
+  // Server time the needs-input answer was computed; clients compare it with
+  // live `session_needs_input` events to keep whichever is newer.
+  const needsInputAt = Date.now();
+  const signals = stmts ? gatherSessionStateSignals(stmts, row.id) : null;
   return {
     ...row,
     checkpoint_rewind_supported: engineSupportsCheckpointRewind(row.engine),
     card_id: stmts ? lookupCardIdForSession(stmts, row.id) : null,
-    finalize_status: stmts ? lookupFinalizeStatusForSession(stmts, row.id) : null,
+    finalize_status: signals?.finalizeStatus ?? null,
     finalize_pushed_count: stmts ? lookupFinalizePushedCountForSession(stmts, row.id) : 0,
-    state: stmts
-      ? computeSessionState(stmts, row.id)
+    state: signals
+      ? resolveSessionState(signals)
       : ((row.state as SessionState | null | undefined) ?? DEFAULT_SESSION_STATE),
+    needs_input: signals?.needsInput ?? null,
+    needs_input_at: signals ? needsInputAt : null,
     can_design_mode: sessionCanUseDesignMode(row, resolvedProject),
     // Fail closed on an unknown project: VM mode is offered only when we can
     // positively confirm a non-workflow project. Workflow sessions (server-side

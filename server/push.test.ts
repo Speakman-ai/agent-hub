@@ -493,6 +493,22 @@ describe('mapBroadcastToPush', () => {
     expect(notConverging?.event).toBe('awaiting_feedback');
     expect(notConverging?.payload.title).toMatch(/not converging/i);
     expect(notConverging?.payload.data?.failureReason).toBe('review_not_converging');
+
+    const disputed = mapBroadcastToPush({
+      type: 'finalize_run_completed',
+      status: 'disputed',
+      failure_reason: 'review_disputed',
+      session_id: 's3',
+      sessionName: 'Ship',
+      run_id: 'r3',
+    });
+    expect(disputed?.event).toBe('awaiting_feedback');
+    expect(disputed?.payload.title).toMatch(/review disputed/i);
+    expect(disputed?.payload.body).toContain('"Ship"');
+    expect(disputed?.payload.data).toMatchObject({
+      sessionId: 's3',
+      failureReason: 'review_disputed',
+    });
   });
 
   it('does NOT push an ordinary finalize failure (only ready_to_push/pushed and the two review-pause reasons)', () => {

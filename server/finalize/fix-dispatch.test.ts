@@ -10,6 +10,7 @@
  * No real CLI binaries, no real timers, no real db. We stub everything
  * the helper touches so the run is sub-millisecond.
  */
+import { REVIEW_DISPUTE_INSTRUCTIONS } from './review-dispute.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ReviewerThreadRow } from '../types.js';
@@ -31,6 +32,13 @@ import { RUNNER_TEARDOWN_DISPATCH_HINT } from './runner-teardown.js';
 // §7 composer tests
 
 describe('composeDispatchBody', () => {
+  it('omits the dispute instructions on a CI-only dispatch', () => {
+    const body = composeDispatchBody({
+      failedStep: { phase: 'tasks', name: 'test', exitCode: 1, outputTail: ['boom'] },
+    });
+    expect(body).not.toContain('agenthub:review-dispute');
+  });
+
   const trailerLines = ['', DISPATCH_TRAILER];
 
   it('renders the step-failed header verbatim', () => {
@@ -70,6 +78,7 @@ describe('composeDispatchBody', () => {
     expect(body).toContain('Reviewer notes:');
     expect(body).toContain('server/foo.ts:42 — **[6/10]** Off by one');
     expect(body.endsWith(`\n${DISPATCH_TRAILER_REVIEWER}`)).toBe(true);
+    expect(body).toContain(REVIEW_DISPUTE_INSTRUCTIONS);
   });
 
   it('renders the root-cause escalation preamble + prior-round findings when a cluster recurs', () => {
@@ -104,6 +113,7 @@ describe('composeDispatchBody', () => {
     // Escalation preamble precedes the current round's notes.
     expect(body.indexOf('Root-cause escalation:')).toBeLessThan(body.indexOf('Reviewer notes:'));
     expect(body.endsWith(`\n${DISPATCH_TRAILER_REVIEWER}`)).toBe(true);
+    expect(body).toContain(REVIEW_DISPUTE_INSTRUCTIONS);
   });
 
   it('omits the escalation preamble when rootCauseEscalation is absent', () => {

@@ -72,13 +72,13 @@ describe('DB hot-spot index coverage', () => {
     expect(detail).not.toMatch(/SCAN s\b(?! USING INDEX)/);
   });
 
-  it('getActiveFinalizeRuns seeks via the partial idx_finalize_runs_active with no sort (WS-connect hot path)', () => {
+  it('getActiveFinalizeRuns seeks via the partial idx_finalize_runs_open with no sort (WS-connect hot path)', () => {
     const detail = planForStmt(db, stmts.getActiveFinalizeRuns.source);
     // Partial index over just the active runs, pre-ordered by the full
     // (started_at DESC, id DESC) tiebreak: short ordered index scan, no full
     // scan of the (mostly-terminal) table and no TEMP B-TREE sort — including
     // the LAST TERM OF ORDER BY, which only the id column in the index covers.
-    expect(detail).toContain('idx_finalize_runs_active');
+    expect(detail).toContain('idx_finalize_runs_open');
     expect(detail).not.toMatch(/SCAN finalize_runs\b(?! USING INDEX)/);
     expect(detail).not.toContain('USE TEMP B-TREE');
   });

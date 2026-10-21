@@ -381,7 +381,12 @@ export function FinalizeReviewNoticeBlock({ message }: any) {
       <HeaderRow
         icon="alert-circle"
         iconColor={TONES.amber.text}
-        title="Finalize paused"
+        title={
+          message?.metadata &&
+          parseFinalizeTimelineKind(message.metadata) === 'finalize_review_disputed'
+            ? 'Review disputed: needs your decision'
+            : 'Finalize paused'
+        }
         titleColor={TONES.amber.text}
       />
       {content ? (
@@ -405,6 +410,8 @@ function terminalLabel(status: any, failureReason: any, hostLabel: string) {
       return 'Timed out';
     case 'stalled_no_response':
       return 'Stalled: no response';
+    case 'disputed':
+      return 'Review disputed: needs your decision';
     default:
       return failureReason ? `Failed (${failureReason})` : `Ended (${status})`;
   }
@@ -417,7 +424,8 @@ export function FinalizeTerminalBlock({ message, hosted = false, onOpenPrDetail 
   // operator sees that tests and review never ran.
   const bypassedPush = meta.status === 'pushed' && meta.bypassedGates;
   const isSuccess = !bypassedPush && (meta.status === 'pushed' || meta.status === 'ready_to_push');
-  const isWarn = bypassedPush || meta.status === 'stalled_no_response';
+  const isWarn =
+    bypassedPush || meta.status === 'stalled_no_response' || meta.status === 'disputed';
   const tone: Tone = isSuccess ? 'emerald' : isWarn ? 'amber' : 'red';
   const icon = isSuccess ? 'checkmark-circle' : isWarn ? 'alert-circle' : 'close-circle';
   const prUrl = meta.status === 'pushed' ? meta.prUrl : null;
@@ -738,6 +746,7 @@ export function renderTimelineSystemMessage(
       return <FinalizeFixDispatchBlock message={message} />;
     case 'finalize_review_stalled':
     case 'finalize_review_not_converging':
+    case 'finalize_review_disputed':
       return <FinalizeReviewNoticeBlock message={message} />;
     default:
       break;

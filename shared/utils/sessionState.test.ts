@@ -9,6 +9,12 @@ import {
   sessionStateMeta,
   groupSessionsByState,
   buildSessionBoardColumns,
+  needsInputLabel,
+  applyNeedsInputSnapshot,
+  applyNeedsInputEvent,
+  liveNeedsInputKind,
+  reseedNeedsInputFromSessions,
+  isNeedsInputKind,
   isSessionsViewMode,
 } from './sessionState.js';
 
@@ -106,6 +112,40 @@ describe('SESSION_STATE_META', () => {
     expect(SESSION_STATE_META.pending_push.icon).toBe('ArrowUpCircle');
     expect(SESSION_STATE_META.pushed.icon).toBe('CloudUpload');
     expect(SESSION_STATE_META.merged.icon).toBe('GitMerge');
+    expect(SESSION_STATE_META.needs_input.icon).toBe('CircleAlert');
+  });
+});
+
+describe('needs_input state', () => {
+  it('wins over every other signal, including a live turn parked on an approval', () => {
+    expect(resolveSessionState({ needsInput: 'approval', hasActiveTask: true })).toBe(
+      'needs_input',
+    );
+    expect(resolveSessionState({ needsInput: 'question', finalizeStatus: 'running' })).toBe(
+      'needs_input',
+    );
+  });
+
+  it('maps a disputed Finalize run to needs_input, but a live reply turn shows working', () => {
+    expect(finalizeStatusToState('disputed')).toBe('needs_input');
+    expect(resolveSessionState({ finalizeStatus: 'disputed' })).toBe('needs_input');
+    expect(resolveSessionState({ finalizeStatus: 'disputed', hasActiveTask: true })).toBe(
+      'working',
+    );
+  });
+
+  it('labels each reason and falls back to the generic label', () => {
+    expect(needsInputLabel('credential')).toMatch(/password/);
+    expect(needsInputLabel('review_disputed')).toMatch(/disputed review/);
+    expect(needsInputLabel(null)).toBe('Needs your input');
+    expect(isNeedsInputKind('sign_in')).toBe(true);
+    expect(isNeedsInputKind('bogus')).toBe(false);
+  });
+
+  it('only gets a board column while a session needs input', () => {
+    expect(buildSessionBoardColumns([]).some((c) => c.state === 'needs_input')).toBe(false);
+    const cols = buildSessionBoardColumns([{ sessionId: 'd', state: 'needs_input' }]);
+    expect(cols.find((c) => c.state === 'needs_input')?.sessions).toHaveLength(1);
   });
 });
 
@@ -217,5 +257,84 @@ describe('isSessionsViewMode', () => {
     expect(isSessionsViewMode('board')).toBe(true);
     expect(isSessionsViewMode('grid')).toBe(false);
     expect(isSessionsViewMode(null)).toBe(false);
+  });
+});
+
+describe('needs-input reconciliation', () => {
+  it('a reconnect snapshot replaces stale entries in both directions', () => {
+    const map = applyNeedsInputSnapshot([
+      { sessionId: 's1', needsInput: 'question', at: 10 },
+      { sessionId: 's2', needsInput: null, at: 10 },
+      { sessionId: 's3', needsInput: 'bogus', at: 10 },
+      { nope: true },
+    ]);
+    expect(map).toEqual({
+      s1: { kind: 'question', at: 10 },
+      s2: { kind: null, at: 10 },
+      s3: { kind: null, at: 10 },
+    });
+    expect(applyNeedsInputSnapshot(null)).toEqual({});
+  });
+
+  it('ignores an event older than the entry already held', () => {
+    let map = applyNeedsInputEvent({}, { sessionId: 's1', needsInput: null, at: 20 });
+    map = applyNeedsInputEvent(map, { sessionId: 's1', needsInput: 'approval', at: 15 });
+    expect(liveNeedsInputKind({ id: 's1', needs_input: 'approval' }, map)).toBeNull();
+  });
+
+  it('keeps an event that landed while a fetch was in flight (fetch computed, event, response)', () => {
+    // Server computed the payload at t=100 (approval pending). The approval is
+    // answered and the null event (t=105) arrives before the fetch response.
+    const map = applyNeedsInputEvent({}, { sessionId: 's1', needsInput: null, at: 105 });
+    const payload = { id: 's1', needs_input: 'approval', needs_input_at: 100 };
+    const next = reseedNeedsInputFromSessions(map, [payload]);
+    expect(next).toBe(map);
+    expect(liveNeedsInputKind(payload, next)).toBeNull();
+  });
+
+  it('rejects a delayed event computed before a payload that already arrived', () => {
+    // Payload computed at t=30 says cleared; an approval event computed at t=20
+    // arrives late over the socket.
+    const payload = { id: 's1', needs_input: null, needs_input_at: 30 };
+    let map = reseedNeedsInputFromSessions({ s1: { kind: 'approval', at: 10 } }, [payload]);
+    map = applyNeedsInputEvent(map, { sessionId: 's1', needsInput: 'approval', at: 20 });
+    expect(liveNeedsInputKind(payload, map)).toBeNull();
+    // Same ordering with no prior entry, raising a new request.
+    const raised = { id: 's2', needs_input: 'question', needs_input_at: 30 };
+    let m2 = reseedNeedsInputFromSessions({}, [raised]);
+    m2 = applyNeedsInputEvent(m2, { sessionId: 's2', needsInput: null, at: 20 });
+    expect(liveNeedsInputKind(raised, m2)).toBe('question');
+  });
+
+  it('prefers a newer payload even when the map was not reseeded', () => {
+    const map = applyNeedsInputEvent({}, { sessionId: 's1', needsInput: 'approval', at: 20 });
+    expect(liveNeedsInputKind({ id: 's1', needs_input: null, needs_input_at: 30 }, map)).toBeNull();
+    expect(liveNeedsInputKind({ id: 's1', needs_input: null, needs_input_at: 10 }, map)).toBe(
+      'approval',
+    );
+    expect(liveNeedsInputKind({ id: 's1', needs_input: null }, map)).toBe('approval');
+  });
+
+  it('lets a newer payload replace an older live entry in both directions', () => {
+    const map = {
+      s1: { kind: null, at: 1 },
+      s2: { kind: 'approval', at: 1 },
+      s9: { kind: 'question', at: 1 },
+    };
+    const sessions = [
+      { id: 's1', needs_input: 'question', needs_input_at: 50 },
+      { id: 's2', needs_input: null, needs_input_at: 50 },
+    ];
+    const next = reseedNeedsInputFromSessions(map, sessions);
+    expect(next).toEqual({
+      s1: { kind: 'question', at: 50 },
+      s2: { kind: null, at: 50 },
+      s9: { kind: 'question', at: 1 },
+    });
+    expect(liveNeedsInputKind(sessions[0], next)).toBe('question');
+    expect(liveNeedsInputKind(sessions[1], next)).toBeNull();
+    // Rows without a timestamp and empty lists leave the map alone.
+    expect(reseedNeedsInputFromSessions(map, [{ id: 's9', needs_input: null }])).toBe(map);
+    expect(reseedNeedsInputFromSessions(map, [])).toBe(map);
   });
 });

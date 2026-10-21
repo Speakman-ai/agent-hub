@@ -232,7 +232,13 @@ export function isChatTriggerSourceType(type: unknown): boolean {
 }
 
 const FINALIZE_PASS = new Set(['ready_to_push', 'pushed', 'succeeded']);
-const FINALIZE_FAIL = new Set(['failed', 'timed_out', 'stalled_no_response', 'infra_error']);
+const FINALIZE_FAIL = new Set([
+  'failed',
+  'timed_out',
+  'stalled_no_response',
+  'infra_error',
+  'disputed',
+]);
 
 /**
  * Recognises a v1 trigger event in a broadcast payload. Returns null for

@@ -73,6 +73,7 @@ export const FINALIZE_TERMINAL_STATUSES: ReadonlyArray<FinalizeRunStatus> = [
   'infra_error',
   'cancelled',
   'stalled_no_response',
+  'disputed',
 ];
 
 /**

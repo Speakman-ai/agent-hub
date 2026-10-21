@@ -12,6 +12,7 @@ const ICONS: Record<string, any> = {
   ArrowUpCircle: 'arrow-up-circle-outline',
   CloudUpload: 'cloud-upload-outline',
   GitMerge: 'git-merge-outline',
+  CircleAlert: 'alert-circle',
 };
 const COLOR: Record<string, any> = {
   amber: colors.amber400,
@@ -21,6 +22,7 @@ const COLOR: Record<string, any> = {
   slate: colors.gray400,
   teal: colors.emerald400,
   emerald: colors.emerald400,
+  rose: colors.rose400,
 };
 export default function SessionStateIcon({
   state,

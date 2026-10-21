@@ -24,6 +24,9 @@ export const FINALIZE_TIMELINE_KINDS = [
   // The review loop was escalated to a human after N consecutive
   // `changes_requested` rounds (non-convergence) instead of grinding the budget.
   'finalize_review_not_converging',
+  // The reviewer upheld findings the session agent disputed; the run stopped
+  // as `disputed` for a human to rule on.
+  'finalize_review_disputed',
 ] as const;
 
 export type FinalizeTimelineKind = (typeof FINALIZE_TIMELINE_KINDS)[number];

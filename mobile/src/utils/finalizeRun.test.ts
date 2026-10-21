@@ -31,7 +31,15 @@ describe('isTerminalStatus', () => {
   });
   it('matches the canonical web-side terminal set', () => {
     expect([...TERMINAL_STATUSES].sort()).toEqual(
-      ['pushed', 'failed', 'timed_out', 'infra_error', 'cancelled', 'stalled_no_response'].sort(),
+      [
+        'pushed',
+        'failed',
+        'timed_out',
+        'infra_error',
+        'cancelled',
+        'stalled_no_response',
+        'disputed',
+      ].sort(),
     );
   });
 });

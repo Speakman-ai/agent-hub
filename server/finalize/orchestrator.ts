@@ -39,6 +39,16 @@
  * promise — phase runners that throw are caught here and surfaced as
  * `infra_error` for the trigger to log + present.
  */
+import {
+  attachDisputesToFindings,
+  buildDisputedNotice,
+  detectReviewDisputeBlock,
+  findUpheldDisputes,
+  REVIEW_DISPUTED_REASON,
+  REVIEW_DISPUTED_STATUS,
+  type ReviewDispute,
+  type UpheldDispute,
+} from './review-dispute.js';
 import { collectRetryCarryOver } from './retry-carry-over.js';
 import { randomUUID } from 'crypto';
 import { execFile } from 'child_process';
@@ -86,6 +96,7 @@ import {
 import {
   computeRootCauseEscalation,
   resolveRootCauseEscalationRounds,
+  type ReviewFinding,
   type ReviewRoundFindings,
 } from './review-cluster-tracker.js';
 import type {
@@ -1070,6 +1081,11 @@ export async function runFinalize(
     // across rounds and escalate to a root-cause fix. Cleared on an approved
     // verdict (a fresh streak starts after any convergence).
     const reviewClusterHistory: ReviewRoundFindings[] = [];
+    // Findings the session agent disputed in its last fix turn, each paired
+    // with the finding it contests. The next review pass sees them; a finding
+    // upheld after a dispute stops the run as `disputed` for a human. Cleared
+    // once a review pass has consumed them.
+    let pendingDisputes: ReviewDispute[] = [];
     const rootCauseEscalationRounds = resolveRootCauseEscalationRounds();
     // Track the last reviewer + step signals so the combined gate doesn't
     // re-read state from the DB (which would race with the live row).
@@ -1451,7 +1467,26 @@ export async function runFinalize(
       // branch (or not at all).
       const timeoutRerun = pendingTimeoutRerun;
       pendingTimeoutRerun = false;
-      if (prevValidatedHead !== null && headValidatedAgainst === prevValidatedHead) {
+      if (
+        prevValidatedHead !== null &&
+        headValidatedAgainst === prevValidatedHead &&
+        pendingDisputes.length > 0
+      ) {
+        // A dispute is the agent's answer to the review, not a missing
+        // commit: re-review at the same HEAD without spending the no-progress
+        // budget. Bounded: the next pass either accepts every dispute or
+        // stops the run as `disputed`.
+        trace('same_sha_rerun', {
+          round: loopCount,
+          reason: 'review_dispute',
+          disputes: pendingDisputes.length,
+          head: headValidatedAgainst,
+        });
+        log(
+          `[finalize-orchestrator] no code change at ${headValidatedAgainst} but ` +
+            `${pendingDisputes.length} disputed finding(s) — re-reviewing for run=${runId}`,
+        );
+      } else if (prevValidatedHead !== null && headValidatedAgainst === prevValidatedHead) {
         // HEAD did not advance since the previous round — no code change. Give a
         // transient/flaky failure a bounded number of same-SHA reruns before
         // giving up, then terminate to avoid livelocking on a genuine red.
@@ -1722,6 +1757,7 @@ export async function runFinalize(
               // persistence.
               sessionId,
               signal: opts.signal,
+              disputes: pendingDisputes.length > 0 ? pendingDisputes : undefined,
             },
           );
         } catch (err) {
@@ -1831,6 +1867,27 @@ export async function runFinalize(
           consecutiveChangesRequested = 0;
           // Converged this round — start a fresh recurrence streak.
           reviewClusterHistory.length = 0;
+        }
+
+        // Settle the disputes this pass was asked to re-check. Any disputed
+        // finding the reviewer still raises is a disagreement another fix turn
+        // cannot settle: stop and hand it to a human.
+        if (pendingDisputes.length > 0) {
+          const latest =
+            lastReviewerOutcome.verdict === 'changes_requested'
+              ? (reviewClusterHistory[reviewClusterHistory.length - 1]?.findings ?? [])
+              : [];
+          const upheld = findUpheldDisputes(pendingDisputes, latest);
+          trace('review_dispute', {
+            round: loopCount,
+            disputed: pendingDisputes.length,
+            upheld: upheld.length,
+          });
+          pendingDisputes = [];
+          if (upheld.length > 0) {
+            trace('terminal', { result: REVIEW_DISPUTED_REASON, round: loopCount });
+            return stopForDisputedReview(deps, runId, sessionId, upheld, log);
+          }
         }
       }
 
@@ -2736,6 +2793,21 @@ export async function runFinalize(
       // cancelTerminal; spawn_failed → dispatch_failure. All handled uniformly.
       const settledOutcome = settleFixDispatchOutcome(fix);
       if (settledOutcome) return settledOutcome;
+      // A reviewer-driven fix turn may dispute findings instead of (or as well
+      // as) committing. Pair each dispute with the finding it contests so the
+      // next pass can re-check it.
+      if (trigger.reviewerVerdict === 'changes_requested') {
+        pendingDisputes = readFixTurnDisputes(
+          deps,
+          sessionId,
+          fix.messageId,
+          reviewClusterHistory[reviewClusterHistory.length - 1]?.findings ?? [],
+          log,
+        );
+        if (pendingDisputes.length > 0) {
+          trace('review_dispute', { round: loopCount, raised: pendingDisputes.length });
+        }
+      }
       // `turn_ended` — the session committed (or at least ended its turn).
       // We re-enter at the top of the loop. The next iteration's rebase
       // pass will refresh the worktree state and the reviewer + step
@@ -3329,6 +3401,96 @@ function escalateNonConvergentReview(
     'failed',
     'review_not_converging',
     `reviewer requested changes ${rounds} consecutive rounds${cluster ? ` (recurring cluster: ${cluster})` : ''}`,
+    log,
+  );
+}
+
+/**
+ * Read the dispute block (if any) from the session agent's reply to a fix
+ * dispatch: every assistant message after the dispatch row. Best-effort; a
+ * read failure means no disputes.
+ */
+function readFixTurnDisputes(
+  deps: OrchestratorDeps,
+  sessionId: string | null,
+  dispatchMessageId: string,
+  findings: readonly ReviewFinding[],
+  log: (msg: string) => void,
+): ReviewDispute[] {
+  if (!sessionId || !dispatchMessageId) return [];
+  try {
+    const rows = deps.stmts.getMessages.all(sessionId) as Array<{
+      id: string;
+      role: string;
+      content: string | null;
+    }>;
+    const start = rows.findIndex((r) => r.id === dispatchMessageId);
+    if (start < 0) return [];
+    const reply = rows
+      .slice(start + 1)
+      .filter((r) => r.role === 'assistant' && typeof r.content === 'string')
+      .map((r) => r.content as string)
+      .join('\n\n');
+    return attachDisputesToFindings(detectReviewDisputeBlock(reply), findings);
+  } catch (err) {
+    log(
+      `[finalize-orchestrator] dispute read failed for session=${sessionId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return [];
+  }
+}
+
+/**
+ * Stop the run as `disputed`: the reviewer upheld findings the agent disputed.
+ * Posts the disagreement to the session so the human can rule on it; the
+ * terminal broadcast drives the session's "Disputed" state and notification.
+ */
+function stopForDisputedReview(
+  deps: OrchestratorDeps,
+  runId: string,
+  sessionId: string | null,
+  upheld: readonly UpheldDispute[],
+  log: (msg: string) => void,
+): OrchestratorOutcome {
+  try {
+    if (sessionId) {
+      writeFinalizeTimelineMessage(
+        { stmts: deps.stmts, broadcast: deps.broadcast, log },
+        {
+          sessionId,
+          kind: 'finalize_review_disputed',
+          content: buildDisputedNotice(upheld),
+          payload: {
+            runId,
+            reason: REVIEW_DISPUTED_REASON,
+            disputes: upheld.map((u) => ({
+              file_path: u.dispute.file_path,
+              line_start: u.dispute.line_start,
+              line_end: u.dispute.line_end,
+              reason: u.dispute.reason,
+              finding: u.upheld,
+            })),
+          },
+        },
+      );
+    }
+  } catch (err) {
+    log(
+      `[finalize-orchestrator] dispute notice post failed for run=${runId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+  return terminate(
+    deps,
+    runId,
+    REVIEW_DISPUTED_STATUS,
+    REVIEW_DISPUTED_REASON,
+    `reviewer upheld ${upheld.length} disputed finding${upheld.length === 1 ? '' : 's'}: ${upheld
+      .map((u) => u.dispute.file_path)
+      .join(', ')}`,
     log,
   );
 }

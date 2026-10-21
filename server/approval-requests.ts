@@ -117,6 +117,12 @@ export function hasLiveApprovalWaiter(id: string): boolean {
   return waiters.has(id);
 }
 
+/** True while a turn in `sessionId` is parked on an approval the human has not answered. */
+export function hasPendingApprovalForSession(sessionId: string): boolean {
+  for (const w of waiters.values()) if (w.sessionId === sessionId) return true;
+  return false;
+}
+
 /** Summary for broadcasts, notifications and REST. */
 export function serializeApproval(a: ApprovalRequest) {
   return {

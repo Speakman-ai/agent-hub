@@ -1,3 +1,8 @@
+import {
+  buildNeedsInputSnapshot,
+  noteBroadcastForNeedsInput,
+  SESSION_NEEDS_INPUT_SNAPSHOT_EVENT,
+} from './session-needs-input.js';
 import { WebSocketServer, WebSocket as WsClient } from 'ws';
 import { isUpgradeClaimed } from './upgrade-claim.js';
 import type { Server } from 'http';
@@ -494,6 +499,9 @@ export default function createWebSocket(
         routeBroadcastToChatTriggers(data, { broadcast });
       });
     }
+    // Questions, approvals, sign-ins and Finalize terminals can put a session
+    // into (or take it out of) the "needs your input" state.
+    noteBroadcastForNeedsInput(data, { stmts, broadcast });
     // A SideBar is answered in its panel; a phone push would deep-link to a
     // session no list shows.
     if (typeof data.sidebarParentId === 'string') return;
@@ -573,6 +581,21 @@ export default function createWebSocket(
         JSON.stringify({
           type: 'awaiting-input-snapshot',
           items: buildAwaitingInputSnapshotLenient(stmts!).filter((item) =>
+            sessionSnapshotVisible(item.sessionId),
+          ),
+        }),
+      );
+    } catch {
+      /* send failure — client may have disconnected */
+    }
+
+    // Authoritative needs-input state for recent sessions, so a reconnect
+    // reconciles anything missed while the socket was down.
+    try {
+      ws.send(
+        JSON.stringify({
+          type: SESSION_NEEDS_INPUT_SNAPSHOT_EVENT,
+          items: buildNeedsInputSnapshot(stmts!).filter((item) =>
             sessionSnapshotVisible(item.sessionId),
           ),
         }),

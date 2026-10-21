@@ -46,6 +46,7 @@
  * one HEAD is stale the moment any commit lands; the push gate (§9) is
  * the only place these signals are trusted to be current.
  */
+import { renderDisputesForReviewer, type ReviewDispute } from './review-dispute.js';
 import { execFile } from 'child_process';
 import { createHash, randomUUID } from 'crypto';
 import { promisify } from 'util';
@@ -250,6 +251,12 @@ export interface ReviewerLocalDiffInputs {
    * the latter on a session that is full of changes.
    */
   fileListUnavailable?: boolean;
+  /**
+   * Findings from the previous pass that the implementer disputed instead of
+   * changing the code. Rendered beside each finding so the reviewer re-checks
+   * the rebuttal rather than re-raising the finding blind.
+   */
+  implementerDisputes?: ReviewDispute[];
 }
 
 /**
@@ -380,6 +387,8 @@ export interface ReviewerDispatchOptions {
    * cancel mid-review kills the reviewer turn cleanly. Optional.
    */
   signal?: ReviewerCancelSignal;
+  /** Disputes the implementer raised against the previous pass; see {@link ReviewerLocalDiffInputs.implementerDisputes}. */
+  disputes?: ReviewDispute[];
 }
 
 /**
@@ -472,6 +481,10 @@ export async function runReviewerDispatch(
         0,
       );
     }
+  }
+
+  if (opts.disputes && opts.disputes.length > 0) {
+    inputs = { ...inputs, implementerDisputes: opts.disputes };
   }
 
   // Run the reviewer agent. Driver may throw on engine-level failures;
@@ -1760,6 +1773,9 @@ its title and description and check the diff delivers that. Report a gap
 only where the stated intent is plainly unmet — **do not invent criteria
 the card never stated.**`;
 
+  const disputes = inputs.implementerDisputes ?? [];
+  const disputeSection = disputes.length > 0 ? `${renderDisputesForReviewer(disputes)}\n` : '';
+
   return `# Pre-PR Code Review (Local Diff)
 ${coverageNotice}
 
@@ -1798,7 +1814,7 @@ ${
     : `The unified diff is **not** in this argv prompt. It is in the attached review corpus (Cursor always-apply session rule, Claude \`--system-prompt-file\`, or Gemini/Codex/Grok stdin). Review that corpus. If Partial input is flagged, read the omitted files — your Read/Bash tools work. A read that still fails is an access failure: report it, do not score it as a code defect, and still end the turn with a verdict.`
 }
 
-## Your task
+${disputeSection}## Your task
 
 1. Read the attached review corpus (or the inline diff) in full.
 2. **Check the diff against the ticket.** ${coverageTask}
@@ -1866,7 +1882,11 @@ Walk in order, take the first match:
    fails, report it in the prose and continue the walk on what you did read.
    Never withhold the verdict block over it — a turn with no block is scored
    \`review_failed\` and Finalize stops with no review at all.
-3. **Otherwise** → verdict = \`approved\`. (Non-blocking notes ≤ 3 are
+3. **Missing CI evidence only**: CI runs only after you approve, so no CI
+   result exists during review. Never withhold approval to wait for test
+   runs, timings, or other CI output, and never score their absence as a
+   finding. Judge the code you can read.
+4. **Otherwise** → verdict = \`approved\`. (Non-blocking notes ≤ 3 are
    still included in the findings list.)
 
 When in doubt about a score, **round up, not down.** Under-scoring to

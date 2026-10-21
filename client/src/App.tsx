@@ -1,3 +1,9 @@
+import {
+  applyNeedsInputEvent,
+  applyNeedsInputSnapshot,
+  reseedNeedsInputFromSessions,
+  type NeedsInputMap,
+} from '@shared/utils/sessionState';
 import OrganizationsPage from './components/OrganizationsPage';
 import OrganizationComputerBar from './components/OrganizationComputerBar';
 import type { OrganizationChatTarget } from './components/OrganizationAgentsPanel';
@@ -527,6 +533,10 @@ export default function App({ initialView }: any = {}) {
   // live by the finalize_run_* WebSocket events. Drives the sidebar
   // "ready to push" indicator.
   const [finalizeStatusBySession, setFinalizeStatusBySession] = useState<Record<string, any>>({});
+  // What each session is waiting on the human for (question, credential,
+  // approval, sign_in, review_disputed), from `session_needs_input` events. A
+  // present-but-null entry means "cleared"; absent falls back to the payload.
+  const [needsInputBySession, setNeedsInputBySession] = useState<NeedsInputMap>({});
   // Live shell output while verify-before-Done runs (close-card → Done gate).
   const [doneVerifyLogBySession, _setDoneVerifyLogBySession] = useState<Record<string, any>>({});
   // Cursor-style ProgressPanel state — keyed by sessionId.
@@ -1885,6 +1895,7 @@ export default function App({ initialView }: any = {}) {
         return next;
       });
 
+      setNeedsInputBySession((prev: any) => reseedNeedsInputFromSessions(prev, data));
       setFinalizeStatusBySession((prev: any) => {
         const next = { ...prev };
         const alive = new Set(data.map((x: any) => x.id));
@@ -2623,6 +2634,15 @@ export default function App({ initialView }: any = {}) {
           );
           break;
         }
+        case 'session-needs-input-snapshot': {
+          setNeedsInputBySession(applyNeedsInputSnapshot(data.items));
+          break;
+        }
+        case 'session_needs_input': {
+          setNeedsInputBySession((prev: NeedsInputMap) => applyNeedsInputEvent(prev, data));
+          break;
+        }
+
         case 'session_state': {
           // Server-side lifecycle cache push. Keep the session row seed current
           // so late terminal states (pushed / merged) update immediately even
@@ -4192,6 +4212,7 @@ export default function App({ initialView }: any = {}) {
         if (Object.keys(finalizeStatuses).length > 0) {
           setFinalizeStatusBySession((prev: any) => ({ ...prev, ...finalizeStatuses }));
         }
+        setNeedsInputBySession((prev: any) => reseedNeedsInputFromSessions(prev, data));
 
         // If we were explicitly navigated to a specific session (e.g. from kanban
         // assign), honour that session ID. Otherwise try to restore the last
@@ -5553,6 +5574,7 @@ export default function App({ initialView }: any = {}) {
       deriveSessionState(s, {
         activeTaskSessionIds: activeTasks,
         finalizeStatusBySession,
+        needsInputBySession,
       }) === 'merged';
     const mergedIds = new Set(agentSessions.filter(isMerged).map((s: any) => s.id));
     for (const id of mergedIds) tearDownSessionPreview(id);
@@ -5964,8 +5986,9 @@ export default function App({ initialView }: any = {}) {
       deriveSessionState(activeSession, {
         activeTaskSessionIds: activeTasks,
         finalizeStatusBySession,
+        needsInputBySession,
       }),
-    [activeSession, activeTasks, finalizeStatusBySession],
+    [activeSession, activeTasks, finalizeStatusBySession, needsInputBySession],
   );
 
   // Fire an ensure for every opened worktree session, independent of the
@@ -6882,6 +6905,7 @@ export default function App({ initialView }: any = {}) {
             previewStartingBySession={previewStartingBySession}
             changesReadyBySession={changesReady}
             finalizeStatusBySession={finalizeStatusBySession}
+            needsInputBySession={needsInputBySession}
             onOpenProject={openAdaptiveProjectWizard}
             onImportProject={openImportProjectWizard}
             onReorderProjects={handleReorderProjects}

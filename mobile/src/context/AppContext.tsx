@@ -1,3 +1,9 @@
+import {
+  applyNeedsInputEvent,
+  applyNeedsInputSnapshot,
+  reseedNeedsInputFromSessions,
+  type NeedsInputMap,
+} from '@shared/utils/sessionState';
 import { createUseAiSignInGuide } from '@shared/hooks/useAiSignInGuide';
 import {
   describeComputerToolSetting,
@@ -353,6 +359,10 @@ export function AppProvider({ children }: any) {
   // the web sidebar's live status map so mobile can derive the same session
   // lifecycle state from Finalize WS events.
   const [finalizeStatusBySession, setFinalizeStatusBySession] = useState<any>({});
+  // What each session is waiting on the human for (question, credential,
+  // approval, sign_in, review_disputed), from `session_needs_input` events. A
+  // present-but-null entry means "cleared"; absent falls back to the payload.
+  const [needsInputBySession, setNeedsInputBySession] = useState<NeedsInputMap>({});
   // Tracks which agenthub:ask prompts the user has already answered in this
   // app instance, so the picker renders as "Submitted" immediately after
   // tapping. This is the optimistic, in-memory half; the authoritative source
@@ -401,6 +411,7 @@ export function AppProvider({ children }: any) {
   const activeSessionState = deriveSessionState(activeSession, {
     activeTaskSessionIds: activeTasks,
     finalizeStatusBySession,
+    needsInputBySession,
   });
   const defaultModelForEngine = (engine: any) => {
     const fromConfig = modelConfig?.engineDefaultModels?.[engine];
@@ -711,6 +722,14 @@ export function AppProvider({ children }: any) {
             setSessionAgents(data.session.agents);
           }
           break;
+        case 'session-needs-input-snapshot': {
+          setNeedsInputBySession(applyNeedsInputSnapshot(data.items));
+          break;
+        }
+        case 'session_needs_input': {
+          setNeedsInputBySession((prev: NeedsInputMap) => applyNeedsInputEvent(prev, data));
+          break;
+        }
         case 'session_state': {
           const sid = data.sessionId;
           if (!sid || typeof data.state !== 'string') break;
@@ -1733,6 +1752,7 @@ export function AppProvider({ children }: any) {
       .then(async (data: any) => {
         if (cancelled) return;
         setSessions(data);
+        setNeedsInputBySession((prev: any) => reseedNeedsInputFromSessions(prev, data));
         // Hydrate the changes_ready banner state from persisted session rows so
         // the "Create PR" button survives page refreshes / reconnects. Merge
         // rather than replace to preserve banners for sessions of other agents.
@@ -2034,6 +2054,7 @@ export function AppProvider({ children }: any) {
           setCronSessions([]);
           setChangesReady({});
           setFinalizeStatusBySession({});
+          setNeedsInputBySession({});
           setSessionHandoffs([]);
           setSessionConsultMode(false);
           // Chat stays empty until the new org's connection is up; the gate
@@ -2131,6 +2152,7 @@ export function AppProvider({ children }: any) {
     const archivedRows = Array.isArray(archived) ? archived : [];
     if (agentId === activeAgentIdRef.current) {
       setSessions(sessions);
+      setNeedsInputBySession((prev: any) => reseedNeedsInputFromSessions(prev, sessions));
       setArchivedSessions(archivedRows);
       setChangesReady((prev: any) => ({ ...prev, ...hydrateChangesReady(sessions) }));
     }
@@ -2933,6 +2955,7 @@ export function AppProvider({ children }: any) {
     isProcessing,
     activeTasks,
     finalizeStatusBySession,
+    needsInputBySession,
     handleNewSession,
     handleStartSessionWithAgent,
     handleStartSkillBuilderMode,

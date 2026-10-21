@@ -52,6 +52,7 @@ const TERMINAL_STATUSES: ReadonlySet<FinalizeRunStatus> = new Set<FinalizeRunSta
   'infra_error',
   'cancelled',
   'stalled_no_response',
+  'disputed',
 ]);
 
 const ROW_VISIBILITY_POLL_INTERVAL_MS = 20;
