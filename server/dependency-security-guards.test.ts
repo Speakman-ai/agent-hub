@@ -1670,6 +1670,52 @@ describe('unpatched advisories (containment guards)', () => {
   });
 
   /**
+   * GHSA-fw47-9c62-h3vw (medium): for `hid` / `usb` checks made from an iframe,
+   * `session.setPermissionCheckHandler` receives the top-level frame's origin.
+   * Patched on 42.11.3, which is a major away from the desktop shell's 41.x.
+   * The 42 major also moves macOS notifications to UNNotification, which needs
+   * a properly signed app, and the default DMG is ad-hoc signed, so the bump
+   * risks silently dropping desktop notifications and is not one to take
+   * unreviewed.
+   *
+   * The advisory only reaches apps that install a permission *check* handler
+   * with origin logic AND delegate `hid`/`usb` to an iframe. The shell installs
+   * only a permission *request* handler (media), and the client never grants
+   * `allow="hid"` / `allow="usb"`. These scans keep that true until the bump.
+   */
+  it('electron: hid/usb permission checks stay unreachable (GHSA-fw47-9c62-h3vw)', () => {
+    const root = join(here, '..');
+    const listSources = (dir: string, exts: RegExp): string[] => {
+      const out = spawnSync('git', ['ls-files', '-z', dir], { cwd: root, encoding: 'utf8' });
+      expect(out.status, `git ls-files ${dir} failed: ${out.stderr}`).toBe(0);
+      return out.stdout
+        .split('\0')
+        .filter((f) => exts.test(f) && !/\.(test|spec)\.[cm]?[jt]sx?$/.test(f));
+    };
+
+    const shell = listSources('electron', /\.[cm]?[jt]s$/);
+    expect(shell.length, 'expected electron/ sources').toBeGreaterThan(0);
+    const shellHandlers =
+      /setPermissionCheckHandler|setDevicePermissionHandler|select-hid-device|select-usb-device/;
+    const shellHits = shell.filter((f) => shellHandlers.test(readFileSync(join(root, f), 'utf8')));
+    expect(
+      shellHits,
+      'the desktop shell now handles hid/usb permission checks, which electron < 42.11.3 attributes ' +
+        'to the wrong origin for iframes (GHSA-fw47-9c62-h3vw). Bump electron to >= 42.11.3 first.',
+    ).toEqual([]);
+
+    const client = listSources('client/src', /\.[jt]sx?$/);
+    expect(client.length, 'expected client sources').toBeGreaterThan(0);
+    const delegation = /\ballow\s*=\s*[{"'`][^\n]*\b(hid|usb)\b/;
+    const clientHits = client.filter((f) => delegation.test(readFileSync(join(root, f), 'utf8')));
+    expect(
+      clientHits,
+      'an iframe now delegates hid/usb, which electron < 42.11.3 checks against the top-level ' +
+        'origin (GHSA-fw47-9c62-h3vw). Bump electron to >= 42.11.3 first.',
+    ).toEqual([]);
+  });
+
+  /**
    * GHSA-866g-f22w-33x8 (low): uncontrolled resource consumption in
    * `createJsonResponseHandler`. The reachable sink parses responses from
    * configured, trusted LLM provider endpoints, not attacker-controlled hosts.
