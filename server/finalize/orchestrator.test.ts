@@ -45,7 +45,7 @@ import {
   type OrchestratorOptions,
   type PushAndCreatePrResult,
 } from './orchestrator.js';
-import type { CiConfig } from './ci-config.js';
+import type { CiConfig, CiConfigParseResult } from './ci-config.js';
 import { jobInstanceKey } from './base-drift-policy.js';
 import type { RebasePhaseOutcome } from './rebase.js';
 import type { ReviewerDispatchOutcome } from './reviewer-dispatch.js';
@@ -414,9 +414,7 @@ function fakeRunRebase(
 }
 
 function fakeRunCi(
-  result:
-    | { ok: true; config: CiConfig }
-    | { ok: false; error: { code: 'yaml_parse_error'; message: string } },
+  result: CiConfigParseResult,
 ): NonNullable<OrchestratorDeps['loadCiConfigFromFile']> {
   return vi.fn().mockResolvedValue(result) as never;
 }
@@ -1270,6 +1268,59 @@ describe('runFinalize — ci.yaml invalid', () => {
       expect(result.failureReason).toBe('ci_config_invalid');
       expect(result.detail).toContain('yaml_parse_error');
     }
+  });
+
+  it('hands a broken committed ci.yaml to the session, then fails if no commit lands', async () => {
+    const steps = fakeRunSteps(STEPS_OK);
+    const { deps } = makeDeps({
+      loadCiConfigFromFile: fakeRunCi({
+        ok: false,
+        error: { code: 'unknown_job_key', message: 'unknown key "shard-by"', path: 'jobs.test' },
+      }),
+      runJobPhase: steps,
+    });
+    const result = await runFinalize(deps, baseOpts());
+
+    expect(deps.dispatchFixMessage).toHaveBeenCalledTimes(1);
+    const dispatchArgs = (deps.dispatchFixMessage as unknown as ReturnType<typeof vi.fn>).mock
+      .calls[0][1];
+    expect(dispatchArgs.trigger.ciConfigInvalid).toEqual({
+      file: '.agent-hub/ci.yaml',
+      code: 'unknown_job_key',
+      message: 'unknown key "shard-by"',
+      path: 'jobs.test',
+    });
+    expect(steps).not.toHaveBeenCalled();
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.failureReason).toBe('ci_config_invalid');
+    }
+  });
+
+  it('re-runs the pipeline after the session commits a ci.yaml fix', async () => {
+    const loadCi = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        error: { code: 'yaml_parse_error', message: 'bad indent' },
+      })
+      .mockResolvedValue(CI_OK);
+    const resolveHead = vi
+      .fn<(...args: unknown[]) => Promise<string>>()
+      .mockResolvedValueOnce('sha-broken')
+      .mockResolvedValue('sha-fixed');
+    const steps = fakeRunSteps(STEPS_OK);
+    const { deps } = makeDeps({
+      loadCiConfigFromFile: loadCi as never,
+      resolveHeadSha: resolveHead,
+      runJobPhase: steps,
+    });
+    const result = await runFinalize(deps, baseOpts());
+
+    expect(deps.dispatchFixMessage).toHaveBeenCalledTimes(1);
+    expect(deps.runRebasePhase).toHaveBeenCalledTimes(2);
+    expect(steps).toHaveBeenCalledTimes(1);
+    expect(result.kind).toBe('ready_to_push');
   });
 });
 

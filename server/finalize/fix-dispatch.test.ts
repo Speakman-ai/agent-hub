@@ -910,3 +910,22 @@ describe('composeDispatchBody — step timeout', () => {
     expect(body).toContain('failed (exit 124)');
   });
 });
+
+describe('composeDispatchBody — invalid ci.yaml', () => {
+  it('names the file, the parser error, and the deployed-parser caveat', () => {
+    const body = composeDispatchBody({
+      ciConfigInvalid: {
+        file: '.agent-hub/ci.yaml',
+        code: 'unknown_job_key',
+        message: 'unknown key "shard-by"',
+        path: 'jobs.test',
+      },
+    });
+    expect(body).toContain(
+      'Finalize Code Changes: phase=tasks, .agent-hub/ci.yaml could not be parsed.',
+    );
+    expect(body).toContain('Error (unknown_job_key at jobs.test): unknown key "shard-by"');
+    expect(body).toContain('currently deployed Agent Hub');
+    expect(body).toContain('re-run automatically');
+  });
+});

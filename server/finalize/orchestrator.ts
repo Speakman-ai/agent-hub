@@ -1169,6 +1169,10 @@ export async function runFinalize(
     // path so a session that never makes progress still terminates.
     const maxNoProgressNudges = resolveMaxNoProgressNudges();
     let noProgressNudgesUsed = 0;
+    // HEAD at which an unparseable committed ci.yaml was handed to the session
+    // to fix. If the next round still fails to parse at the same HEAD, the
+    // agent made no commit and the run ends as ci_config_invalid.
+    let ciConfigFixDispatchedAt: string | null = null;
     // CI step timeouts retried this run (not reset by commits: a step that
     // keeps hanging across fixes should still park eventually). The pending
     // flag lets the timeout's own same-commit rerun skip the flaky-rerun
@@ -1733,14 +1737,71 @@ export async function runFinalize(
       } else {
         checksRequired = checksRequestedByMode;
         if (!parseResult.ok) {
-          return terminate(
-            deps,
-            runId,
-            'failed',
-            'ci_config_invalid',
-            `${parseResult.error.code}: ${parseResult.error.message}`,
-            log,
-          );
+          // A committed config lives in the session worktree, so the agent can
+          // fix it: send the parse error as a fix turn once per HEAD. A
+          // server-stored config is not in the branch and still fails the run.
+          if (ciSource !== 'committed' || ciConfigFixDispatchedAt === headValidatedAgainst) {
+            return terminate(
+              deps,
+              runId,
+              'failed',
+              'ci_config_invalid',
+              `${parseResult.error.code}: ${parseResult.error.message}`,
+              log,
+            );
+          }
+          ciConfigFixDispatchedAt = headValidatedAgainst;
+          trace('fix_dispatch', {
+            round: loopCount,
+            phase: 'dispatching',
+            ciConfigInvalid: parseResult.error.code,
+          });
+          fixDispatchCounter.value += 1;
+          let ciFix: FixDispatchResult;
+          try {
+            ciFix = await dispatchFix(
+              {
+                stmts: deps.stmts,
+                broadcast: deps.broadcast,
+                turnEnd: deps.turnEnd,
+                spawnFixTurn: deps.spawnFixTurn,
+              },
+              {
+                runId,
+                sessionId,
+                projectId: opts.project.id,
+                cardId: opts.card.id,
+                triggerSource: opts.triggerSource,
+                cardTitle: opts.card.title,
+                trigger: {
+                  ciConfigInvalid: {
+                    file: DEFAULT_CI_CONFIG_RELATIVE_PATH,
+                    code: parseResult.error.code,
+                    message: parseResult.error.message,
+                    ...(parseResult.error.path ? { path: parseResult.error.path } : {}),
+                  },
+                },
+                notifyAfterMs: opts.stallNotifyAfterMs,
+                stallAfterMs: opts.stallAfterMs,
+                signal: opts.signal,
+              },
+            );
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            return terminate(
+              deps,
+              runId,
+              'infra_error',
+              'container_unavailable',
+              `ci.yaml fix dispatch threw: ${msg}`,
+              log,
+            );
+          }
+          broadcastActiveSeconds(deps, runId);
+          trace('fix_dispatch', { round: loopCount, phase: 'settled', outcome: ciFix.outcome });
+          const settledCiFix = settleFixDispatchOutcome(ciFix);
+          if (settledCiFix) return settledCiFix;
+          continue;
         }
         parsedCi = parseResult.config;
 

@@ -201,6 +201,12 @@ export interface FixDispatchTrigger {
    * to investigate why the step ran long before the automatic re-run.
    */
   stepTimedOut?: { limitMs: number; elapsedMs: number } | null;
+  /**
+   * Set when the session's committed `.agent-hub/ci.yaml` failed to parse.
+   * The agent can fix the file in its worktree, so Finalize hands the parse
+   * error back as a fix turn instead of ending the run.
+   */
+  ciConfigInvalid?: { file: string; code: string; message: string; path?: string } | null;
 }
 
 /**
@@ -412,7 +418,8 @@ export async function dispatchFixMessage(
   // persisted round message after the round completed ("tests only show after
   // they finish, and only when there's a failure"). Mirrors `rebase.ts`,
   // which already keeps `phase === 'rebase'` on its conflict-fix dispatch.
-  const originPhase: FinalizeRunPhase = opts.trigger.failedStep?.phase ?? 'review';
+  const originPhase: FinalizeRunPhase =
+    opts.trigger.failedStep?.phase ?? (opts.trigger.ciConfigInvalid ? 'tasks' : 'review');
   try {
     stmts.updateFinalizeRunPhase.run(originPhase, 'dispatching', opts.runId);
     broadcast({
@@ -704,7 +711,32 @@ function renderFailedStepEvidence(f: FailedStepContext): string[] {
   return lines;
 }
 
+/**
+ * Body for a dispatch triggered by an unparseable committed ci.yaml. Finalize
+ * validates the file with the parser in the deployed Hub, so a key added to
+ * the parser in this same branch is still rejected until that Hub ships.
+ */
+export function composeCiConfigInvalidBody(
+  err: NonNullable<FixDispatchTrigger['ciConfigInvalid']>,
+): string {
+  return [
+    `Finalize Code Changes: phase=tasks, ${err.file} could not be parsed.`,
+    '',
+    `Error (${err.code}${err.path ? ` at ${err.path}` : ''}): ${err.message}`,
+    '',
+    `Fix ${err.file} so it validates, then commit on the current branch. ` +
+      'Finalize parses the config with the parser in the currently deployed Agent Hub, ' +
+      'not the one in this branch: if the error names a key or value this branch just taught ' +
+      'the parser, remove it from the config here and opt in from a follow-up change once ' +
+      'the parser support is deployed.',
+    '',
+    'The pipeline will re-run automatically when you finish your turn. If you end the turn ' +
+      'without a new commit, the run fails with ci_config_invalid.',
+  ].join('\n');
+}
+
 export function composeDispatchBody(trigger: FixDispatchTrigger): string {
+  if (trigger.ciConfigInvalid) return composeCiConfigInvalidBody(trigger.ciConfigInvalid);
   // The full failure set takes precedence when the round had ≥2 reds across
   // parallel jobs; otherwise fall back to the single primary failure so the
   // legacy one-failure output is byte-for-byte unchanged.
