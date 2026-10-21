@@ -12,66 +12,13 @@
  * full run; project globs add to `DEFAULT_FULL_RUN_PATHS`, never replace them.
  */
 
-import { DEFAULT_BASE_DRIFT_HAZARD_PATHS } from './base-drift-policy.js';
+import { DEFAULT_FULL_RUN_PATHS } from '../../shared/utils/testSelection.js';
 import { matchesAnyGlob } from './flake-recovery.js';
+
+export { DEFAULT_FULL_RUN_PATHS };
 
 export const TEST_SELECTION_MODES = ['full', 'dynamic'] as const;
 export type TestSelectionMode = (typeof TEST_SELECTION_MODES)[number];
-
-/**
- * Changes that can move any test's result without touching a test file:
- * dependency manifests and lockfiles, test-runner config, CI and container
- * definitions, and schema migrations.
- */
-export const DEFAULT_FULL_RUN_PATHS: readonly string[] = [
-  // JavaScript / TypeScript
-  '**/package.json',
-  '**/package-lock.json',
-  '**/npm-shrinkwrap.json',
-  '**/pnpm-lock.yaml',
-  '**/pnpm-workspace.yaml',
-  '**/yarn.lock',
-  '**/bun.lockb',
-  '**/bun.lock',
-  '**/vitest.config.*',
-  '**/vitest.workspace.*',
-  '**/vite.config.*',
-  '**/jest.config.*',
-  '**/playwright.config.*',
-  '**/cypress.config.*',
-  '**/tsconfig*.json',
-  // Python
-  '**/pyproject.toml',
-  '**/poetry.lock',
-  '**/uv.lock',
-  '**/Pipfile',
-  '**/Pipfile.lock',
-  '**/requirements*.txt',
-  '**/setup.py',
-  '**/setup.cfg',
-  '**/pytest.ini',
-  '**/tox.ini',
-  '**/conftest.py',
-  // Ruby
-  '**/Gemfile',
-  '**/Gemfile.lock',
-  '**/*.gemspec',
-  '**/.rspec',
-  '**/spec/spec_helper.rb',
-  '**/spec/rails_helper.rb',
-  // Go
-  '**/go.mod',
-  '**/go.sum',
-  // Rust
-  '**/Cargo.toml',
-  '**/Cargo.lock',
-  // CI, containers, migrations
-  '.agent-hub/ci.yaml',
-  '**/Dockerfile*',
-  '**/docker-compose*.y*ml',
-  '**/compose.y*ml',
-  ...DEFAULT_BASE_DRIFT_HAZARD_PATHS,
-];
 
 /** Project-level config as stored in projects.json. Every field is optional. */
 export interface TestSelectionSettings {

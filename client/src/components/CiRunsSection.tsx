@@ -29,6 +29,18 @@ import { api } from '../utils/api';
 import { relativePrTime } from '../utils/prFormatting';
 import { resourceBadgeText, jobResourceKey } from '../utils/formatResources';
 import { describeFinalizeFailureReason } from '../utils/finalizeFailureReason';
+import {
+  CI_ON_PUSH_LOCKED_BY_DYNAMIC_HINT,
+  DEFAULT_FULL_RUN_PATHS,
+  alwaysRunJobChoices,
+  dynamicModeBlockedReason,
+  testSelectionFormFromSettings,
+  testSelectionListsDirty,
+  testSelectionListsKey,
+  testSelectionListsPatch,
+  testSelectionSaveError,
+  toggleAlwaysRunJob,
+} from '@shared/utils/testSelection';
 
 const TERMINAL_STATUSES = new Set([
   'ready_to_push',
@@ -747,6 +759,161 @@ export function BaseDriftSettings({ value, onSave, saving }: any) {
   );
 }
 
+/**
+ * Finalize dynamic test selection. `dynamic` runs only the CI job instances a
+ * change needs; the full run on every default-branch merge (CI on push) is the
+ * backstop, so the server refuses dynamic without it. Server 400s render
+ * inline under the controls.
+ */
+export function TestSelectionSettings({ value, ciOnPush, tests, onSave }: any) {
+  const stored = testSelectionFormFromSettings(value);
+  const listsKey = testSelectionListsKey(value);
+  const [form, setForm] = useState(stored);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [showDefaults, setShowDefaults] = useState(false);
+
+  useEffect(() => setForm((f) => ({ ...f, ...JSON.parse(listsKey) })), [listsKey]);
+
+  const dynamic = stored.mode === 'dynamic';
+  const blocked = dynamicModeBlockedReason(stored.mode, ciOnPush === true);
+  const dirty = testSelectionListsDirty(form, value);
+  const jobs = alwaysRunJobChoices(tests, form.alwaysRun);
+
+  const save = async (patch: Record<string, unknown>) => {
+    setSaving(true);
+    setError(null);
+    try {
+      await onSave(patch);
+    } catch (err) {
+      setError(testSelectionSaveError(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="space-y-2" data-testid="test-selection-settings">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex-1 min-w-0">
+          <span className="text-sm text-gray-200">Dynamic test selection</span>
+          <p className="text-xs text-gray-500">
+            {dynamic
+              ? "Finalize runs only the CI jobs and shards that cover the tests this change needs. Anything it can't map runs in full."
+              : 'Finalize runs every CI job. Turn on to run only the jobs and shards a change needs.'}
+          </p>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={dynamic}
+          onClick={() => save({ mode: dynamic ? 'full' : 'dynamic' })}
+          disabled={saving || blocked !== null}
+          title={blocked ?? undefined}
+          data-testid="test-selection-mode-toggle"
+          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 disabled:opacity-50 ${
+            dynamic ? 'bg-emerald-600' : 'bg-gray-600'
+          }`}
+        >
+          <span
+            className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+              dynamic ? 'translate-x-4' : 'translate-x-0.5'
+            }`}
+          />
+        </button>
+      </div>
+      {blocked && (
+        <p className="text-xs text-amber-400/80" data-testid="test-selection-blocked">
+          {blocked}
+        </p>
+      )}
+      <div className="space-y-1 text-xs">
+        <span className="text-gray-300">Jobs that always run</span>
+        {jobs.length === 0 ? (
+          <p className="text-gray-500">No jobs found in .agent-hub/ci.yaml yet.</p>
+        ) : (
+          <div className="flex flex-wrap gap-1.5" data-testid="test-selection-always-run">
+            {jobs.map((job) => {
+              const on = form.alwaysRun.includes(job.id);
+              return (
+                <button
+                  key={job.id}
+                  type="button"
+                  aria-pressed={on}
+                  disabled={saving}
+                  onClick={() =>
+                    setForm((f) => ({ ...f, alwaysRun: toggleAlwaysRunJob(f.alwaysRun, job.id) }))
+                  }
+                  title={job.configured ? undefined : 'Not in ci.yaml anymore'}
+                  data-testid={`test-selection-job-${job.id}`}
+                  className={`px-2 py-0.5 rounded-full border font-mono disabled:opacity-50 ${
+                    on
+                      ? 'bg-emerald-700/40 border-emerald-600 text-emerald-200'
+                      : 'bg-gray-900 border-gray-700 text-gray-400'
+                  } ${job.configured ? '' : 'line-through'}`}
+                >
+                  {job.id}
+                </button>
+              );
+            })}
+          </div>
+        )}
+        <p className="text-gray-500">
+          Build, lint and typecheck jobs usually belong here. Jobs that don&apos;t write JUnit
+          results always run anyway.
+        </p>
+      </div>
+      <label className="block text-xs">
+        <span className="text-gray-300">Run everything when these paths change</span>
+        <textarea
+          value={form.fullRunPathsText}
+          disabled={saving}
+          onChange={(e) => setForm((f) => ({ ...f, fullRunPathsText: e.target.value }))}
+          rows={3}
+          placeholder="proto/**"
+          data-testid="test-selection-full-run-paths"
+          className="mt-1 w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 font-mono text-gray-200 disabled:opacity-50"
+        />
+        <span className="text-gray-500">
+          Globs, one per line. These add to the {DEFAULT_FULL_RUN_PATHS.length} built-in paths.{' '}
+        </span>
+        <button
+          type="button"
+          onClick={() => setShowDefaults((v) => !v)}
+          data-testid="test-selection-defaults-toggle"
+          className="text-blue-400 hover:text-blue-300"
+        >
+          {showDefaults ? 'Hide built-in paths' : 'Show built-in paths'}
+        </button>
+      </label>
+      {showDefaults && (
+        <ul
+          className="text-[11px] font-mono text-gray-400 bg-gray-900 rounded-lg px-2 py-1 max-h-40 overflow-y-auto"
+          data-testid="test-selection-defaults"
+        >
+          {DEFAULT_FULL_RUN_PATHS.map((glob) => (
+            <li key={glob}>{glob}</li>
+          ))}
+        </ul>
+      )}
+      <button
+        type="button"
+        disabled={saving || !dirty}
+        onClick={() => save(testSelectionListsPatch(form))}
+        data-testid="test-selection-save"
+        className="px-3 py-1 rounded-lg text-xs bg-emerald-700 hover:bg-emerald-600 text-white disabled:opacity-40"
+      >
+        Save
+      </button>
+      {error && (
+        <p className="text-xs text-red-400" role="alert" data-testid="test-selection-error">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
 const PUSH_CONCURRENCY_OPTIONS = [
   { value: 'queue', label: 'Queue after the running one' },
   { value: 'cancel', label: 'Cancel the running one' },
@@ -805,6 +972,8 @@ export default function CiRunsSection({ project, onProjectsChange, showToast }: 
   const ciOnPush = project?.ciOnPush?.enabled === true;
   const ciSpot = project?.finalizeRunner?.spot !== false;
   const [spotChoiceAvailable, setSpotChoiceAvailable] = useState(false);
+  const [ciOnPushError, setCiOnPushError] = useState<string | null>(null);
+  const dynamicSelection = project?.testSelection?.mode === 'dynamic';
 
   const refresh = useCallback(async () => {
     if (!projectId) return;
@@ -885,11 +1054,12 @@ export default function CiRunsSection({ project, onProjectsChange, showToast }: 
   const toggleCiOnPush = async () => {
     if (!projectId) return;
     setSavingToggle(true);
+    setCiOnPushError(null);
     try {
       await api.updateProject(projectId, { ciOnPush: { enabled: !ciOnPush } });
       if (onProjectsChange) onProjectsChange();
     } catch (err: any) {
-      if (showToast) showToast(String(err?.message || err || 'Failed to update'), 'error');
+      setCiOnPushError(testSelectionSaveError(err));
     } finally {
       setSavingToggle(false);
     }
@@ -906,6 +1076,13 @@ export default function CiRunsSection({ project, onProjectsChange, showToast }: 
     } finally {
       setSavingToggle(false);
     }
+  };
+
+  // Throws so TestSelectionSettings can show the server's 400 inline.
+  const updateTestSelection = async (patch: Record<string, unknown>) => {
+    if (!projectId) return;
+    await api.updateProject(projectId, { testSelection: patch });
+    if (onProjectsChange) onProjectsChange();
   };
 
   const updateBaseDrift = async (patch: Record<string, unknown>) => {
@@ -937,6 +1114,16 @@ export default function CiRunsSection({ project, onProjectsChange, showToast }: 
               : 'Run the same jobs on every new default-branch commit. Agent Hub checks GitHub about once a minute, and right away after merges it makes.'}{' '}
             Results appear below. This does not block the merge.
           </p>
+          {dynamicSelection && ciOnPush && (
+            <p className="text-xs text-gray-500" data-testid="ci-on-push-locked">
+              {CI_ON_PUSH_LOCKED_BY_DYNAMIC_HINT}
+            </p>
+          )}
+          {ciOnPushError && (
+            <p className="text-xs text-red-400" role="alert" data-testid="ci-on-push-error">
+              {ciOnPushError}
+            </p>
+          )}
         </div>
         <button
           onClick={toggleCiOnPush}
@@ -997,6 +1184,13 @@ export default function CiRunsSection({ project, onProjectsChange, showToast }: 
         value={project?.baseDrift}
         onSave={updateBaseDrift}
         saving={savingToggle}
+      />
+
+      <TestSelectionSettings
+        value={project?.testSelection}
+        ciOnPush={ciOnPush}
+        tests={stats?.tests}
+        onSave={updateTestSelection}
       />
 
       <RunnerStats

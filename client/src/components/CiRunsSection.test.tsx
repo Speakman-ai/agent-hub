@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import CiRunsSection, {
+  TestSelectionSettings,
   formatCiStepLogLine,
   groupStepsByJob,
   runHasWorkInFlight,
@@ -253,7 +254,8 @@ describe('CiRunsSection', () => {
     // The step name renders with its job/matrix prefix stripped ("unit /
     // default / test" -> "test") because the job header already shows that
     // context.
-    expect(await screen.findByText('test')).toBeInTheDocument();
+    const step = await screen.findByTestId('ci-run-step-run-1-1');
+    expect(within(step).getByText('test')).toBeInTheDocument();
     expect(screen.queryByText('unit / default / test')).toBeNull();
     // Job header still shows the job id once.
     expect(screen.getByText('unit')).toBeInTheDocument();
@@ -519,6 +521,100 @@ describe('CiRunsSection', () => {
         },
       }),
     );
+  });
+
+  it('disables the dynamic selection toggle while CI on push is off', async () => {
+    render(<CiRunsSection project={hostedProject} />);
+    const toggle = await screen.findByTestId('test-selection-mode-toggle');
+    expect(toggle).toBeDisabled();
+    expect(screen.getByTestId('test-selection-blocked')).toHaveTextContent(/CI on push first/);
+  });
+
+  it('turns on dynamic selection when CI on push is on', async () => {
+    (api.updateProject as any).mockResolvedValue({});
+    render(<CiRunsSection project={{ ...hostedProject, ciOnPush: { enabled: true } }} />);
+    const toggle = await screen.findByTestId('test-selection-mode-toggle');
+    expect(toggle).not.toBeDisabled();
+    expect(screen.queryByTestId('test-selection-blocked')).toBeNull();
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(api.updateProject).toHaveBeenCalledWith('proj-1', {
+        testSelection: { mode: 'dynamic' },
+      }),
+    );
+  });
+
+  it('saves picked always-run jobs and project full-run globs', async () => {
+    (api.updateProject as any).mockResolvedValue({});
+    render(<CiRunsSection project={hostedProject} />);
+    fireEvent.click(await screen.findByTestId('test-selection-job-test'));
+    fireEvent.change(screen.getByTestId('test-selection-full-run-paths'), {
+      target: { value: 'proto/**\n' },
+    });
+    fireEvent.click(screen.getByTestId('test-selection-defaults-toggle'));
+    expect(screen.getByTestId('test-selection-defaults')).toHaveTextContent('**/package.json');
+    fireEvent.click(screen.getByTestId('test-selection-save'));
+    await waitFor(() =>
+      expect(api.updateProject).toHaveBeenCalledWith('proj-1', {
+        testSelection: { alwaysRun: ['test'], fullRunPaths: ['proto/**'] },
+      }),
+    );
+  });
+
+  it('keeps unsaved list edits when only the mode is saved', async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const jobs = [{ job_id: 'lint', configured: true }];
+    const { rerender } = render(
+      <TestSelectionSettings value={{}} ciOnPush tests={jobs} onSave={onSave} />,
+    );
+    fireEvent.click(screen.getByTestId('test-selection-job-lint'));
+    fireEvent.change(screen.getByTestId('test-selection-full-run-paths'), {
+      target: { value: 'fixtures/a,b/**' },
+    });
+    fireEvent.click(screen.getByTestId('test-selection-mode-toggle'));
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith({ mode: 'dynamic' }));
+    // The parent refetches the project; only the mode changed on the server.
+    rerender(
+      <TestSelectionSettings value={{ mode: 'dynamic' }} ciOnPush tests={jobs} onSave={onSave} />,
+    );
+    expect(screen.getByTestId('test-selection-job-lint')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('test-selection-full-run-paths')).toHaveValue('fixtures/a,b/**');
+    fireEvent.click(screen.getByTestId('test-selection-save'));
+    await waitFor(() =>
+      expect(onSave).toHaveBeenLastCalledWith({
+        alwaysRun: ['lint'],
+        fullRunPaths: ['fixtures/a,b/**'],
+      }),
+    );
+  });
+
+  it('shows a server 400 for test selection inline', async () => {
+    (api.updateProject as any).mockRejectedValue(
+      new Error('400: testSelection.mode "dynamic" requires CI on push (ciOnPush.enabled)'),
+    );
+    render(<CiRunsSection project={{ ...hostedProject, ciOnPush: { enabled: true } }} />);
+    fireEvent.click(await screen.findByTestId('test-selection-mode-toggle'));
+    expect(await screen.findByTestId('test-selection-error')).toHaveTextContent(
+      /^testSelection.mode "dynamic" requires CI on push/,
+    );
+  });
+
+  it('shows the CI on push 400 inline when dynamic selection depends on it', async () => {
+    (api.updateProject as any).mockRejectedValue(
+      new Error('400: ciOnPush cannot be turned off while testSelection.mode is "dynamic"'),
+    );
+    render(
+      <CiRunsSection
+        project={{
+          ...hostedProject,
+          ciOnPush: { enabled: true },
+          testSelection: { mode: 'dynamic' },
+        }}
+      />,
+    );
+    expect(await screen.findByTestId('ci-on-push-locked')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('ci-on-push-toggle'));
+    expect(await screen.findByTestId('ci-on-push-error')).toHaveTextContent(/cannot be turned off/);
   });
 
   it('shows the polling toggle for GitHub-hosted projects alongside history', async () => {

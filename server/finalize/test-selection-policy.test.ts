@@ -7,6 +7,7 @@ import {
   parseTestSelectionPatch,
   resolveTestSelectionPolicy,
 } from './test-selection-policy.js';
+import { DEFAULT_BASE_DRIFT_HAZARD_PATHS } from './base-drift-policy.js';
 
 describe('resolveTestSelectionPolicy', () => {
   it('defaults to full with the built-in fullRunPaths', () => {
@@ -16,6 +17,12 @@ describe('resolveTestSelectionPolicy', () => {
       fullRunPaths: [...DEFAULT_FULL_RUN_PATHS],
     });
     expect(resolveTestSelectionPolicy(null).mode).toBe('full');
+  });
+
+  it('includes every base-drift hazard path in the defaults', () => {
+    for (const glob of DEFAULT_BASE_DRIFT_HAZARD_PATHS) {
+      expect(DEFAULT_FULL_RUN_PATHS).toContain(glob);
+    }
   });
 
   it('reads an unknown mode as full', () => {

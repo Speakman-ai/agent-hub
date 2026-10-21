@@ -13,6 +13,7 @@ import { colors } from '../theme/colors';
 import { relativeTime } from '../utils/time';
 import ProjectScreenHeader from '../components/ProjectScreenHeader';
 import FinalizeSection from '../components/FinalizeSection';
+import TestSelectionSection from '../components/settings/TestSelectionSection';
 const STATUS_COLOR: Record<string, any> = {
   success: colors.emerald400,
   failure: colors.red400,
@@ -34,7 +35,8 @@ const TERMINAL_STATUSES = new Set([
 ]);
 export default function RunnersScreen({ route, navigation }: any) {
   const { projectId, project: routeProject } = route.params || {};
-  const project = routeProject;
+  const [project, setProject] = useState<any>(routeProject);
+  const [ciTests, setCiTests] = useState<any[] | null>(null);
   const [runs, setRuns] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<any>(null);
@@ -61,6 +63,31 @@ export default function RunnersScreen({ route, navigation }: any) {
     const id = setInterval(loadRuns, 60000);
     return () => clearInterval(id);
   }, [loadRuns]);
+  // The route param is a snapshot; read the live settings and the job list
+  // the test selection picker offers. Failures leave the snapshot in place.
+  useEffect(() => {
+    if (!projectId) return undefined;
+    let cancelled = false;
+    api
+      .getProject(projectId)
+      .then((p: any) => {
+        if (!cancelled && p?.id) setProject(p);
+      })
+      .catch(() => {});
+    api
+      .getCiRunStats(projectId)
+      .then((s: any) => {
+        if (!cancelled) setCiTests(Array.isArray(s?.tests) ? s.tests : []);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+  const saveTestSelection = async (patch: Record<string, unknown>) => {
+    const updated = await api.updateProject(projectId, { testSelection: patch });
+    if (updated?.id) setProject(updated);
+  };
   const openDetail = async (run: any) => {
     setSelectedRun(run);
     setDetail(null);
@@ -95,6 +122,15 @@ export default function RunnersScreen({ route, navigation }: any) {
       />
       <ScrollView contentContainerStyle={styles.content}>
         <FinalizeSection navigation={navigation} fixedProjectId={projectId} />
+
+        {projectId ? (
+          <TestSelectionSection
+            settings={project?.testSelection}
+            ciOnPushEnabled={project?.ciOnPush?.enabled === true}
+            tests={ciTests}
+            onSave={saveTestSelection}
+          />
+        ) : null}
 
         <View style={styles.ciSection}>
           <View style={styles.ciHeader}>
