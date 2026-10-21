@@ -46,13 +46,19 @@ function renderTemplate(tpl: string, vars: Record<string, unknown>): string {
       return chosen;
     });
   }
-  return tpl.replace(/\$\{(\w+)\}/g, (_m, name) => {
-    if (name in vars) {
-      const v = vars[name];
-      return v === undefined || v === null ? '' : String(v);
-    }
-    return '';
-  });
+  // `$${` is Terraform's escape for a literal `${`.
+  const ESCAPED = '\u0000TF_ESCAPED_INTERP\u0000';
+  return tpl
+    .replace(/\$\$\{/g, ESCAPED)
+    .replace(/\$\{(\w+)\}/g, (_m, name) => {
+      if (name in vars) {
+        const v = vars[name];
+        return v === undefined || v === null ? '' : String(v);
+      }
+      return '';
+    })
+    .split(ESCAPED)
+    .join('${');
 }
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -84,6 +90,31 @@ const RENDER_VARS_BASE = {
   ssm_deb_url: 'https://example.invalid/ssm.deb',
   libprofiler_stub_c_b64: LIBPROFILER_STUB_B64,
 };
+
+/**
+ * Runs the Hub memory-cap snippet (from `MEM_TOTAL_KB=` up to `endMarker`)
+ * against a fake /proc/meminfo and checks the docker flags it produces.
+ */
+function expectMemCap(script: string, endMarker: string, dir: string): void {
+  const memStart = script.indexOf('MEM_TOTAL_KB=');
+  const memEnd = script.indexOf(endMarker, memStart);
+  expect(memStart).toBeGreaterThan(-1);
+  expect(memEnd).toBeGreaterThan(memStart);
+  const meminfo = join(dir, 'meminfo');
+  writeFileSync(meminfo, 'MemTotal:       64000000 kB\nMemFree: 1 kB\n');
+  const snippet =
+    script.slice(memStart, memEnd).replace('/proc/meminfo', meminfo) + '\necho "$HUB_MEM_ARGS"\n';
+  const run = (env: Record<string, string>) =>
+    spawnSync('bash', ['-c', snippet], {
+      encoding: 'utf8',
+      env: { PATH: process.env.PATH ?? '', ...env },
+    }).stdout.trim();
+  expect(run({})).toBe('--memory 48000000k --memory-swap 48000000k');
+  expect(run({ AGENT_HUB_CONTAINER_MEMORY_PCT: '50' })).toBe(
+    '--memory 32000000k --memory-swap 32000000k',
+  );
+  expect(run({ AGENT_HUB_CONTAINER_MEMORY_PCT: '0' })).toBe('');
+}
 
 /**
  * Regression guard for ops/terraform/agent-hub-user-data.tftpl.
@@ -259,6 +290,82 @@ describe('agent-hub-user-data.tftpl', () => {
       expect(rendered).toContain('/var/run/docker.sock:/var/run/docker.sock');
       expect(rendered).not.toContain('--add-host host.docker.internal:host-gateway');
       expect(rendered).not.toMatch(/--pid=host\b/);
+    });
+
+    // The prod box wedged twice on 2026-10-21: concurrent session typechecks
+    // filled RAM on a host with no swap, page cache thrashed, SSM and the ALB
+    // stopped answering, and only a forced stop recovered it. The guards below
+    // keep a memory burst from taking the whole host down.
+    describe('host memory guards', () => {
+      it('adds an idempotent swap file and discards core dumps', () => {
+        expect(rendered).toMatch(
+          /if \[ -z "\$\(swapon --show --noheadings[^\n]*\[ ! -e \/swapfile \]/,
+        );
+        expect(rendered).toContain('mkswap /swapfile && swapon /swapfile');
+        expect(rendered).toContain('kernel.core_pattern = |/bin/false');
+        expect(rendered).toContain('vm.swappiness = 10');
+      });
+
+      it('caps the Hub container memory and disables its core dumps', () => {
+        expect(rendered).toMatch(
+          /exec docker run --rm --name agenthub-server \\\n[^\n]*\n\s*\\\$HUB_MEM_ARGS \\\n\s*--ulimit core=0/,
+        );
+      });
+
+      const hasBash = spawnSync('bash', ['--version']).status === 0;
+      it.skipIf(!hasBash)(
+        'writes a run script whose memory cap is 75% of MemTotal with swap pinned to it',
+        () => {
+          const dir = mkdtempSync(join(tmpdir(), 'ud-mem-'));
+          try {
+            const start = rendered.indexOf(
+              'cat >/usr/local/bin/agenthub-server-run.sh <<RUNSCRIPT',
+            );
+            const end = rendered.indexOf('\nRUNSCRIPT\n', start);
+            expect(start).toBeGreaterThan(-1);
+            expect(end).toBeGreaterThan(start);
+            const runPath = join(dir, 'run.sh');
+            const heredoc =
+              rendered
+                .slice(start, end + '\nRUNSCRIPT'.length)
+                .replace('/usr/local/bin/agenthub-server-run.sh', runPath) + '\n';
+            const write = spawnSync('bash', ['-c', heredoc], { encoding: 'utf8' });
+            expect(write.status, write.stderr).toBe(0);
+            const runScript = readFileSync(runPath, 'utf8');
+            expect(spawnSync('bash', ['-n', runPath]).status).toBe(0);
+
+            expectMemCap(runScript, 'exec docker run', dir);
+          } finally {
+            rmSync(dir, { recursive: true, force: true });
+          }
+        },
+      );
+    });
+
+    describe('host memory guards (legacy docker-build)', () => {
+      const built = renderTemplate(tpl, {
+        ...RENDER_VARS_BASE,
+        use_ecr_pull: false,
+        use_docker_bootstrap: true,
+      });
+
+      it('caps the Hub container memory and disables its core dumps', () => {
+        expect(built).toMatch(
+          /docker run -d --name agenthub-server --restart unless-stopped \\\n[^\n]*\n\s*\$HUB_MEM_ARGS \\\n\s*--ulimit core=0/,
+        );
+      });
+
+      it.skipIf(spawnSync('bash', ['--version']).status !== 0)(
+        'computes the memory cap at 75% of MemTotal with swap pinned to it',
+        () => {
+          const dir = mkdtempSync(join(tmpdir(), 'ud-mem-build-'));
+          try {
+            expectMemCap(built, 'cd "$REPO_DIR" && docker run -d --name agenthub-server', dir);
+          } finally {
+            rmSync(dir, { recursive: true, force: true });
+          }
+        },
+      );
     });
 
     it('still picks up image updates on systemd-managed restart', () => {

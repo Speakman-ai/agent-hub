@@ -78,6 +78,26 @@ maybe_fix_al2023_nginx_libprofiler() {
 # PR-env host nginx + certbot bootstrap removed in PR-Env Removal #6. See
 # alb.tf for the teardown note.
 
+# ── Host memory guards ──────────────────────────────────────────────────────
+# With no swap, a host that fills RAM evicts its own code pages and wedges in
+# I/O (root-volume reads spike, SSM goes "Delayed", the ALB 504s) instead of
+# letting the OOM killer take one process. A small swap file gives anonymous
+# pages somewhere to go so the box stays reachable. Low swappiness keeps it a
+# backstop rather than a working set. Idempotent: skipped when any swap exists.
+if [ -z "$(swapon --show --noheadings 2>/dev/null)" ] && [ ! -e /swapfile ]; then
+  { fallocate -l 8G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=8192; } \
+    && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile \
+    && { grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab; } \
+    || echo "WARN: swap file setup failed; continuing without swap" >&2
+fi
+# Discard core dumps. A crashed 4 GB tsc otherwise streams its whole heap into
+# systemd-coredump, which burns a core for minutes and then drops it anyway.
+cat >/etc/sysctl.d/90-agent-hub-memory.conf <<'SYSCTL'
+vm.swappiness = 10
+kernel.core_pattern = |/bin/false
+SYSCTL
+sysctl --system >/dev/null 2>&1 || true
+
 %{ if use_ecr_pull }
 # ── ECR pull path ───────────────────────────────────────────────────────────
 # Docker is preinstalled on the ECS-optimized AL2023 AMI. Just make sure it's
@@ -378,8 +398,24 @@ fi
 # runs in a privileged sibling container (see
 # server/session-env/firecracker/firecracker-privileged-exec.ts); this
 # container stays unprivileged and gets no device access.
+# Cap the Hub container below host RAM. Agent sessions (and their tsc / npm /
+# vitest children) run inside this container, so a burst of concurrent
+# typechecks hits the cgroup limit and the kernel OOM-kills the largest of
+# them, while dockerd, the SSM agent, and preview containers keep their memory.
+# --memory-swap == --memory keeps the container out of swap so the kill is
+# prompt instead of a slow thrash. AGENT_HUB_CONTAINER_MEMORY_PCT overrides the
+# share of MemTotal (0 disables the cap).
+MEM_TOTAL_KB="\$(awk '/^MemTotal:/ {print \$2}' /proc/meminfo)"
+HUB_MEM_PCT="\$${AGENT_HUB_CONTAINER_MEMORY_PCT:-75}"
+HUB_MEM_ARGS=""
+if [ -n "\$MEM_TOTAL_KB" ] && [ "\$HUB_MEM_PCT" -gt 0 ] 2>/dev/null; then
+  HUB_MEM_KB=\$(( MEM_TOTAL_KB * HUB_MEM_PCT / 100 ))
+  HUB_MEM_ARGS="--memory \$${HUB_MEM_KB}k --memory-swap \$${HUB_MEM_KB}k"
+fi
 exec docker run --rm --name agenthub-server \
   -p "\$APP_PORT:3051" \
+  \$HUB_MEM_ARGS \
+  --ulimit core=0 \
   -v "\$DATA_ROOT/data:/data" -v "\$DATA_ROOT/uploads:/app/uploads" \
   -v "\$DATA_ROOT/projects:/home/node/projects" \
   -v "\$DATA_ROOT/workspaces:/home/node/.agent-hub/workspaces" \
@@ -566,8 +602,18 @@ fi
 # dir at both /home/node/... AND the host-absolute path. Required so
 # compose-go inside this container can stat build contexts at the host
 # path that `--project-directory` emits.
+# Same memory cap as the ECR-pull run script above (see the rationale there).
+MEM_TOTAL_KB="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
+HUB_MEM_PCT="$${AGENT_HUB_CONTAINER_MEMORY_PCT:-75}"
+HUB_MEM_ARGS=""
+if [ -n "$MEM_TOTAL_KB" ] && [ "$HUB_MEM_PCT" -gt 0 ] 2>/dev/null; then
+  HUB_MEM_KB=$(( MEM_TOTAL_KB * HUB_MEM_PCT / 100 ))
+  HUB_MEM_ARGS="--memory $${HUB_MEM_KB}k --memory-swap $${HUB_MEM_KB}k"
+fi
 cd "$REPO_DIR" && docker run -d --name agenthub-server --restart unless-stopped \
   -p ${app_port}:3051 \
+  $HUB_MEM_ARGS \
+  --ulimit core=0 \
   -v "$DATA_ROOT/data:/data" -v "$DATA_ROOT/uploads:/app/uploads" \
   -v "$DATA_ROOT/projects:/home/node/projects" \
   -v "$DATA_ROOT/workspaces:/home/node/.agent-hub/workspaces" \
