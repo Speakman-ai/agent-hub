@@ -148,6 +148,90 @@ describe('runJobPhase with job cache entries', () => {
     for (const s of result.stepResults) expect(s.run).not.toContain('sig=secret');
   });
 
+  it('reports runner startup phases and cache restore time for the job', async () => {
+    const records: SpawnRecord[] = [];
+    const { deps } = makeDeps(recordingSpawn(records, () => 0));
+    const spawnStep = recordingSpawn(records, () => 0);
+    deps.runnerBackend = {
+      kind: 'remote',
+      acquire: async () => ({
+        spawnStep,
+        release: async () => {},
+        startup: Promise.resolve({ queue_wait: 40_000, container_start: 7_000 }),
+      }),
+    };
+    const samples: Array<{ jobId: string; backend: string; phases: Record<string, number> }> = [];
+
+    await runJobPhase(deps, {
+      ...opts(fakeStore()),
+      onJobStartup: (s) => samples.push(s as (typeof samples)[number]),
+    });
+
+    const ready = samples.find((s) => 'total' in s.phases);
+    expect(ready).toMatchObject({
+      jobId: 'e2e',
+      backend: 'remote',
+      phases: { queue_wait: 40_000, container_start: 7_000 },
+    });
+    expect(ready!.phases.total).toBeGreaterThanOrEqual(0);
+    const restore = samples.find((s) => 'cache_restore' in s.phases);
+    expect(restore).toMatchObject({ jobId: 'e2e', backend: 'remote' });
+    expect(samples).toHaveLength(2);
+  });
+
+  it('times cache restore from runner readiness, not from when the restore queued behind bring-up', async () => {
+    let clock = 1_000_000;
+    let readyStartup!: (t: { container_start: number }) => void;
+    let finishRestore!: () => void;
+    let restoreSpawned = false;
+    const restoreDone = new Promise<void>((r) => (finishRestore = r));
+    const spawnStep: SpawnStepFn = ({ step }) => {
+      const isRestore = step.name.includes('Restore cache');
+      if (isRestore) restoreSpawned = true;
+      const child: SpawnedStep = {
+        stdout: null,
+        stderr: null,
+        on(event: 'close' | 'exit' | 'error', listener: (arg: never) => void) {
+          if (event === 'close') {
+            const close = () => (listener as (c: number | null) => void)(0);
+            if (isRestore) void restoreDone.then(close);
+            else queueMicrotask(close);
+          }
+          return child;
+        },
+        kill: vi.fn(() => true),
+      };
+      return child;
+    };
+    const { deps } = makeDeps(spawnStep);
+    (deps as { now?: () => number }).now = () => clock;
+    deps.runnerBackend = {
+      kind: 'remote',
+      acquire: async () => ({
+        spawnStep,
+        release: async () => {},
+        startup: new Promise((r) => (readyStartup = r)),
+      }),
+    };
+    const samples: Array<{ phases: Record<string, number> }> = [];
+    const resultP = runJobPhase(deps, {
+      ...opts(fakeStore()),
+      onJobStartup: (s) => samples.push(s),
+    });
+
+    for (let i = 0; i < 50 && !restoreSpawned; i++) await new Promise((r) => setImmediate(r));
+    expect(restoreSpawned).toBe(true);
+    clock += 60_000; // the agent's bring-up; the restore waits in the channel
+    readyStartup({ container_start: 1 });
+    await new Promise((r) => setImmediate(r));
+    clock += 2_000; // the restore itself
+    finishRestore();
+
+    expect((await resultP).status).toBe('success');
+    const restore = samples.find((s) => 'cache_restore' in s.phases);
+    expect(restore?.phases.cache_restore).toBe(2_000);
+  });
+
   it('skips the save on an exact restore hit', async () => {
     const records: SpawnRecord[] = [];
     const store = fakeStore({ [`${cacheObjectPrefix('org', 'proj')}img-abc123`]: 1 });

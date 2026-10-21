@@ -82,6 +82,23 @@ describe('createLocalRunnerBackend', () => {
     await expect(readFile(path.join(mounted, 'README.md'), 'utf8')).rejects.toThrow();
   });
 
+  it('reports how long the per-job clone and container start took', async () => {
+    let clock = 0;
+    const backend = createLocalRunnerBackend({
+      sourceRoot: await tmpDir('startup'),
+      now: () => clock,
+      materialize: async () => {
+        clock += 1_200;
+      },
+      startContainer: async () => {
+        clock += 8_500;
+      },
+    });
+    const lease = await backend.acquire(spec('/unused'));
+    expect(await lease.startup).toEqual({ worktree: 1_200, container_start: 8_500 });
+    await lease.release();
+  });
+
   it('removes the per-job copy if the container fails to start', async () => {
     const root = await tmpDir('fail');
     const src = path.join(root, 'staging');

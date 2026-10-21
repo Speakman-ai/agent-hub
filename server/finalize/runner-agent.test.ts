@@ -520,6 +520,62 @@ describe('runAgentJob', () => {
     expect(events[0]).toBe('start:/ws/repo');
   });
 
+  it('reports each bring-up phase once, before its first poll', async () => {
+    const { transport, docker } = fakes(
+      [{ type: 'run_step', stepIndex: 0, run: 'echo a', env: {} }, { type: 'finish' }],
+      () => 0,
+    );
+    const order: string[] = [];
+    const reports: unknown[] = [];
+    const poll = transport.poll;
+    transport.poll = async (jobId) => {
+      order.push('poll');
+      return poll(jobId);
+    };
+    transport.postBringup = async (_jobId, timings) => {
+      order.push('bringup');
+      reports.push(timings);
+    };
+    await runAgentJob({
+      jobId: 'j',
+      spec: wire({ worktreeRef: { key: 'worktrees/o/r.bundle', sha256: 'x', sizeBytes: 1 } }),
+      workspaceDir: '/ws',
+      ...noChown,
+      materialize: async () => {},
+      transport,
+      docker,
+      logFlushMs: 5,
+    });
+    expect(order[0]).toBe('bringup');
+    expect(reports).toHaveLength(1);
+    expect(Object.keys(reports[0] as object).sort()).toEqual([
+      'chown',
+      'clear_workspace',
+      'container_start',
+      'materialize',
+    ]);
+  });
+
+  it('runs the job even when the bring-up report fails (older Hub)', async () => {
+    const { transport, docker, results } = fakes(
+      [{ type: 'run_step', stepIndex: 0, run: 'echo a', env: {} }, { type: 'finish' }],
+      () => 0,
+    );
+    transport.postBringup = async () => {
+      throw new Error('bringup post failed: 404');
+    };
+    await runAgentJob({
+      jobId: 'j',
+      spec: wire(),
+      workspaceDir: '/ws',
+      ...noChown,
+      transport,
+      docker,
+      logFlushMs: 5,
+    });
+    expect(results).toEqual([{ stepIndex: 0, exitCode: 0 }]);
+  });
+
   it('skips chown (no agent_lost) when there is no worktreeRef to materialize', async () => {
     // `clear` already `sudo rm -rf`'d /ws/repo. If materialize is skipped the dest
     // no longer exists, so an unconditional `sudo chown -R` would fail with

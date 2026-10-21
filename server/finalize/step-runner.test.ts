@@ -2412,3 +2412,84 @@ describe('runStepsSequence — deferRunTerminal (v2 matrix shard contract)', () 
     expect(stmts.failFinalizeRun.run).toHaveBeenCalledWith('failed', 'step_failed', RUN_ID);
   });
 });
+
+describe('runStepsSequence — remote step delivery', () => {
+  function remoteStep() {
+    const f = makeFakeChild();
+    let deliver: ((at: number) => void) | undefined;
+    f.child.onDispatched = (listener) => {
+      deliver = listener;
+    };
+    return { ...f, deliver: (at: number) => deliver?.(at) };
+  }
+
+  it('moves the step start to when the runner received it and re-announces it', async () => {
+    const stmts = makeStmts();
+    const restamp = { run: vi.fn(() => ({ changes: 1 })) };
+    const broadcast = vi.fn();
+    const step = remoteStep();
+    const deps: StepRunnerDeps = {
+      stmts: { ...stmts, restampFinalizeRunStepStartIfAttempt: restamp } as never,
+      broadcast,
+      spawnStep: () => step.child,
+      logStore: makeLogStore().store,
+      now: makeMonoClock(),
+    };
+    const resultP = runStepsSequence(deps, {
+      runId: RUN_ID,
+      sessionId: SESSION_ID,
+      worktreePath: WORKTREE,
+      steps: [{ name: 'Tests', run: 'npm test' }],
+      timeoutMinutes: 60,
+      persistMeta: { jobId: 'test', matrixKey: 'shard=1' },
+    });
+    await microtaskTick();
+
+    step.deliver(987_654);
+    const nonce = stmts.beginFinalizeRunStepAttempt.run.mock.calls[0][0];
+    expect(restamp.run).toHaveBeenCalledWith(987_654, RUN_ID, 1, nonce);
+    expect(broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'finalize_run_step_state',
+        step_index: 1,
+        state: 'running',
+        started_at: 987_654,
+        job_id: 'test',
+        matrix_key: 'shard=1',
+      }),
+    );
+
+    step.emitter.emit('close', 0);
+    expect((await resultP).status).toBe('success');
+  });
+
+  it('stays quiet when the execution was superseded before delivery', async () => {
+    const stmts = makeStmts();
+    const restamp = { run: vi.fn(() => ({ changes: 0 })) };
+    const broadcast = vi.fn();
+    const step = remoteStep();
+    const deps: StepRunnerDeps = {
+      stmts: { ...stmts, restampFinalizeRunStepStartIfAttempt: restamp } as never,
+      broadcast,
+      spawnStep: () => step.child,
+      logStore: makeLogStore().store,
+      now: makeMonoClock(),
+    };
+    const resultP = runStepsSequence(deps, {
+      runId: RUN_ID,
+      sessionId: SESSION_ID,
+      worktreePath: WORKTREE,
+      steps: [{ name: 'Tests', run: 'npm test' }],
+      timeoutMinutes: 60,
+    });
+    await microtaskTick();
+    broadcast.mockClear();
+
+    step.deliver(5);
+    expect(restamp.run).toHaveBeenCalledTimes(1);
+    expect(broadcast).not.toHaveBeenCalled();
+
+    step.emitter.emit('close', 0);
+    await resultP;
+  });
+});

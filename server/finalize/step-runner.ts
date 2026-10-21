@@ -429,6 +429,12 @@ export interface SpawnedStep {
   probeRunnerLoss?: () => RunnerJobLossProbe | null;
   /** False only when the remote command has never left the Hub's queue. */
   wasDispatched?: () => boolean;
+  /**
+   * Remote backend only: register for the moment the step actually reached the
+   * runner. Until then the step is queued behind the agent's bring-up, so the
+   * step row's start is moved to this time.
+   */
+  onDispatched?: (listener: (at: number) => void) => void;
 }
 
 export interface SpawnStepArgs {
@@ -471,7 +477,9 @@ export interface StepRunnerDeps {
   > &
     // Only the infra-retry carry-over uses these; without them nothing carries
     // over and every instance runs.
-    Partial<Pick<Stmts, 'copyFinalizeRunJobForInstance' | 'copyFinalizeRunStepsForInstance'>>;
+    Partial<Pick<Stmts, 'copyFinalizeRunJobForInstance' | 'copyFinalizeRunStepsForInstance'>> &
+    // Only remote steps use this; without it a step keeps its spawn-time start.
+    Partial<Pick<Stmts, 'restampFinalizeRunStepStartIfAttempt'>>;
   broadcast: BroadcastFn;
   /**
    * Store for per-step CI output blobs (S3 or local dir). When set, each
@@ -685,6 +693,17 @@ export async function runStepsSequence(
       spawnStep,
       hardTimeoutMs: stepHardTimeoutMs,
       ...(opts.signal ? { cancelSignal: opts.signal } : {}),
+      onDispatched: (at) =>
+        restampStepStart(
+          deps,
+          opts.sessionId,
+          opts.runId,
+          stepIndex,
+          stepForRun,
+          attempt,
+          at,
+          persistMeta,
+        ),
     });
 
     activeSecondsBilled += STEP_ACTIVE_SECONDS_PER_STEP;
@@ -1071,6 +1090,8 @@ interface RunSingleStepArgs {
    * doesn't accumulate a listener per step across the whole run.
    */
   cancelSignal?: CancelSignal;
+  /** Called when a remote runner actually received the step (see SpawnedStep.onDispatched). */
+  onDispatched?: (at: number) => void;
 }
 
 /**
@@ -1128,6 +1149,7 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
         env: stepEnv,
         deadlineMs: hardTimeoutMs,
       });
+      if (args.onDispatched) child.onDispatched?.(args.onDispatched);
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       const line = `[spawn-error] ${detail}`;
@@ -1611,6 +1633,45 @@ function announceStepStart(
     );
   }
   return attempt;
+}
+
+/**
+ * A remote step sat queued behind the runner's bring-up until `at`; move the
+ * row's start there so the step's duration is its own run time, and re-announce
+ * it so live clients pick up the new start. No-op for a superseded execution.
+ */
+function restampStepStart(
+  deps: StepRunnerDeps,
+  sessionId: string,
+  runId: string,
+  stepIndex: number,
+  step: CiStep,
+  attempt: string,
+  at: number,
+  meta?: StepPersistMeta,
+): void {
+  const stmt = deps.stmts.restampFinalizeRunStepStartIfAttempt;
+  if (!stmt) return;
+  try {
+    if (stmt.run(at, runId, stepIndex, attempt).changes === 0) return;
+    deps.broadcast({
+      type: 'finalize_run_step_state',
+      run_id: runId,
+      session_id: sessionId,
+      step_index: stepIndex,
+      step_name: step.name,
+      state: 'running',
+      started_at: at,
+      ...(meta?.jobId ? { job_id: meta.jobId } : {}),
+      ...(meta?.matrixKey ? { matrix_key: meta.matrixKey } : {}),
+    });
+  } catch (err) {
+    console.warn(
+      `[finalize-step-runner] restamp step start failed run=${runId} step=${stepIndex}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
 }
 
 /**

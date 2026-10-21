@@ -30,6 +30,8 @@ export class RemoteSpawnedStep implements SpawnedStep {
    */
   probeRunnerLoss?: () => RunnerJobLossProbe | null;
   wasDispatched?: () => boolean;
+  private dispatchedAt: number | null = null;
+  private dispatchListener?: (at: number) => void;
   private exitListener?: (code: number | null) => void;
   private closeListener?: (code: number | null) => void;
   private errorListener?: (err: Error) => void;
@@ -72,6 +74,22 @@ export class RemoteSpawnedStep implements SpawnedStep {
       }
     }
     return this;
+  }
+
+  /**
+   * Fires once with the time the `run_step` directive reached the agent. Fires
+   * immediately when the step was already delivered before the listener attached.
+   */
+  onDispatched(listener: (at: number) => void): void {
+    this.dispatchListener = listener;
+    if (this.dispatchedAt !== null) listener(this.dispatchedAt);
+  }
+
+  /** The channel delivered this step's directive to the agent. */
+  markDispatched(at: number): void {
+    if (this.dispatchedAt !== null) return;
+    this.dispatchedAt = at;
+    this.dispatchListener?.(at);
   }
 
   kill(signal?: NodeJS.Signals): boolean {

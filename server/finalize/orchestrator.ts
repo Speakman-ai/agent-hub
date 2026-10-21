@@ -131,6 +131,7 @@ import {
   recordRunWallSeconds,
   recordStalledNoResponse,
   recordStepResult,
+  recordJobStartup,
 } from './metrics.js';
 import {
   readFinalizeLoopRound,
@@ -2163,6 +2164,11 @@ export async function runFinalize(
               ...(reuseInstances ? { reuseInstances } : {}),
               ...(carryOver ? { carryOver } : {}),
               ...(notSelectedInstances ? { notSelectedInstances } : {}),
+              onJobStartup: ({ jobId, backend, phases }) =>
+                recordJobStartup(
+                  { stmts: deps.stmts, now, log },
+                  { projectId: opts.project.id, runId, jobName: jobId, backend, phases },
+                ),
             },
           );
           roundRanNoInstance =

@@ -14,6 +14,7 @@
  * the scheduler, and all DB/broadcast persistence unchanged.
  */
 import type { SpawnStepFn } from './step-runner.js';
+import type { JobStartupTimings } from './job-startup.js';
 import type { RepoVisibility, RunnerResourceProfileName } from './runner-resource-profile.js';
 import { createLocalRunnerBackend } from './runner-backend-local.js';
 import { createRemoteRunnerBackend } from './runner-backend-remote.js';
@@ -90,6 +91,14 @@ export interface RunnerLease {
   spawnStep: SpawnStepFn;
   /** Tear the runner down (idempotent; safe on the error/timeout paths). */
   release(): Promise<void>;
+  /**
+   * The backend's startup phase timings. Settles once the runner is ready for
+   * its first step: immediately for the local backend (acquire already waited
+   * for the container), on first step delivery for the remote one (acquire
+   * resolves at claim, before the agent's bring-up). Resolves null when the
+   * runner never became ready. Optional so injected test backends can omit it.
+   */
+  startup?: Promise<JobStartupTimings | null>;
 }
 
 export interface RunnerBackend {

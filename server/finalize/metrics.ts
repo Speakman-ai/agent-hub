@@ -31,6 +31,7 @@
  */
 import type { Stmts } from '../types.js';
 import type { JobResourceSummary } from './job-resource-sampler.js';
+import type { JobStartupTimings } from './job-startup.js';
 
 // Metric vocabulary
 
@@ -106,6 +107,12 @@ export const METRIC_NAMES = [
    * interval. Histogram sample in `value`. Labels: `{ job_name, matrix_key }`.
    */
   'finalize_job_cpu_percent',
+  /**
+   * Per CI job: seconds spent in one runner startup phase before the job's
+   * first step could run (see job-startup.ts for the phase list). Histogram
+   * sample in `value`. Labels: `{ phase, backend, job_name }`.
+   */
+  'finalize_job_startup_seconds',
 ] as const;
 
 export type MetricName = (typeof METRIC_NAMES)[number];
@@ -133,6 +140,7 @@ const METRIC_KIND: Record<MetricName, MetricKind> = {
   finalize_github_parity: 'counter',
   finalize_job_peak_memory_bytes: 'histogram',
   finalize_job_cpu_percent: 'histogram',
+  finalize_job_startup_seconds: 'histogram',
 };
 
 export function getMetricKind(name: MetricName): MetricKind {
@@ -378,6 +386,33 @@ export function recordJobResourceSummary(
       name: 'finalize_job_cpu_percent',
       labels,
       value: args.summary.peakCpuPercent,
+      runId: args.runId,
+    });
+  }
+}
+
+/**
+ * One `finalize_job_startup_seconds` row per measured phase. Phases are given
+ * in milliseconds and stored as seconds (3 decimals) to match the other
+ * duration histograms.
+ */
+export function recordJobStartup(
+  deps: MetricsDeps,
+  args: {
+    projectId: string;
+    runId: string;
+    jobName: string;
+    backend: string;
+    phases: JobStartupTimings;
+  },
+): void {
+  for (const [phase, ms] of Object.entries(args.phases)) {
+    if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) continue;
+    recordMetric(deps, {
+      projectId: args.projectId,
+      name: 'finalize_job_startup_seconds',
+      labels: { phase, backend: args.backend, job_name: args.jobName },
+      value: Math.round(ms) / 1000,
       runId: args.runId,
     });
   }

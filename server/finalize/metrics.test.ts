@@ -16,6 +16,7 @@ import {
   recordMergedPrProvenance,
   recordMetric,
   recordJobResourceSummary,
+  recordJobStartup,
   recordReviewerVerdict,
   recordRunActiveSeconds,
   recordRunCompleted,
@@ -72,6 +73,40 @@ function makeFakeStmts(): {
   } as unknown as Pick<Stmts, 'insertFinalizeMetric'>;
   return { stmts, calls };
 }
+
+describe('recordJobStartup', () => {
+  it('writes one seconds sample per phase and skips unusable values', () => {
+    const { stmts, calls } = makeFakeStmts();
+    recordJobStartup(
+      { stmts, now: () => 5 },
+      {
+        projectId: 'p1',
+        runId: 'r1',
+        jobName: 'test',
+        backend: 'remote',
+        phases: { queue_wait: 41_250, container_start: 6_000, bringup: -1, bundle: NaN },
+      },
+    );
+    expect(calls).toEqual([
+      {
+        projectId: 'p1',
+        name: 'finalize_job_startup_seconds',
+        labels: { backend: 'remote', job_name: 'test', phase: 'queue_wait' },
+        value: 41.25,
+        runId: 'r1',
+        observedAt: 5,
+      },
+      {
+        projectId: 'p1',
+        name: 'finalize_job_startup_seconds',
+        labels: { backend: 'remote', job_name: 'test', phase: 'container_start' },
+        value: 6,
+        runId: 'r1',
+        observedAt: 5,
+      },
+    ]);
+  });
+});
 
 describe('recordJobResourceSummary', () => {
   const summary = {

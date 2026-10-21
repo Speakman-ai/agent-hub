@@ -19,6 +19,7 @@
  * backends that attach without going through /claim.
  */
 import { RemoteSpawnedStep, type RemoteStepSink } from './remote-spawned-step.js';
+import type { AgentBringupTimings } from './job-startup.js';
 
 export type RunnerDirective =
   | {
@@ -67,7 +68,25 @@ export class RunnerJobChannel implements RemoteStepSink {
   private directiveWaiter: ((d: RunnerDirective | null) => void) | null = null;
   private readonly steps = new Map<number, RemoteSpawnedStep>();
 
-  constructor(readonly jobId: string) {
+  /** When the agent attached (claim), for the Hub-observed `bringup` phase. */
+  attachedAt: number | null = null;
+  /** Phase timings the agent reported for its own bring-up, if it sent them. */
+  bringup: AgentBringupTimings | null = null;
+  /**
+   * Resolves with the time the first `run_step` reached the agent, which is
+   * when the agent's bring-up finished. Resolves null if the channel fails or
+   * is disposed first.
+   */
+  readonly firstDispatch: Promise<number | null>;
+  private firstDispatchResolve!: (at: number | null) => void;
+
+  constructor(
+    readonly jobId: string,
+    private readonly now: () => number = Date.now,
+  ) {
+    this.firstDispatch = new Promise((resolve) => {
+      this.firstDispatchResolve = resolve;
+    });
     this.ready = new Promise<void>((resolve, reject) => {
       this.readyResolve = resolve;
       this.readyReject = reject;
@@ -84,8 +103,14 @@ export class RunnerJobChannel implements RemoteStepSink {
     if (!this.settled) {
       this.attached = true;
       this.settled = true;
+      this.attachedAt = this.now();
       this.readyResolve();
     }
+  }
+
+  /** The agent reported how long each of its bring-up phases took. */
+  onBringup(timings: AgentBringupTimings): void {
+    this.bringup = timings;
   }
 
   get isAttached(): boolean {
@@ -106,6 +131,9 @@ export class RunnerJobChannel implements RemoteStepSink {
     step.wasDispatched = () => dispatched;
     this.deliveryCallbacks.set(stepIndex, () => {
       dispatched = true;
+      const at = this.now();
+      step.markDispatched(at);
+      this.firstDispatchResolve(at);
     });
     this.steps.set(stepIndex, step);
     if (this.failed || this.disposed) {
@@ -230,10 +258,12 @@ export class RunnerJobChannel implements RemoteStepSink {
       this.settled = true;
       this.readyReject(err);
     }
+    this.firstDispatchResolve(null);
   }
 
   dispose(): void {
     this.disposed = true;
+    this.firstDispatchResolve(null);
     this.outbound.length = 0;
     this.deliveryCallbacks.clear();
     this.steps.clear();
@@ -247,8 +277,8 @@ export class RunnerJobChannel implements RemoteStepSink {
 // Process-wide registry (the bridge both backend and routes look up)
 const channels = new Map<string, RunnerJobChannel>();
 
-export function createJobChannel(jobId: string): RunnerJobChannel {
-  const ch = new RunnerJobChannel(jobId);
+export function createJobChannel(jobId: string, now?: () => number): RunnerJobChannel {
+  const ch = new RunnerJobChannel(jobId, now);
   channels.set(jobId, ch);
   return ch;
 }

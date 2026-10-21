@@ -1649,6 +1649,7 @@ components:
             - finalize_github_parity
             - finalize_job_peak_memory_bytes
             - finalize_job_cpu_percent
+            - finalize_job_startup_seconds
         kind:
           type: string
           enum:
@@ -1697,6 +1698,7 @@ components:
             - finalize_github_parity
             - finalize_job_peak_memory_bytes
             - finalize_job_cpu_percent
+            - finalize_job_startup_seconds
         kind:
           type: string
           enum:
@@ -23281,9 +23283,9 @@ paths:
           in: query
         - schema:
             type: string
-            description: "Comma-separated subset: finalize_run_started, finalize_run_completed, finalize_run_active_seconds, finalize_run_wall_seconds, finalize_fix_dispatch_count, finalize_reviewer_verdict, finalize_step_result, finalize_stalled_no_response_count, merged_pr_provenance, finalize_github_parity, finalize_job_peak_memory_bytes, finalize_job_cpu_percent."
+            description: "Comma-separated subset: finalize_run_started, finalize_run_completed, finalize_run_active_seconds, finalize_run_wall_seconds, finalize_fix_dispatch_count, finalize_reviewer_verdict, finalize_step_result, finalize_stalled_no_response_count, merged_pr_provenance, finalize_github_parity, finalize_job_peak_memory_bytes, finalize_job_cpu_percent, finalize_job_startup_seconds."
           required: false
-          description: "Comma-separated subset: finalize_run_started, finalize_run_completed, finalize_run_active_seconds, finalize_run_wall_seconds, finalize_fix_dispatch_count, finalize_reviewer_verdict, finalize_step_result, finalize_stalled_no_response_count, merged_pr_provenance, finalize_github_parity, finalize_job_peak_memory_bytes, finalize_job_cpu_percent."
+          description: "Comma-separated subset: finalize_run_started, finalize_run_completed, finalize_run_active_seconds, finalize_run_wall_seconds, finalize_fix_dispatch_count, finalize_reviewer_verdict, finalize_step_result, finalize_stalled_no_response_count, merged_pr_provenance, finalize_github_parity, finalize_job_peak_memory_bytes, finalize_job_cpu_percent, finalize_job_startup_seconds."
           name: metrics
           in: query
       responses:

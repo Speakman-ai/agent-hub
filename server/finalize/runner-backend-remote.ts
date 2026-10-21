@@ -21,6 +21,7 @@ import { reconcileFleetCapacity } from './runner-fleet-scaler.js';
 import type { JobClaimSpec, RunnerBackend, RunnerLease } from './runner-backend.js';
 import type { RepoVisibility, RunnerResourceProfileName } from './runner-resource-profile.js';
 import type { SpawnStepArgs } from './step-runner.js';
+import type { JobStartupTimings } from './job-startup.js';
 import {
   createWorktreeBundle,
   worktreeBundleKey,
@@ -146,6 +147,8 @@ export function createRemoteRunnerBackend(opts?: {
     runsNativeJobsRemotely: true,
     async acquire(spec: JobClaimSpec): Promise<RunnerLease> {
       let worktreeRef: WorktreeRef | null = null;
+      const timings: JobStartupTimings = {};
+      const bundleStartedAt = now();
       if (store) {
         // Bundle once per (run, head SHA) — memoized so a round's shards share
         // it, busted when a new fix-round advances HEAD. Presign per-acquire so
@@ -169,6 +172,7 @@ export function createRemoteRunnerBackend(opts?: {
         const baseRef = await entry.pending;
         const getUrl = store.presignGet ? await store.presignGet(baseRef.key) : null;
         worktreeRef = getUrl ? { ...baseRef, getUrl } : baseRef;
+        timings.bundle = now() - bundleStartedAt;
       }
       const runsOn = spec.runsOn ?? '';
       const native = isMacosRunsOn(runsOn);
@@ -206,7 +210,8 @@ export function createRemoteRunnerBackend(opts?: {
       // Scale the agent fleet up to meet the new queue depth (fast ramp; the
       // periodic reconcile + scale-down-when-idle is handled by the scaler).
       void reconcileFleetCapacity();
-      const channel = createJobChannel(queueJobId);
+      const enqueuedAt = now();
+      const channel = createJobChannel(queueJobId, now);
 
       // Wait for an agent to claim (claim-time attach). Bring-up (worktree /
       // DinD) happens AFTER claim and must not block acquire — otherwise a hung
@@ -245,7 +250,14 @@ export function createRemoteRunnerBackend(opts?: {
         );
       }
 
+      const claimedAt = channel.attachedAt ?? now();
+      timings.queue_wait = claimedAt - enqueuedAt;
+      const startup = channel.firstDispatch.then((at): JobStartupTimings | null =>
+        at === null ? null : { ...timings, bringup: at - claimedAt, ...channel.bringup },
+      );
+
       return {
+        startup,
         spawnStep: ({ step, index, env, deadlineMs }: SpawnStepArgs) => {
           const spawned = channel.runStep(index, step.run, toEnvRecord(env), deadlineMs);
           // Loss-evidence seam: lets step-runner distinguish "the step overran

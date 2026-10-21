@@ -26,6 +26,7 @@ import {
 import { resolveRunnerBackend, type RunnerLease } from './runner-backend.js';
 import { cancelRemoteJobsForRun } from './runner-backend-remote.js';
 import { detectRepoVisibility } from './runner-repo-visibility.js';
+import type { JobStartupTimings } from './job-startup.js';
 import { hasExplicitResourceProfile, type RepoVisibility } from './runner-resource-profile.js';
 import {
   isContainerRunsOn,
@@ -135,6 +136,17 @@ export interface JobRunnerOptions {
    * session Finalize runs leave it unset, so they pay nothing.
    */
   onJunitReport?: (report: InstanceJunitReport) => void;
+  /**
+   * Runner startup phase timings for a job instance, in ms. Called once when
+   * the runner is ready for its first step (Hub phases + the backend's own +
+   * `total`), and again with `cache_restore` after restore steps ran.
+   */
+  onJobStartup?: (sample: {
+    jobId: string;
+    matrixKey: string;
+    backend: string;
+    phases: JobStartupTimings;
+  }) => void;
 }
 
 interface PlannedStep {
@@ -573,6 +585,28 @@ async function runJobInstance(
   };
 
   let lease: RunnerLease | null = null;
+  // Hub-side startup phases; the backend's own phases join them once ready.
+  const startupTimings: JobStartupTimings = {};
+  // When the runner could run its first step. A remote lease is handed over at
+  // claim, so restore steps queue behind the agent's bring-up until then.
+  let runnerReadyAt: number | null = null;
+  const reportStartup = (backendKind: string, phases: JobStartupTimings): void => {
+    if (!opts.onJobStartup) return;
+    try {
+      opts.onJobStartup({
+        jobId: instance.jobId,
+        matrixKey: instance.matrixKey,
+        backend: backendKind,
+        phases,
+      });
+    } catch (err) {
+      console.warn(
+        `[finalize-job-runner] ${instance.jobId}/${instance.matrixKey} startup report failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  };
 
   // Resolve the runner backend once for any job that needs one: a container job
   // (always), or a macOS job (to read its native-host capability and, when the
@@ -717,7 +751,9 @@ async function runJobInstance(
     // jobs — a native macOS job is not a Docker container, so skip the probe.
     let visibility: RepoVisibility | undefined;
     if (isContainerRunsOn(instance.runsOn) && !hasExplicitResourceProfile()) {
+      const visibilityStartedAt = now();
       visibility = await detectRepoVisibility({ worktreePath, env: process.env });
+      startupTimings.repo_visibility = now() - visibilityStartedAt;
     }
     try {
       lease = await backend.acquire({
@@ -784,6 +820,15 @@ async function runJobInstance(
       };
     }
     spawnStep = lease.spawnStep;
+    const backendKind = backend.kind;
+    void lease.startup?.then(
+      (timings) => {
+        if (!timings) return;
+        runnerReadyAt = now();
+        reportStartup(backendKind, { ...startupTimings, ...timings, total: now() - jobStartedAt });
+      },
+      () => {},
+    );
   }
 
   const instanceSteps = planned.filter((p) => p.instance === instance);
@@ -869,6 +914,7 @@ async function runJobInstance(
 
   const runAll = async (): Promise<StepRunResult> => {
     const ran: StepRunResult[] = [];
+    const restoreStartedAt = now();
     for (const [i, p] of restoreSteps.entries()) {
       const res = await runCacheStep(p);
       ran.push(res);
@@ -880,6 +926,19 @@ async function runJobInstance(
           persistMeta,
         );
         return combineResults(res, ran);
+      }
+    }
+    if (restoreSteps.length > 0 && lease && backend) {
+      // Measure from runner readiness, not from when the restore was queued,
+      // so bring-up (already reported as its own phase) isn't counted twice.
+      // A lease that reports startup but never became ready records nothing.
+      const restoreFrom = lease.startup
+        ? runnerReadyAt === null
+          ? null
+          : Math.max(restoreStartedAt, runnerReadyAt)
+        : restoreStartedAt;
+      if (restoreFrom !== null) {
+        reportStartup(backend.kind, { cache_restore: now() - restoreFrom });
       }
     }
     const main = await runSequence(jobSteps);

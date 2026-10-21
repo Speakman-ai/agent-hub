@@ -800,6 +800,35 @@ describe('runner-routes (HTTP control plane)', () => {
     await lease.release();
   });
 
+  it('bringup forwards the agent phase timings to the job channel, dropping junk', async () => {
+    const cbApp = express()
+      .use(express.json())
+      .use(createRunnerRoutes({ claimWaitMs: 2000, pollWaitMs: 1500, leaseMs: 60_000 }));
+    const r = await request(cbApp).post('/api/runners/register').send({ fleetToken: FLEET });
+    const token = r.body.token as string;
+    const backend = createRemoteRunnerBackend({ acquireTimeoutMs: 3000 });
+    const acquireP = backend.acquire(SPEC);
+    const claim = await request(cbApp)
+      .post('/api/runners/claim')
+      .set('Authorization', `Bearer ${token}`)
+      .send({});
+    const jobId = claim.body.jobId as string;
+    const lease = await acquireP;
+
+    const res = await request(cbApp)
+      .post(`/api/runners/jobs/${jobId}/bringup`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ timings: { materialize: 4100, chown: -5, container_start: 'slow', bogus: 1 } });
+    expect(res.status).toBe(204);
+    expect(getJobChannel(jobId)!.bringup).toEqual({ materialize: 4100 });
+
+    const unauth = await request(cbApp)
+      .post(`/api/runners/jobs/${jobId}/bringup`)
+      .send({ timings: { materialize: 1 } });
+    expect(unauth.status).toBe(401);
+    await lease.release();
+  });
+
   it('finish without a resource summary is a clean 204 (no callback)', async () => {
     const events: JobResourcesEvent[] = [];
     const cbApp = express()

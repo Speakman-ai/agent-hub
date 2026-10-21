@@ -463,6 +463,82 @@ describe('createRemoteRunnerBackend', () => {
     expect(calls[0].key).not.toBe(calls[1].key);
   });
 
+  it('reports startup phases once the first step reaches the agent', async () => {
+    let clock = 1_000_000;
+    const now = () => clock;
+    const store: BundleStore = {
+      put: async () => {},
+      get: async () => {},
+      presignGet: async (key: string) => `https://example.test/${key}`,
+    };
+    const backend = createRemoteRunnerBackend({
+      acquireTimeoutMs: 2000,
+      store,
+      now,
+      createBundle: (async (args: { key: string }) => {
+        clock += 3_000;
+        return { key: args.key, sha256: 'deadbeef', sizeBytes: 1 };
+      }) as any,
+    });
+    const acquireP = backend.acquire({
+      orgId: 'orgA',
+      projectId: 'p1',
+      runId: 'r-startup',
+      jobId: 'test',
+      matrixKey: 'shard=1',
+      image: 'img:latest',
+      worktreePath: '/tmp/wt',
+      composeProjectName: 'cp',
+      env: { FINALIZE_HEAD_SHA: 'abc' },
+      labels: {},
+    });
+    let claimed: { id: string } | null = null;
+    for (let i = 0; i < 100 && !claimed; i++) {
+      claimed = claimRunnerJob({ agentId: 'agent-1', leaseMs: 60_000, now: Date.now() });
+      if (!claimed) await tick();
+    }
+    const channel = getJobChannel(claimed!.id)!;
+    clock += 5_000; // waiting for an agent to claim
+    channel.attach();
+    const lease = await acquireP;
+
+    // The agent brings the runner up, reports its phases, then polls.
+    clock += 7_000;
+    channel.onBringup({ materialize: 4_000, container_start: 2_500 });
+    lease.spawnStep({ step: { name: 's', run: 'true' }, index: 0, cwd: '/tmp/wt' });
+    await channel.nextDirective(1000);
+
+    expect(await lease.startup).toEqual({
+      bundle: 3_000,
+      queue_wait: 5_000,
+      bringup: 7_000,
+      materialize: 4_000,
+      container_start: 2_500,
+    });
+    await lease.release();
+  });
+
+  it('reports no startup when the lease ends before any step reached the agent', async () => {
+    const backend = createRemoteRunnerBackend({ acquireTimeoutMs: 2000 });
+    const acquireP = backend.acquire({
+      orgId: 'orgA',
+      projectId: 'p1',
+      runId: 'r-no-startup',
+      jobId: 'test',
+      matrixKey: '',
+      image: 'img:latest',
+      worktreePath: '/tmp/wt',
+      composeProjectName: 'cp',
+      env: {},
+      labels: {},
+    });
+    const claimed = claimRunnerJob({ agentId: 'agent-1', leaseMs: 60_000, now: Date.now() });
+    getJobChannel(claimed!.id)!.attach();
+    const lease = await acquireP;
+    await lease.release();
+    expect(await lease.startup).toBeNull();
+  });
+
   it('throws (→ infra_error) when no agent claims within the timeout', async () => {
     const backend = createRemoteRunnerBackend({ acquireTimeoutMs: 60 });
     await expect(

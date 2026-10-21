@@ -394,7 +394,12 @@ export function useFinalizeRun({
             ...existing,
             name: detail.step_name || existing.name,
             state: 'running',
-            startedAt: existing.startedAt ?? now,
+            // A remote step's start moves to when its runner received it; the
+            // server re-announces the step with that time.
+            startedAt:
+              typeof detail.started_at === 'number'
+                ? detail.started_at
+                : (existing.startedAt ?? now),
             endedAt: null,
             exitCode: null,
             jobId: detail.job_id ?? existing.jobId ?? null,

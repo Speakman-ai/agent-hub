@@ -59,6 +59,7 @@ import path from 'path';
 import { Transform } from 'stream';
 import { pipeline } from 'stream/promises';
 import { spotReclaimDetail, spotRequeueOnNoticeEnabled } from './spot-interruption.js';
+import { parseAgentBringupTimings } from './job-startup.js';
 
 interface RunnerReq extends Request {
   agent?: AgentTokenPayload;
@@ -485,6 +486,17 @@ export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Rout
       res.status(204).end();
     },
   );
+
+  // Bring-up phase timings, sent once by the agent right before its first poll.
+  // Best-effort telemetry: a malformed body is ignored, never an error the agent
+  // has to handle.
+  router.post('/api/runners/jobs/:jobId/bringup', requireAgent, (req: RunnerReq, res: Response) => {
+    const jobId = req.params.jobId as string;
+    if (!authorizeJob(req.agent!, jobId, res)) return;
+    const timings = parseAgentBringupTimings((req.body ?? {}).timings);
+    if (timings) getJobChannel(jobId)?.onBringup(timings);
+    res.status(204).end();
+  });
 
   router.post('/api/runners/jobs/:jobId/finish', requireAgent, (req: RunnerReq, res: Response) => {
     const jobId = req.params.jobId as string;

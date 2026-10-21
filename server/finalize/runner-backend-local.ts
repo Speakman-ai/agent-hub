@@ -20,16 +20,21 @@ import {
 import { jobWorktreePath, materializeJobWorktree } from './job-worktree.js';
 import { finalizeSourceRoot } from './session-source.js';
 import type { JobClaimSpec, RunnerBackend, RunnerLease } from './runner-backend.js';
+import { timePhase, type JobStartupTimings } from './job-startup.js';
 
 export interface LocalRunnerBackendOpts {
   /** Override `.finalize-source` root (tests). */
   sourceRoot?: string;
   materialize?: typeof materializeJobWorktree;
+  startContainer?: typeof startJobContainer;
+  now?: () => number;
 }
 
 export function createLocalRunnerBackend(opts: LocalRunnerBackendOpts = {}): RunnerBackend {
   const sourceRoot = opts.sourceRoot;
   const materialize = opts.materialize ?? materializeJobWorktree;
+  const startContainer = opts.startContainer ?? startJobContainer;
+  const now = opts.now ?? Date.now;
   return {
     kind: 'local',
     // Native (non-container) jobs run directly on THIS Hub host, so the Hub's
@@ -44,24 +49,32 @@ export function createLocalRunnerBackend(opts: LocalRunnerBackendOpts = {}): Run
         spec.jobId,
         spec.matrixKey,
       );
-      await materialize(spec.worktreePath, jobWt);
+      const timings: JobStartupTimings = {};
+      await timePhase(timings, 'worktree', () => materialize(spec.worktreePath, jobWt), now);
       try {
-        await startJobContainer({
-          containerName,
-          image: spec.image,
-          worktreePath: jobWt,
-          composeProjectName: spec.composeProjectName,
-          env: spec.env,
-          labels: spec.labels,
-          visibility: spec.visibility,
-          resourceProfile: spec.resourceProfile,
-          baseEnvOnly: spec.minimalEnv,
-        });
+        await timePhase(
+          timings,
+          'container_start',
+          () =>
+            startContainer({
+              containerName,
+              image: spec.image,
+              worktreePath: jobWt,
+              composeProjectName: spec.composeProjectName,
+              env: spec.env,
+              labels: spec.labels,
+              visibility: spec.visibility,
+              resourceProfile: spec.resourceProfile,
+              baseEnvOnly: spec.minimalEnv,
+            }),
+          now,
+        );
       } catch (err) {
         await rm(jobWt, { recursive: true, force: true }).catch(() => {});
         throw err;
       }
       return {
+        startup: Promise.resolve(timings),
         spawnStep: createJobScopedSpawnStep({
           containerName,
           baseEnv: spec.env,

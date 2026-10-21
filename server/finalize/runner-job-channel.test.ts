@@ -257,4 +257,41 @@ describe('RunnerJobChannel', () => {
 
     removeJobChannel('job-cancel-order');
   });
+
+  it('records claim time and resolves firstDispatch when the first step reaches the agent', async () => {
+    let clock = 100;
+    const ch = createJobChannel('job-first-dispatch', () => clock);
+    ch.attach();
+    expect(ch.attachedAt).toBe(100);
+    ch.onBringup({ materialize: 40 });
+    expect(ch.bringup).toEqual({ materialize: 40 });
+
+    const step = ch.runStep(0, 'true', {});
+    const seen: number[] = [];
+    step.onDispatched((at) => seen.push(at));
+    clock = 250;
+    await ch.nextDirective(1000);
+    expect(seen).toEqual([250]);
+    expect(await ch.firstDispatch).toBe(250);
+    removeJobChannel('job-first-dispatch');
+  });
+
+  it('fires onDispatched immediately when the agent was already polling', async () => {
+    const ch = createJobChannel('job-waiting-agent', () => 42);
+    const pollP = ch.nextDirective(1000);
+    const step = ch.runStep(0, 'true', {});
+    await pollP;
+    const seen: number[] = [];
+    step.onDispatched((at) => seen.push(at));
+    expect(seen).toEqual([42]);
+    removeJobChannel('job-waiting-agent');
+  });
+
+  it('resolves firstDispatch with null when the runner is lost before any step', async () => {
+    const ch = createJobChannel('job-lost-early');
+    ch.attach();
+    ch.fail(new Error('agent lost'));
+    expect(await ch.firstDispatch).toBeNull();
+    removeJobChannel('job-lost-early');
+  });
 });

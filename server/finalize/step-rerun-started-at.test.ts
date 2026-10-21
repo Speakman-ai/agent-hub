@@ -137,6 +137,27 @@ describe('finalize step started_at + terminal identity across fix rounds', () =>
     return res.changes;
   }
 
+  it('restamps a running step to its remote delivery time, only for the current execution', () => {
+    const runId = seedRun();
+    const stale = startStep(runId, R1_START);
+    const current = startStep(runId, R2_START);
+
+    const restamp = (attempt: string, at: number): number =>
+      (stmts.restampFinalizeRunStepStartIfAttempt.run(at, runId, 1, attempt) as { changes: number })
+        .changes;
+
+    expect(restamp(stale, R2_START + 1)).toBe(0);
+    expect(readStep(runId).started_at).toBe(R2_START);
+
+    expect(restamp(current, R2_START + 90_000)).toBe(1);
+    expect(readStep(runId).started_at).toBe(R2_START + 90_000);
+
+    // Once the step is terminal a late delivery can't move its start.
+    expect(finishStep(runId, current, 'passed', 0, R2_END)).toBe(1);
+    expect(restamp(current, R2_END + 1)).toBe(0);
+    expect(readStep(runId)).toMatchObject({ started_at: R2_START + 90_000, ended_at: R2_END });
+  });
+
   it('re-queue resets the clock and the next round overwrites the stamp (the bug)', () => {
     const runId = seedRun();
     // Round 1: queued → running → passed.

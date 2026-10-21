@@ -7695,6 +7695,15 @@ function initDb(dataDir: string): void {
     // the same (run_id, step_index) never shows the previous attempt's blob —
     // including the case where the new best-effort upload later fails or times
     // out (the row simply has no location, rather than a stale one).
+    // Move a running step's start to when a remote runner actually received
+    // it (the step waited behind the agent's bring-up until then). Guarded on
+    // the execution nonce so a late delivery for a superseded execution can't
+    // rewrite the current one.
+    restampFinalizeRunStepStartIfAttempt: db.prepare(
+      `UPDATE finalize_run_steps
+          SET started_at = ?
+        WHERE run_id = ? AND step_index = ? AND log_attempt = ? AND state = 'running'`,
+    ),
     beginFinalizeRunStepAttempt: db.prepare(
       `UPDATE finalize_run_steps
           SET log_attempt = ?,

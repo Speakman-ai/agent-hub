@@ -51,6 +51,7 @@ import {
   clearWorktreeDestForRematerialize,
 } from './worktree-job-ownership.js';
 import { realEnvironmentDockerOps, runAgentEnvironment } from './runner-agent-environment.js';
+import { timePhase, type AgentBringupTimings } from './job-startup.js';
 
 export interface AgentLogFrame {
   seq: number;
@@ -96,6 +97,11 @@ export interface AgentTransport {
    * agent dies so hard it can't make this call.
    */
   reportError(jobId: string, detail: string): Promise<void>;
+  /**
+   * Report how long each bring-up phase took, once, before the first poll.
+   * Telemetry only: callers ignore failures (an older Hub answers 404).
+   */
+  postBringup?(jobId: string, timings: AgentBringupTimings): Promise<void>;
 }
 
 export interface AgentDocker {
@@ -195,6 +201,9 @@ export async function withBringupDeadline<T>(
  * a bound the agent would sit in `await fetch` forever instead of recycling.
  */
 export const CRITICAL_POST_TIMEOUT_MS = 15_000;
+// The bring-up report is telemetry sent before the first poll, so a slow Hub
+// must not hold up the job's first step for long.
+const BRINGUP_POST_TIMEOUT_MS = 5_000;
 
 /** Max attempts for critical-message delivery (step-result / finish). */
 export const CRITICAL_DELIVERY_ATTEMPTS = 5;
@@ -388,12 +397,16 @@ export async function runAgentJob(args: {
     // rmdir'd, and materializeWorktree clears its dest before cloning.
     const jobWorkspace = path.join(args.workspaceDir, 'repo');
     const bringupDeadlineMs = args.bringupDeadlineMs ?? readBringupDeadlineMs();
+    const bringup: AgentBringupTimings = {};
     const containerName = await withBringupDeadline(bringupDeadlineMs, async () => {
       // Prior jobs leave other-uid / root files under /finalize-ws/repo; wipe with
       // sudo first so materialize's fs.rm cannot EACCES and strand the shard.
-      await (args.clearJobWorktreeDest ?? clearWorktreeDestForRematerialize)(jobWorkspace);
+      await timePhase(bringup, 'clear_workspace', () =>
+        (args.clearJobWorktreeDest ?? clearWorktreeDestForRematerialize)(jobWorkspace),
+      );
       if (spec.worktreeRef && args.materialize) {
-        await args.materialize(spec, jobWorkspace);
+        const materialize = args.materialize;
+        await timePhase(bringup, 'materialize', () => materialize(spec, jobWorkspace));
         // Agent image and job image can disagree on `runner`'s uid during a
         // rollout (agent on :main → 1001, job on a pinned build → 1000). Without
         // this, npm ci / venv mkdir EACCES across every shard. Only chown when we
@@ -407,11 +420,16 @@ export async function runAgentJob(args: {
         // user — there is no container uid to match, and chowning to uid 1000
         // would be wrong on macOS — so skip it.
         if (!spec.native) {
-          await (args.ensureJobWorktreeOwnership ?? chownWorktreeForJobRunner)(jobWorkspace);
+          await timePhase(bringup, 'chown', () =>
+            (args.ensureJobWorktreeOwnership ?? chownWorktreeForJobRunner)(jobWorkspace),
+          );
         }
       }
-      return docker.startContainer(spec, jobWorkspace);
+      return timePhase(bringup, 'container_start', () => docker.startContainer(spec, jobWorkspace));
     });
+    if (transport.postBringup) {
+      await transport.postBringup(jobId, bringup).catch(() => {});
+    }
     let seq = 0;
     try {
       for (;;) {
@@ -926,6 +944,14 @@ export function httpTransport(hubUrl: string, token: string): AgentTransport & D
         signal: AbortSignal.timeout(CRITICAL_POST_TIMEOUT_MS),
       });
       if (!res.ok) throw new Error(`step-result post failed: ${res.status}`);
+    },
+    async postBringup(jobId, timings) {
+      await fetch(`${base}/api/runners/jobs/${jobId}/bringup`, {
+        method: 'POST',
+        headers: auth,
+        body: JSON.stringify({ timings }),
+        signal: AbortSignal.timeout(BRINGUP_POST_TIMEOUT_MS),
+      });
     },
     async postFinish(jobId, exitCode, resourceSummary) {
       // Finish settles any straggler steps Hub-side (channel.onFinish), so it

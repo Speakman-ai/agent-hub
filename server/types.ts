@@ -3014,6 +3014,7 @@ export interface Stmts {
   backfillFinalizeRunFailedStepsOnBoot: Stmt;
   getFinalizeRunStep: Stmt;
   beginFinalizeRunStepAttempt: Stmt;
+  restampFinalizeRunStepStartIfAttempt: Stmt;
   attachFinalizeRunStepLog: Stmt;
   finishFinalizeRunStepIfAttempt: Stmt;
   upsertFinalizeRunJob: Stmt;
