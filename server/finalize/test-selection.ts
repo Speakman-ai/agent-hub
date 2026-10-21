@@ -182,6 +182,14 @@ function select(input: ComputeTestSelectionInput): TestSelection {
   }
   if (inventory.status === 'stale')
     throw new ForceFull(`test inventory is stale: ${inventory.reason}`);
+  // Every job would run as "no inventory" anyway; say why instead of failing
+  // later on whichever test file happens to be selected first.
+  if (inventory.entries.length === 0) {
+    throw new ForceFull(
+      'the last full default-branch run recorded no test files: no CI job wrote JUnit XML ' +
+        'to $FINALIZE_JUNIT_DIR (or every job had an incomplete report)',
+    );
+  }
 
   const instanceKeys = new Set(instances.map((i) => jobInstanceKey(i.jobId, i.matrixKey)));
   const jobIds = new Set(instances.map((i) => i.jobId));

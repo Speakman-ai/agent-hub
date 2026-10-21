@@ -294,6 +294,19 @@ describe('computeTestSelection', () => {
       );
     });
 
+    it('when the recorded inventory is empty, naming FINALIZE_JUNIT_DIR', () => {
+      const empty: TestInventoryLookup = { ...OK, entries: [] };
+      for (const over of [
+        { sessionRan: [ran('server/a.test.ts')] },
+        { sessionRan: [], changed: [{ status: 'M', path: 'README.md' }] },
+      ]) {
+        expectFull(
+          computeTestSelection(input({ inventory: empty, ...over })),
+          /recorded no test files.*FINALIZE_JUNIT_DIR/,
+        );
+      }
+    });
+
     it('when the reviewer asks for one (selection: full, timeout or a bad block)', () => {
       expectFull(
         computeTestSelection(input({ reviewer: { kind: 'full', reason: 'reviewer timed out' } })),
