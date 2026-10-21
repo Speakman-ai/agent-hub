@@ -173,6 +173,10 @@ import {
   resolveBaseDriftPolicy,
 } from './base-drift-policy.js';
 import { resolveTestSelectionPolicy } from './test-selection-policy.js';
+import type {
+  collectReviewerSelectionContext,
+  ReviewerSelectionContext,
+} from './reviewer-selection-context.js';
 import {
   describeTestSelection,
   fullSelection,
@@ -512,6 +516,14 @@ export interface OrchestratorDeps {
    * every instance.
    */
   resolveTestSelection?: (args: Omit<ResolveTestSelectionArgs, 'db'>) => Promise<TestSelection>;
+  /**
+   * What the reviewer is told about dynamic test selection (session-ran tests,
+   * job inventory). Dynamic mode only; without it the reviewer prompt omits
+   * the section and selection still runs from the other sources.
+   */
+  collectReviewerSelectionContext?: (
+    args: Omit<Parameters<typeof collectReviewerSelectionContext>[0], 'db'>,
+  ) => Promise<ReviewerSelectionContext>;
   /**
    * Ancestry check for inherited-failure classification. Defaults to
    * `git merge-base --is-ancestor` in the worktree; tests inject a stub.
@@ -1754,6 +1766,23 @@ export async function runFinalize(
       // by the checks phase alone. `reviewRequired` is false only for
       // `mode === 'checks'`.
       if (reviewRequired) {
+        const reviewerTestSelection =
+          testSelectionPolicy.mode === 'dynamic' && parsedCi
+            ? await reviewerSelectionContextFor(
+                deps,
+                {
+                  projectId: opts.project.id,
+                  policy: testSelectionPolicy,
+                  config: parsedCi,
+                  worktreePath,
+                  baseSha: baseValidatedAgainst,
+                  headSha: headValidatedAgainst,
+                  sessionId,
+                  env: spawnEnv,
+                },
+                log,
+              )
+            : undefined;
         try {
           lastReviewerOutcome = await runReview(
             {
@@ -1780,6 +1809,7 @@ export async function runFinalize(
               sessionId,
               signal: opts.signal,
               disputes: pendingDisputes.length > 0 ? pendingDisputes : undefined,
+              ...(reviewerTestSelection ? { testSelection: reviewerTestSelection } : {}),
             },
           );
         } catch (err) {
@@ -4087,6 +4117,29 @@ function reviewerSelectionFrom(outcome: ReviewerDispatchOutcome | null): Reviewe
     };
   }
   return outcome.selection ?? { kind: 'none' };
+}
+
+/**
+ * The reviewer's view of dynamic selection. A failure only drops the prompt
+ * section: the selection itself is still computed (and forced full on doubt)
+ * before checks.
+ */
+async function reviewerSelectionContextFor(
+  deps: OrchestratorDeps,
+  args: Omit<Parameters<typeof collectReviewerSelectionContext>[0], 'db'>,
+  log: (msg: string) => void,
+): Promise<ReviewerSelectionContext | undefined> {
+  if (!deps.collectReviewerSelectionContext) return undefined;
+  try {
+    return await deps.collectReviewerSelectionContext(args);
+  } catch (err) {
+    log(
+      `[finalize-orchestrator] reviewer selection context unavailable: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return undefined;
+  }
 }
 
 /**

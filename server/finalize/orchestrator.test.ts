@@ -4864,4 +4864,67 @@ describe('runFinalize — dynamic test selection', () => {
     );
     expect('notSelectedInstances' in steps2.mock.calls[0][1]).toBe(false);
   });
+  describe('reviewer selection context', () => {
+    const CTX = {
+      sessionRan: [{ path: 'server/a.test.ts', kind: 'file' as const }],
+      alwaysRun: [],
+      inventory: { status: 'ok' as const, sha: 'inv' },
+      instances: [{ jobId: 'checks', matrixKey: '', testFiles: ['server/a.test.ts'] }],
+    };
+
+    function reviewSpy() {
+      return vi
+        .fn<(...args: unknown[]) => Promise<ReviewerDispatchOutcome>>()
+        .mockResolvedValue(REVIEW_OK);
+    }
+
+    it('hands the context to the reviewer in dynamic mode', async () => {
+      const review = reviewSpy();
+      const collectReviewerSelectionContext = vi.fn(async () => CTX);
+      const { deps } = makeDeps({
+        runReviewerDispatch: review as never,
+        resolveTestSelection: vi.fn(async () => selection(true)),
+        collectReviewerSelectionContext,
+      });
+
+      await runFinalize(deps, baseOpts({ mode: 'full', project: DYNAMIC }));
+
+      expect(collectReviewerSelectionContext).toHaveBeenCalledTimes(1);
+      const call = collectReviewerSelectionContext.mock.calls[0] as unknown as [
+        { sessionId: string; policy: { mode: string } },
+      ];
+      expect(call[0].policy.mode).toBe('dynamic');
+      expect((review.mock.calls[0][1] as { testSelection?: unknown }).testSelection).toBe(CTX);
+    });
+
+    it('never collects or passes it for mode full projects', async () => {
+      const review = reviewSpy();
+      const collectReviewerSelectionContext = vi.fn(async () => CTX);
+      const { deps } = makeDeps({
+        runReviewerDispatch: review as never,
+        collectReviewerSelectionContext,
+      });
+
+      await runFinalize(deps, baseOpts({ mode: 'full' }));
+
+      expect(collectReviewerSelectionContext).not.toHaveBeenCalled();
+      expect('testSelection' in (review.mock.calls[0][1] as object)).toBe(false);
+    });
+
+    it('still reviews without the section when collecting fails', async () => {
+      const review = reviewSpy();
+      const { deps } = makeDeps({
+        runReviewerDispatch: review as never,
+        resolveTestSelection: vi.fn(async () => selection(true)),
+        collectReviewerSelectionContext: vi.fn(async () => {
+          throw new Error('db gone');
+        }),
+      });
+
+      const result = await runFinalize(deps, baseOpts({ mode: 'full', project: DYNAMIC }));
+
+      expect(result.kind).toBe('ready_to_push');
+      expect('testSelection' in (review.mock.calls[0][1] as object)).toBe(false);
+    });
+  });
 });

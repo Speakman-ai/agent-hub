@@ -1186,6 +1186,44 @@ describe('buildLocalDiffReviewerPrompt', () => {
     expect(prompt).toContain('Never withhold approval to wait for test');
   });
 
+  it('adds the selection section and verdict fields only in dynamic mode', () => {
+    const full = buildLocalDiffReviewerPrompt({
+      inputs: fakeInputs,
+      card: fakeCard,
+      project: fakeProject,
+    });
+    expect(full).not.toContain('Test selection');
+    expect(full).not.toContain('"tests"');
+
+    const dynamic = buildLocalDiffReviewerPrompt({
+      inputs: {
+        ...fakeInputs,
+        testSelection: {
+          sessionRan: [{ path: 'server/a.test.ts', kind: 'file' }],
+          alwaysRun: [],
+          inventory: { status: 'ok', sha: 'inv' },
+          instances: [{ jobId: 'e2e', matrixKey: '', testFiles: ['e2e/tests/login.spec.ts'] }],
+        },
+      },
+      card: fakeCard,
+      project: fakeProject,
+    });
+    expect(dynamic).toContain('## Test selection (dynamic mode)');
+    expect(dynamic).toContain('- `server/a.test.ts`');
+    expect(dynamic).toContain('  - `e2e/tests/login.spec.ts`');
+    expect(dynamic).toContain('### Test selection fields (optional)');
+    expect(dynamic).toContain('"selection": "full"');
+    expect(dynamic.indexOf('## Test selection')).toBeLessThan(dynamic.indexOf('## Your task'));
+    // Everything else is the mode-full prompt, untouched.
+    const section = dynamic.slice(
+      dynamic.indexOf('## Test selection (dynamic mode)'),
+      dynamic.indexOf('## Your task'),
+    );
+    const fieldsStart = dynamic.indexOf('\n\n### Test selection fields');
+    const fields = dynamic.slice(fieldsStart, dynamic.indexOf('cover the change.') + 17);
+    expect(dynamic.replace(section, '').replace(fields, '')).toBe(full);
+  });
+
   it('embeds the diff verbatim and forbids GitHub API calls', () => {
     const prompt = buildLocalDiffReviewerPrompt({
       inputs: fakeInputs,

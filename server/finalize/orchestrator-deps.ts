@@ -17,6 +17,7 @@ import type { OrchestratorDeps } from './orchestrator.js';
 import type { EnrichedAgent, KanbanCardRow, RouteDeps } from '../types.js';
 import { waitForPreFinalizeBackgroundShells } from './pre-finalize-background-shells.js';
 import { resolveTestSelection } from './test-selection.js';
+import { collectReviewerSelectionContext } from './reviewer-selection-context.js';
 
 // Stub seams (tests only)
 
@@ -111,6 +112,8 @@ export function buildOrchestratorDeps(
       { cardId: card.id, projectId, moveToDoneOnPush: routeDeps.config.cardDoneOnPush !== false },
     ),
     resolveTestSelection: (args) => resolveTestSelection({ ...args, db: getDb() }),
+    collectReviewerSelectionContext: (args) =>
+      collectReviewerSelectionContext({ ...args, db: getDb() }),
     waitForBackgroundShells: async ({ sessionId, signal }) =>
       waitForPreFinalizeBackgroundShells(routeDeps, sessionId, { signal }),
   };

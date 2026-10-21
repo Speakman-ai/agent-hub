@@ -48,6 +48,11 @@
  */
 import type { ReviewerSelection } from './test-selection.js';
 import { renderDisputesForReviewer, type ReviewDispute } from './review-dispute.js';
+import {
+  REVIEWER_SELECTION_OUTPUT_CONTRACT,
+  renderReviewerSelectionSection,
+  type ReviewerSelectionContext,
+} from './reviewer-selection-context.js';
 import { execFile } from 'child_process';
 import { createHash, randomUUID } from 'crypto';
 import { promisify } from 'util';
@@ -258,6 +263,13 @@ export interface ReviewerLocalDiffInputs {
    * the rebuttal rather than re-raising the finding blind.
    */
   implementerDisputes?: ReviewDispute[];
+  /**
+   * Dynamic test selection state (`testSelection.mode: dynamic` only). When
+   * set, the prompt lists the tests the session ran and the job inventory and
+   * documents the optional `tests` / `jobs` / `selection` verdict fields.
+   * Absent for `full` projects, whose prompt stays unchanged.
+   */
+  testSelection?: ReviewerSelectionContext;
 }
 
 /**
@@ -392,6 +404,8 @@ export interface ReviewerDispatchOptions {
   signal?: ReviewerCancelSignal;
   /** Disputes the implementer raised against the previous pass; see {@link ReviewerLocalDiffInputs.implementerDisputes}. */
   disputes?: ReviewDispute[];
+  /** Dynamic-mode selection context; see {@link ReviewerLocalDiffInputs.testSelection}. */
+  testSelection?: ReviewerSelectionContext;
 }
 
 /**
@@ -490,6 +504,9 @@ export async function runReviewerDispatch(
 
   if (opts.disputes && opts.disputes.length > 0) {
     inputs = { ...inputs, implementerDisputes: opts.disputes };
+  }
+  if (opts.testSelection) {
+    inputs = { ...inputs, testSelection: opts.testSelection };
   }
 
   // Run the reviewer agent. Driver may throw on engine-level failures;
@@ -1781,6 +1798,10 @@ the card never stated.**`;
 
   const disputes = inputs.implementerDisputes ?? [];
   const disputeSection = disputes.length > 0 ? `${renderDisputesForReviewer(disputes)}\n` : '';
+  const selectionSection = inputs.testSelection
+    ? `${renderReviewerSelectionSection(inputs.testSelection)}\n\n`
+    : '';
+  const selectionContract = inputs.testSelection ? `\n\n${REVIEWER_SELECTION_OUTPUT_CONTRACT}` : '';
 
   return `# Pre-PR Code Review (Local Diff)
 ${coverageNotice}
@@ -1820,7 +1841,7 @@ ${
     : `The unified diff is **not** in this argv prompt. It is in the attached review corpus (Cursor always-apply session rule, Claude \`--system-prompt-file\`, or Gemini/Codex/Grok stdin). Review that corpus. If Partial input is flagged, read the omitted files — your Read/Bash tools work. A read that still fails is an access failure: report it, do not score it as a code defect, and still end the turn with a verdict.`
 }
 
-${disputeSection}## Your task
+${disputeSection}${selectionSection}## Your task
 
 1. Read the attached review corpus (or the inline diff) in full.
 2. **Check the diff against the ticket.** ${coverageTask}
@@ -1922,7 +1943,7 @@ after it:
 - \`threads\` may be empty when there is genuinely nothing worth noting.
 - \`line_start\` / \`line_end\` may be \`null\` for a file-level comment.
 - Prefix every \`body\` with \`**[N/10]**\` (the severity score) so the
-  side-panel UI can sort and filter.
+  side-panel UI can sort and filter.${selectionContract}
 
 The host parses the verdict block, persists each thread to
 \`reviewer_threads\`, and uses the verdict to gate the next phase.`;
