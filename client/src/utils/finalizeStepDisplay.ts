@@ -1,4 +1,4 @@
-import { CheckCircle2, XCircle, Loader2, Clock, ChevronRight } from 'lucide-react';
+import { CheckCircle2, XCircle, Loader2, Clock, ChevronRight, MinusCircle } from 'lucide-react';
 import { formatDuration } from '../hooks/useFinalizeRun';
 
 export function computeStepDuration(step: any) {
@@ -20,6 +20,8 @@ export function labelForStepState(state: any) {
       return 'failed';
     case 'skipped':
       return 'skipped';
+    case 'not_selected':
+      return 'not selected';
     default:
       return state;
   }
@@ -35,6 +37,8 @@ export function stepIconFor(state: any) {
       return Loader2;
     case 'skipped':
       return ChevronRight;
+    case 'not_selected':
+      return MinusCircle;
     case 'queued':
     default:
       return Clock;
@@ -51,6 +55,8 @@ export function stepToneFor(state: any) {
       return 'bg-indigo-900/40 text-indigo-300';
     case 'skipped':
       return 'bg-slate-700/60 text-slate-400';
+    case 'not_selected':
+      return 'bg-slate-800/60 text-slate-500';
     case 'queued':
     default:
       return 'bg-slate-700/60 text-slate-400';

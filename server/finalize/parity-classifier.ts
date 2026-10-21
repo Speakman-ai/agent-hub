@@ -205,7 +205,7 @@ export function githubChecksToVerdict(checks: ReadonlyArray<unknown>): ParityVer
 export function normalizeFinalizeJobState(state: string): ParityVerdict | 'skipped' {
   if (state === 'passed') return 'green';
   if (state === 'failed') return 'red';
-  if (state === 'skipped') return 'skipped';
+  if (state === 'skipped' || state === 'not_selected') return 'skipped';
   return 'unknown';
 }
 

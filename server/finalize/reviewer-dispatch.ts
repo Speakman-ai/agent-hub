@@ -46,6 +46,7 @@
  * one HEAD is stale the moment any commit lands; the push gate (§9) is
  * the only place these signals are trusted to be current.
  */
+import type { ReviewerSelection } from './test-selection.js';
 import { renderDisputesForReviewer, type ReviewDispute } from './review-dispute.js';
 import { execFile } from 'child_process';
 import { createHash, randomUUID } from 'crypto';
@@ -270,6 +271,8 @@ export interface ReviewerRunResult {
   threads: ReviewerThreadInput[];
   /** Optional active-seconds the reviewer's turn actually consumed; defaults to REVIEW_PHASE_ACTIVE_SECONDS. */
   activeSecondsBilled?: number;
+  /** Test-selection fields from the verdict block (see `parseReviewerSelectionFields`). */
+  selection?: ReviewerSelection;
 }
 
 /**
@@ -402,6 +405,8 @@ export type ReviewerDispatchOutcome =
       verdict: ReviewerVerdict;
       threadCount: number;
       activeSecondsBilled: number;
+      /** Tests/jobs the reviewer adds to a dynamic selection, or a forced full run. */
+      selection?: ReviewerSelection;
     }
   | {
       kind: 'failed';
@@ -617,6 +622,7 @@ export async function runReviewerDispatch(
     verdict: result.verdict,
     threadCount: insertedRows.length,
     activeSecondsBilled: billed,
+    ...(result.selection ? { selection: result.selection } : {}),
   };
 }
 

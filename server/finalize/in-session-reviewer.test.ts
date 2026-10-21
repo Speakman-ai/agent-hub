@@ -831,6 +831,49 @@ describe('runReviewerTurn — changes_requested with threads', () => {
   });
 });
 
+describe('runReviewerTurn — test selection fields', () => {
+  async function run(payload: string) {
+    const { spawnFn } = makeSpawnFake(
+      `Looks good.\n\n<agenthub:review-verdict>\n${payload}\n</agenthub:review-verdict>`,
+    );
+    const { deps } = makeDeps(spawnFn);
+    return runReviewerTurn(deps, {
+      runId: 'run-sel',
+      worktreePath: '/tmp/wt',
+      card: fakeCard,
+      project: fakeProject,
+      inputs: fakeInputs,
+      sessionId: 'sess-1',
+    });
+  }
+
+  it('returns reviewer-added tests and jobs from the verdict block', async () => {
+    const result = await run(
+      JSON.stringify({
+        verdict: 'approved',
+        threads: [],
+        tests: [{ file: 'client/src/a.test.ts', reason: 'shape change' }],
+        jobs: [{ job: 'e2e', reason: 'route contract' }],
+      }),
+    );
+    expect(result.verdict).toBe('approved');
+    expect(result.selection).toEqual({
+      kind: 'additions',
+      tests: [{ file: 'client/src/a.test.ts', reason: 'shape change' }],
+      jobs: [{ job: 'e2e', reason: 'route contract' }],
+    });
+  });
+
+  it('turns a malformed selection field into a forced full run without failing the verdict', async () => {
+    const result = await run(JSON.stringify({ verdict: 'approved', jobs: 'e2e' }));
+    expect(result.verdict).toBe('approved');
+    expect(result.selection).toEqual({
+      kind: 'full',
+      reason: 'reviewer selection block is malformed: "jobs" must be an array',
+    });
+  });
+});
+
 describe('runReviewerTurn — changes_requested with no anchored findings', () => {
   it('recovers the reviewer prose as a file-level finding so the round is not empty', async () => {
     const assistantText = `This change ships scaffolding but never wires it up — the new helper has no caller, so the acceptance criterion is unmet.

@@ -375,11 +375,14 @@ export function writeFinalizeChecksRoundTimeline(
 ): string | null {
   const failed = args.steps.find((s) => s.state === 'failed');
   const passed = args.steps.filter((s) => s.state === 'passed').length;
+  const notSelected = args.steps.filter((s) => s.state === 'not_selected').length;
+  const considered = args.steps.length - notSelected;
   const content = failed
     ? `Checks · round ${args.round} · ${failed.name} failed`
     : args.steps.length === 0
       ? `Checks · round ${args.round} · no steps`
-      : `Checks · round ${args.round} · ${passed}/${args.steps.length} passed`;
+      : `Checks · round ${args.round} · ${passed}/${considered} passed` +
+        (notSelected > 0 ? ` · ${notSelected} not selected` : '');
   return writeFinalizeTimelineMessage(deps, {
     sessionId: args.sessionId,
     kind: 'finalize_checks_round',

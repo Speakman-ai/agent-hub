@@ -172,6 +172,16 @@ import {
   jobInstanceKey,
   resolveBaseDriftPolicy,
 } from './base-drift-policy.js';
+import { resolveTestSelectionPolicy } from './test-selection-policy.js';
+import {
+  describeTestSelection,
+  fullSelection,
+  notSelectedInstanceKeys,
+  selectionInstancesFor,
+  type ResolveTestSelectionArgs,
+  type ReviewerSelection,
+  type TestSelection,
+} from './test-selection.js';
 
 export { computeIdempotencyKey, DEFAULT_CI_CONFIG_RELATIVE_PATH };
 
@@ -495,6 +505,12 @@ export interface OrchestratorDeps {
    * push (the session committed an extra fix mid-window).
    */
   resolveHeadSha?: (worktreePath: string, env?: NodeJS.ProcessEnv) => Promise<string>;
+  /**
+   * Dynamic test selection for one checks round (`testSelection.mode:
+   * dynamic`). Production binds the DB; without it a dynamic project runs
+   * every instance.
+   */
+  resolveTestSelection?: (args: Omit<ResolveTestSelectionArgs, 'db'>) => Promise<TestSelection>;
   /**
    * Ancestry check for inherited-failure classification. Defaults to
    * `git merge-base --is-ancestor` in the worktree; tests inject a stub.
@@ -1124,6 +1140,10 @@ export async function runFinalize(
     // anyway. Without it the timeline reads as if the kept jobs were ignored.
     let pendingFullRerunNote: string | null = null;
     const baseDriftPolicy = resolveBaseDriftPolicy(opts.project.baseDrift);
+    // Dynamic test selection. Within a run the selection only grows across
+    // fix rounds; a base-drift re-loop recomputes it against the new base.
+    const testSelectionPolicy = resolveTestSelectionPolicy(opts.project.testSelection);
+    let lastTestSelection: TestSelection | null = null;
     // §6 no-progress reruns: how many same-SHA reruns we've already spent this
     // streak. Reset to 0 whenever HEAD advances (a real commit landed). Bounds
     // the relaxed fix_no_progress path so a stuck run can't livelock.
@@ -1197,6 +1217,7 @@ export async function runFinalize(
       loopCount += 1;
       const roundJobReuse = pendingJobReuse;
       pendingJobReuse = null;
+      if (pendingReloopReason === 'base_branch_moved') lastTestSelection = null;
       // This round's rebase timeline message, so a confirmed job reuse can be
       // written onto it once the round's ci config is known.
       let roundRebaseMessage: { id: string; args: FinalizeRebaseResultArgs } | null = null;
@@ -1937,6 +1958,9 @@ export async function runFinalize(
 
         // Phase 4: tasks
         let reuseInstances: ReadonlySet<string> | undefined;
+        // Selection left every instance out: nothing ran, so no attempt
+        // history is expected from this round.
+        let roundRanNoInstance = false;
         try {
           // Tenant identity for the remote runner queue (local backend ignores
           // it). getActiveOrgId throws before an org is selected — default to
@@ -1996,6 +2020,35 @@ export async function runFinalize(
               ? { fromRunId: retryOfRunId as string, instances: carryOverKeys }
               : undefined;
           const ciRunnerClass = resolveCiRunnerClass(opts.project);
+          let notSelectedInstances: Set<string> | undefined;
+          if (testSelectionPolicy.mode === 'dynamic') {
+            const selection = await selectRoundTests(deps, {
+              projectId: opts.project.id,
+              policy: testSelectionPolicy,
+              config: parsedCi,
+              worktreePath,
+              baseSha: baseValidatedAgainst,
+              headSha: headValidatedAgainst,
+              sessionId,
+              reviewer: reviewerSelectionFrom(lastReviewerOutcome),
+              previous: lastTestSelection,
+              env: spawnEnv,
+            });
+            lastTestSelection = selection;
+            const skip = notSelectedInstanceKeys(selection);
+            if (skip.size > 0) notSelectedInstances = skip;
+            log(
+              `[finalize-orchestrator] run=${runId} round=${loopCount} test selection: ` +
+                describeTestSelection(selection),
+            );
+            trace('test_selection', {
+              round: loopCount,
+              forcedFullReason: selection.forcedFullReason,
+              inventorySha: selection.inventorySha,
+              selected: selection.instances.filter((i) => i.selected).length,
+              total: selection.instances.length,
+            });
+          }
           lastStepOutcome = await runJobs(
             {
               stmts: deps.stmts,
@@ -2016,8 +2069,13 @@ export async function runFinalize(
               ...(opts.signal ? { signal: opts.signal } : {}),
               ...(reuseInstances ? { reuseInstances } : {}),
               ...(carryOver ? { carryOver } : {}),
+              ...(notSelectedInstances ? { notSelectedInstances } : {}),
             },
           );
+          roundRanNoInstance =
+            notSelectedInstances !== undefined &&
+            lastTestSelection !== null &&
+            notSelectedInstances.size === lastTestSelection.instances.length;
           const carried = lastStepOutcome.carriedOverInstances ?? [];
           if (carried.length > 0) {
             const labels = carried.map((k) => k.replace('\u0000', '/').replace(/\/$/, ''));
@@ -2081,7 +2139,7 @@ export async function runFinalize(
         // the flake-recovery classifier can later see "failed round N, passed
         // round M". finalize_run_jobs only keeps the latest state per instance;
         // this append is what makes per-round history durable.
-        ranJobs = true;
+        if (!roundRanNoInstance) ranJobs = true;
         // Capture any shard that recovered a genuine test failure via a
         // same-commit config `retries:` rerun this round. These are invisible
         // to the per-round attempt history below (their final state is
@@ -3937,6 +3995,7 @@ function identityTransactional<T>(fn: () => T): T {
 
 export const __test = {
   computeIdempotencyKey,
+  reviewerSelectionFrom,
   finalizeTraceEnabled,
   formatTraceFields,
   buildFixTrigger,
@@ -3986,4 +4045,39 @@ function collectJobReuse(
   }
   if (keys.size === 0) return null;
   return { keys, jobIds: [...jobIds].sort(), ciFingerprint: JSON.stringify(parsedCi) };
+}
+
+/**
+ * The reviewer's contribution to test selection. A reviewer that ran but
+ * produced no selection fields adds nothing.
+ */
+function reviewerSelectionFrom(outcome: ReviewerDispatchOutcome | null): ReviewerSelection {
+  if (!outcome) return { kind: 'none' };
+  // A failed review (timeout, stall, no parseable verdict) ends the run before
+  // the checks phase today. Should that ever change, it must widen the gate.
+  if (outcome.kind === 'failed') {
+    return {
+      kind: 'full',
+      reason: `reviewer did not return a usable verdict (${outcome.failureReason}): ${outcome.detail}`,
+    };
+  }
+  return outcome.selection ?? { kind: 'none' };
+}
+
+/**
+ * Compute one round's selection. Anything that goes wrong is a forced full
+ * run: a selection failure never shrinks the gate.
+ */
+async function selectRoundTests(
+  deps: OrchestratorDeps,
+  args: Omit<ResolveTestSelectionArgs, 'db'>,
+): Promise<TestSelection> {
+  const full = (reason: string): TestSelection =>
+    fullSelection(selectionInstancesFor(args.config), args.previous?.forcedFullReason ?? reason);
+  if (!deps.resolveTestSelection) return full('test selection is not available on this host');
+  try {
+    return await deps.resolveTestSelection(args);
+  } catch (err) {
+    return full(`selection error: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }

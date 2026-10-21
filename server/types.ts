@@ -1911,8 +1911,17 @@ export type FinalizeRunStatus =
 /** Phase codes — UI surfaces these; some collapse onto the same status. */
 export type FinalizeRunPhase = 'rebase' | 'review' | 'tasks' | 'dispatching' | 'push';
 
-/** Per-step CI task state persisted for the checks panel. */
-export type FinalizeRunStepState = 'queued' | 'running' | 'passed' | 'failed' | 'skipped';
+/**
+ * Per-step CI task state persisted for the checks panel. `not_selected` is a
+ * step of an instance dynamic test selection left out; it counts as a pass.
+ */
+export type FinalizeRunStepState =
+  | 'queued'
+  | 'running'
+  | 'passed'
+  | 'failed'
+  | 'skipped'
+  | 'not_selected';
 
 export interface FinalizeRunStepRow {
   run_id: string;
@@ -1945,8 +1954,14 @@ export interface FinalizeRunStepRow {
   log_attempt: string | null;
 }
 
-/** v2 job/matrix shard state for parallel container jobs. */
-export type FinalizeRunJobState = 'queued' | 'running' | 'passed' | 'failed' | 'skipped';
+/** Job/matrix shard state for parallel container jobs (`not_selected`: left out by test selection). */
+export type FinalizeRunJobState =
+  | 'queued'
+  | 'running'
+  | 'passed'
+  | 'failed'
+  | 'skipped'
+  | 'not_selected';
 
 export interface FinalizeRunJobRow {
   run_id: string;
@@ -1969,7 +1984,8 @@ export interface FinalizeRunJobAttemptRow {
   matrix_key: string;
   /** 1-indexed loop_round the observation belongs to. */
   round: number;
-  state: FinalizeRunJobState;
+  /** Never `not_selected`: an instance that did not run records no attempt. */
+  state: Exclude<FinalizeRunJobState, 'not_selected'>;
   exit_code: number | null;
   /** Post-rebase HEAD the round validated against. */
   head_sha: string | null;

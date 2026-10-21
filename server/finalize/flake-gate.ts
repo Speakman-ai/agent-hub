@@ -112,6 +112,8 @@ export function recordJobAttemptsForRound(
   let allPersisted = true;
   for (const job of jobs) {
     if (args.excludeInstances?.has(jobInstanceKey(job.job_id, job.matrix_key))) continue;
+    // Left out by test selection: nothing ran, so there is no attempt to record.
+    if (job.state === 'not_selected') continue;
     try {
       deps.stmts.upsertFinalizeRunJobAttempt.run(
         args.runId,

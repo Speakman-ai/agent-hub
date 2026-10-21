@@ -314,7 +314,8 @@ function runInfraFailed(status: string, failureReason: string | null): boolean {
 }
 
 function jobFailed(state: string, exitCode: number | null): boolean {
-  if (state === 'passed' || state === 'success' || state === 'skipped') return false;
+  if (state === 'passed' || state === 'success' || state === 'skipped' || state === 'not_selected')
+    return false;
   if (IN_FLIGHT_JOB_STATES.has(state)) return false;
   return state === 'failed' || state === 'failure' || state === 'timeout' || exitCode !== 0;
 }

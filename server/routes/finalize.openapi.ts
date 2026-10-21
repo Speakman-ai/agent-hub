@@ -111,7 +111,10 @@ export const FinalizeRunStepComponent = registerComponent(
     .object({
       index: z.number().int(),
       name: z.string(),
-      state: z.enum(['queued', 'running', 'passed', 'failed', 'skipped']),
+      state: z.enum(['queued', 'running', 'passed', 'failed', 'skipped', 'not_selected']).openapi({
+        description:
+          '`not_selected`: dynamic test selection left this instance out; it counts as a pass.',
+      }),
       exitCode: z.number().int().nullable(),
       startedAt: z.number().int().nullable(),
       endedAt: z.number().int().nullable(),

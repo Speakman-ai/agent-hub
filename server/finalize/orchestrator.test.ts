@@ -4666,3 +4666,196 @@ describe('runFinalize — implementer disputes a reviewer finding', () => {
     expect(result.kind === 'failed' && result.failureReason).toBe('fix_no_progress');
   });
 });
+
+describe('runFinalize — dynamic test selection', () => {
+  type SelectionArgs = Parameters<NonNullable<OrchestratorDeps['resolveTestSelection']>>[0];
+  const DYNAMIC: Project = { ...fakeProject, testSelection: { mode: 'dynamic' } };
+
+  function selection(selected: boolean, reason: string | null = null) {
+    return {
+      mode: 'dynamic' as const,
+      forcedFullReason: reason,
+      inventorySha: 'inv',
+      instances: [
+        { jobId: 'checks', matrixKey: '', selected, sources: [], files: [], reasons: [] },
+      ],
+    };
+  }
+
+  function stepsMock(...outcomes: StepRunResult[]) {
+    const fn = vi.fn();
+    for (const o of outcomes) fn.mockResolvedValueOnce(o);
+    fn.mockResolvedValue(STEPS_OK);
+    return fn;
+  }
+
+  it('mode full never computes a selection and passes nothing new to the job phase', async () => {
+    const steps = stepsMock(STEPS_OK);
+    const resolveTestSelection = vi.fn();
+    const { deps } = makeDeps({ runJobPhase: steps as never, resolveTestSelection });
+
+    const result = await runFinalize(deps, baseOpts({ mode: 'full' }));
+
+    expect(result.kind).toBe('ready_to_push');
+    expect(resolveTestSelection).not.toHaveBeenCalled();
+    expect('notSelectedInstances' in steps.mock.calls[0][1]).toBe(false);
+  });
+
+  it('runs only selected instances and still reaches ready_to_push', async () => {
+    const steps = stepsMock(STEPS_OK);
+    const resolveTestSelection = vi.fn(async () => selection(false));
+    const { deps } = makeDeps({ runJobPhase: steps as never, resolveTestSelection });
+
+    const result = await runFinalize(deps, baseOpts({ mode: 'full', project: DYNAMIC }));
+
+    expect(result.kind).toBe('ready_to_push');
+    expect([...steps.mock.calls[0][1].notSelectedInstances]).toEqual([
+      jobInstanceKey('checks', ''),
+    ]);
+    const args = resolveTestSelection.mock.calls[0] as unknown as [SelectionArgs];
+    expect(args[0].previous).toBeNull();
+    expect(args[0].reviewer).toEqual({ kind: 'none' });
+    expect(args[0].policy.mode).toBe('dynamic');
+  });
+
+  it('hands the previous round selection to the next fix round', async () => {
+    const failed: StepRunResult = {
+      status: 'failure',
+      stepResults: [],
+      activeSecondsBilled: 1,
+      failedStep: { index: 1, name: 'test', run: 'npm test', exitCode: 1, outputTail: [] },
+    };
+    const steps = stepsMock(failed, STEPS_OK);
+    const first = selection(true);
+    const resolveTestSelection = vi
+      .fn<(a: SelectionArgs) => Promise<ReturnType<typeof selection>>>()
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce(selection(true));
+    const resolveHead = vi
+      .fn<(...args: unknown[]) => Promise<string>>()
+      .mockResolvedValueOnce('sha-1')
+      .mockResolvedValue('sha-2');
+    const { deps } = makeDeps({
+      runJobPhase: steps as never,
+      resolveTestSelection,
+      resolveHeadSha: resolveHead,
+    });
+
+    const result = await runFinalize(deps, baseOpts({ mode: 'full', project: DYNAMIC }));
+
+    expect(result.kind).toBe('ready_to_push');
+    expect(resolveTestSelection).toHaveBeenCalledTimes(2);
+    expect(resolveTestSelection.mock.calls[1][0].previous).toBe(first);
+  });
+
+  it('recomputes from scratch after a base-drift re-loop', async () => {
+    const drift = await import('./base-drift.js');
+    vi.mocked(drift.resolveBaseSha).mockResolvedValue('base1');
+    vi.mocked(drift.inspectBaseDrift)
+      .mockResolvedValueOnce({
+        kind: 'stale',
+        overlap: ['app/'],
+        basePaths: ['app/a.ts'],
+        branchPaths: ['app/b.ts'],
+        detail: 'base moved',
+      })
+      .mockResolvedValue({ kind: 'clear', reason: 'no_drift', detail: 'still' });
+    try {
+      const steps = stepsMock(STEPS_OK, STEPS_OK);
+      const resolveTestSelection = vi.fn(async (_a: SelectionArgs) => selection(true));
+      const { deps } = makeDeps({ runJobPhase: steps as never, resolveTestSelection });
+
+      const result = await runFinalize(deps, baseOpts({ mode: 'full', project: DYNAMIC }));
+
+      expect(result.kind).toBe('ready_to_push');
+      expect(resolveTestSelection).toHaveBeenCalledTimes(2);
+      expect(resolveTestSelection.mock.calls[1][0].previous).toBeNull();
+    } finally {
+      const actual = await vi.importActual<typeof import('./base-drift.js')>('./base-drift.js');
+      vi.mocked(drift.inspectBaseDrift).mockReset();
+      vi.mocked(drift.resolveBaseSha).mockReset();
+      vi.mocked(drift.inspectBaseDrift).mockImplementation(actual.inspectBaseDrift);
+      vi.mocked(drift.resolveBaseSha).mockImplementation(actual.resolveBaseSha);
+    }
+  });
+
+  it('passes the reviewer selection from the review phase to the selector', async () => {
+    const steps = stepsMock(STEPS_OK);
+    const resolveTestSelection = vi.fn(async (_a: SelectionArgs) => selection(true));
+    const reviewerSelection = {
+      kind: 'full' as const,
+      reason: 'reviewer requested a full test run',
+    };
+    const { deps } = makeDeps({
+      runJobPhase: steps as never,
+      resolveTestSelection,
+      runReviewerDispatch: vi
+        .fn()
+        .mockResolvedValue({ ...REVIEW_OK, selection: reviewerSelection }),
+    });
+
+    const result = await runFinalize(deps, baseOpts({ mode: 'full', project: DYNAMIC }));
+
+    expect(result.kind).toBe('ready_to_push');
+    expect(resolveTestSelection.mock.calls[0][0].reviewer).toEqual(reviewerSelection);
+  });
+
+  it.each([
+    ['review_stalled', 'reviewer turn timed out'],
+    ['review_failed', 'Review-verdict block contains invalid JSON'],
+  ] as const)(
+    'a %s review never reaches the checks phase, so selection cannot shrink it',
+    async (failureReason, detail) => {
+      const steps = stepsMock(STEPS_OK);
+      const resolveTestSelection = vi.fn(async (_a: SelectionArgs) => selection(false));
+      const { deps } = makeDeps({
+        runJobPhase: steps as never,
+        resolveTestSelection,
+        runReviewerDispatch: vi
+          .fn()
+          .mockResolvedValue({ kind: 'failed', failureReason, detail, activeSecondsBilled: 1 }),
+      });
+
+      const result = await runFinalize(deps, baseOpts({ mode: 'full', project: DYNAMIC }));
+
+      expect(result.kind).not.toBe('ready_to_push');
+      expect(resolveTestSelection).not.toHaveBeenCalled();
+      expect(steps).not.toHaveBeenCalled();
+    },
+  );
+
+  it('maps a failed reviewer outcome to a forced full run and a missing reviewer to none', () => {
+    expect(
+      __test.reviewerSelectionFrom({
+        kind: 'failed',
+        failureReason: 'review_stalled',
+        detail: 'reviewer turn timed out',
+        activeSecondsBilled: 1,
+      }),
+    ).toEqual({
+      kind: 'full',
+      reason: 'reviewer did not return a usable verdict (review_stalled): reviewer turn timed out',
+    });
+    expect(__test.reviewerSelectionFrom(null)).toEqual({ kind: 'none' });
+    expect(__test.reviewerSelectionFrom(REVIEW_OK)).toEqual({ kind: 'none' });
+  });
+
+  it('runs every instance when the resolver throws or is not wired', async () => {
+    const steps = stepsMock(STEPS_OK);
+    const resolveTestSelection = vi.fn(async () => {
+      throw new Error('boom');
+    });
+    const { deps } = makeDeps({ runJobPhase: steps as never, resolveTestSelection });
+    expect((await runFinalize(deps, baseOpts({ mode: 'full', project: DYNAMIC }))).kind).toBe(
+      'ready_to_push',
+    );
+    expect('notSelectedInstances' in steps.mock.calls[0][1]).toBe(false);
+
+    const steps2 = stepsMock(STEPS_OK);
+    const { deps: deps2 } = makeDeps({ runJobPhase: steps2 as never });
+    expect((await runFinalize(deps2, baseOpts({ mode: 'full', project: DYNAMIC }))).kind).toBe(
+      'ready_to_push',
+    );
+    expect('notSelectedInstances' in steps2.mock.calls[0][1]).toBe(false);
+  });
+});

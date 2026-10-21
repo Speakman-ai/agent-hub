@@ -44,6 +44,7 @@ import {
   normalizeControlCharsInsideStrings,
   sliceFirstBalancedJson,
 } from '../action-block-parsing.js';
+import type { ReviewerSelection } from './test-selection.js';
 
 /** Mirror of `reviewer-dispatch.REVIEWER_THREAD_HARD_CAP` — see that file. */
 export const REVIEWER_THREAD_HARD_CAP_DEFAULT = 200;
@@ -63,6 +64,76 @@ export interface ReviewThreadInput {
 export interface ReviewVerdictTask {
   verdict: ReviewVerdict;
   threads: ReviewThreadInput[];
+  /**
+   * Optional test-selection fields (`tests`, `jobs`, `selection`). Only
+   * dynamic-selection projects read it; a malformed field never fails the
+   * verdict, it forces a full test run.
+   */
+  selection: ReviewerSelection;
+}
+
+/** Upper bound on reviewer-added tests or jobs before the block reads as malformed. */
+export const REVIEWER_SELECTION_MAX_ENTRIES = 200;
+
+/**
+ * Parse the optional selection fields of a verdict payload. Absent fields add
+ * nothing; anything malformed is a forced full run, never a smaller one.
+ */
+export function parseReviewerSelectionFields(obj: Record<string, unknown>): ReviewerSelection {
+  const malformed = (why: string): ReviewerSelection => ({
+    kind: 'full',
+    reason: `reviewer selection block is malformed: ${why}`,
+  });
+  if (obj.selection !== undefined && obj.selection !== null) {
+    if (typeof obj.selection === 'string' && obj.selection.trim().toLowerCase() === 'full') {
+      return { kind: 'full', reason: 'reviewer requested a full test run' };
+    }
+    return malformed('"selection" must be "full"');
+  }
+  const tests: Array<{ file: string; reason?: string }> = [];
+  const jobs: Array<{ job: string; reason?: string }> = [];
+  const readList = (
+    key: 'tests' | 'jobs',
+    field: 'file' | 'job',
+    push: (value: string, reason: string | undefined) => void,
+  ): string | null => {
+    const raw = obj[key];
+    if (raw === undefined || raw === null) return null;
+    if (!Array.isArray(raw)) return `"${key}" must be an array`;
+    if (raw.length > REVIEWER_SELECTION_MAX_ENTRIES) {
+      return `"${key}" has more than ${REVIEWER_SELECTION_MAX_ENTRIES} entries`;
+    }
+    for (const entry of raw) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        return `each "${key}" entry must be an object`;
+      }
+      const e = entry as Record<string, unknown>;
+      const value = typeof e[field] === 'string' ? (e[field] as string).trim() : '';
+      if (!value) return `each "${key}" entry needs a "${field}" string`;
+      if (e.reason !== undefined && e.reason !== null && typeof e.reason !== 'string') {
+        return `"${key}" reason must be a string`;
+      }
+      const reason = typeof e.reason === 'string' && e.reason.trim() ? e.reason.trim() : undefined;
+      push(value, reason);
+    }
+    return null;
+  };
+  const testsError = readList('tests', 'file', (value, reason) => {
+    const file = value.replace(/^(\.\/)+/, '');
+    tests.push({ file, ...(reason ? { reason } : {}) });
+  });
+  if (testsError) return malformed(testsError);
+  for (const t of tests) {
+    if (t.file.startsWith('/') || t.file.split('/').includes('..')) {
+      return malformed(`test path "${t.file}" must be repo-relative`);
+    }
+  }
+  const jobsError = readList('jobs', 'job', (job, reason) => {
+    jobs.push({ job, ...(reason ? { reason } : {}) });
+  });
+  if (jobsError) return malformed(jobsError);
+  if (tests.length === 0 && jobs.length === 0) return { kind: 'none' };
+  return { kind: 'additions', tests, jobs };
 }
 
 export type ReviewVerdictMalformedReason =
@@ -158,7 +229,12 @@ function parseReviewVerdictPayload(
     threads = sanitiseThreadInputs(obj.threads as unknown[]);
   }
 
-  return { present: opts.present, task: { verdict, threads }, reason: null, rawBody };
+  return {
+    present: opts.present,
+    task: { verdict, threads, selection: parseReviewerSelectionFields(obj) },
+    reason: null,
+    rawBody,
+  };
 }
 
 /**

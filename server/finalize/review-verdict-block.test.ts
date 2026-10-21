@@ -24,6 +24,7 @@ import {
   REVIEWER_THREAD_BODY_LIMIT_DEFAULT,
   REVIEWER_THREAD_HARD_CAP_DEFAULT,
   detectReviewVerdictBlock,
+  parseReviewerSelectionFields,
   sanitiseThreadInputs,
   stripReviewVerdictBlock,
   isReviewEnvironmentFinding,
@@ -41,7 +42,7 @@ describe('detectReviewVerdictBlock — happy path', () => {
     const result = detectReviewVerdictBlock(text);
     expect(result.present).toBe(true);
     expect(result.reason).toBeNull();
-    expect(result.task).toEqual({ verdict: 'approved', threads: [] });
+    expect(result.task).toEqual({ verdict: 'approved', threads: [], selection: { kind: 'none' } });
   });
 
   it('parses approved with missing threads (defaults to [])', () => {
@@ -49,7 +50,7 @@ describe('detectReviewVerdictBlock — happy path', () => {
 {"verdict": "approved"}
 </agenthub:review-verdict>`;
     const result = detectReviewVerdictBlock(text);
-    expect(result.task).toEqual({ verdict: 'approved', threads: [] });
+    expect(result.task).toEqual({ verdict: 'approved', threads: [], selection: { kind: 'none' } });
   });
 
   it('parses changes_requested with multiple threads', () => {
@@ -296,7 +297,7 @@ describe('detectReviewVerdictBlock — bare tail fallback (no agenthub tags)', (
 
 {"verdict":"approved","threads":[]}`;
     const result = detectReviewVerdictBlock(text);
-    expect(result.task).toEqual({ verdict: 'approved', threads: [] });
+    expect(result.task).toEqual({ verdict: 'approved', threads: [], selection: { kind: 'none' } });
   });
 
   it('parses raw trailing JSON with nested thread objects', () => {
@@ -436,5 +437,58 @@ These are verification limits, not confirmed implementation gaps. The verdict wi
   it('leaves approved and empty-thread verdicts unchanged', () => {
     expect(coerceEnvironmentOnlyReviewVerdict('approved', [])).toBe('approved');
     expect(coerceEnvironmentOnlyReviewVerdict('changes_requested', [])).toBe('changes_requested');
+  });
+});
+
+describe('review-verdict selection fields', () => {
+  it('parses tests and jobs into reviewer additions', () => {
+    const result = detectReviewVerdictBlock(
+      `<agenthub:review-verdict>${JSON.stringify({
+        verdict: 'approved',
+        tests: [{ file: './server/a.test.ts', reason: 'covers route' }, { file: 'x.test.ts' }],
+        jobs: [{ job: 'e2e' }],
+      })}</agenthub:review-verdict>`,
+    );
+    expect(result.task?.selection).toEqual({
+      kind: 'additions',
+      tests: [{ file: 'server/a.test.ts', reason: 'covers route' }, { file: 'x.test.ts' }],
+      jobs: [{ job: 'e2e' }],
+    });
+  });
+
+  it('reads selection: full as a forced full run', () => {
+    expect(parseReviewerSelectionFields({ selection: 'full' })).toEqual({
+      kind: 'full',
+      reason: 'reviewer requested a full test run',
+    });
+  });
+
+  it('adds nothing when the fields are absent or empty', () => {
+    expect(parseReviewerSelectionFields({})).toEqual({ kind: 'none' });
+    expect(parseReviewerSelectionFields({ tests: [], jobs: null })).toEqual({ kind: 'none' });
+  });
+
+  it.each([
+    [{ selection: 'partial' }, /"selection" must be "full"/],
+    [{ tests: 'a.test.ts' }, /"tests" must be an array/],
+    [{ tests: ['a.test.ts'] }, /entry must be an object/],
+    [{ tests: [{ file: '' }] }, /needs a "file" string/],
+    [{ tests: [{ file: '/abs/a.test.ts' }] }, /repo-relative/],
+    [{ tests: [{ file: 'a/../../b.test.ts' }] }, /repo-relative/],
+    [{ jobs: [{ job: 'e2e', reason: 5 }] }, /reason must be a string/],
+    [{ jobs: Array.from({ length: 201 }, (_, i) => ({ job: `j${i}` })) }, /more than 200/],
+  ])('forces a full run on a malformed block %#', (obj, reason) => {
+    const sel = parseReviewerSelectionFields(obj as Record<string, unknown>);
+    expect(sel.kind).toBe('full');
+    expect(sel.kind === 'full' ? sel.reason : '').toMatch(reason);
+  });
+
+  it('keeps the verdict valid when the selection fields are malformed', () => {
+    const result = detectReviewVerdictBlock(
+      '<agenthub:review-verdict>{"verdict":"approved","selection":42}</agenthub:review-verdict>',
+    );
+    expect(result.reason).toBeNull();
+    expect(result.task?.verdict).toBe('approved');
+    expect(result.task?.selection.kind).toBe('full');
   });
 });

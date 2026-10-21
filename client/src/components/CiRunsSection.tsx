@@ -342,6 +342,8 @@ function jobStateIcon(state: any) {
     return <Loader2 size={12} className="text-amber-400 animate-spin" aria-label="running" />;
   if (state === 'skipped')
     return <CircleDashed size={12} className="text-gray-500" aria-label="skipped" />;
+  if (state === 'not_selected')
+    return <CircleDashed size={12} className="text-gray-600" aria-label="not selected" />;
   return <CircleDashed size={12} className="text-gray-500" aria-label="pending" />;
 }
 

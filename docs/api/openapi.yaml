@@ -1191,6 +1191,8 @@ components:
             - passed
             - failed
             - skipped
+            - not_selected
+          description: "`not_selected`: dynamic test selection left this instance out; it counts as a pass."
         exitCode:
           type: integer
           nullable: true

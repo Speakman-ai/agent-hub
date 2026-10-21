@@ -2194,6 +2194,11 @@ const TEST_FILE_PATTERNS: Record<TestRunner, RegExp> = {
     /(\.(test|spec|cy)\.[cm]?[jt]sx?$)|((^|\/)__tests__\/)|((^|\/)test_[^/]*\.py$)|(_test\.(py|go)$)|(_spec\.rb$)/,
 };
 
+/** Whether a repo-relative path has the shape of a test file for any supported runner. */
+export function isTestFilePath(repoRelPath: string): boolean {
+  return TEST_FILE_PATTERNS.script.test(repoRelPath);
+}
+
 function pushPositionals(parsed: RunnerArgs, runner: TestRunner, state: WalkState): void {
   for (const arg of parsed.positionals) {
     state.out.push({

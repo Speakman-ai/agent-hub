@@ -825,6 +825,7 @@ export async function runReviewerTurn(
     return {
       verdict,
       threads,
+      selection: parsed.task.selection,
     };
   }
 }

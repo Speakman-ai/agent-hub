@@ -113,6 +113,12 @@ export interface JobRunnerOptions {
    */
   carryOver?: { fromRunId: string; instances: ReadonlySet<string> };
   /**
+   * Dynamic test selection: instances (keyed by `jobInstanceKey`) this round
+   * leaves out. They do not run; their job and step rows read `not_selected`,
+   * which counts as a pass. A reused or carried-over instance keeps its rows.
+   */
+  notSelectedInstances?: ReadonlySet<string>;
+  /**
    * Called as soon as one job instance settles red (after its retries), while
    * the rest of the phase may still be running. `infra_error` and cancelled
    * instances are not reported: neither is something a code change fixes.
@@ -472,7 +478,7 @@ function persistJobState(
   runId: string,
   jobId: string,
   matrixKey: string,
-  state: 'queued' | 'running' | 'passed' | 'failed' | 'skipped',
+  state: 'queued' | 'running' | 'passed' | 'failed' | 'skipped' | 'not_selected',
   exitCode: number | null,
   startedAt: number | null,
   endedAt: number | null,
@@ -1144,6 +1150,11 @@ export async function runJobPhase(
     ? copyCarriedOverInstances(deps, opts.runId, opts.carryOver, instances, planned)
     : [];
   for (const key of carriedOver) reused.add(key);
+  const notSelected = new Set(
+    [...(opts.notSelectedInstances ?? [])].filter((key) => !reused.has(key)),
+  );
+  const isNotSelected = (instance: JobInstance): boolean =>
+    notSelected.has(jobInstanceKey(instance.jobId, instance.matrixKey));
 
   for (const instance of instances) {
     if (isReused(instance)) continue;
@@ -1158,6 +1169,19 @@ export async function runJobPhase(
       null,
       null,
     );
+    if (isNotSelected(instance)) {
+      persistJobState(
+        deps,
+        opts.runId,
+        instance.jobId,
+        instance.matrixKey,
+        'not_selected',
+        null,
+        null,
+        now(),
+        null,
+      );
+    }
   }
 
   // Persist every planned step as `queued` up front and emit the checks
@@ -1180,6 +1204,21 @@ export async function runJobPhase(
         p.instance.jobId,
         p.instance.matrixKey,
       );
+      // Queued first so the guarded upsert accepts the terminal write over a
+      // row an earlier round left behind.
+      if (isNotSelected(p.instance)) {
+        deps.stmts.upsertFinalizeRunStep.run(
+          opts.runId,
+          p.stepIndex,
+          `${p.namePrefix}${p.step.name}`,
+          'not_selected',
+          null,
+          null,
+          null,
+          p.instance.jobId,
+          p.instance.matrixKey,
+        );
+      }
     } catch (err) {
       console.warn(
         `[finalize-job-runner] queue-step persist failed run=${opts.runId} step=${p.stepIndex}: ${
@@ -1245,7 +1284,7 @@ export async function runJobPhase(
     : opts;
 
   const runInstance = async (instance: JobInstance): Promise<JobInstanceOutcome> => {
-    if (isReused(instance)) {
+    if (isReused(instance) || isNotSelected(instance)) {
       return {
         instance,
         result: { status: 'success' as const, stepResults: [], activeSecondsBilled: 0 },
@@ -1381,7 +1420,11 @@ export async function runJobPhase(
         matrixKey: instance.matrixKey,
         testFiles: [],
         status: 'incomplete',
-        reason: isReused(instance) ? 'carried over from an earlier round' : 'instance did not run',
+        reason: isReused(instance)
+          ? 'carried over from an earlier round'
+          : isNotSelected(instance)
+            ? 'not selected'
+            : 'instance did not run',
       };
       try {
         opts.onJunitReport(report);

@@ -144,6 +144,36 @@ describe('timeline-message', () => {
     expect(stmts.addMessage.run.mock.calls[0][3]).toContain('test failed');
   });
 
+  it('writeFinalizeChecksRoundTimeline counts not_selected steps apart from passes', () => {
+    const stmts = {
+      addMessage: { run: vi.fn() },
+      touchSession: { run: vi.fn() },
+      getMessageById: { get: vi.fn(() => undefined) },
+    };
+    writeFinalizeChecksRoundTimeline(
+      { stmts: stmts as never, broadcast: vi.fn(), newId: () => 'm3' },
+      {
+        sessionId: 'sess-1',
+        runId: 'run-1',
+        round: 1,
+        steps: [
+          { index: 1, name: 'lint', state: 'passed', exitCode: 0, startedAt: 1, endedAt: 2 },
+          {
+            index: 2,
+            name: 'e2e',
+            state: 'not_selected',
+            exitCode: null,
+            startedAt: null,
+            endedAt: 3,
+          },
+        ],
+      },
+    );
+    expect(stmts.addMessage.run.mock.calls[0][3]).toBe(
+      'Checks · round 1 · 1/1 passed · 1 not selected',
+    );
+  });
+
   it('writeFinalizeRunTerminalTimeline marks a gated push as pushed without warning', () => {
     const stmts = {
       addMessage: { run: vi.fn() },

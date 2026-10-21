@@ -2493,3 +2493,45 @@ describe('long card spec rides the review corpus instead of blocking', () => {
     expect(buildSpecTruncationDirective(out)).not.toMatch(SCORED_SIX);
   });
 });
+
+describe('runReviewerDispatch — test selection fields', () => {
+  it('carries the reviewer selection onto the success outcome', async () => {
+    const store: ThreadStoreState = { rows: [] };
+    const selection = {
+      kind: 'additions' as const,
+      tests: [{ file: 'server/a.test.ts' }],
+      jobs: [{ job: 'e2e', reason: 'route contract' }],
+    };
+    const runner = vi
+      .fn<ReviewerDispatchDeps['runReviewer']>()
+      .mockResolvedValue({ verdict: 'approved', threads: [], selection });
+    const { deps } = makeDeps(store, runner, vi.fn());
+
+    const outcome = await runReviewerDispatch(deps, {
+      runId: 'run-sel',
+      worktreePath: '/tmp/wt',
+      inputs: fakeInputs,
+      card: fakeCard,
+      project: fakeProject,
+    });
+    if (outcome.kind !== 'success') throw new Error('unreachable');
+    expect(outcome.selection).toEqual(selection);
+  });
+
+  it('leaves selection unset when the reviewer sent none', async () => {
+    const store: ThreadStoreState = { rows: [] };
+    const runner = vi
+      .fn<ReviewerDispatchDeps['runReviewer']>()
+      .mockResolvedValue({ verdict: 'approved', threads: [] });
+    const { deps } = makeDeps(store, runner, vi.fn());
+    const outcome = await runReviewerDispatch(deps, {
+      runId: 'run-sel2',
+      worktreePath: '/tmp/wt',
+      inputs: fakeInputs,
+      card: fakeCard,
+      project: fakeProject,
+    });
+    if (outcome.kind !== 'success') throw new Error('unreachable');
+    expect('selection' in outcome).toBe(false);
+  });
+});
