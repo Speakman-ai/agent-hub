@@ -573,8 +573,20 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // 4.x line. vitest is a direct devDependency in every workspace (`^4.1.11`)
     // and @vitest/mocker rides it transitively, so both re-resolve in range with
     // no override. Both are dev-only (test tooling), never in a shipped artifact.
-    { pkg: 'vitest', min: '4.1.11', advisory: 'GHSA-82fw-gwwq-j7x9' },
-    { pkg: '@vitest/mocker', min: '4.1.11', advisory: 'GHSA-82fw-gwwq-j7x9' },
+    // GHSA-qxg6-89mg-rqv8 (code injection via unauthenticated manual mock
+    // registration) and GHSA-xp26-3454-mjgp (Windows backslash traversal past
+    // the redirect allowlist) raised the floor to 4.1.12. Direct ranges are
+    // `^4.1.12` so a fresh install cannot fall back.
+    {
+      pkg: 'vitest',
+      min: '4.1.12',
+      advisory: ['GHSA-82fw-gwwq-j7x9', 'GHSA-qxg6-89mg-rqv8', 'GHSA-xp26-3454-mjgp'],
+    },
+    {
+      pkg: '@vitest/mocker',
+      min: '4.1.12',
+      advisory: ['GHSA-82fw-gwwq-j7x9', 'GHSA-qxg6-89mg-rqv8', 'GHSA-xp26-3454-mjgp'],
+    },
     // GHSA-866g-f22w-33x8 (low): uncontrolled resource consumption in
     // `createJsonResponseHandler`, first patched at 3.0.28 on the 3.x line.
     // The first-party @ai-sdk family pins provider-utils to an exact 3.0.23, so
