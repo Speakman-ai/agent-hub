@@ -57,6 +57,7 @@ const VALID_REPLAY_MISS_REASONS = new Set([
   'recorder-inactive',
   'buffer-too-small',
   'no-full-snapshot',
+  'replay-too-large',
   'upload-failed',
 ]);
 const VALID_SCREENSHOT_MISS_REASONS = new Set([

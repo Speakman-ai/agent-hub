@@ -49,6 +49,7 @@ export const BugReportFormFieldsComponent = registerComponent(
           'recorder-inactive',
           'buffer-too-small',
           'no-full-snapshot',
+          'replay-too-large',
           'upload-failed',
         ])
         .optional()

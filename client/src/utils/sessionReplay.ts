@@ -40,13 +40,20 @@ export function isTerminalViewReason(reason: any): boolean {
 export const RRWEB_FULL_SNAPSHOT = 2;
 export const RRWEB_META = 4;
 
-// Trailing window kept in the rolling buffer. 45s sits in the 30–60s range the
-// product wants, while a periodic full-snapshot checkout at the same cadence
-// guarantees the buffer always opens with a replayable snapshot.
-export const DEFAULT_WINDOW_MS = 45_000;
+// Trailing window a bug-report / record-on-error replay covers. The flush opens
+// on the oldest snapshot inside this window, so the replay length is roughly
+// `windowMs - checkoutMs` to `windowMs`.
+export const DEFAULT_WINDOW_MS = 3 * 60 * 1000;
+// Full-snapshot checkout cadence. Kept separate from (and much shorter than) the
+// window: when the two were equal, the oldest in-window snapshot could land
+// anywhere in the window and a replay came out 0-45s long.
+export const DEFAULT_CHECKOUT_MS = 60_000;
 // Hard safety cap on retained events so a chatty page can't grow the buffer
-// without bound between checkouts.
-export const DEFAULT_MAX_EVENTS = 5_000;
+// without bound between checkouts. Below the one-shot ingest's 20k-event cap.
+export const DEFAULT_MAX_EVENTS = 15_000;
+// Serialized-size budget for a one-shot upload, under the ingest's 16 MB
+// post-inflation body limit with headroom for `meta` and JSON framing.
+export const FLUSH_MAX_BYTES = 12 * 1024 * 1024;
 // Don't bother shipping a buffer that can't reconstruct anything.
 const MIN_FLUSH_EVENTS = 2;
 // A full snapshot whose captured DOM has at most this many element nodes is
@@ -743,6 +750,45 @@ export function selectFlushWindow(events: any, now: any, windowMs: any = DEFAULT
     startIdx -= 1;
   }
   return startIdx > 0 ? events.slice(startIdx) : events;
+}
+
+/**
+ * Drop leading snapshot-to-snapshot segments until the serialized slice fits
+ * `maxBytes` (UTF-8, what the server counts after inflation), so a long window
+ * on a heavy page uploads its most recent part instead of failing the ingest
+ * body limit. Every cut lands on a full snapshot (plus its preceding Meta) so
+ * the result stays replayable. When even the newest snapshot's segment is over
+ * budget, returns an empty array: that segment can't be shortened without
+ * either losing its anchor or dropping the latest events, and uploading it
+ * would only be rejected.
+ */
+export function trimToByteBudget(events: any, maxBytes: any = FLUSH_MAX_BYTES) {
+  if (!Array.isArray(events) || events.length === 0 || !(maxBytes > 0)) return events;
+  const sizes = events.map((e: any) => {
+    try {
+      return utf8ByteLength(JSON.stringify(e) || '') + 1;
+    } catch {
+      return 0;
+    }
+  });
+  let total = sizes.reduce((a: number, b: number) => a + b, 0);
+  if (total <= maxBytes) return events;
+
+  // Candidate cut points: each full snapshot after the first event, moved back
+  // onto its Meta when rrweb emitted one right before it.
+  const cuts: number[] = [];
+  for (let i = 1; i < events.length; i++) {
+    if (!events[i] || events[i].type !== RRWEB_FULL_SNAPSHOT) continue;
+    const c = events[i - 1] && events[i - 1].type === RRWEB_META ? i - 1 : i;
+    if (c > 0 && (cuts.length === 0 || cuts[cuts.length - 1] !== c)) cuts.push(c);
+  }
+  let start = 0;
+  for (const c of cuts) {
+    for (let i = start; i < c; i++) total -= sizes[i];
+    start = c;
+    if (total <= maxBytes) return events.slice(start);
+  }
+  return [];
 }
 
 /**
@@ -2670,7 +2716,9 @@ export class SessionReplayRecorder {
     record = null,
     now = () => Date.now(),
     windowMs = DEFAULT_WINDOW_MS,
+    checkoutMs = DEFAULT_CHECKOUT_MS,
     maxEvents = DEFAULT_MAX_EVENTS,
+    maxFlushBytes = FLUSH_MAX_BYTES,
     minFlushEvents = MIN_FLUSH_EVENTS,
     errorThrottleMs = ERROR_FLUSH_THROTTLE_MS,
     flushTimeoutMs = FLUSH_TIMEOUT_MS,
@@ -2695,7 +2743,13 @@ export class SessionReplayRecorder {
     this._takeFullSnapshot = takeFullSnapshot;
     this._now = now;
     this.windowMs = windowMs;
+    // Never check out less often than the window, or the buffer could hold no
+    // snapshot young enough to open the replay on.
+    this.checkoutMs = checkoutMs > 0 ? Math.min(checkoutMs, windowMs) : windowMs;
     this.maxEvents = maxEvents;
+    this.maxFlushBytes = maxFlushBytes;
+    // Why the most recent flush() declined to upload, when it can tell.
+    this.lastFlushMissReason = null;
     this.minFlushEvents = minFlushEvents;
     this.errorThrottleMs = errorThrottleMs;
     this.flushTimeoutMs = flushTimeoutMs;
@@ -2751,7 +2805,7 @@ export class SessionReplayRecorder {
         // accidentally clobbered by a caller-supplied recordOptions.
         ...this.recordOptions,
         emit: (event: any) => this._handleEmit(event),
-        checkoutEveryNms: this.windowMs,
+        checkoutEveryNms: this.checkoutMs,
       }) || null;
     this._startTelemetryCapture();
   }
@@ -2918,7 +2972,14 @@ export class SessionReplayRecorder {
     // Open the replay on a recent snapshot rather than the memory pruner's
     // "newest snapshot before the cutoff" — which, after an idle gap or a
     // pre-mount initial snapshot, would open blank and replay the dead gap.
-    const events = selectFlushWindow(this.snapshot(), this._now(), this.windowMs);
+    this.lastFlushMissReason = null;
+    const selected = selectFlushWindow(this.snapshot(), this._now(), this.windowMs);
+    const events = trimToByteBudget(selected, this.maxFlushBytes);
+    if (events.length === 0 && Array.isArray(selected) && selected.length > 0) {
+      // Even the newest snapshot segment exceeds the ingest body limit.
+      this.lastFlushMissReason = 'replay-too-large';
+      return null;
+    }
     if (events.length < this.minFlushEvents) return null;
     // A buffer with no full snapshot can't be replayed — don't ship a ref that
     // would later be surfaced (untrusted) into an intake prompt.
@@ -3332,7 +3393,8 @@ export async function initSessionReplay(opts: any = {}) {
 // invisible.
 //
 // Reasons: 'recorder-not-initialized' | 'recorder-inactive' |
-//          'buffer-too-small' | 'no-full-snapshot' | 'upload-failed'
+//          'buffer-too-small' | 'no-full-snapshot' | 'replay-too-large' |
+//          'upload-failed'
 
 // The closed set of reasons a flush can yield no replay ref. Exported so the
 // bug-report path (and the server's intake validation) share one vocabulary —
@@ -3342,6 +3404,7 @@ export const REPLAY_MISS_REASONS = Object.freeze([
   'recorder-inactive',
   'buffer-too-small',
   'no-full-snapshot',
+  'replay-too-large',
   'upload-failed',
 ]);
 
@@ -3425,6 +3488,10 @@ export async function flushSessionReplayRefWithReason(meta?: any, timeoutMs?: an
   const opts = timeoutMs != null ? { timeoutMs } : undefined;
   const result = await _recorder.flush(meta, opts);
   const ref = result?.replayRef || null;
+  if (!ref && _recorder.lastFlushMissReason === 'replay-too-large') {
+    reportNullFlush('replay-too-large', meta);
+    return { ref: null, reason: 'replay-too-large' };
+  }
   // A replayable buffer that still produced no ref means the ingest upload
   // failed, timed out, or was rate-limited.
   if (!ref) {

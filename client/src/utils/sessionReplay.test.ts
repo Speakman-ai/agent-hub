@@ -13,6 +13,9 @@ import {
   REPLAY_SAMPLE_RATE_KEY,
   pruneBuffer,
   selectFlushWindow,
+  trimToByteBudget,
+  DEFAULT_WINDOW_MS,
+  DEFAULT_CHECKOUT_MS,
   countSnapshotElements,
   countElementsInNode,
   PREMOUNT_SHELL_MAX_ELEMENTS,
@@ -672,6 +675,130 @@ describe('selectFlushWindow', () => {
   });
 });
 
+describe('bug-report replay length', () => {
+  it('covers minutes of history, not a sub-window slice', () => {
+    // Regression: checkout cadence equalled the 45s window, so the oldest
+    // in-window snapshot could sit anywhere in it and a bug-report replay came
+    // out 0-45s long (20s observed). Checkouts now fire well inside the window.
+    expect(DEFAULT_CHECKOUT_MS).toBeLessThan(DEFAULT_WINDOW_MS);
+    expect(DEFAULT_WINDOW_MS).toBeGreaterThanOrEqual(2 * 60 * 1000);
+
+    const now = 10 * 60 * 1000;
+    const events: any[] = [];
+    for (let t = 0; t <= now; t += 1000) {
+      if (t % DEFAULT_CHECKOUT_MS === 0) events.push(meta(t), snap(t));
+      else events.push(incr(t));
+    }
+    const out = selectFlushWindow(events, now);
+    const span = out[out.length - 1].timestamp - out[0].timestamp;
+    expect(span).toBeGreaterThanOrEqual(DEFAULT_WINDOW_MS - DEFAULT_CHECKOUT_MS);
+    expect(span).toBeLessThanOrEqual(DEFAULT_WINDOW_MS);
+  });
+
+  it('caps checkout cadence at the window so short windows stay replayable', () => {
+    const rec = new SessionReplayRecorder({ windowMs: 100, checkoutMs: 60_000 });
+    expect(rec.checkoutMs).toBe(100);
+  });
+});
+
+describe('trimToByteBudget', () => {
+  const big = (ts: number, type: number) => ({
+    type,
+    timestamp: ts,
+    data: { pad: 'x'.repeat(1000) },
+  });
+
+  it('returns the input unchanged when it fits', () => {
+    const events = [meta(0), snap(1), incr(2)];
+    expect(trimToByteBudget(events, 1_000_000)).toBe(events);
+  });
+
+  it('drops oldest segments at snapshot boundaries until it fits', () => {
+    const events = [
+      meta(0),
+      big(1, RRWEB_FULL_SNAPSHOT),
+      big(2, 3),
+      meta(10),
+      big(11, RRWEB_FULL_SNAPSHOT),
+      big(12, 3),
+      meta(20),
+      big(21, RRWEB_FULL_SNAPSHOT),
+      incr(22),
+    ];
+    const out = trimToByteBudget(events, 3_500);
+    expect(out[0]).toEqual(meta(10));
+    expect(out[1].type).toBe(RRWEB_FULL_SNAPSHOT);
+    expect(out[1].timestamp).toBe(11);
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(3_500);
+  });
+
+  it('returns nothing when the newest snapshot segment alone is over budget', () => {
+    const events = [meta(0), big(1, RRWEB_FULL_SNAPSHOT), meta(10), big(11, RRWEB_FULL_SNAPSHOT)];
+    expect(trimToByteBudget(events, 10)).toEqual([]);
+  });
+
+  it('measures UTF-8 bytes, not UTF-16 code units', () => {
+    // 1000 CJK characters are 1000 code units but 3000 UTF-8 bytes. A
+    // code-unit count would wrongly keep the whole slice under a 2500 budget.
+    const cjk = (ts: number) => ({
+      type: RRWEB_FULL_SNAPSHOT,
+      timestamp: ts,
+      data: { text: '\u4e2d'.repeat(1000) },
+    });
+    const events = [meta(0), cjk(1), meta(10), snap(11), incr(12)];
+    expect(JSON.stringify(events).length).toBeLessThan(2_500);
+    const out = trimToByteBudget(events, 2_500);
+    expect(out[0]).toEqual(meta(10));
+    expect(out).toHaveLength(3);
+  });
+});
+
+function fakeRecord() {
+  const calls: Record<string, any> = { emit: null, stopped: false };
+  const record = ({ emit }: any) => {
+    calls.emit = emit;
+    return () => {
+      calls.stopped = true;
+    };
+  };
+  return { record, calls };
+}
+
+describe('SessionReplayRecorder.flush byte budget', () => {
+  it('never submits a replay whose newest segment exceeds the budget', async () => {
+    const submit = vi
+      .fn()
+      .mockResolvedValue({ replayId: 'r', replayRef: '/uploads/replay-r.json' });
+    const rec = new SessionReplayRecorder({ submit, now: () => 1000, maxFlushBytes: 500 });
+    const { record, calls } = fakeRecord();
+    rec.start(record);
+    calls.emit(meta(1));
+    calls.emit({ type: RRWEB_FULL_SNAPSHOT, timestamp: 2, data: { pad: 'x'.repeat(2000) } });
+    calls.emit(incr(3));
+    const out = await rec.flush({ trigger: 'bug-report' });
+    expect(out).toBeNull();
+    expect(submit).not.toHaveBeenCalled();
+    expect(rec.lastFlushMissReason).toBe('replay-too-large');
+  });
+
+  it('reports replay-too-large to the bug-report path', async () => {
+    const rec = getRecorder();
+    rec._now = () => 1000;
+    rec.maxFlushBytes = 500;
+    const submit = vi.fn();
+    rec._submit = submit;
+    const { record, calls } = fakeRecord();
+    rec.start(record);
+    calls.emit(meta(1));
+    calls.emit({ type: RRWEB_FULL_SNAPSHOT, timestamp: 2, data: { pad: 'x'.repeat(2000) } });
+    calls.emit(incr(3));
+    const out = await flushSessionReplayRefWithReason({ trigger: 'bug-report' });
+    expect(out).toEqual({ ref: null, reason: 'replay-too-large' });
+    expect(submit).not.toHaveBeenCalled();
+    _resetSessionReplayForTest();
+  });
+});
+
 describe('countSnapshotElements', () => {
   it('counts element nodes in a captured DOM tree', () => {
     expect(countSnapshotElements(snapEl(1, 16))).toBe(16);
@@ -1014,17 +1141,6 @@ describe('defaultReplayBeacon', () => {
 });
 
 describe('SessionReplayRecorder', () => {
-  function fakeRecord() {
-    const calls: Record<string, any> = { emit: null, stopped: false };
-    const record = ({ emit }: any) => {
-      calls.emit = emit;
-      return () => {
-        calls.stopped = true;
-      };
-    };
-    return { record, calls };
-  }
-
   it('buffers emitted events and prunes to the trailing window', () => {
     const { record, calls } = fakeRecord();
     let now = 1000;
@@ -1346,7 +1462,7 @@ describe('SessionReplayRecorder', () => {
     expect(opts.ignoreClass).toBe('ah-replay-ignore');
     // emit/checkout still wired and not clobbered by the spread.
     expect(typeof opts.emit).toBe('function');
-    expect(opts.checkoutEveryNms).toBe(rec.windowMs);
+    expect(opts.checkoutEveryNms).toBe(rec.checkoutMs);
   });
 
   it('the default privacy options mask inputs and all text', () => {

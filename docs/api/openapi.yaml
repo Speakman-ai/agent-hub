@@ -3389,6 +3389,7 @@ components:
             - recorder-inactive
             - buffer-too-small
             - no-full-snapshot
+            - replay-too-large
             - upload-failed
           description: Why no session replay attached, when `replayRef` is absent. Recorded in the ticket Reporter Context so a "didn't capture replay" report is self-diagnosing. Ignored if a valid `replayRef` is present.
         screenshotMissReason:
