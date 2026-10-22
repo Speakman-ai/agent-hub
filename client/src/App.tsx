@@ -7620,6 +7620,7 @@ export default function App({ initialView }: any = {}) {
                     setPullsProjectId(projectId);
                     setCurrentView('pulls');
                   }}
+                  onOpenRunners={(projectId: string) => setCurrentView(`runners:${projectId}`)}
                   onToast={showToast}
                 />
               ) : currentView === 'releases' ? (

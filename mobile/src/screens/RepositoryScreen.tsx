@@ -13,6 +13,7 @@ import { colors } from '../theme/colors';
 import { relativePrTime } from '../utils/prFormatting';
 import { splitUnifiedDiff } from '../utils/commitDiff';
 import ProjectScreenHeader from '../components/ProjectScreenHeader';
+import DefaultBranchCiBadge from '../components/DefaultBranchCiBadge';
 function shortSha(sha: any) {
   return (sha || '').slice(0, 8);
 }
@@ -142,6 +143,11 @@ export default function RepositoryScreen({ route, navigation }: any) {
         title="Repository"
         project={project}
         onBack={() => navigation.goBack()}
+      />
+      <DefaultBranchCiBadge
+        projectId={projectId}
+        project={project}
+        onOpenRunners={() => navigation.navigate('Runners', { projectId, project })}
       />
       <View style={styles.tabs}>
         {['commits', 'branches'].map((t: any) => (

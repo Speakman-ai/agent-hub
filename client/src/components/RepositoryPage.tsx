@@ -34,6 +34,7 @@ import { FileDiffSection } from './FileDiffView';
 import { MarkdownContent } from './MarkdownRenderer';
 import { resolveRepoImageUrl } from '../utils/resolveRepoMediaUrl';
 import GitHostMirrorStatusBanner from './GitHostMirrorStatusBanner';
+import DefaultBranchCiBadge from './DefaultBranchCiBadge';
 import GitHubRepoChrome from './github/GitHubRepoChrome';
 
 function shortSha(sha: any) {
@@ -529,7 +530,7 @@ export default function RepositoryPage(props: any) {
   return <RepositoryPageInner key={props?.projectId} {...props} />;
 }
 
-function RepositoryPageInner({ projectId, project, onOpenPulls, onToast }: any) {
+function RepositoryPageInner({ projectId, project, onOpenPulls, onOpenRunners, onToast }: any) {
   const [view, setView] = useState<'code' | 'commits' | 'branches'>('code');
   const [branchData, setBranchData] = useState<any>(null);
   const [selectedBranch, setSelectedBranch] = useState('');
@@ -1501,6 +1502,7 @@ function RepositoryPageInner({ projectId, project, onOpenPulls, onToast }: any) 
       onOpenPulls={onOpenPulls}
     >
       <GitHostMirrorStatusBanner projectId={projectId} onToast={onToast} />
+      <DefaultBranchCiBadge projectId={projectId} project={project} onOpenRunners={onOpenRunners} />
 
       {loading && (
         <p className="text-sm text-gh-muted flex items-center gap-2 py-6 justify-center">
