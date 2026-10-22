@@ -24,33 +24,13 @@ import type { SpawnStepFn } from './step-runner.js';
 import { FINALIZE_RUNNER_WORKSPACE } from './runner-images.js';
 import { FINALIZE_JUNIT_DIR_ENV } from './runner-exec-args.js';
 import { TEST_INVENTORY_SCHEMA_SQL } from './test-inventory-schema.js';
-import { execFile } from 'child_process';
+import { plainIsAncestor, shallowAwareIsAncestor, type IsAncestorFn } from './git-ancestry.js';
 import { createHash } from 'crypto';
-import { promisify } from 'util';
 
-const execFileP = promisify(execFile);
+export type { IsAncestorFn };
 
-/** `git merge-base --is-ancestor`: true / false, or null when git can't tell. */
-export type IsAncestorFn = (
-  repoDir: string,
-  ancestor: string,
-  descendant: string,
-  env?: NodeJS.ProcessEnv,
-) => Promise<boolean | null>;
-
-export const defaultIsAncestor: IsAncestorFn = async (repoDir, ancestor, descendant, env) => {
-  if (ancestor === descendant) return true;
-  try {
-    await execFileP('git', ['-C', repoDir, 'merge-base', '--is-ancestor', ancestor, descendant], {
-      timeout: 30_000,
-      ...(env ? { env } : {}),
-    });
-    return true;
-  } catch (err) {
-    // Exit 1 is "not an ancestor"; anything else (missing object) is unknown.
-    return (err as { code?: unknown }).code === 1 ? false : null;
-  }
-};
+/** Plain `merge-base --is-ancestor`; see {@link shallowAwareIsAncestor} for shallow clones. */
+export const defaultIsAncestor: IsAncestorFn = plainIsAncestor;
 
 // ── Per-instance JUnit directory ────────────────────────────────────────────
 
@@ -873,7 +853,7 @@ export async function lookupTestInventory(
   const inv = readTestInventory(db, args.projectId);
   if (!inv) return { status: 'missing' };
   const { sha, branch, recordedAt } = inv.state;
-  const isAncestor = args.isAncestor ?? defaultIsAncestor;
+  const isAncestor = args.isAncestor ?? shallowAwareIsAncestor;
   let ancestor: boolean | null;
   try {
     ancestor = await isAncestor(args.repoDir, sha, args.baseSha, args.env);

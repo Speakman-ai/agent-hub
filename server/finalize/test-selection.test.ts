@@ -8,6 +8,7 @@ import {
   notSelectedInstanceKeys,
   parseNameStatusZ,
   parseTestSelection,
+  resolveReviewerJob,
   resolveTestSelection,
   selectionInstancesFor,
   type ChangedPath,
@@ -75,6 +76,38 @@ function expectFull(sel: TestSelection, reason: RegExp): void {
   expect(sel.instances.every((i) => i.selected)).toBe(true);
   expect(notSelectedInstanceKeys(sel).size).toBe(0);
 }
+
+describe('resolveReviewerJob', () => {
+  const inst = [
+    { jobId: 'lint', matrixKey: '' },
+    { jobId: 'e2e', matrixKey: 'Core_Workflows' },
+    { jobId: 'e2e', matrixKey: 'Reports' },
+  ];
+
+  it('resolves a bare job id to the whole job', () => {
+    expect(resolveReviewerJob('e2e', inst)).toEqual({ jobId: 'e2e', matrixKey: null });
+  });
+
+  it('resolves an instance label to that instance, ignoring case and space/underscore', () => {
+    expect(resolveReviewerJob('e2e [Core_Workflows]', inst)).toEqual({
+      jobId: 'e2e',
+      matrixKey: 'Core_Workflows',
+    });
+    expect(resolveReviewerJob(' e2e [core workflows] ', inst)).toEqual({
+      jobId: 'e2e',
+      matrixKey: 'Core_Workflows',
+    });
+  });
+
+  it('falls back to the whole job for an unknown matrix key of a known job', () => {
+    expect(resolveReviewerJob('e2e [Nope]', inst)).toEqual({ jobId: 'e2e', matrixKey: null });
+  });
+
+  it('returns null for an unknown job', () => {
+    expect(resolveReviewerJob('nope', inst)).toBeNull();
+    expect(resolveReviewerJob('nope [x]', inst)).toBeNull();
+  });
+});
 
 describe('computeTestSelection', () => {
   it('runs only the instance owning a test the session ran', () => {
@@ -154,6 +187,23 @@ describe('computeTestSelection', () => {
     );
     expect(selectedKeys(sel)).toEqual(['client', 'server/group=1', 'server/group=2']);
     expect(sel.instances.find((i) => i.jobId === 'client')!.reasons).toEqual(['shape change']);
+  });
+
+  it('accepts a reviewer job given as the instance label from the prompt', () => {
+    const instances: SelectionJobInstance[] = [
+      ...INSTANCES,
+      { jobId: 'e2e', matrixKey: 'Core_Workflows', needs: [], warmup: false },
+      { jobId: 'e2e', matrixKey: 'Reports', needs: [], warmup: false },
+    ];
+    const sel = computeTestSelection(
+      input({
+        instances,
+        reviewer: { kind: 'additions', jobs: [{ job: 'e2e [Core_Workflows]' }], tests: [] },
+      }),
+    );
+    expect(sel.forcedFullReason).toBeNull();
+    expect(selectedKeys(sel)).toContain('e2e/Core_Workflows');
+    expect(selectedKeys(sel)).not.toContain('e2e/Reports');
   });
 
   it('runs a test file the diff edits', () => {

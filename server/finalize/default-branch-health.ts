@@ -21,6 +21,7 @@
  * Nothing here blocks merges: a red default branch is reported, never gated.
  */
 import { execFile } from 'child_process';
+import { plainIsAncestor, shallowAwareIsAncestor, type IsAncestorFn } from './git-ancestry.js';
 import { promisify } from 'util';
 import { v4 as uuidv4 } from 'uuid';
 import type {
@@ -92,13 +93,7 @@ export interface RangeMerge {
   sessionIds: string[];
 }
 
-/** `git merge-base --is-ancestor`: true / false, or null when git can't tell. */
-export type IsAncestorFn = (
-  repoDir: string,
-  ancestor: string,
-  descendant: string,
-  env?: NodeJS.ProcessEnv,
-) => Promise<boolean | null>;
+export type { IsAncestorFn };
 
 /** First-parent commits in `(from, to]`, newest first. Null on git failure. */
 export type ListRangeFn = (
@@ -116,21 +111,7 @@ export type StepLogTailFn = (args: {
   step: FinalizeRunStepRow;
 }) => string[];
 
-export const defaultIsAncestor: IsAncestorFn = async (repoDir, ancestor, descendant, env) => {
-  if (ancestor === descendant) return true;
-  try {
-    await execFileP('git', ['-C', repoDir, 'merge-base', '--is-ancestor', ancestor, descendant], {
-      timeout: 30_000,
-      ...(env ? { env } : {}),
-    });
-    return true;
-  } catch (err) {
-    // Exit 1 means "not an ancestor"; anything else (missing object, bad
-    // repo) means we couldn't tell.
-    const code = (err as { code?: unknown }).code;
-    return code === 1 ? false : null;
-  }
-};
+export const defaultIsAncestor: IsAncestorFn = plainIsAncestor;
 
 export const defaultListRange: ListRangeFn = async (repoDir, from, to) => {
   const range = from ? [`${from}..${to}`] : ['-1', to];
@@ -772,7 +753,7 @@ export async function classifyInheritedFailures(
   const failed = jobs.filter((j) => j.state === 'failed');
   if (failed.length === 0) return { kind: 'not_inherited', reason: 'no failed instances' };
 
-  const isAncestor = deps.isAncestor ?? defaultIsAncestor;
+  const isAncestor = deps.isAncestor ?? shallowAwareIsAncestor;
   const ancestry = new Map<string, boolean | null>();
   const instances: InheritedFailures['instances'] = [];
   const breakageIds = new Set<string>();

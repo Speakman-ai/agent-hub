@@ -212,6 +212,6 @@ Add any of these keys to the same JSON object, next to \`verdict\` and \`threads
 "selection": "full"
 \`\`\`
 
-- \`tests[].file\` is a repo-relative test file path; \`jobs[].job\` is a job id from the list above.
+- \`tests[].file\` is a repo-relative test file path; \`jobs[].job\` is a job id (\`e2e\`) to run every shard, or an instance label from the list above (\`e2e [shard]\`) to run one.
 - \`selection\` accepts only \`"full"\`; when set, \`tests\` and \`jobs\` are ignored.
 - Omit all three when the tests the session ran already cover the change.`;

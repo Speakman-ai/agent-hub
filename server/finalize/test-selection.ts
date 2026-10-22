@@ -130,6 +130,33 @@ export function fullSelection(
   };
 }
 
+/**
+ * Resolve a reviewer `jobs[].job` entry. The reviewer prompt lists matrix
+ * instances as `job [matrixKey]`, so reviewers copy that label as often as
+ * the bare id. A known label selects that one instance; a known job with an
+ * unrecognised matrix key selects the whole job. `matrixKey: null` means the
+ * whole job. Matrix keys compare ignoring case and space/underscore.
+ */
+export function resolveReviewerJob(
+  name: string,
+  instances: readonly Pick<SelectionJobInstance, 'jobId' | 'matrixKey'>[],
+): { jobId: string; matrixKey: string | null } | null {
+  const trimmed = name.trim();
+  if (instances.some((i) => i.jobId === trimmed)) return { jobId: trimmed, matrixKey: null };
+  const m = /^(.+?)\s*\[(.*)\]$/.exec(trimmed);
+  if (!m) return null;
+  const jobId = m[1].trim();
+  const ofJob = instances.filter((i) => i.jobId === jobId);
+  if (ofJob.length === 0) return null;
+  const norm = (k: string) =>
+    k
+      .trim()
+      .toLowerCase()
+      .replace(/[\s_]+/g, '_');
+  const hit = ofJob.find((i) => norm(i.matrixKey) === norm(m[2]));
+  return { jobId, matrixKey: hit ? hit.matrixKey : null };
+}
+
 /** Keys (`jobInstanceKey`) of the instances a selection leaves out. */
 export function notSelectedInstanceKeys(selection: TestSelection): Set<string> {
   const out = new Set<string>();
@@ -332,8 +359,11 @@ function select(input: ComputeTestSelectionInput): TestSelection {
   // Reviewer additions.
   if (reviewer.kind === 'additions') {
     for (const j of reviewer.jobs) {
-      if (!jobIds.has(j.job)) throw new ForceFull(`reviewer required unknown job "${j.job}"`);
-      markJob(j.job, 'reviewer', j.reason ? { reason: j.reason } : {});
+      const target = resolveReviewerJob(j.job, instances);
+      if (!target) throw new ForceFull(`reviewer required unknown job "${j.job}"`);
+      const opts = j.reason ? { reason: j.reason } : {};
+      if (target.matrixKey === null) markJob(target.jobId, 'reviewer', opts);
+      else mark(jobInstanceKey(target.jobId, target.matrixKey), 'reviewer', opts);
     }
     for (const t of reviewer.tests) selectFile(t.file, 'reviewer', t.reason);
   }

@@ -9,6 +9,7 @@ import {
   writeFileSync,
   existsSync,
 } from 'fs';
+import { execFileSync } from 'child_process';
 import os from 'os';
 import path from 'path';
 import {
@@ -949,6 +950,48 @@ describe('lookupTestInventory', () => {
       recordedAt: 1000,
       entries: [{ jobId: 'unit', matrixKey: '', testFile: 'a.test.ts' }],
     });
+  });
+
+  it('returns ok on a depth-1 clone whose inventory sha is behind the graft', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'inv-shallow-'));
+    try {
+      const upstream = path.join(root, 'upstream');
+      const git = (cwd: string, ...args: string[]) =>
+        execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+      execFileSync('git', ['init', '-q', '-b', 'main', upstream]);
+      git(upstream, 'config', 'user.email', 't@example.com');
+      git(upstream, 'config', 'user.name', 't');
+      const shas: string[] = [];
+      for (let i = 0; i < 4; i++) {
+        writeFileSync(path.join(upstream, 'f.txt'), String(i));
+        git(upstream, 'add', 'f.txt');
+        git(upstream, 'commit', '-q', '-m', `c${i}`);
+        shas.push(git(upstream, 'rev-parse', 'HEAD'));
+      }
+      const worktree = path.join(root, 'session');
+      execFileSync('git', ['clone', '-q', '--depth', '1', `file://${upstream}`, worktree]);
+
+      const db = memDb();
+      writeTestInventory(db, {
+        projectId: 'p1',
+        branch: 'main',
+        sha: shas[1],
+        runId: 'r1',
+        reports: [
+          { jobId: 'unit', matrixKey: '', testFiles: ['a.test.ts'], status: 'reported' as const },
+        ],
+        now: 1000,
+      });
+      // Default ancestry implementation: no isAncestor override.
+      const res = await lookupTestInventory(db, {
+        projectId: 'p1',
+        baseSha: shas[3],
+        repoDir: worktree,
+      });
+      expect(res.status).toBe('ok');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('is stale when the inventory sha is not an ancestor of the base', async () => {
