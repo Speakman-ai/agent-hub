@@ -52339,6 +52339,64 @@ paths:
                     type: string
                 required:
                   - error
+  /api/projects/{projectId}/pulls/{number}/discuss:
+    post:
+      tags:
+        - Pull Requests
+      summary: Discuss a PR in a normal session
+      description: Creates a normal interactive session seeded with the PR's context (description, checks, review feedback, recent comments) and the PR environment's status and URL when one exists. The worktree is provisioned on the PR head branch. No background task runs and nothing is pushed automatically. Works for Agent Hub-hosted and GitHub-hosted projects.
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: integer
+            minimum: 0
+            exclusiveMinimum: true
+          required: true
+          name: number
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agentId:
+                  type: string
+                  minLength: 1
+              required:
+                - agentId
+      responses:
+        "201":
+          description: Discussion session started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId:
+                    type: string
+                  agentId:
+                    type: string
+                  hasEnvironment:
+                    type: boolean
+                    description: Whether the seed prompt told the agent about a PR environment.
+                required:
+                  - sessionId
+                  - agentId
+                  - hasEnvironment
+        "400":
+          description: Invalid request, the project has no PR source configured, or it has no session worktrees (organization workspaces)
+        "404":
+          description: Project, agent, or PR not found
+        "409":
+          description: The PR has no head branch to check out
+        "502":
+          description: PR context could not be fetched or the session could not be started
   /api/projects/{projectId}/pulls:
     post:
       tags:

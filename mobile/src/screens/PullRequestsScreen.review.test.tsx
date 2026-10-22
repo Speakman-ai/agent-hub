@@ -20,7 +20,9 @@ vi.mock('react-native', () => ({
 vi.mock('react-native-safe-area-context', () => ({ SafeAreaView: 'SafeAreaView' }));
 vi.mock('../context/AppContext', () => ({ useApp: () => ({ projects: [] }) }));
 vi.mock('../context/SidebarContext', () => ({ SidebarContext: {} }));
-vi.mock('../utils/api', () => ({ api: { requestPrReviewSession: vi.fn(), resolvePR: vi.fn() } }));
+vi.mock('../utils/api', () => ({
+  api: { requestPrReviewSession: vi.fn(), resolvePR: vi.fn(), discussPR: vi.fn() },
+}));
 vi.mock('../components/PrDiffView', () => ({ default: () => null }));
 vi.mock('../components/PrReviewSheet', () => ({ default: () => null }));
 vi.mock('../components/PrCommentSheet', () => ({ default: () => null }));
@@ -66,6 +68,32 @@ describe('private GitHub review on mobile', () => {
     });
     expect(api.requestPrReviewSession).toHaveBeenCalledWith('p1', 42, 'a1');
     expect(onOpenReviewSession).toHaveBeenCalledWith('review-session', 'a1');
+    expect(api.resolvePR).not.toHaveBeenCalled();
+    await act(async () => {
+      tree!.unmount();
+    });
+  });
+
+  it('Discuss opens a normal session for the PR without resolving it', async () => {
+    vi.mocked(api.discussPR).mockResolvedValue({ sessionId: 'discuss-session', agentId: 'a1' });
+    const onOpenReviewSession = vi.fn();
+    let tree: ReturnType<typeof create>;
+    await act(async () => {
+      tree = create(
+        <PrDetail
+          detail={{ ...detail, source: 'agenthub' }}
+          projectId="p1"
+          reviewAgentId="a1"
+          onOpenReviewSession={onOpenReviewSession}
+        />,
+      );
+    });
+    const button = tree!.root.findByProps({ accessibilityLabel: 'Discuss' });
+    await act(async () => {
+      await button.props.onPress();
+    });
+    expect(api.discussPR).toHaveBeenCalledWith('p1', 42, 'a1');
+    expect(onOpenReviewSession).toHaveBeenCalledWith('discuss-session', 'a1');
     expect(api.resolvePR).not.toHaveBeenCalled();
     await act(async () => {
       tree!.unmount();

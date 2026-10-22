@@ -333,6 +333,18 @@ export function PrDetail({
       setReviewBusy(false);
     }
   };
+  const [discussBusy, setDiscussBusy] = useState(false);
+  const startDiscussion = async () => {
+    setDiscussBusy(true);
+    try {
+      const result = await api.discussPR(projectId, detail.pr.number, reviewAgentId);
+      onOpenReviewSession?.(result.sessionId, result.agentId);
+    } catch (err: any) {
+      Alert.alert('Discuss failed', err?.message || 'Failed to start discussion session');
+    } finally {
+      setDiscussBusy(false);
+    }
+  };
   const pr = detail?.pr;
   const caps = prDetailCapabilities(detail);
   // PR actions (diff / review / comment / edit / reopen) — web parity.
@@ -647,6 +659,16 @@ export function PrDetail({
         )}
       </View>
 
+      <TouchableOpacity
+        onPress={startDiscussion}
+        disabled={discussBusy || !reviewAgentId}
+        accessibilityLabel="Discuss"
+        accessibilityHint="Open a chat session with this PR loaded, including its running PR environment if there is one"
+        accessibilityState={{ disabled: discussBusy || !reviewAgentId, busy: discussBusy }}
+        style={styles.resolveButton}
+      >
+        <Text style={styles.resolveButtonText}>{discussBusy ? 'Starting…' : 'Discuss'}</Text>
+      </TouchableOpacity>
       {!caps.isNative && (pr.state || '').toLowerCase() === 'open' && (
         <TouchableOpacity
           onPress={requestReview}

@@ -2029,6 +2029,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ agentId }),
     }),
+  discussPR: (projectId: string, prNumber: number, agentId: string) =>
+    fetchJSON(`/projects/${projectId}/pulls/${prNumber}/discuss`, {
+      method: 'POST',
+      body: JSON.stringify({ agentId }),
+    }),
   resolvePR: (projectId: any, prNumber: any, { agentId }: any = {}) =>
     fetchJSON(`/projects/${projectId}/pulls/${prNumber}/resolve`, {
       method: 'POST',

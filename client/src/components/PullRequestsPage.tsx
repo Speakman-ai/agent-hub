@@ -626,6 +626,7 @@ function PrDetail({
   const [confirmingRevert, setConfirmingRevert] = useState(false);
   const [togglingReview, setTogglingReview] = useState(false);
   const [dispatchingAgentReview, setDispatchingAgentReview] = useState(false);
+  const [startingDiscussion, setStartingDiscussion] = useState(false);
   // Latched once an agent review is dispatched so the button reflects a
   // persistent "requested" state and cannot dispatch duplicates while the
   // reviewer is still working. This is only the OPTIMISTIC half — it bridges the
@@ -939,6 +940,21 @@ function PrDetail({
 
   // Agent review: dispatch the project Reviewer agent against this PR without
   // touching the human-review flag. Always a fresh request (no toggle).
+  // Discuss opens a normal interactive session, so prefer a non-reviewer agent.
+  const discussAgentId = reviewAgentId || agentId;
+  const handleDiscuss = async () => {
+    if (!discussAgentId || startingDiscussion) return;
+    setStartingDiscussion(true);
+    try {
+      const res = await api.discussPR(projectId, pr.number, discussAgentId);
+      onOpenSession?.(res.agentId, res.sessionId);
+    } catch (err: any) {
+      toastErr(err);
+    } finally {
+      setStartingDiscussion(false);
+    }
+  };
+
   const handleRequestAgentReview = async () => {
     setDispatchingAgentReview(true);
     try {
@@ -1152,6 +1168,25 @@ function PrDetail({
               Resolve PR
             </button>
           )}
+          <button
+            type="button"
+            onClick={handleDiscuss}
+            disabled={startingDiscussion || !discussAgentId}
+            title={
+              !discussAgentId
+                ? 'No agents configured'
+                : 'Open a chat session with this PR loaded, including its running PR environment if there is one'
+            }
+            data-testid="pr-discuss-button"
+            className="flex items-center gap-1.5 text-sm text-gray-400 hover:text-gray-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {startingDiscussion ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : (
+              <MessageSquare size={14} />
+            )}
+            Discuss
+          </button>
           {isOpen && (
             <button
               type="button"

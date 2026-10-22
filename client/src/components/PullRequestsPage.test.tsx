@@ -45,6 +45,7 @@ import { api } from '../utils/api';
     dismissNativePrReview: vi.fn(),
     requestNativePrReview: vi.fn(),
     requestPrReviewSession: vi.fn(),
+    discussPR: vi.fn(),
     startNativePrPreview: vi.fn(),
     stopNativePrPreview: vi.fn(),
     getNativePrPreviewState: vi.fn(),
@@ -146,6 +147,16 @@ describe('<PullRequestsPage /> — Resolve PR button', () => {
     await waitFor(() => expect(onOpenSession).toHaveBeenCalledWith('agent-alpha', 'review-chat'));
     expect(api.requestPrReviewSession).toHaveBeenCalledWith('proj-1', 123, 'agent-alpha');
     expect(api.requestNativePrReview).not.toHaveBeenCalled();
+    expect(api.resolvePR).not.toHaveBeenCalled();
+  });
+
+  it('Discuss opens a normal session for the PR without resolving it', async () => {
+    const onOpenSession = vi.fn();
+    (api.discussPR as any).mockResolvedValue({ sessionId: 'discuss-chat', agentId: 'agent-alpha' });
+    await renderAndOpenDetail({ onOpenSession });
+    fireEvent.click(await screen.findByTestId('pr-discuss-button'));
+    await waitFor(() => expect(onOpenSession).toHaveBeenCalledWith('agent-alpha', 'discuss-chat'));
+    expect(api.discussPR).toHaveBeenCalledWith('proj-1', 123, 'agent-alpha');
     expect(api.resolvePR).not.toHaveBeenCalled();
   });
 
