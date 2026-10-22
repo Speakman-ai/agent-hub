@@ -36,6 +36,7 @@ export interface SeenStore {
 }
 
 const SEEN_KEY_PREFIX = 'agenthub.googleChat.seen';
+const GOOGLE_READ_KEY_PREFIX = 'agenthub.googleChat.googleRead';
 /** Only spaces active this recently get a Google read-state check. */
 export const READ_STATE_WINDOW_MS = 14 * 24 * 60 * 60_000;
 /** Checks issued per list refresh; the rest wait for the next one. */
@@ -81,6 +82,76 @@ export function saveSeen(userId: string | null, store: SeenStore): void {
   }
 }
 
+export function googleReadStorageKey(userId: string | null): string {
+  return `${GOOGLE_READ_KEY_PREFIX}:${userId || 'local'}`;
+}
+
+/**
+ * Google read positions from earlier visits. Kept so reopening the page starts
+ * from what Google last said instead of an empty cache, which would let stale
+ * local positions show dots until every space is re-checked.
+ */
+export function loadGoogleRead(userId: string | null): GoogleReadCache {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(googleReadStorageKey(userId)) ?? 'null');
+    if (!parsed || typeof parsed !== 'object') return {};
+    const out: GoogleReadCache = {};
+    for (const [id, e] of Object.entries(parsed as Record<string, any>)) {
+      if (
+        e &&
+        (e.lastReadTime === null || typeof e.lastReadTime === 'string') &&
+        (e.checkedActive === null || typeof e.checkedActive === 'string') &&
+        Number.isFinite(e.checkedAt)
+      ) {
+        out[id] = {
+          lastReadTime: e.lastReadTime,
+          checkedActive: e.checkedActive,
+          checkedAt: e.checkedAt,
+        };
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function saveGoogleRead(userId: string | null, cache: GoogleReadCache): void {
+  try {
+    localStorage.setItem(googleReadStorageKey(userId), JSON.stringify(cache));
+  } catch {
+    /* storage full or blocked: positions are re-read next visit */
+  }
+}
+
+/** Drop cached positions for spaces no longer listed. */
+export function pruneGoogleRead(
+  cache: GoogleReadCache,
+  spaceIds: Iterable<string>,
+): GoogleReadCache {
+  const keep = new Set(spaceIds);
+  const ids = Object.keys(cache);
+  if (ids.every((id) => keep.has(id))) return cache;
+  const out: GoogleReadCache = {};
+  for (const id of ids) if (keep.has(id)) out[id] = cache[id];
+  return out;
+}
+
+/**
+ * A space with no Google position yet that the read-state pass will check.
+ * Its dot waits for that answer: this browser's position can be stale when
+ * the user read the space in Google Chat or on another device.
+ */
+function awaitingGoogleRead(
+  space: Pick<ChatSpace, 'id' | 'lastActiveTime'>,
+  google: GoogleReadCache,
+  now: number,
+): boolean {
+  if (!space.id || google[space.id] || !space.lastActiveTime) return false;
+  const active = Date.parse(space.lastActiveTime);
+  return Number.isFinite(active) && active >= now - READ_STATE_WINDOW_MS;
+}
+
 /** Record that the user saw `space` up to `time`. Returns the same store when nothing moved. */
 export function markSeen(store: SeenStore, spaceId: string, time: string | null): SeenStore {
   if (!time) return store;
@@ -102,10 +173,11 @@ export function pruneSeen(store: SeenStore, spaceIds: Iterable<string>): SeenSto
 /**
  * Whether the space shows an unread dot. With read-state access, a space whose
  * Google position hasn't been fetched yet shows nothing rather than guessing.
+ * Only spaces too idle to be checked fall back to this browser's position.
  */
 export function isSpaceUnread(
   space: Pick<ChatSpace, 'id' | 'lastActiveTime'>,
-  opts: { google: GoogleReadCache; seen: SeenStore; useGoogle: boolean },
+  opts: { google: GoogleReadCache; seen: SeenStore; useGoogle: boolean; now?: number },
 ): boolean {
   if (!space.id || !space.lastActiveTime) return false;
   const local = opts.seen.spaces[space.id] ?? null;
@@ -113,7 +185,7 @@ export function isSpaceUnread(
   if (opts.useGoogle) {
     const entry = opts.google[space.id];
     if (!entry) {
-      if (!local) return false;
+      if (!local || awaitingGoogleRead(space, opts.google, opts.now ?? Date.now())) return false;
       readThrough = local;
     } else {
       readThrough = laterOf(entry.lastReadTime, local);
@@ -171,21 +243,32 @@ export function spacesNeedingReadState(
 
 /**
  * The list's dot state for every space, for the Chat badges. `unknown` holds
- * spaces whose Google read position hasn't been fetched and that this browser
- * never showed, so a publisher keeps whatever it last knew for them instead of
+ * spaces whose Google read position hasn't been fetched and is either pending
+ * or was never shown by this browser, so a publisher keeps whatever it last knew for them instead of
  * clearing them on mount. The open space is being read and is never unread.
  */
 export function partitionUnreadSpaces(
   spaces: Pick<ChatSpace, 'id' | 'lastActiveTime'>[],
-  opts: { google: GoogleReadCache; seen: SeenStore; useGoogle: boolean; selectedId: string | null },
+  opts: {
+    google: GoogleReadCache;
+    seen: SeenStore;
+    useGoogle: boolean;
+    selectedId: string | null;
+    now?: number;
+  },
 ): { unread: string[]; unknown: string[] } {
+  const now = opts.now ?? Date.now();
   const unread: string[] = [];
   const unknown: string[] = [];
   for (const space of spaces) {
     if (!space.id || space.id === opts.selectedId) continue;
-    if (opts.useGoogle && !opts.google[space.id] && !opts.seen.spaces[space.id]) {
+    if (
+      opts.useGoogle &&
+      !opts.google[space.id] &&
+      (!opts.seen.spaces[space.id] || awaitingGoogleRead(space, opts.google, now))
+    ) {
       unknown.push(space.id);
-    } else if (isSpaceUnread(space, opts)) {
+    } else if (isSpaceUnread(space, { ...opts, now })) {
       unread.push(space.id);
     }
   }

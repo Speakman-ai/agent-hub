@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
+  googleReadStorageKey,
   isSpaceUnread,
   laterOf,
+  loadGoogleRead,
+  pruneGoogleRead,
+  saveGoogleRead,
   loadSeen,
   markSeen,
   partitionUnreadSpaces,
@@ -243,5 +247,59 @@ describe('partitionUnreadSpaces', () => {
       selectedId: null,
     });
     expect(out).toEqual({ unread: ['A', 'C', 'D'], unknown: [] });
+  });
+});
+
+describe('pending Google read positions', () => {
+  const space = { id: 'A', lastActiveTime: '2026-10-09T11:00:00Z' };
+  const staleLocal = seenAt('2026-10-01T00:00:00Z', { A: '2026-10-09T10:00:00Z' });
+
+  it('waits for Google instead of dotting from a stale local position', () => {
+    expect(isSpaceUnread(space, { google: {}, seen: staleLocal, useGoogle: true, now: NOW })).toBe(
+      false,
+    );
+    const out = partitionUnreadSpaces([space], {
+      google: {},
+      seen: staleLocal,
+      useGoogle: true,
+      selectedId: null,
+      now: NOW,
+    });
+    expect(out).toEqual({ unread: [], unknown: ['A'] });
+  });
+
+  it('uses the local position for spaces too idle to be checked', () => {
+    const later = NOW + READ_STATE_WINDOW_MS + 60_000;
+    expect(
+      isSpaceUnread(space, { google: {}, seen: staleLocal, useGoogle: true, now: later }),
+    ).toBe(true);
+  });
+});
+
+describe('google read cache storage', () => {
+  beforeEach(() => localStorage.clear());
+
+  it('round-trips per user and drops malformed entries', () => {
+    const cache: GoogleReadCache = {
+      A: { lastReadTime: '2026-10-09T10:00:00Z', checkedActive: null, checkedAt: NOW },
+      B: { lastReadTime: null, checkedActive: '2026-10-09T11:00:00Z', checkedAt: NOW },
+    };
+    saveGoogleRead('u1', cache);
+    expect(loadGoogleRead('u1')).toEqual(cache);
+    expect(loadGoogleRead('u2')).toEqual({});
+    localStorage.setItem(
+      googleReadStorageKey('u1'),
+      JSON.stringify({ A: cache.A, bad: { lastReadTime: 5, checkedAt: NOW } }),
+    );
+    expect(loadGoogleRead('u1')).toEqual({ A: cache.A });
+    localStorage.setItem(googleReadStorageKey('u1'), '{nope');
+    expect(loadGoogleRead('u1')).toEqual({});
+  });
+
+  it('prunes spaces no longer listed', () => {
+    const entry = { lastReadTime: null, checkedActive: null, checkedAt: NOW };
+    const cache = { A: entry, B: entry };
+    expect(pruneGoogleRead(cache, ['A', 'B'])).toBe(cache);
+    expect(pruneGoogleRead(cache, ['A'])).toEqual({ A: entry });
   });
 });

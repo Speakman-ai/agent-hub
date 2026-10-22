@@ -52,6 +52,7 @@ import { CHAT_SURFACE_SCOPES } from '../utils/googleSurface';
 import { compareRfc3339 } from '@shared/utils/rfc3339';
 import { chatPushStore, resetChatPushStore } from '../utils/googleChatPush';
 import { chatMuteStore } from '../utils/googleChatMutes';
+import { saveSeen } from '../utils/googleChatUnread';
 
 const mockApi = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
@@ -1408,6 +1409,68 @@ describe('GoogleChatPage', () => {
     // Leaving it keeps it read: this browser showed its latest activity.
     fireEvent.click(screen.getByTestId('chat-space-AAA'));
     await waitFor(() => expect(screen.queryByTestId('chat-unread-dot-BBB')).toBeNull());
+  });
+
+  it('does not dot spaces read elsewhere while their Google position loads', async () => {
+    localStorage.clear();
+    connectedAll();
+    const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
+    const open = { ...SPACE, lastActiveTime: ago(1) };
+    const readElsewhere = {
+      ...SPACE,
+      name: 'spaces/BBB',
+      id: 'BBB',
+      displayName: 'Kevin',
+      lastActiveTime: ago(5),
+    };
+    // This browser last showed BBB before its newest message; the user read
+    // that message in Google Chat.
+    saveSeen(null, { since: ago(600), spaces: { BBB: ago(30) } });
+    mockApi.listGoogleChatSpaces.mockResolvedValue({
+      spaces: [open, readElsewhere],
+      nextPageToken: null,
+    });
+    mockApi.listGoogleChatMessages.mockResolvedValue({ messages: [], nextPageToken: null });
+    let answer: (v: { lastReadTime: string }) => void = () => {};
+    mockApi.getGoogleChatReadState.mockImplementation((id: string) =>
+      id === 'BBB'
+        ? new Promise((resolve) => {
+            answer = resolve;
+          })
+        : Promise.resolve({ lastReadTime: ago(0) }),
+    );
+
+    render(<GoogleChatPage />);
+    await screen.findByTestId('chat-space-BBB');
+    await waitFor(() => expect(mockApi.getGoogleChatReadState).toHaveBeenCalledWith('BBB'));
+    expect(screen.queryByTestId('chat-unread-dot-BBB')).toBeNull();
+
+    await act(async () => answer({ lastReadTime: ago(2) }));
+    expect(screen.queryByTestId('chat-unread-dot-BBB')).toBeNull();
+  });
+
+  it('starts from the Google read positions of the last visit', async () => {
+    localStorage.clear();
+    connectedAll();
+    const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
+    const open = { ...SPACE, lastActiveTime: ago(1) };
+    const unread = { ...SPACE, name: 'spaces/BBB', id: 'BBB', lastActiveTime: ago(5) };
+    mockApi.listGoogleChatSpaces.mockResolvedValue({ spaces: [open, unread], nextPageToken: null });
+    mockApi.listGoogleChatMessages.mockResolvedValue({ messages: [], nextPageToken: null });
+    mockApi.getGoogleChatReadState.mockImplementation(async (id: string) => ({
+      lastReadTime: id === 'BBB' ? ago(60) : ago(0),
+    }));
+
+    const first = render(<GoogleChatPage />);
+    expect(await screen.findByTestId('chat-unread-dot-BBB')).toBeInTheDocument();
+    first.unmount();
+
+    // Navigating back: the dot comes from the kept position, with no re-check.
+    mockApi.getGoogleChatReadState.mockClear();
+    mockApi.getGoogleChatReadState.mockImplementation(() => new Promise(() => {}));
+    render(<GoogleChatPage />);
+    expect(await screen.findByTestId('chat-unread-dot-BBB')).toBeInTheDocument();
+    expect(mockApi.getGoogleChatReadState).not.toHaveBeenCalledWith('BBB');
   });
 
   it('keeps messages it showed as read when the list activity lagged behind them', async () => {

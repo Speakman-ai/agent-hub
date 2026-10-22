@@ -111,10 +111,13 @@ import {
 import {
   isSpaceUnread,
   laterOf,
+  loadGoogleRead,
   loadSeen,
   markSeen,
   partitionUnreadSpaces,
+  pruneGoogleRead,
   pruneSeen,
+  saveGoogleRead,
   saveSeen,
   spacesNeedingReadState,
   type GoogleReadCache,
@@ -404,7 +407,7 @@ export default function GoogleChatPage({
   // Unread dots for the list (see googleChatUnread.ts): Google read positions
   // per space, and what this browser has shown the user.
   const unreadUserId = getAuthRecord()?.user?.id ?? null;
-  const [googleRead, setGoogleRead] = useState<GoogleReadCache>({});
+  const [googleRead, setGoogleRead] = useState<GoogleReadCache>(() => loadGoogleRead(unreadUserId));
   const readStateInFlightRef = useRef<Set<string>>(new Set());
   const [seen, setSeen] = useState<SeenStore>(() => loadSeen(unreadUserId));
   // The newest time already reported to Google per space.
@@ -1148,6 +1151,20 @@ export default function GoogleChatPage({
   useEffect(() => {
     saveSeen(unreadUserId, seen);
   }, [unreadUserId, seen]);
+
+  useEffect(() => {
+    if (!spaces.length) return;
+    setGoogleRead((cache) =>
+      pruneGoogleRead(
+        cache,
+        spaces.flatMap((s) => (s.id ? [s.id] : [])),
+      ),
+    );
+  }, [spaces]);
+
+  useEffect(() => {
+    saveGoogleRead(unreadUserId, googleRead);
+  }, [unreadUserId, googleRead]);
 
   // Share the dot set so the Chat badges can count it while this page is closed.
   useEffect(() => {
