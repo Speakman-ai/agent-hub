@@ -27,6 +27,7 @@ import { api } from '../utils/api';
 import FileDiffView from './FileDiffView';
 import ScheduleAutoMergeButton from './ScheduleAutoMergeButton';
 import PrEnvironmentShareLinks from './PrEnvironmentShareLinks';
+import CopyBranchButton from './CopyBranchButton';
 import { resolvePrEnvironmentOpenUrl } from '@shared/utils/prEnvironmentShare';
 import { MarkdownContent } from './MarkdownRenderer';
 import { RunRow } from './CiRunsSection';
@@ -1385,6 +1386,7 @@ function PrDetail({
           <code className="text-[12px] bg-gray-800 text-sky-300 px-1.5 py-0.5 rounded-md border border-gray-700">
             {pr.head}
           </code>
+          {pr.head ? <CopyBranchButton branch={pr.head} className="ml-1" /> : null}
         </span>
       </div>
 
@@ -1656,7 +1658,8 @@ function PrDetail({
           </div>
           {pr.head && (
             <div className="text-xs text-gray-400 mt-0.5">
-              <code className="bg-gray-800/60 px-1 rounded">{pr.head}</code> →{' '}
+              <code className="bg-gray-800/60 px-1 rounded">{pr.head}</code>
+              <CopyBranchButton branch={pr.head} size={11} className="mx-0.5" /> →{' '}
               <code className="bg-gray-800/60 px-1 rounded">{pr.base || 'main'}</code>
             </div>
           )}

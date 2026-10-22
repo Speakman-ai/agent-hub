@@ -28,6 +28,7 @@ vi.mock('../utils/api', () => ({
   },
 }));
 vi.mock('../components/PrDiffView', () => ({ default: () => null }));
+vi.mock('../components/CopyBranchButton', () => ({ default: () => null }));
 vi.mock('../components/PrReviewSheet', () => ({ default: () => null }));
 vi.mock('../components/PrCommentSheet', () => ({ default: () => null }));
 vi.mock('../components/PrEditSheet', () => ({ default: () => null }));

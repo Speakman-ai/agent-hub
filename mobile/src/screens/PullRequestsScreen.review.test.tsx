@@ -24,6 +24,7 @@ vi.mock('../utils/api', () => ({
   api: { requestPrReviewSession: vi.fn(), resolvePR: vi.fn(), discussPR: vi.fn() },
 }));
 vi.mock('../components/PrDiffView', () => ({ default: () => null }));
+vi.mock('../components/CopyBranchButton', () => ({ default: () => null }));
 vi.mock('../components/PrReviewSheet', () => ({ default: () => null }));
 vi.mock('../components/PrCommentSheet', () => ({ default: () => null }));
 vi.mock('../components/PrEditSheet', () => ({ default: () => null }));

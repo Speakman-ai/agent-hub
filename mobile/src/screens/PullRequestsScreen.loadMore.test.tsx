@@ -33,6 +33,7 @@ vi.mock('../context/SidebarContext', () => ({
 }));
 vi.mock('../utils/api', () => ({ api: { getProjectPulls: vi.fn() } }));
 vi.mock('../components/PrDiffView', () => ({ default: () => null }));
+vi.mock('../components/CopyBranchButton', () => ({ default: () => null }));
 vi.mock('../components/PrReviewSheet', () => ({ default: () => null }));
 vi.mock('../components/PrCommentSheet', () => ({ default: () => null }));
 vi.mock('../components/PrEditSheet', () => ({ default: () => null }));

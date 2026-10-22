@@ -51,6 +51,7 @@ import {
   pagingAfterPage,
 } from '../utils/prPaging';
 import PrDiffView from '../components/PrDiffView';
+import CopyBranchButton from '../components/CopyBranchButton';
 import PrEnvironmentShareLinks from '../components/PrEnvironmentShareLinks';
 import { resolvePrEnvironmentOpenUrl } from '@shared/utils/prEnvironmentShare';
 import PrReviewSheet from '../components/PrReviewSheet';
@@ -694,9 +695,11 @@ export function PrDetail({
         {pr.created_at ? ` opened ${relativePrTime(pr.created_at)}` : ''}
       </Text>
       {pr.head && (
-        <Text style={styles.metaText}>
-          {pr.head} → {pr.base || 'main'}
-        </Text>
+        <View style={styles.branchRow}>
+          <Text style={styles.metaText}>{pr.head}</Text>
+          <CopyBranchButton branch={pr.head} />
+          <Text style={styles.metaText}>→ {pr.base || 'main'}</Text>
+        </View>
       )}
       <Text style={styles.diffText}>{diffSummary(pr)}</Text>
       {caps.isNative && projectId && pr.number ? (
@@ -1726,6 +1729,7 @@ const styles = StyleSheet.create({
   prNumber: { color: colors.gray400, fontSize: 12, fontWeight: '500' },
   prTitle: { color: colors.white, fontSize: 15, fontWeight: '500' },
   metaText: { color: colors.gray400, fontSize: 12, marginTop: 2 },
+  branchRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' },
   timeText: { color: colors.gray500, fontSize: 11 },
   diffText: { color: colors.gray400, fontSize: 12, marginTop: 4, fontVariant: ['tabular-nums'] },
   labelsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 6 },
