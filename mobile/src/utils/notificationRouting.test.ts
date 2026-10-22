@@ -322,6 +322,11 @@ describe('routeInboxNotification — bell inbox rows', () => {
       projectId: 'p1',
       cardId: 'c2',
     });
+    expect(routeInboxNotification(row('default_branch_ci_failed', { cardId: 'c3' }))).toEqual({
+      kind: 'kanban',
+      projectId: 'p1',
+      cardId: 'c3',
+    });
   });
 
   it('accepts a string PR number', () => {

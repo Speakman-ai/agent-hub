@@ -100,6 +100,12 @@ export const NOTIFICATION_SECTIONS = [
         defaults: QUIET,
       },
       {
+        id: 'default_branch_ci_failed',
+        label: 'Default branch CI failed',
+        description: "CI started failing on a project's default branch after a merge",
+        defaults: LOUD,
+      },
+      {
         id: 'review_assigned_to_you',
         label: 'Review assigned to you',
         description: 'A PR or card needs your review',

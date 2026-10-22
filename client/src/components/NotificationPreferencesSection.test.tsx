@@ -128,6 +128,7 @@ describe('NotificationPreferencesSection', () => {
       ready_to_push: on,
       pushed: on,
       finalize_failed: on,
+      default_branch_ci_failed: on,
       review_assigned_to_you: on,
       pr_environment_ready: on,
       pr_merged: on,

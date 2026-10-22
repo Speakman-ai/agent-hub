@@ -37,6 +37,7 @@ import { getOrCreateBoard } from '../routes/board.js';
 import { loadFinalizeStepOutput, loadRunnerQueueStepOutput } from './step-output.js';
 import { jobInstanceKey } from './base-drift-policy.js';
 import { parseTestSelection } from './test-selection.js';
+import { DEFAULT_BRANCH_CI_FAILED_EVENT } from './default-branch-events.js';
 
 const execFileP = promisify(execFile);
 
@@ -292,8 +293,9 @@ async function recordUnserialized(
   }
 
   let breakage: DefaultBranchBreakageRow | null = null;
+  let opened = false;
   if (args.outcome === 'failed' && failingJobs.length > 0) {
-    breakage = openOrContinueBreakage(deps, { ...args, rangeFrom, at });
+    ({ breakage, opened } = openOrContinueBreakage(deps, { ...args, rangeFrom, at }));
     for (const j of failingJobs) {
       stmts.upsertDefaultBranchFailure.run(
         projectId,
@@ -350,6 +352,18 @@ async function recordUnserialized(
       failing: failingJobs,
       stillFailing: remaining,
     });
+    if (opened) {
+      deps.broadcast({
+        type: DEFAULT_BRANCH_CI_FAILED_EVENT,
+        projectId,
+        branch,
+        headSha,
+        runId,
+        breakageId: breakage.id,
+        cardId,
+        failing: failingJobs.map((j) => instanceLabel(j.job_id, j.matrix_key ?? '')),
+      });
+    }
     return { kind: 'recorded', failing: remaining.length, breakageId: breakage.id, cardId };
   }
   return {
@@ -363,14 +377,17 @@ async function recordUnserialized(
 function openOrContinueBreakage(
   deps: DefaultBranchHealthDeps,
   args: RecordDefaultBranchArgs & { rangeFrom: string | null; at: number },
-): DefaultBranchBreakageRow {
+): { breakage: DefaultBranchBreakageRow; opened: boolean } {
   const { stmts } = deps;
   const open = stmts.getOpenDefaultBranchBreakage.get(args.projectId) as
     | DefaultBranchBreakageRow
     | undefined;
   if (open) {
     stmts.touchDefaultBranchBreakage.run(args.headSha, args.runId, args.at, open.id);
-    return { ...open, last_failing_sha: args.headSha, last_run_id: args.runId };
+    return {
+      breakage: { ...open, last_failing_sha: args.headSha, last_run_id: args.runId },
+      opened: false,
+    };
   }
   // Idempotent on (project, first failing sha): a replay or re-run of the same
   // red commit reopens the same breakage instead of creating a second card.
@@ -392,9 +409,12 @@ function openOrContinueBreakage(
   ) as DefaultBranchBreakageRow;
   if (row.status !== 'open') {
     stmts.touchDefaultBranchBreakage.run(args.headSha, args.runId, args.at, row.id);
-    return { ...row, status: 'open', last_failing_sha: args.headSha, last_run_id: args.runId };
+    return {
+      breakage: { ...row, status: 'open', last_failing_sha: args.headSha, last_run_id: args.runId },
+      opened: true,
+    };
   }
-  return row;
+  return { breakage: row, opened: true };
 }
 
 /** Resolve the commits a run covers to merged PRs and the sessions behind them. */

@@ -12779,6 +12779,7 @@ components:
             ready_to_push: *a3
             pushed: *a3
             finalize_failed: *a3
+            default_branch_ci_failed: *a3
             review_assigned_to_you: *a3
             pr_environment_ready: *a3
             pr_merged: *a3
@@ -12836,6 +12837,7 @@ components:
                     - ready_to_push
                     - pushed
                     - finalize_failed
+                    - default_branch_ci_failed
                     - review_assigned_to_you
                     - pr_environment_ready
                     - pr_merged
@@ -12867,6 +12869,7 @@ components:
                   - ready_to_push
                   - pushed
                   - finalize_failed
+                  - default_branch_ci_failed
                   - review_assigned_to_you
                   - pr_environment_ready
                   - pr_merged

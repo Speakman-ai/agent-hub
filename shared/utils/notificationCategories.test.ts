@@ -36,6 +36,7 @@ describe('notification category catalog', () => {
         'ready_to_push',
         'pushed',
         'finalize_failed',
+        'default_branch_ci_failed',
         'review_assigned_to_you',
         'pr_environment_ready',
         'pr_merged',
@@ -66,6 +67,7 @@ describe('notification category catalog', () => {
       'dm',
       'mention',
       'infra_alert',
+      'default_branch_ci_failed',
     ]);
     for (const id of NOTIFICATION_CATEGORY_IDS) {
       expect(categoryChannelDefault(id, 'in_app')).toBe(true);

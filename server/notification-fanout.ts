@@ -49,6 +49,7 @@ import {
 } from './push.js';
 import { HUB_CHAT_MESSAGE_EVENT, mentionedUserIds } from './hub-chat-events.js';
 import { REMINDER_DUE_EVENT } from './reminders-events.js';
+import { DEFAULT_BRANCH_CI_FAILED_EVENT } from './finalize/default-branch-events.js';
 import { pushCategoryIdFor } from '../shared/utils/approvals.js';
 import { isLocalBundledServer } from './auth.js';
 import { getActiveOrgId } from './orgs.js';
@@ -516,6 +517,41 @@ export function mapBroadcastToNotification(data: BroadcastData): NotificationInt
         projectId: str(data.projectId) ?? null,
         sourceKey: `finalize:${String(data.run_id)}:${status}`,
         recipients: { kind: 'session', sessionId },
+      };
+    }
+
+    case DEFAULT_BRANCH_CI_FAILED_EVENT: {
+      const projectId = str(data.projectId) ?? null;
+      const breakageId = str(data.breakageId);
+      const runId = str(data.runId);
+      if (!projectId || !breakageId || !runId) return null;
+      const branch = str(data.branch) ?? 'default branch';
+      const sha = str(data.headSha);
+      const failing = Array.isArray(data.failing)
+        ? data.failing.filter((f): f is string => typeof f === 'string' && f.length > 0)
+        : [];
+      const listed = failing.slice(0, 3).join(', ');
+      const more = failing.length > 3 ? ` +${failing.length - 3} more` : '';
+      return {
+        category: 'default_branch_ci_failed',
+        pushEvent: null,
+        deviceScope: 'recipients',
+        title: `CI failing on ${projectId}/${branch}`,
+        body:
+          `${listed ? `${listed}${more} failed` : 'CI failed'}` +
+          `${sha ? ` at ${sha.slice(0, 8)}` : ''}`,
+        data: {
+          projectId,
+          cardId: str(data.cardId),
+          breakageId,
+          runId,
+          branch,
+          type: 'default_branch_ci_failed',
+        },
+        projectId,
+        // A reopened breakage keeps its id, so the run makes the key unique.
+        sourceKey: `default_branch_ci_failed:${breakageId}:${runId}`,
+        recipients: { kind: 'project' },
       };
     }
 

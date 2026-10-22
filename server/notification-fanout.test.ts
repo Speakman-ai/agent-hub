@@ -517,6 +517,36 @@ describe('mapBroadcastToNotification: new producers', () => {
     });
   });
 
+  it('default_branch_ci_failed notifies project viewers and links the breakage card', () => {
+    expect(
+      mapBroadcastToNotification({
+        type: 'default_branch_ci_failed',
+        projectId: 'p1',
+        branch: 'main',
+        headSha: 'abcdef1234567890',
+        runId: 'r1',
+        breakageId: 'b1',
+        cardId: 'c1',
+        failing: ['unit (shard-1)', 'e2e', 'lint', 'typecheck'],
+      }),
+    ).toMatchObject({
+      category: 'default_branch_ci_failed',
+      title: 'CI failing on p1/main',
+      body: 'unit (shard-1), e2e, lint +1 more failed at abcdef12',
+      data: { projectId: 'p1', cardId: 'c1', breakageId: 'b1', type: 'default_branch_ci_failed' },
+      sourceKey: 'default_branch_ci_failed:b1:r1',
+      recipients: { kind: 'project' },
+      deviceScope: 'recipients',
+    });
+    expect(
+      mapBroadcastToNotification({
+        type: 'default_branch_ci_failed',
+        projectId: 'p1',
+        runId: 'r1',
+      }),
+    ).toBe(null);
+  });
+
   it('deploy_outcome only on terminal status, to the trigger user when known', () => {
     expect(
       mapBroadcastToNotification({

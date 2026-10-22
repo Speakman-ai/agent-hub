@@ -47,6 +47,14 @@ describe('notificationTarget', () => {
     ).toEqual({ kind: 'route', route: { view: 'kanban:acme', cardId: 'c1' } });
   });
 
+  it('opens the breakage card for default-branch CI failures', () => {
+    expect(
+      notificationTarget(
+        row({ category: 'default_branch_ci_failed', data: { projectId: 'acme', cardId: 'c9' } }),
+      ),
+    ).toEqual({ kind: 'route', route: { view: 'kanban:acme', cardId: 'c9' } });
+  });
+
   it('prefers the card over the PR for reviews, and falls back to the PR', () => {
     expect(
       notificationTarget(

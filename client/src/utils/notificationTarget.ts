@@ -64,6 +64,7 @@ export function notificationTarget(n: InboxNotification): NotificationTarget | n
     case 'pr_environment_ready':
       return pull();
     case 'card_assigned_to_you':
+    case 'default_branch_ci_failed':
       return card();
     case 'support_ticket_created':
       return projectId

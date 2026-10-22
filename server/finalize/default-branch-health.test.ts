@@ -316,6 +316,59 @@ describe('recordDefaultBranchCiResult', () => {
   });
 });
 
+describe('recordDefaultBranchCiResult: failure notification broadcast', () => {
+  it('broadcasts default_branch_ci_failed when the branch goes red, not on later red runs, and again after a fix', async () => {
+    const projectId = newProject();
+    const { dir, shas } = linearRepo(['base', 'break', 'still', 'fix', 'break again']);
+    const [a, b, c, d, e] = shas;
+    const events: Array<Record<string, unknown>> = [];
+    const capture = () => ({
+      ...deps(),
+      broadcast: (m: Record<string, unknown>) => events.push(m),
+    });
+    const record = async (sha: string, state: JobState) => {
+      const run = seedRun(projectId, sha, [['unit', 'shard-1', state]]);
+      await recordDefaultBranchCiResult(capture(), {
+        projectId,
+        branch: 'main',
+        headSha: sha,
+        runId: run.runId,
+        logSessionId: run.sessionId,
+        outcome: state === 'failed' ? 'failed' : 'succeeded',
+        repoDir: dir,
+      });
+      return run.runId;
+    };
+    const failed = () => events.filter((m) => m.type === 'default_branch_ci_failed');
+
+    await record(a, 'passed');
+    expect(failed()).toHaveLength(0);
+
+    const redRun = await record(b, 'failed');
+    const breakage = stmts.getOpenDefaultBranchBreakage.get(projectId) as DefaultBranchBreakageRow;
+    expect(failed()).toEqual([
+      {
+        type: 'default_branch_ci_failed',
+        projectId,
+        branch: 'main',
+        headSha: b,
+        runId: redRun,
+        breakageId: breakage.id,
+        cardId: breakage.card_id,
+        failing: ['unit (shard-1)'],
+      },
+    ]);
+
+    await record(c, 'failed');
+    expect(failed()).toHaveLength(1);
+
+    await record(d, 'passed');
+    await record(e, 'failed');
+    expect(failed()).toHaveLength(2);
+    expect(failed()[1]).toMatchObject({ headSha: e });
+  });
+});
+
 describe('recordDefaultBranchCiResult: selected runs that skipped a failing instance', () => {
   /**
    * A session Finalize run that validated `validatedSha`. `instances` null is
