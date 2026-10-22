@@ -7,6 +7,7 @@ import {
   macosRunnerMismatch,
   runnerClassForRunsOn,
   resolveDeployRunnerClass,
+  resolveEnvironmentRunnerClass,
   ciSpotChoiceAvailable,
   resolveCiRunnerClass,
   ONDEMAND_RUNNER_CLASS,
@@ -258,5 +259,26 @@ describe('Finalize CI Spot / on-demand choice', () => {
         { ...fleet, FINALIZE_FLEET_ONDEMAND_ECS_SERVICE: undefined },
       ),
     ).toBeUndefined();
+  });
+});
+
+describe('resolveEnvironmentRunnerClass', () => {
+  const od = { FINALIZE_FLEET_ECS_CLUSTER: 'c', FINALIZE_FLEET_ONDEMAND_ECS_SERVICE: 'svc-od' };
+
+  it('keeps PR environments off Spot when an on-demand pool exists', () => {
+    expect(resolveEnvironmentRunnerClass(od)).toBe('ondemand');
+    expect(resolveEnvironmentRunnerClass({})).toBe('default');
+  });
+
+  it('honours FINALIZE_ENVIRONMENT_RUNNER_CLASS, independent of the deploy override', () => {
+    expect(
+      resolveEnvironmentRunnerClass({ ...od, FINALIZE_ENVIRONMENT_RUNNER_CLASS: 'default' }),
+    ).toBe('default');
+    expect(resolveEnvironmentRunnerClass({ ...od, FINALIZE_DEPLOY_RUNNER_CLASS: 'default' })).toBe(
+      'ondemand',
+    );
+    expect(
+      resolveEnvironmentRunnerClass({ ...od, FINALIZE_ENVIRONMENT_RUNNER_CLASS: 'macos' }),
+    ).toBe('ondemand');
   });
 });

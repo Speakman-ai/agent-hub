@@ -526,13 +526,13 @@ variable "finalize_runner_use_spot" {
 variable "finalize_deploy_ondemand_pool" {
   type        = bool
   default     = false
-  description = "Add an on-demand runner pool for deploys (runner class `ondemand`). The Hub then routes Linux deploy.yaml jobs there instead of the Spot fleet, so a Spot reclaim can't interrupt a release. Finalize CI stays on the Spot fleet. Counts against the On-Demand Standard vCPU quota (see the quota guard in finalize-runners.tf)."
+  description = "Add an on-demand runner pool (runner class `ondemand`). The Hub then routes Linux deploy.yaml jobs and PR environments there instead of the Spot fleet, so a Spot reclaim can't interrupt a release or take down an environment mid-review. Finalize CI stays on the Spot fleet. Counts against the On-Demand Standard vCPU quota (see the quota guard in finalize-runners.tf)."
 }
 
 variable "finalize_deploy_ondemand_max_size" {
   type        = number
   default     = 2
-  description = "Max on-demand deploy agents (FINALIZE_FLEET_ONDEMAND_MAX_AGENTS). One agent per instance; deploys are serialized per environment."
+  description = "Max on-demand agents (FINALIZE_FLEET_ONDEMAND_MAX_AGENTS). One agent per instance. Each live PR environment holds an agent until its PR closes, so size this for the PR-environment cap plus deploy headroom."
 }
 
 variable "finalize_deploy_ondemand_instance_types" {

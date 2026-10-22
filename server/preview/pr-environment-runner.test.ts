@@ -107,6 +107,23 @@ describe('remote environment runner', () => {
     });
   });
 
+  it('queues on the on-demand class when an on-demand pool is configured', async () => {
+    vi.stubEnv('FINALIZE_FLEET_ECS_CLUSTER', 'c');
+    vi.stubEnv('FINALIZE_FLEET_ONDEMAND_ECS_SERVICE', 'svc-od');
+    try {
+      const { runner } = make();
+      const ref = await runner.start(request());
+      expect(getRunnerJobStatus(ref)).toMatchObject({ runnerClass: 'ondemand' });
+      // A Spot (default-class) agent must not pick it up.
+      expect(claimRunnerJob({ agentId: 'spot', leaseMs: 60_000, now: 2_000 })).toBeNull();
+      expect(
+        claimRunnerJob({ agentId: 'od', runnerClass: 'ondemand', leaseMs: 60_000, now: 2_000 }),
+      ).toMatchObject({ id: ref });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('an agent-reported loss during bring-up is requeued by the runtime', async () => {
     const { runner } = make();
     const rt = createRunnerPrEnvironmentRuntime({

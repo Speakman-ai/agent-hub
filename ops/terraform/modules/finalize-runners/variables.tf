@@ -57,13 +57,13 @@ variable "instance_types" {
 variable "ondemand_pool" {
   type        = bool
   default     = false
-  description = "Add an on-demand ASG + ECS service for the `ondemand` runner class (deploys). Finalize CI stays on the main pool."
+  description = "Add an on-demand ASG + ECS service for the `ondemand` runner class (deploys and PR environments). Finalize CI stays on the main pool."
 }
 
 variable "ondemand_max_size" {
   type        = number
   default     = 2
-  description = "Max on-demand deploy agents (one per instance). Deploys are serialized per environment, so this is small."
+  description = "Max on-demand agents (one per instance). Each live PR environment pins one until its PR closes; deploys need headroom on top."
 }
 
 variable "ondemand_instance_types" {

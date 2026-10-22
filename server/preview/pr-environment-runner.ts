@@ -40,7 +40,7 @@ import {
   readRunnerJobLogs,
 } from '../finalize/runner-queue.js';
 import { reconcileFleetCapacity } from '../finalize/runner-fleet-scaler.js';
-import { DEFAULT_RUNNER_CLASS, resolveRunsOnImage } from '../finalize/runner-images.js';
+import { resolveEnvironmentRunnerClass, resolveRunsOnImage } from '../finalize/runner-images.js';
 import type { RunnerJobWireSpec } from '../finalize/runner-backend-remote.js';
 import {
   createWorktreeBundle,
@@ -178,7 +178,7 @@ export function createRemoteEnvironmentRunner(
         jobId: wire.jobId,
         matrixKey: wire.matrixKey,
         image,
-        runnerClass: DEFAULT_RUNNER_CLASS,
+        runnerClass: resolveEnvironmentRunnerClass(),
         kind: 'environment',
         specJson: JSON.stringify(wire),
         now: now(),

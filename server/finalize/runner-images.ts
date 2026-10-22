@@ -112,6 +112,19 @@ export const DEFAULT_RUNNER_CLASS = 'default';
  */
 export const ONDEMAND_RUNNER_CLASS = 'ondemand';
 
+function explicitRunnerClass(raw: string | undefined): string | null {
+  const v = raw?.trim().toLowerCase();
+  return v && v !== MACOS_RUNNER_CLASS && /^[a-z0-9_-]+$/.test(v) ? v : null;
+}
+
+/** `ondemand` when an on-demand ECS pool is configured, else `default`. */
+function onDemandWhenConfigured(env: NodeJS.ProcessEnv): string {
+  const cluster =
+    env.FINALIZE_FLEET_ONDEMAND_ECS_CLUSTER?.trim() || env.FINALIZE_FLEET_ECS_CLUSTER?.trim();
+  const service = env.FINALIZE_FLEET_ONDEMAND_ECS_SERVICE?.trim();
+  return cluster && service ? ONDEMAND_RUNNER_CLASS : DEFAULT_RUNNER_CLASS;
+}
+
 /**
  * Queue class for a Linux container deploy job.
  *
@@ -122,14 +135,20 @@ export const ONDEMAND_RUNNER_CLASS = 'ondemand';
  * isn't, so a deploy never waits on a class no agent serves.
  */
 export function resolveDeployRunnerClass(env: NodeJS.ProcessEnv = process.env): string {
-  const explicit = env.FINALIZE_DEPLOY_RUNNER_CLASS?.trim().toLowerCase();
-  if (explicit && explicit !== MACOS_RUNNER_CLASS && /^[a-z0-9_-]+$/.test(explicit)) {
-    return explicit;
-  }
-  const cluster =
-    env.FINALIZE_FLEET_ONDEMAND_ECS_CLUSTER?.trim() || env.FINALIZE_FLEET_ECS_CLUSTER?.trim();
-  const service = env.FINALIZE_FLEET_ONDEMAND_ECS_SERVICE?.trim();
-  return cluster && service ? ONDEMAND_RUNNER_CLASS : DEFAULT_RUNNER_CLASS;
+  return explicitRunnerClass(env.FINALIZE_DEPLOY_RUNNER_CLASS) ?? onDemandWhenConfigured(env);
+}
+
+/**
+ * Queue class for a PR environment job.
+ *
+ * A PR environment holds its agent until the PR closes and testers click
+ * through it, so a Spot reclaim takes it down mid-review. It follows the same
+ * rule as deploys: `ondemand` when an on-demand ECS pool is configured,
+ * `default` otherwise. `FINALIZE_ENVIRONMENT_RUNNER_CLASS` overrides (set it to
+ * `default` to keep environments on Spot).
+ */
+export function resolveEnvironmentRunnerClass(env: NodeJS.ProcessEnv = process.env): string {
+  return explicitRunnerClass(env.FINALIZE_ENVIRONMENT_RUNNER_CLASS) ?? onDemandWhenConfigured(env);
 }
 
 /**
