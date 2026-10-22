@@ -66,6 +66,11 @@ import { summarizeTranscript, buildTranscript } from './routes/sessions.js';
 import { writeHooksConfig, removeStaleMcpConfigFile } from './hooks.js';
 import { getSessionOwner } from './session-ownership.js';
 import { serverAgentPrefsForUser } from './hub-assistant.js';
+import {
+  serverAgentSkillScopeForUser,
+  widenAllowedSkills,
+  type ServerAgentSkillScope,
+} from './server-agent-skills.js';
 import type { ServerAgentPrefs } from './user-preferences-store.js';
 import { isDevServerConfigured } from './dev-server-config.js';
 import { createUploadStore } from './upload-store.js';
@@ -439,6 +444,8 @@ interface SlashSkillResult {
 
 interface BuildEnrichedPromptOptions {
   useWorktree?: boolean;
+  /** Skills the Server Agent's owner added; listed in Available Skills. */
+  serverAgentSkills?: ServerAgentSkillScope | null;
   isFirstMessage?: boolean;
   sessionId?: string;
   /** `sessions.computer_tool_enabled`; NULL/absent inherits the agent default. */
@@ -1123,7 +1130,12 @@ The generic \`browser\` tool is off for this agent, but you can still verify **t
   }
 
   {
-    const allSkills = listEnabledSkills(agent.id, paths.skillsDir, agent.allowedSkills ?? null);
+    const allSkills = listEnabledSkills(
+      agent.id,
+      paths.skillsDir,
+      widenAllowedSkills(agent.allowedSkills, options.serverAgentSkills ?? null),
+      options.serverAgentSkills?.pinned ?? [],
+    );
     if (allSkills.length > 0) {
       const skillsList = allSkills.map(
         (s) => `- **${s.name}**: ${compressSkillDescription(s.description)}`,
@@ -3236,6 +3248,15 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           projectMode: getProjectMode(project as Project),
         });
       const paths = resolveProjectPaths(project as Project, agent as Agent);
+      // Server Agent sessions add the owner's chosen skills to the Hub set.
+      const serverAgentSkills = isHubModeActive(session!)
+        ? serverAgentSkillScopeForUser(sessOwnerUid)
+        : null;
+      const skillAllowlist = widenAllowedSkills((agent as Agent).allowedSkills, serverAgentSkills);
+      const skillPaths = {
+        skillsDir: paths.skillsDir,
+        pinnedSkills: serverAgentSkills?.pinned ?? [],
+      };
       const slashAug = augmentChatTurnForSlashSkill({
         slashResult,
         project: project as Project,
@@ -3265,7 +3286,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         const availableSkills = listEnabledSkills(
           agent.id,
           paths.skillsDir,
-          agent.allowedSkills ?? null,
+          skillAllowlist,
+          skillPaths.pinnedSkills,
         );
         // Seed the dedupe set from the pending-skill suffix so we don't
         // re-inject a skill the previous `<agenthub:skill>` block already
@@ -3312,7 +3334,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           const injection = loadSkillByName({
             name: routed.skillId,
             reason: `auto-route: ${routed.reason}`,
-            paths: { skillsDir: paths.skillsDir },
+            paths: skillPaths,
             sessionId,
             stmts: stmts as Stmts,
             broadcast,
@@ -3403,6 +3425,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           // token-saving first-message-only gate.
           isFirstMessage: isFirstMessage || !engineResumesAcrossTurns(engine),
           sessionId,
+          serverAgentSkills,
           sessionComputerToolEnabled: session!.computer_tool_enabled ?? null,
           computerToolAuthorized: agentComputerDenial(sessionId) === null,
           orchestrationPhase: session!.orchestration_phase ?? null,
@@ -3492,7 +3515,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             const injection = loadSkillByName({
               name: requiredId,
               reason: 'session_mode=scoping (required)',
-              paths: { skillsDir: paths.skillsDir },
+              paths: skillPaths,
               sessionId,
               stmts: stmts as Stmts,
               broadcast,
@@ -3523,7 +3546,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             const injection = loadSkillByName({
               name: requiredId,
               reason: 'session_mode=skill-builder (required)',
-              paths: { skillsDir: paths.skillsDir },
+              paths: skillPaths,
               sessionId,
               stmts: stmts as Stmts,
               broadcast,
@@ -3568,7 +3591,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             const injection = loadSkillByName({
               name: requiredId,
               reason: 'session_mode=consult (required)',
-              paths: { skillsDir: paths.skillsDir },
+              paths: skillPaths,
               sessionId,
               stmts: stmts as Stmts,
               broadcast,
@@ -4891,7 +4914,12 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           /* non-fatal — env var simply omitted, prompt block already covers the agent */
         }
         if (!isOrganizationWorkspace(project)) {
-          mergeSkillCredentialSpawnEnv(base, { ownerId, agentId: agent.id, project });
+          mergeSkillCredentialSpawnEnv(base, {
+            ownerId,
+            agentId: agent.id,
+            project,
+            extraSkills: serverAgentSkills,
+          });
           mergeProjectSecretsSpawnEnv(base, { projectId: project.id, sessionId });
           mergeProjectAwsSpawnEnv(base, project, projectAwsFiles);
         }
@@ -6111,8 +6139,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             }
             const result = handleSkillImprovement({
               rawBlock: rawSkillImprovementBlock,
-              paths: { skillsDir: paths.skillsDir },
-              allowedSkills: agent.allowedSkills ?? null,
+              paths: skillPaths,
+              allowedSkills: skillAllowlist,
               loadedSkillIds,
               provenance: { sessionId, agentId: agent.id },
             });
@@ -6136,11 +6164,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             if (rawSkillBlock) {
               const injection = handleSkillInvoke({
                 rawBlock: rawSkillBlock,
-                paths: { skillsDir: paths.skillsDir },
+                paths: skillPaths,
                 sessionId,
                 stmts: stmts as Stmts,
                 broadcast,
-                allowedSkills: agent.allowedSkills ?? null,
+                allowedSkills: skillAllowlist,
               });
               if (injection.trim()) {
                 assistantContextToAppend = assistantContextToAppend
@@ -6215,11 +6243,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               if (rawSkillBlock) {
                 const injection = handleSkillInvoke({
                   rawBlock: rawSkillBlock,
-                  paths: { skillsDir: paths.skillsDir },
+                  paths: skillPaths,
                   sessionId,
                   stmts: stmts as Stmts,
                   broadcast,
-                  allowedSkills: agent.allowedSkills ?? null,
+                  allowedSkills: skillAllowlist,
                 });
                 if (injection.trim()) {
                   assistantContextToAppend = assistantContextToAppend
@@ -6323,11 +6351,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                 const injection = loadSkillByName({
                   name: action.name!,
                   reason: 'react-loop',
-                  paths: { skillsDir: paths.skillsDir },
+                  paths: skillPaths,
                   sessionId,
                   stmts: stmts as Stmts,
                   broadcast,
-                  allowedSkills: agent.allowedSkills ?? null,
+                  allowedSkills: skillAllowlist,
                 });
                 if (injection.trim()) {
                   assistantContextToAppend = assistantContextToAppend

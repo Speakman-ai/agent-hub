@@ -2,6 +2,8 @@ import { createOrganizationApi } from '@shared/utils/organizations';
 import { createOrganizationAgentApi } from '@shared/utils/organization-agents';
 import { createOrganizationPortfolioApi } from '@shared/utils/organization-portfolio';
 import type { UploadedAttachment } from '@shared/types/uploads';
+import type { ServerAgentSkillRef } from '@shared/utils/hub';
+import type { ServerAgentSkillOptions } from '@shared/utils/serverAgentSkills';
 import {
   ROUTINE_DRAFT_TIMEOUT_MS,
   type RoutineDraftWire,
@@ -687,6 +689,8 @@ function infraQuery(params: Record<string, unknown>): string {
 export interface ServerAgentSettingsWire {
   name: string;
   instructions: string;
+  skills?: ServerAgentSkillRef[];
+  builtInSkills?: string[];
   defaultName: string;
   effectiveName: string;
 }
@@ -1170,7 +1174,13 @@ export const api = {
       clearedSessionId: string | null;
     }>('/me/hub-session/clear', { method: 'POST' }),
   getServerAgentSettings: () => fetchJSON<ServerAgentSettingsWire>('/me/server-agent'),
-  putServerAgentSettings: (body: { name?: string; instructions?: string }) =>
+  getServerAgentSkillOptions: () =>
+    fetchJSON<ServerAgentSkillOptions>('/me/server-agent/skill-options'),
+  putServerAgentSettings: (body: {
+    name?: string;
+    instructions?: string;
+    skills?: ServerAgentSkillRef[];
+  }) =>
     fetchJSON<ServerAgentSettingsWire>('/me/server-agent', {
       method: 'PUT',
       body: JSON.stringify(body),

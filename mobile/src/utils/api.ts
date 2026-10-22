@@ -1507,8 +1507,12 @@ export const api = {
   },
   clearHubSession: () => fetchJSON('/me/hub-session/clear', { method: 'POST' }),
   getServerAgentSettings: () => fetchJSON('/me/server-agent'),
-  putServerAgentSettings: (body: { name?: string; instructions?: string }) =>
-    fetchJSON('/me/server-agent', { method: 'PUT', body: JSON.stringify(body) }),
+  putServerAgentSettings: (body: {
+    name?: string;
+    instructions?: string;
+    skills?: Array<{ id: string; projectId?: string }>;
+  }) => fetchJSON('/me/server-agent', { method: 'PUT', body: JSON.stringify(body) }),
+  getServerAgentSkillOptions: () => fetchJSON('/me/server-agent/skill-options'),
   getHubModel: () => fetchJSON('/me/hub-model'),
   putHubModel: (body: { engine: string; model: string }) =>
     fetchJSON('/me/hub-model', { method: 'PUT', body: JSON.stringify(body) }),

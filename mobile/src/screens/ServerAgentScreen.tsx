@@ -9,6 +9,7 @@ import {
 import { useApp } from '../context/AppContext';
 import { colors } from '../theme/colors';
 import HubIcon from '../components/HubIcon';
+import { ServerAgentSkillsSection } from '../components/ServerAgentSkillsSection';
 import ChatScreen from './ChatScreen';
 import {
   DEFAULT_SERVER_AGENT_NAME,
@@ -175,6 +176,11 @@ export function ServerAgentSettingsScreen({ onBack }: { onBack: () => void }) {
             {status.text}
           </Text>
         ) : null}
+        <ServerAgentSkillsSection
+          accountKey={accountKey}
+          settings={loaded ? settings : null}
+          enabled={loaded}
+        />
       </ScrollView>
     </View>
   );

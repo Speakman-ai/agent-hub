@@ -14,6 +14,7 @@ import {
   useServerAgentLoadError,
   useServerAgentSettings,
 } from '../utils/serverAgentSettings';
+import { ServerAgentSkillsSection } from './ServerAgentSkillsSection';
 
 /**
  * The Server Agent: the user's assistant for everything Agent Hub. It acts
@@ -191,6 +192,11 @@ export function ServerAgentSettingsPage({ onBack }: { onBack: () => void }) {
               </span>
             )}
           </div>
+          <ServerAgentSkillsSection
+            accountKey={accountKey}
+            settings={loaded ? settings : null}
+            enabled={loaded}
+          />
         </div>
       </div>
     </div>

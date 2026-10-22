@@ -2,7 +2,8 @@
  * GET/POST /api/me/hub-session — the caller's persistent Hub assistant session.
  * GET/PUT /api/me/hub-model — Hub engine/model used by Hub chats and Hub generation.
  * POST /api/me/hub-session/clear — archive Hub chat and start a fresh empty session.
- * GET/PUT /api/me/server-agent — the caller's Server Agent name and instructions.
+ * GET/PUT /api/me/server-agent — the caller's Server Agent name, instructions and added skills.
+ * GET /api/me/server-agent/skill-options — skills the caller may add to their Server Agent.
  */
 import { Router, type Request, type Response } from 'express';
 import type { AuthenticatedRequest } from '../auth.js';
@@ -18,11 +19,18 @@ import {
   getUserPreferencesRow,
   mutateUserPreferencesJson,
   normalizeServerAgentPrefs,
+  normalizeServerAgentSkillRefs,
   SERVER_AGENT_INSTRUCTIONS_MAX,
+  SERVER_AGENT_SKILLS_MAX,
   SERVER_AGENT_NAME_MAX,
   type ServerAgentPrefs,
 } from '../user-preferences-store.js';
-import { DEFAULT_SERVER_AGENT_NAME } from '../hub-mode-prompt.js';
+import { DEFAULT_SERVER_AGENT_NAME, HUB_SKILL_IDS } from '../hub-mode-prompt.js';
+import {
+  listServerAgentSkillOptions,
+  serverAgentCaller,
+  validateServerAgentSkillRefs,
+} from '../server-agent-skills.js';
 import type { RouteDeps } from '../types.js';
 import './me-hub.openapi.js';
 import { HUB_ASSISTANT_AGENT_ID } from '../../shared/utils/hub.js';
@@ -131,6 +139,8 @@ export default function createMeHubRoutes(deps: RouteDeps): Router {
     return {
       name: prefs?.name ?? '',
       instructions: prefs?.instructions ?? '',
+      skills: prefs?.skills ?? [],
+      builtInSkills: [...HUB_SKILL_IDS],
       defaultName: DEFAULT_SERVER_AGENT_NAME,
       effectiveName: prefs?.name || DEFAULT_SERVER_AGENT_NAME,
     };
@@ -160,6 +170,33 @@ export default function createMeHubRoutes(deps: RouteDeps): Router {
     }
     const name = body.name as string | undefined;
     const instructions = body.instructions as string | undefined;
+    let skills: ReturnType<typeof normalizeServerAgentSkillRefs> | null = null;
+    if (body.skills !== undefined) {
+      if (!Array.isArray(body.skills)) {
+        res.status(400).json({ error: 'skills must be an array' });
+        return;
+      }
+      if (body.skills.length > SERVER_AGENT_SKILLS_MAX) {
+        res
+          .status(400)
+          .json({ error: `skills must have at most ${SERVER_AGENT_SKILLS_MAX} entries` });
+        return;
+      }
+      skills = normalizeServerAgentSkillRefs(body.skills);
+      if ((skills?.length ?? 0) !== body.skills.length) {
+        res.status(400).json({ error: 'skills entries must be unique { id, projectId? } objects' });
+        return;
+      }
+      const check = validateServerAgentSkillRefs(
+        skills ?? [],
+        serverAgentCaller(areq.authUserId),
+        getUserPreferencesRow(areq.authUserId).serverAgent?.skills ?? [],
+      );
+      if (!check.ok) {
+        res.status(400).json({ error: check.error });
+        return;
+      }
+    }
     if (name !== undefined && name.trim().length > SERVER_AGENT_NAME_MAX) {
       res.status(400).json({ error: `name must be at most ${SERVER_AGENT_NAME_MAX} characters` });
       return;
@@ -175,12 +212,23 @@ export default function createMeHubRoutes(deps: RouteDeps): Router {
       serverAgent: normalizeServerAgentPrefs({
         name: name ?? current.serverAgent?.name,
         instructions: instructions ?? current.serverAgent?.instructions,
+        skills: skills === null ? current.serverAgent?.skills : skills,
       }),
     }));
     res.json(serverAgentBody(next.serverAgent));
   }
 
+  function handleGetSkillOptions(req: Request, res: Response): void {
+    const areq = req as AuthenticatedRequest;
+    if (!areq.authUserId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    res.json(listServerAgentSkillOptions(serverAgentCaller(areq.authUserId)));
+  }
+
   router.get('/api/me/server-agent', handleGetServerAgent);
+  router.get('/api/me/server-agent/skill-options', handleGetSkillOptions);
   router.put('/api/me/server-agent', handlePutServerAgent);
   router.get('/api/me/hub-session', handleHubSession);
   router.post('/api/me/hub-session', handleHubSession);

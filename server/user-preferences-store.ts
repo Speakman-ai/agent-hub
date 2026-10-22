@@ -37,7 +37,7 @@
  * ignored on read and dropped on the next write.
  */
 import { getOrgsDb } from './orgs.js';
-import { SERVER_AGENT_LIMITS } from '../shared/utils/hub.js';
+import { SERVER_AGENT_LIMITS, type ServerAgentSkillRef } from '../shared/utils/hub.js';
 import {
   normalizeDailySummarySchedule,
   type HubDailySummarySchedule,
@@ -67,6 +67,38 @@ export interface UserPreferencesStored {
 export interface ServerAgentPrefs {
   name?: string;
   instructions?: string;
+  /** Skills added on top of the built-in Hub set. */
+  skills?: ServerAgentSkillRef[];
+}
+
+export type { ServerAgentSkillRef };
+
+export const SERVER_AGENT_SKILLS_MAX = SERVER_AGENT_LIMITS.skills;
+const SKILL_REF_ID_MAX = 200;
+
+/**
+ * Shape-only cleanup of a skill list: well-formed refs, trimmed, de-duplicated
+ * on (projectId, id), capped. Whether the skill exists and the user may use it
+ * is checked separately (`server-agent-skills.ts`).
+ */
+export function normalizeServerAgentSkillRefs(raw: unknown): ServerAgentSkillRef[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: ServerAgentSkillRef[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const obj = item as Record<string, unknown>;
+    const id = typeof obj.id === 'string' ? obj.id.trim() : '';
+    if (!id || id.length > SKILL_REF_ID_MAX) continue;
+    const projectId = typeof obj.projectId === 'string' ? obj.projectId.trim() : '';
+    if (projectId.length > SKILL_REF_ID_MAX) continue;
+    const key = `${projectId}\u0000${id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(projectId ? { id, projectId } : { id });
+    if (out.length >= SERVER_AGENT_SKILLS_MAX) break;
+  }
+  return out.length ? out : undefined;
 }
 
 export const SERVER_AGENT_NAME_MAX = SERVER_AGENT_LIMITS.name;
@@ -81,6 +113,8 @@ export function normalizeServerAgentPrefs(raw: unknown): ServerAgentPrefs | unde
   if (name) out.name = name.slice(0, SERVER_AGENT_NAME_MAX);
   const instructions = typeof obj.instructions === 'string' ? obj.instructions.trim() : '';
   if (instructions) out.instructions = instructions.slice(0, SERVER_AGENT_INSTRUCTIONS_MAX);
+  const skills = normalizeServerAgentSkillRefs(obj.skills);
+  if (skills) out.skills = skills;
   return Object.keys(out).length ? out : undefined;
 }
 

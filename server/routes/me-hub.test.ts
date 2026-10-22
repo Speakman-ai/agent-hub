@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import express, { type Express, type Request, type Response, type NextFunction } from 'express';
 import request from 'supertest';
 import { tmpdir } from 'os';
-import { mkdtempSync } from 'fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'fs';
 import path from 'path';
 import type { AppConfig, RouteDeps } from '../types.js';
 import {
@@ -19,7 +19,8 @@ import {
 const { initOrgsDb, setOrgsDbPathForTests } = await import('../orgs.js');
 const { createUser } = await import('../users-store.js');
 const { initDb, getStmts } = await import('../db.js');
-const { getProjects, findAgent, saveProjects } = await import('../project-model.js');
+const { getProjects, findAgent, saveProjects, resolveProjectSkillsDir } =
+  await import('../project-model.js');
 const { default: createMeHubRoutes } = await import('./me-hub.js');
 const { ensureHubAssistantAgent } = await import('../hub-assistant.js');
 
@@ -114,6 +115,8 @@ describe('/api/me/server-agent', () => {
     expect(initial.body).toEqual({
       name: '',
       instructions: '',
+      skills: [],
+      builtInSkills: expect.arrayContaining(['agent-hub', 'google']),
       defaultName: 'Server Agent',
       effectiveName: 'Server Agent',
     });
@@ -154,6 +157,112 @@ describe('/api/me/server-agent', () => {
       .put('/api/me/server-agent')
       .send({ instructions: 'x'.repeat(8001) })
       .expect(400);
+  });
+
+  it('adds global and project skills, keeps them across name edits, and validates them', async () => {
+    const project = {
+      id: 'skills-proj',
+      name: 'Skills Project',
+      cwd: tmpdir(),
+      agents: [],
+    } as unknown as import('../types.js').Project;
+    getProjects().push(project);
+    const skillDir = path.join(resolveProjectSkillsDir(project), 'proj-deploy');
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(
+      path.join(skillDir, 'SKILL.md'),
+      '---\nname: proj-deploy\ndescription: Deploys it\n---\n\nbody\n',
+    );
+    try {
+      const options = await request(mount(userA))
+        .get('/api/me/server-agent/skill-options')
+        .expect(200);
+      expect(options.body.global.map((s: { id: string }) => s.id)).toContain('github');
+      expect(options.body.projects).toContainEqual(
+        expect.objectContaining({ projectId: 'skills-proj', projectName: 'Skills Project' }),
+      );
+
+      const skills = [{ id: 'github' }, { id: 'proj-deploy', projectId: 'skills-proj' }];
+      const saved = await request(mount(userA))
+        .put('/api/me/server-agent')
+        .send({ skills })
+        .expect(200);
+      expect(saved.body.skills).toEqual(skills);
+
+      await request(mount(userA)).put('/api/me/server-agent').send({ name: 'Ada' }).expect(200);
+      const read = await request(mount(userA)).get('/api/me/server-agent').expect(200);
+      expect(read.body).toMatchObject({ name: 'Ada', skills });
+      const other = await request(mount(userB)).get('/api/me/server-agent').expect(200);
+      expect(other.body.skills).toEqual([]);
+
+      for (const bad of [
+        'github',
+        [{ id: 'no-such-skill' }],
+        [{ id: 'proj-deploy', projectId: 'missing-project' }],
+        [{ id: 'agent-hub' }],
+        [{ id: 'github' }, { id: 'github' }],
+        [{ nope: true }],
+      ]) {
+        await request(mount(userA)).put('/api/me/server-agent').send({ skills: bad }).expect(400);
+      }
+
+      const cleared = await request(mount(userA))
+        .put('/api/me/server-agent')
+        .send({ skills: [] })
+        .expect(200);
+      expect(cleared.body).toMatchObject({ name: 'Ada', skills: [] });
+    } finally {
+      getProjects().splice(getProjects().indexOf(project), 1);
+    }
+  });
+
+  it('removes stale skills one at a time after project access is revoked', async () => {
+    const project = {
+      id: 'revoked-proj',
+      name: 'Revoked',
+      cwd: tmpdir(),
+      agents: [],
+    } as unknown as import('../types.js').Project;
+    getProjects().push(project);
+    for (const id of ['stale-one', 'stale-two']) {
+      const dir = path.join(resolveProjectSkillsDir(project), id);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(path.join(dir, 'SKILL.md'), `---\nname: ${id}\ndescription: x\n---\n`);
+    }
+    const stale = [
+      { id: 'stale-one', projectId: 'revoked-proj' },
+      { id: 'stale-two', projectId: 'revoked-proj' },
+    ];
+    try {
+      await request(mount(userA)).put('/api/me/server-agent').send({ skills: stale }).expect(200);
+    } finally {
+      getProjects().splice(getProjects().indexOf(project), 1);
+    }
+    // The project is gone for this user now: both saved refs are stale.
+    const afterFirst = await request(mount(userA))
+      .put('/api/me/server-agent')
+      .send({ skills: [stale[1]] })
+      .expect(200);
+    expect(afterFirst.body.skills).toEqual([stale[1]]);
+    // Adding a valid skill alongside the remaining stale one still works.
+    await request(mount(userA))
+      .put('/api/me/server-agent')
+      .send({ skills: [stale[1], { id: 'github' }] })
+      .expect(200);
+    // A stale ref that was not saved before is still rejected.
+    await request(mount(userA))
+      .put('/api/me/server-agent')
+      .send({ skills: [stale[0], { id: 'github' }] })
+      .expect(400);
+    const cleared = await request(mount(userA))
+      .put('/api/me/server-agent')
+      .send({ skills: [{ id: 'github' }] })
+      .expect(200);
+    expect(cleared.body.skills).toEqual([{ id: 'github' }]);
+  });
+
+  it('requires authentication for skill options', async () => {
+    await request(mount(null)).get('/api/me/server-agent/skill-options').expect(401);
   });
 
   it('renames an existing agent row still called Hub', async () => {

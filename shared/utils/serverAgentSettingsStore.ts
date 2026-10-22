@@ -12,9 +12,15 @@
  * so a re-login as the same user is a new account even when nothing observed
  * the signed-out state in between.
  */
+import type { ServerAgentSkillRef } from './hub';
+
 export interface ServerAgentSettings {
   name: string;
   instructions: string;
+  /** Skills the user added on top of the built-in set. */
+  skills?: ServerAgentSkillRef[];
+  /** Skill ids the Server Agent always loads. */
+  builtInSkills?: string[];
   defaultName: string;
   effectiveName: string;
 }
@@ -22,6 +28,7 @@ export interface ServerAgentSettings {
 export interface ServerAgentSettingsBody {
   name?: string;
   instructions?: string;
+  skills?: ServerAgentSkillRef[];
 }
 
 export class ServerAgentAccountChangedError extends Error {

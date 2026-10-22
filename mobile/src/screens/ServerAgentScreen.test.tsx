@@ -18,6 +18,7 @@ vi.mock('../context/AppContext', () => ({ useApp: () => ({ clearHubChat: vi.fn()
 const api = vi.hoisted(() => ({
   getServerAgentSettings: vi.fn(),
   putServerAgentSettings: vi.fn(),
+  getServerAgentSkillOptions: vi.fn(),
 }));
 vi.mock('../utils/api', () => ({ api }));
 // The chat account gate's generation stands in for the signed-in account.
@@ -33,7 +34,7 @@ const { ServerAgentScreen, ServerAgentSettingsScreen } = await import('./ServerA
 const { resetServerAgentSettingsForTests } = await import('../utils/serverAgentInstance');
 process.env.NODE_ENV = originalNodeEnv;
 
-const settings = (over: Record<string, string> = {}) => ({
+const settings = (over: Record<string, unknown> = {}) => ({
   name: '',
   instructions: '',
   defaultName: 'Server Agent',
@@ -56,6 +57,17 @@ beforeEach(() => {
   vi.clearAllMocks();
   account.snapshot = { active: true, account: 1 };
   resetServerAgentSettingsForTests();
+  api.getServerAgentSkillOptions.mockResolvedValue({
+    builtIn: ['agent-hub'],
+    global: [{ id: 'github', name: 'github', description: 'GitHub', source: 'default' }],
+    projects: [
+      {
+        projectId: 'p1',
+        projectName: 'Payments',
+        skills: [{ id: 'deploy', name: 'deploy', description: 'Ship it', source: 'project' }],
+      },
+    ],
+  });
 });
 
 function deferred<T>() {
@@ -273,5 +285,36 @@ describe('ServerAgentSettingsScreen when loading fails', () => {
       r.root.findAll((n: any) => n.props?.testID === 'server-agent-settings-load-error'),
     ).toHaveLength(0);
     expect(api.getServerAgentSettings).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('ServerAgentSettingsScreen skills', () => {
+  it('adds a project skill and removes a global one', async () => {
+    api.getServerAgentSettings.mockResolvedValue(settings({ skills: [{ id: 'github' }] }));
+    api.putServerAgentSettings.mockImplementation(async (body: Record<string, unknown>) =>
+      settings(body),
+    );
+    let r: any;
+    await act(async () => {
+      r = TestRenderer.create(
+        React.createElement(ServerAgentSettingsScreen, { onBack: () => undefined }),
+      );
+    });
+    await flush();
+    expect(text(byId(r, 'server-agent-skill-github'))).toContain('Global');
+
+    act(() => byId(r, 'server-agent-skills-add').props.onPress());
+    await act(async () => byId(r, 'server-agent-skills-option-project:p1-deploy').props.onPress());
+    await flush();
+    expect(api.putServerAgentSettings).toHaveBeenCalledWith({
+      skills: [{ id: 'github' }, { id: 'deploy', projectId: 'p1' }],
+    });
+    expect(text(byId(r, 'server-agent-skill-deploy'))).toContain('Payments');
+
+    await act(async () => byId(r, 'server-agent-skill-remove-github').props.onPress());
+    await flush();
+    expect(api.putServerAgentSettings).toHaveBeenLastCalledWith({
+      skills: [{ id: 'deploy', projectId: 'p1' }],
+    });
   });
 });

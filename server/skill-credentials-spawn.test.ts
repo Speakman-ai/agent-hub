@@ -14,6 +14,7 @@ vi.mock('./skill-credentials-resolve.js', () => ({
 }));
 
 const { listEnabledSkills } = await import('./agent-skills-list.js');
+const { readCredentialsSchemaForSkill } = await import('./skill-credentials-resolve.js');
 const { mergeSkillCredentialSpawnEnv } = await import('./skill-credentials-spawn.js');
 
 function makeProject(agents: unknown[]): Project {
@@ -35,13 +36,13 @@ describe('mergeSkillCredentialSpawnEnv — allowlist resolution (access boundary
       { id: 'a1', name: 'A1', engine: 'claude-code', allowedSkills: ['kanban'] },
     ]);
     mergeSkillCredentialSpawnEnv({}, { ownerId: 'u1', agentId: 'a1', project });
-    expect(listEnabledSkills).toHaveBeenCalledWith('a1', expect.any(String), ['kanban']);
+    expect(listEnabledSkills).toHaveBeenCalledWith('a1', expect.any(String), ['kanban'], []);
   });
 
   it('forwards null (unrestricted) when the resolved agent has no allowlist', () => {
     const project = makeProject([{ id: 'a1', name: 'A1', engine: 'claude-code' }]);
     mergeSkillCredentialSpawnEnv({}, { ownerId: 'u1', agentId: 'a1', project });
-    expect(listEnabledSkills).toHaveBeenCalledWith('a1', expect.any(String), null);
+    expect(listEnabledSkills).toHaveBeenCalledWith('a1', expect.any(String), null, []);
   });
 
   it('FAILS CLOSED (empty allowlist) when the agent cannot be resolved from the project', () => {
@@ -49,6 +50,33 @@ describe('mergeSkillCredentialSpawnEnv — allowlist resolution (access boundary
     // credentials. The spawn path passes [] so listEnabledSkills filters to none.
     const project = makeProject([{ id: 'other', name: 'Other', engine: 'claude-code' }]);
     mergeSkillCredentialSpawnEnv({}, { ownerId: 'u1', agentId: 'missing', project });
-    expect(listEnabledSkills).toHaveBeenCalledWith('missing', expect.any(String), []);
+    expect(listEnabledSkills).toHaveBeenCalledWith('missing', expect.any(String), [], []);
+  });
+});
+
+describe('mergeSkillCredentialSpawnEnv — Server Agent added skills', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('widens the allowlist and reads a pinned skill schema from its own project', () => {
+    const project = makeProject([
+      { id: 'a1', name: 'A1', engine: 'claude-code', allowedSkills: ['agent-hub'] },
+    ]);
+    const pinned = [{ id: 'deploy', root: '/data/project-skills/other' }];
+    vi.mocked(listEnabledSkills).mockReturnValueOnce([
+      { id: 'deploy', name: 'deploy', description: '', path: '' },
+    ]);
+    mergeSkillCredentialSpawnEnv(
+      {},
+      { ownerId: 'u1', agentId: 'a1', project, extraSkills: { ids: ['deploy', 'github'], pinned } },
+    );
+    expect(listEnabledSkills).toHaveBeenCalledWith(
+      'a1',
+      expect.any(String),
+      ['agent-hub', 'deploy', 'github'],
+      pinned,
+    );
+    expect(readCredentialsSchemaForSkill).toHaveBeenCalledWith('deploy', {
+      projectSkillsDirs: [expect.any(String), '/data/project-skills/other'],
+    });
   });
 });

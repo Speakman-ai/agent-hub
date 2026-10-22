@@ -14,7 +14,16 @@ export const HUB_SESSION_NAME = 'Hub';
 
 /** Name the Server Agent (the per-user Hub assistant) uses until the user renames it. */
 export const DEFAULT_SERVER_AGENT_NAME = 'Server Agent';
-export const SERVER_AGENT_LIMITS = { name: 60, instructions: 8000 } as const;
+export const SERVER_AGENT_LIMITS = { name: 60, instructions: 8000, skills: 50 } as const;
+
+/**
+ * A skill the user added to their Server Agent. `projectId` set means a skill
+ * from that project's store; unset means the global or bundled tier.
+ */
+export interface ServerAgentSkillRef {
+  id: string;
+  projectId?: string;
+}
 
 /**
  * Workspace panes inside Hub. `agent` is the Server Agent (the user's Hub

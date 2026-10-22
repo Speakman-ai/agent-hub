@@ -12683,6 +12683,38 @@ components:
         - engine
         - model
       description: Engine and model for Hub chats, chat digests, and other Hub-level generation.
+    MeServerAgentSkillRef:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Skill id.
+        projectId:
+          type: string
+          description: Owning project; omit for a global or bundled skill.
+      required:
+        - id
+      description: A skill added to the Server Agent.
+    MeServerAgentSkillOption:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        source:
+          type: string
+          enum:
+            - project
+            - global
+            - default
+      required:
+        - id
+        - name
+        - description
+        - source
     MeServerAgentSettings:
       type: object
       properties:
@@ -12692,6 +12724,16 @@ components:
         instructions:
           type: string
           description: Extra instructions appended to the Server Agent prompt.
+        skills:
+          type: array
+          items:
+            $ref: "#/components/schemas/MeServerAgentSkillRef"
+          description: Skills the caller added on top of the built-in set.
+        builtInSkills:
+          type: array
+          items:
+            type: string
+          description: Skill ids the Server Agent always loads.
         defaultName:
           type: string
         effectiveName:
@@ -12700,9 +12742,11 @@ components:
       required:
         - name
         - instructions
+        - skills
+        - builtInSkills
         - defaultName
         - effectiveName
-      description: The caller's Server Agent name and instructions.
+      description: The caller's Server Agent name, instructions and added skills.
     NotificationPreferencesErrorResponse:
       type: object
       properties:
@@ -45379,6 +45423,12 @@ paths:
                 instructions:
                   type: string
                   maxLength: 8000
+                skills:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/MeServerAgentSkillRef"
+                  maxItems: 50
+                  description: Replaces the added skills. Each must exist, project skills must come from a project the caller can view, ids must be unique, and built-in skills are rejected.
       responses:
         "200":
           description: Saved settings.
@@ -45387,11 +45437,60 @@ paths:
               schema:
                 $ref: "#/components/schemas/MeServerAgentSettings"
         "400":
-          description: Invalid name or instructions.
+          description: Invalid name, instructions or skills.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/MeHubErrorResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeHubErrorResponse"
+  /api/me/server-agent/skill-options:
+    get:
+      tags:
+        - Hub
+      summary: List skills the caller can add to their Server Agent
+      description: Global and bundled skills, plus project skills grouped by project for every project the caller can view. Built-in Server Agent skills are listed separately and excluded from both.
+      responses:
+        "200":
+          description: Skill options.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  builtIn:
+                    type: array
+                    items:
+                      type: string
+                  global:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/MeServerAgentSkillOption"
+                  projects:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        projectId:
+                          type: string
+                        projectName:
+                          type: string
+                        skills:
+                          type: array
+                          items:
+                            $ref: "#/components/schemas/MeServerAgentSkillOption"
+                      required:
+                        - projectId
+                        - projectName
+                        - skills
+                required:
+                  - builtIn
+                  - global
+                  - projects
         "401":
           description: Authentication required.
           content:

@@ -3,9 +3,11 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 const getServerAgentSettings = vi.fn();
 const putServerAgentSettings = vi.fn();
+const getServerAgentSkillOptions = vi.fn();
 vi.mock('../utils/api', () => ({
   api: {
     getServerAgentSettings: (...args: unknown[]) => getServerAgentSettings(...args),
+    getServerAgentSkillOptions: (...args: unknown[]) => getServerAgentSkillOptions(...args),
     putServerAgentSettings: (...args: unknown[]) => putServerAgentSettings(...args),
   },
 }));
@@ -23,7 +25,7 @@ import { act } from '@testing-library/react';
 import { ServerAgentPage, ServerAgentSettingsPage } from './ServerAgentPage';
 import { resetServerAgentSettingsForTests } from '../utils/serverAgentSettings';
 
-const settings = (over: Record<string, string> = {}) => ({
+const settings = (over: Record<string, unknown> = {}) => ({
   name: '',
   instructions: '',
   defaultName: 'Server Agent',
@@ -36,6 +38,17 @@ beforeEach(() => {
   auth.user = { id: 'user-a' };
   auth.token = 'token-1';
   resetServerAgentSettingsForTests();
+  getServerAgentSkillOptions.mockResolvedValue({
+    builtIn: ['agent-hub'],
+    global: [{ id: 'github', name: 'github', description: 'GitHub workflows', source: 'default' }],
+    projects: [
+      {
+        projectId: 'p1',
+        projectName: 'Payments',
+        skills: [{ id: 'deploy', name: 'deploy', description: 'Ship it', source: 'project' }],
+      },
+    ],
+  });
 });
 
 function deferred<T>() {
@@ -314,5 +327,49 @@ describe('ServerAgentSettingsPage across sign-out and sign-in as the same user',
     await act(async () => firstSave.resolve(settings({ name: 'Old name', instructions: 'one' })));
     expect(screen.getByTestId('server-agent-name')).toHaveTextContent('New name');
     expect(nameInput().value).toBe('New name');
+  });
+});
+
+describe('ServerAgentSettingsPage skills', () => {
+  it('adds a project skill and removes a global one, saving each change', async () => {
+    getServerAgentSettings.mockResolvedValue(
+      settings({ skills: [{ id: 'github' }], builtInSkills: ['agent-hub'] }),
+    );
+    putServerAgentSettings.mockImplementation(async (body: Record<string, unknown>) =>
+      settings({ builtInSkills: ['agent-hub'], ...body }),
+    );
+    render(<ServerAgentSettingsPage onBack={() => undefined} />);
+
+    expect(await screen.findByTestId('server-agent-skill-github')).toHaveTextContent('Global');
+    expect(screen.getByTestId('server-agent-skills')).toHaveTextContent('agent-hub');
+
+    fireEvent.click(screen.getByTestId('server-agent-skills-add'));
+    expect(screen.queryByTestId('server-agent-skills-option-global-github')).toBeNull();
+    fireEvent.click(await screen.findByTestId('server-agent-skills-option-project:p1-deploy'));
+    await waitFor(() =>
+      expect(putServerAgentSettings).toHaveBeenCalledWith({
+        skills: [{ id: 'github' }, { id: 'deploy', projectId: 'p1' }],
+      }),
+    );
+    expect(await screen.findByTestId('server-agent-skill-deploy')).toHaveTextContent('Payments');
+
+    fireEvent.click(screen.getByTestId('server-agent-skill-remove-github'));
+    await waitFor(() =>
+      expect(putServerAgentSettings).toHaveBeenLastCalledWith({
+        skills: [{ id: 'deploy', projectId: 'p1' }],
+      }),
+    );
+    await waitFor(() => expect(screen.queryByTestId('server-agent-skill-github')).toBeNull());
+  });
+
+  it('shows a save error from the server', async () => {
+    getServerAgentSettings.mockResolvedValue(settings());
+    putServerAgentSettings.mockRejectedValue(new Error('Project "p1" was not found'));
+    render(<ServerAgentSettingsPage onBack={() => undefined} />);
+    const add = screen.getByTestId('server-agent-skills-add') as HTMLButtonElement;
+    await waitFor(() => expect(add.disabled).toBe(false));
+    fireEvent.click(add);
+    fireEvent.click(await screen.findByTestId('server-agent-skills-option-project:p1-deploy'));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Project "p1" was not found');
   });
 });

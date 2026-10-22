@@ -3,7 +3,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'f
 import { v4 as uuidv4 } from 'uuid';
 import { DEFAULT_SKILLS_DIR } from './routes/skills.js';
 import { resolveGlobalSkillsDir } from './global-skills-dir.js';
-import { isSkillAllowed } from './agent-skills-list.js';
+import { isSkillAllowed, type PinnedSkill } from './agent-skills-list.js';
 import type { BroadcastFn, Stmts } from './types.js';
 import {
   detectTagBlockInLastFence,
@@ -57,6 +57,8 @@ export interface SkillInvokeMalformed {
 
 export interface SkillInvokePaths {
   skillsDir: string;
+  /** Skills borrowed from other projects' stores; searched after `skillsDir`. */
+  pinnedSkills?: readonly PinnedSkill[];
 }
 
 export interface LoadedSkillBody {
@@ -326,6 +328,9 @@ export function loadSkillBody(name: string, paths: SkillInvokePaths): LoadedSkil
   // same-id global one, which shadows a same-id bundled default.
   const searchOrder: Array<{ source: 'project' | 'global' | 'default'; root: string }> = [];
   if (projectRoot) searchOrder.push({ source: 'project', root: projectRoot });
+  for (const pin of paths.pinnedSkills ?? []) {
+    if (pin.id === trimmedName && pin.root) searchOrder.push({ source: 'project', root: pin.root });
+  }
   const globalRoot = resolveGlobalSkillsDir();
   if (globalRoot) searchOrder.push({ source: 'global', root: globalRoot });
   searchOrder.push({ source: 'default', root: DEFAULT_SKILLS_DIR });

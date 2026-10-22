@@ -144,6 +144,29 @@ registerPath({
   },
 });
 
+const ServerAgentSkillRef = registerComponent(
+  'MeServerAgentSkillRef',
+  z
+    .object({
+      id: z.string().openapi({ description: 'Skill id.' }),
+      projectId: z
+        .string()
+        .optional()
+        .openapi({ description: 'Owning project; omit for a global or bundled skill.' }),
+    })
+    .openapi({ description: 'A skill added to the Server Agent.' }),
+);
+
+const ServerAgentSkillOption = registerComponent(
+  'MeServerAgentSkillOption',
+  z.object({
+    id: z.string(),
+    name: z.string(),
+    description: z.string(),
+    source: z.enum(['project', 'global', 'default']),
+  }),
+);
+
 const ServerAgentSettings = registerComponent(
   'MeServerAgentSettings',
   z
@@ -152,10 +175,16 @@ const ServerAgentSettings = registerComponent(
       instructions: z
         .string()
         .openapi({ description: 'Extra instructions appended to the Server Agent prompt.' }),
+      skills: z
+        .array(ServerAgentSkillRef)
+        .openapi({ description: 'Skills the caller added on top of the built-in set.' }),
+      builtInSkills: z
+        .array(z.string())
+        .openapi({ description: 'Skill ids the Server Agent always loads.' }),
       defaultName: z.string(),
       effectiveName: z.string().openapi({ description: 'The name the agent uses right now.' }),
     })
-    .openapi({ description: "The caller's Server Agent name and instructions." }),
+    .openapi({ description: "The caller's Server Agent name, instructions and added skills." }),
 );
 
 registerPath({
@@ -184,13 +213,51 @@ registerPath({
         z.object({
           name: z.string().max(SERVER_AGENT_LIMITS.name).optional(),
           instructions: z.string().max(SERVER_AGENT_LIMITS.instructions).optional(),
+          skills: z
+            .array(ServerAgentSkillRef)
+            .max(SERVER_AGENT_LIMITS.skills)
+            .optional()
+            .openapi({
+              description:
+                'Replaces the added skills. Each must exist, project skills must come from a ' +
+                'project the caller can view, ids must be unique, and built-in skills are rejected.',
+            }),
         }),
       ),
     },
   },
   responses: {
     200: { description: 'Saved settings.', content: jsonContent(ServerAgentSettings) },
-    400: errorResponse('Invalid name or instructions.'),
+    400: errorResponse('Invalid name, instructions or skills.'),
+    401: errorResponse('Authentication required.'),
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/me/server-agent/skill-options',
+  tags: ['Hub'],
+  summary: 'List skills the caller can add to their Server Agent',
+  description:
+    'Global and bundled skills, plus project skills grouped by project for every project the ' +
+    'caller can view. Built-in Server Agent skills are listed separately and excluded from both.',
+  responses: {
+    200: {
+      description: 'Skill options.',
+      content: jsonContent(
+        z.object({
+          builtIn: z.array(z.string()),
+          global: z.array(ServerAgentSkillOption),
+          projects: z.array(
+            z.object({
+              projectId: z.string(),
+              projectName: z.string(),
+              skills: z.array(ServerAgentSkillOption),
+            }),
+          ),
+        }),
+      ),
+    },
     401: errorResponse('Authentication required.'),
   },
 });

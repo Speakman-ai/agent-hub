@@ -1,5 +1,10 @@
 import type { Project } from './types.js';
 import { listEnabledSkills } from './agent-skills-list.js';
+import {
+  skillSchemaDirs,
+  widenAllowedSkills,
+  type ServerAgentSkillScope,
+} from './server-agent-skills.js';
 import { readOptionsSchemaForSkill } from './skill-options-resolve.js';
 import { isValidOptionValue } from './skill-options-declaration.js';
 import { getUserSkillOptionValues } from './skill-options-store.js';
@@ -21,6 +26,8 @@ export function mergeSkillOptionSpawnEnv(
     ownerId: string | null;
     agentId: string;
     project: Project;
+    /** Server Agent additions: widen the allowlist and resolve pinned project skills. */
+    extraSkills?: ServerAgentSkillScope | null;
   },
 ): void {
   const { ownerId, agentId, project } = opts;
@@ -33,10 +40,17 @@ export function mergeSkillOptionSpawnEnv(
     const allowedSkills: string[] | null = spawningAgent
       ? (spawningAgent.allowedSkills ?? null)
       : [];
-    const enabled = listEnabledSkills(agentId, skillsRoot, allowedSkills);
+    const enabled = listEnabledSkills(
+      agentId,
+      skillsRoot,
+      widenAllowedSkills(allowedSkills, opts.extraSkills ?? null),
+      opts.extraSkills?.pinned ?? [],
+    );
 
     for (const skill of enabled) {
-      const schema = readOptionsSchemaForSkill(skill.id, { projectSkillsDirs: [skillsRoot] });
+      const schema = readOptionsSchemaForSkill(skill.id, {
+        projectSkillsDirs: skillSchemaDirs(skillsRoot, opts.extraSkills, skill.id),
+      });
       // Malformed frontmatter → inject nothing for this skill.
       if (schema.error || schema.options.length === 0) continue;
       const selections = getUserSkillOptionValues(ownerId, skill.id);

@@ -1,5 +1,10 @@
 import type { Project } from './types.js';
 import { listEnabledSkills } from './agent-skills-list.js';
+import {
+  skillSchemaDirs,
+  widenAllowedSkills,
+  type ServerAgentSkillScope,
+} from './server-agent-skills.js';
 import { mergeDecryptedSkillCredentialsIntoEnv } from './skill-credentials-store.js';
 import { readCredentialsSchemaForSkill } from './skill-credentials-resolve.js';
 import { mergeSkillOptionSpawnEnv } from './skill-options-spawn.js';
@@ -23,6 +28,8 @@ export function mergeSkillCredentialSpawnEnv(
     ownerId: string | null;
     agentId: string;
     project: Project;
+    /** Server Agent additions: widen the allowlist and resolve pinned project skills. */
+    extraSkills?: ServerAgentSkillScope | null;
   },
 ): void {
   const { ownerId, agentId, project } = opts;
@@ -38,11 +45,18 @@ export function mergeSkillCredentialSpawnEnv(
     const allowedSkills: string[] | null = spawningAgent
       ? (spawningAgent.allowedSkills ?? null)
       : [];
-    const enabled = listEnabledSkills(agentId, skillsRoot, allowedSkills);
+    const enabled = listEnabledSkills(
+      agentId,
+      skillsRoot,
+      widenAllowedSkills(allowedSkills, opts.extraSkills ?? null),
+      opts.extraSkills?.pinned ?? [],
+    );
     const skillIds = enabled.map((s) => s.id);
     const allowedKeysBySkillId = new Map<string, ReadonlySet<string>>();
     for (const skillId of skillIds) {
-      const schema = readCredentialsSchemaForSkill(skillId, { projectSkillsDirs: [skillsRoot] });
+      const schema = readCredentialsSchemaForSkill(skillId, {
+        projectSkillsDirs: skillSchemaDirs(skillsRoot, opts.extraSkills, skillId),
+      });
       // Malformed frontmatter → empty allowlist: refuse to leak unverified
       // env vars from a row whose declaration we can't trust right now.
       if (schema.error) {

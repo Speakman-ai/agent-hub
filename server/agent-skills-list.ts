@@ -79,22 +79,51 @@ export function applyAgentSkillOverrides(agentId: string, skills: SkillInfo[]): 
  * editor (`GET /agents/:id/skills`) must use so a previously denied skill can
  * always be re-added.
  */
-export function listMergedSkills(skillsDir: string): SkillWithSource[] {
-  const tiers: Array<{ source: SkillWithSource['source']; dir: string }> = [
-    { source: 'project', dir: skillsDir },
-    { source: 'global', dir: resolveGlobalSkillsDir() },
-    { source: 'default', dir: DEFAULT_SKILLS_DIR },
-  ];
+export function listMergedSkills(
+  skillsDir: string,
+  pinnedSkills: readonly PinnedSkill[] = [],
+): SkillWithSource[] {
   const seen = new Set<string>();
   const merged: SkillWithSource[] = [];
-  for (const { source, dir } of tiers) {
-    for (const s of collectSkillsFromDir(dir)) {
+  const add = (source: SkillWithSource['source'], skills: SkillInfo[]) => {
+    for (const s of skills) {
       if (seen.has(s.id)) continue;
       seen.add(s.id);
       merged.push({ ...s, source });
     }
-  }
+  };
+  add('project', collectSkillsFromDir(skillsDir));
+  add('project', collectPinnedSkills(pinnedSkills));
+  add('global', collectSkillsFromDir(resolveGlobalSkillsDir()));
+  add('default', collectSkillsFromDir(DEFAULT_SKILLS_DIR));
   return merged;
+}
+
+/**
+ * A single skill taken from another project's skill store, by id. Sits between
+ * the session's own project tier and the global tier, so the session's project
+ * still wins a same-id conflict while an explicit pin beats a global skill.
+ */
+export interface PinnedSkill {
+  id: string;
+  /** The owning project's skills dir (`resolveProjectSkillsDir`). */
+  root: string;
+}
+
+function collectPinnedSkills(pinned: readonly PinnedSkill[]): SkillInfo[] {
+  if (pinned.length === 0) return [];
+  const byRoot = new Map<string, SkillInfo[]>();
+  const out: SkillInfo[] = [];
+  for (const pin of pinned) {
+    let skills = byRoot.get(pin.root);
+    if (!skills) {
+      skills = collectSkillsFromDir(pin.root);
+      byRoot.set(pin.root, skills);
+    }
+    const hit = skills.find((s) => s.id === pin.id);
+    if (hit) out.push(hit);
+  }
+  return out;
 }
 
 /** Project-authored skills only — `<dataDir>/project-skills/<projectId>`. */
@@ -141,7 +170,11 @@ export function listEnabledSkills(
   agentId: string,
   skillsDir: string,
   allowedSkills: string[] | null | undefined,
+  pinnedSkills: readonly PinnedSkill[] = [],
 ): SkillInfo[] {
-  const afterOverrides = applyAgentSkillOverrides(agentId, listMergedSkills(skillsDir));
+  const afterOverrides = applyAgentSkillOverrides(
+    agentId,
+    listMergedSkills(skillsDir, pinnedSkills),
+  );
   return filterSkillsByAllowlist(afterOverrides, allowedSkills);
 }
