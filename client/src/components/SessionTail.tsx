@@ -13,6 +13,7 @@ import {
 } from '@shared/utils/scheduledWakeup';
 import { markdownComponents } from './MarkdownRenderer';
 import { HubChatMessageBody, hasHubChatRefTokens } from './HubChatRefs';
+import WikiConsultedChip from './WikiConsultedChip';
 import {
   isFileModifyingTool,
   shortenPath,
@@ -505,6 +506,7 @@ function SessionTail({
             }
           })}
         </div>
+        {!streaming && <WikiConsultedChip metadata={message?.metadata} />}
         <div data-testid="session-tail-bottom" className="h-px w-full shrink-0" aria-hidden />
       </div>
     </div>
@@ -2240,6 +2242,7 @@ function StoredAssistantBubble({
             dispatchError={delegationDispatchError}
           />
         )}
+        <WikiConsultedChip metadata={message.metadata} />
       </div>
     </div>
   );
