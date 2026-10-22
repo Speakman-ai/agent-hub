@@ -60,7 +60,7 @@ describe('buildReplayPlayerSrcDoc', () => {
     expect(html!).toContain('rrwebPlayer');
   });
 
-  it('embeds a restrictive no-network CSP meta tag in the document head', () => {
+  it('embeds a restrictive CSP meta tag in the document head', () => {
     const html = buildReplayPlayerSrcDoc('PLAYER', 'css');
     // The CSP meta must appear in <head> so it governs every subresource.
     expect(html!).toContain(
@@ -75,13 +75,37 @@ describe('buildReplayPlayerSrcDoc', () => {
     // fetch/XHR/WebSocket/beacon — the actual exfiltration vector.
     expect(PLAYER_CSP!).toContain("default-src 'none'");
     expect(PLAYER_CSP!).toContain("connect-src 'none'");
-    // Remote images/fonts/media are blocked (data:/blob: only — no http(s)).
-    expect(PLAYER_CSP!).toMatch(/img-src data: blob:/);
-    expect(PLAYER_CSP!).not.toMatch(/https?:/);
+    // Only passive https assets may load; nothing allows plain http.
+    expect(PLAYER_CSP!).not.toMatch(/http:/);
     // Inline player bundle + styles must still run (no remote, no eval).
     expect(PLAYER_CSP!).toContain("script-src 'unsafe-inline'");
     expect(PLAYER_CSP!).toContain("style-src 'unsafe-inline'");
     expect(PLAYER_CSP!).not.toContain('unsafe-eval');
+  });
+
+  it('CSP lets replayed https images, fonts and media load', () => {
+    // Recordings reference the app's own images and web fonts (icon fonts like
+    // Material Icons) by absolute URL; blocking them renders broken images and
+    // raw ligature text instead of icons.
+    expect(PLAYER_CSP!).toContain('img-src data: blob: https:;');
+    expect(PLAYER_CSP!).toContain('font-src data: https:;');
+    expect(PLAYER_CSP!).toContain('media-src data: blob: https:;');
+  });
+
+  it('CSP keeps active and fetch-capable sources off the network', () => {
+    for (const dir of ['script-src', 'style-src', 'connect-src', 'frame-src', 'child-src']) {
+      const m = PLAYER_CSP!.match(new RegExp(`${dir} ([^;]*)`));
+      expect(m, dir).not.toBeNull();
+      expect(m![1], dir).not.toMatch(/https?:/);
+    }
+  });
+
+  it('player document sends no Referer with replayed asset requests', () => {
+    const html = buildReplayPlayerSrcDoc('PLAYER', 'css');
+    const headEnd = html.indexOf('</head>');
+    const idx = html.indexOf('<meta name="referrer" content="no-referrer" />');
+    expect(idx).toBeGreaterThan(-1);
+    expect(idx).toBeLessThan(headEnd);
   });
 
   it('CSP permits rrweb’s internal replay frame but blocks remote frames', () => {

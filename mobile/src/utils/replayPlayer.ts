@@ -160,7 +160,7 @@ export function seekBaselineIndex(
 
 // In-app rrweb WebView player
 // Mobile parity of client/src/components/ReplayPlayerModal + its inline iframe
-// bootstrap. The player document is the SAME sandboxed, no-network island the
+// bootstrap. The player document is the SAME sandboxed, no-fetch island the
 // web player builds (rrweb-player UMD + CSS inlined, restrictive CSP), loaded
 // into a react-native-webview from a `data:text/html` URL so the frame runs at
 // an OPAQUE origin — cross-origin to the RN app, unable to reach its bridge,
@@ -261,16 +261,16 @@ export const WEBVIEW_BOOTSTRAP = `(function () {
 })();`;
 
 // Content-Security-Policy for the player document. Host isolation comes from the
-// data: URL's opaque origin; this CSP is defense-in-depth that blocks ALL
-// network egress from the frame (rrweb rehydrates captured DOM that can
-// reference remote images/fonts/media/iframes). Mirrors the web PLAYER_CSP.
+// data: URL's opaque origin; this CSP is defense-in-depth. Passive https
+// images/fonts/media load so replays match the recorded page; scripts, styles,
+// frames and connect stay local. Mirrors the web PLAYER_CSP (see its notes).
 export const PLAYER_CSP =
   "default-src 'none'; " +
   "script-src 'unsafe-inline'; " +
   "style-src 'unsafe-inline'; " +
-  'img-src data: blob:; ' +
-  'font-src data:; ' +
-  'media-src data: blob:; ' +
+  'img-src data: blob: https:; ' +
+  'font-src data: https:; ' +
+  'media-src data: blob: https:; ' +
   "connect-src 'none'; " +
   "frame-src 'self' blob: data:; " +
   "child-src 'self' blob: data:; " +
@@ -282,8 +282,8 @@ export const PLAYER_CSP =
 /**
  * Build the player document HTML. `playerJs` is the rrweb-player UMD bundle
  * (exposes `window.rrwebPlayer`); `playerCss` is its stylesheet. Both are inlined
- * so the frame needs no network, and {@link PLAYER_CSP} enforces that even
- * against the replayed DOM rrweb reconstructs. Loaded via
+ * so the player itself needs no network, and {@link PLAYER_CSP} limits the
+ * replayed DOM rrweb reconstructs to passive https assets. Loaded via
  * {@link buildReplayPlayerDataUrl} so it runs at an isolated opaque origin.
  */
 export function buildReplayPlayerSrcDoc(playerJs?: string, playerCss?: string): string {
@@ -292,6 +292,7 @@ export function buildReplayPlayerSrcDoc(playerJs?: string, playerCss?: string): 
 <head>
 <meta charset="utf-8" />
 <meta http-equiv="Content-Security-Policy" content="${PLAYER_CSP}" />
+<meta name="referrer" content="no-referrer" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <style>${escapeForScript(playerCss || '')}</style>
 <style>

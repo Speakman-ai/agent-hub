@@ -222,16 +222,28 @@ describe('WEBVIEW_BOOTSTRAP', () => {
   });
 });
 
-describe('buildReplayPlayerSrcDoc / DataUrl (opaque-origin no-network island)', () => {
+describe('buildReplayPlayerSrcDoc / DataUrl (opaque-origin no-fetch island)', () => {
   it('inlines the player js + css and the WebView bootstrap under a locked-down CSP', () => {
     const doc = buildReplayPlayerSrcDoc('/*JS*/window.rrwebPlayer={};', '.rr-player{}');
     expect(doc).toContain(PLAYER_CSP);
     expect(doc).toContain('window.rrwebPlayer={}');
     expect(doc).toContain('.rr-player{}');
     expect(doc).toContain('__ahReplayReceive');
-    // No-network invariants carried from web.
+    // No-fetch invariants carried from web.
     expect(PLAYER_CSP).toContain("connect-src 'none'");
     expect(PLAYER_CSP).toContain("default-src 'none'");
+  });
+  it('lets replayed https images, fonts and media load but keeps fetch, scripts and frames local', () => {
+    expect(PLAYER_CSP).toContain('img-src data: blob: https:;');
+    expect(PLAYER_CSP).toContain('font-src data: https:;');
+    expect(PLAYER_CSP).toContain('media-src data: blob: https:;');
+    for (const dir of ['script-src', 'style-src', 'connect-src', 'frame-src', 'child-src']) {
+      const m = PLAYER_CSP.match(new RegExp(`${dir} ([^;]*)`));
+      expect(m![1]).not.toMatch(/https?:/);
+    }
+    expect(buildReplayPlayerSrcDoc('', '')).toContain(
+      '<meta name="referrer" content="no-referrer" />',
+    );
   });
   it('escapes a </script> in the injected bundle so it cannot close the tag early', () => {
     const doc = buildReplayPlayerSrcDoc('var s="</script>";', '');

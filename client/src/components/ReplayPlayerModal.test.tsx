@@ -95,7 +95,7 @@ describe('ReplayPlayerModal', () => {
     // stay off by omission.
     expect(iframe.getAttribute('sandbox')).toBe('allow-scripts allow-same-origin');
 
-    // The decoded document carries the player root + the no-network CSP.
+    // The decoded document carries the player root + the restrictive CSP.
     const doc = decodeURIComponent(src.replace(/^data:text\/html;charset=utf-8,/, ''));
     expect(doc).toContain('id="root"');
     expect(doc).toContain('rrwebPlayer');

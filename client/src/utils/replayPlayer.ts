@@ -10,7 +10,7 @@
 // proven in e2e/tests/replay-player.spec.ts. This is the primary trust boundary
 // for sensitive (masked-DOM) replay content, so a compromised dependency, a
 // player-bundle bug, or rrweb-rendered active content still cannot reach host
-// state. CSP (below) is defense-in-depth (no network), not the only boundary.
+// state. CSP (below) is defense-in-depth, not the only boundary.
 //
 // The iframe also carries `sandbox="allow-scripts allow-same-origin"`. Here
 // `allow-same-origin` does NOT grant the host origin — the data: document's
@@ -138,10 +138,10 @@ export const IFRAME_BOOTSTRAP = `(function () {
 
 // Content-Security-Policy for the player document. Host isolation is provided by
 // the data: URL's opaque origin (see the isolation-model note at the top of this
-// file), so this CSP is defense-in-depth, not the only boundary. Its key job is
-// to block ALL network egress from the frame — and rrweb rehydrates
-// captured DOM that can reference remote images/fonts/media/iframes/stylesheets.
-// This locks the document down to a no-network island:
+// file), so this CSP is defense-in-depth, not the only boundary. rrweb
+// rehydrates captured DOM that references remote images/fonts/media/iframes/
+// stylesheets. Passive assets may load over https so replays look like the
+// recorded page; everything that can run code or send data stays local:
 //   - `default-src 'none'`           — deny everything unless re-allowed below.
 //   - `script-src 'unsafe-inline'`   — only our inlined player bundle + bootstrap
 //                                       run; no remote or eval'd scripts (the
@@ -149,8 +149,15 @@ export const IFRAME_BOOTSTRAP = `(function () {
 //                                       inert, and the bundle uses no eval).
 //   - `style-src 'unsafe-inline'`    — inlined player CSS + rrweb's reconstructed
 //                                       inline styles; no remote stylesheets.
-//   - `img-src/font-src/media-src`   — data:/blob: only (embedded, not network);
-//                                       remote replayed assets are blocked.
+//   - `img-src/font-src/media-src`   — data:/blob: plus https:. Recordings
+//                                       point at the app's own images and web
+//                                       fonts (icon fonts included) by absolute
+//                                       URL; without them replays show broken
+//                                       images and raw icon ligature text. The
+//                                       cost is that the viewer's browser hits
+//                                       those hosts; the referrer meta keeps the
+//                                       requests Referer-free. Same trade as
+//                                       hosted replay products.
 //   - `connect-src 'none'`           — no fetch / XHR / WebSocket / sendBeacon.
 //   - `frame-src/child-src 'self' blob: data:` — rrweb's Replayer renders the
 //                                       captured DOM into an iframe it creates
@@ -162,16 +169,16 @@ export const IFRAME_BOOTSTRAP = `(function () {
 //                                       cover that mechanism; a replayed iframe
 //                                       with a remote `http(s)` src still fails
 //                                       to load, so remote frames stay blocked.
-// No remote `http(s)` source is whitelisted anywhere, so the frame stays a
-// no-network island. Verified end-to-end in e2e/tests/replay-player.spec.js,
+// No remote source is allowed for scripts, stylesheets, frames, or connect, so
+// the frame can display remote assets but cannot fetch or post data. Verified end-to-end in e2e/tests/replay-player.spec.js,
 // which renders a real recording through this exact srcDoc under a real browser.
 export const PLAYER_CSP =
   "default-src 'none'; " +
   "script-src 'unsafe-inline'; " +
   "style-src 'unsafe-inline'; " +
-  'img-src data: blob:; ' +
-  'font-src data:; ' +
-  'media-src data: blob:; ' +
+  'img-src data: blob: https:; ' +
+  'font-src data: https:; ' +
+  'media-src data: blob: https:; ' +
   "connect-src 'none'; " +
   "frame-src 'self' blob: data:; " +
   "child-src 'self' blob: data:; " +
@@ -183,9 +190,9 @@ export const PLAYER_CSP =
 /**
  * Build the player document HTML. `playerJs` is the rrweb-player UMD bundle
  * (exposes `window.rrwebPlayer`); `playerCss` is its stylesheet. Both are inlined
- * so the frame needs no network, and a restrictive CSP (see {@link PLAYER_CSP})
- * enforces that no-network property even against the replayed DOM rrweb
- * reconstructs. The document is loaded via {@link buildReplayPlayerDataUrl} so it
+ * so the player itself needs no network, and a restrictive CSP (see
+ * {@link PLAYER_CSP}) limits the replayed DOM rrweb reconstructs to passive
+ * https assets. The document is loaded via {@link buildReplayPlayerDataUrl} so it
  * runs at an isolated opaque origin (see the isolation-model note at the top of
  * this file) — the name keeps `Doc` for historical reasons but it is no longer
  * passed to the iframe `srcDoc` attribute.
@@ -196,6 +203,7 @@ export function buildReplayPlayerSrcDoc(playerJs?: string, playerCss?: string) {
 <head>
 <meta charset="utf-8" />
 <meta http-equiv="Content-Security-Policy" content="${PLAYER_CSP}" />
+<meta name="referrer" content="no-referrer" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <style>${escapeForScript(playerCss || '')}</style>
 <style>
