@@ -47,6 +47,11 @@ import {
 } from './orchestrator.js';
 import type { CiConfig, CiConfigParseResult } from './ci-config.js';
 import { jobInstanceKey } from './base-drift-policy.js';
+import { __resetFleetPrewarmForTests, fleetPrewarmDemand } from './runner-fleet-prewarm.js';
+import { mkdtempSync, rmSync } from 'fs';
+import os from 'os';
+import path from 'path';
+import { initOrgsDb, setOrgsDbPathForTests } from '../orgs.js';
 import type { RebasePhaseOutcome } from './rebase.js';
 import type { ReviewerDispatchOutcome } from './reviewer-dispatch.js';
 import type { StepRunResult } from './step-runner.js';
@@ -4977,5 +4982,97 @@ describe('runFinalize — dynamic test selection', () => {
       expect(result.kind).toBe('ready_to_push');
       expect('testSelection' in (review.mock.calls[0][1] as object)).toBe(false);
     });
+  });
+});
+
+describe('runFinalize — fleet prewarm', () => {
+  const FLEET_CI = {
+    ok: true as const,
+    config: {
+      ...CI_OK.config,
+      jobs: {
+        checks: {
+          ...CI_OK.config.jobs.checks,
+          runsOn: 'ubuntu-24.04',
+          matrixInclude: [{ group: 'a' }, { group: 'b' }, { group: 'c' }],
+        },
+      },
+    },
+  };
+  const demand = (): number =>
+    fleetPrewarmDemand(undefined, { watermark: () => 0, shardsEnqueuedSince: () => 0 });
+
+  let orgsDir: string;
+  beforeEach(() => {
+    __resetFleetPrewarmForTests();
+    process.env.FINALIZE_RUNNER_BACKEND = 'remote';
+    orgsDir = mkdtempSync(path.join(os.tmpdir(), 'orch-prewarm-'));
+    setOrgsDbPathForTests(path.join(orgsDir, 'orgs.db'));
+    initOrgsDb();
+  });
+  afterEach(() => {
+    delete process.env.FINALIZE_RUNNER_BACKEND;
+    __resetFleetPrewarmForTests();
+    setOrgsDbPathForTests(null);
+    rmSync(orgsDir, { recursive: true, force: true });
+  });
+
+  it('reserves fleet shards while the reviewer runs and releases after checks', async () => {
+    let duringReview = -1;
+    let duringChecks = -1;
+    const { deps } = makeDeps({
+      loadCiConfigFromFile: fakeRunCi(FLEET_CI as never),
+      runReviewerDispatch: vi.fn(async () => {
+        duringReview = demand();
+        return REVIEW_OK;
+      }) as never,
+      runJobPhase: vi.fn(async () => {
+        duringChecks = demand();
+        return STEPS_OK;
+      }) as never,
+    });
+
+    const result = await runFinalize(deps, baseOpts());
+
+    expect(result.kind).toBe('ready_to_push');
+    expect(duringReview).toBe(3);
+    expect(duringChecks).toBe(3);
+    expect(demand()).toBe(0);
+  });
+
+  it('releases the reservation when the reviewer requests changes', async () => {
+    let duringFix = -1;
+    const { deps } = makeDeps({
+      loadCiConfigFromFile: fakeRunCi(FLEET_CI as never),
+      runReviewerDispatch: vi
+        .fn()
+        .mockResolvedValueOnce({ ...REVIEW_OK, verdict: 'changes_requested', threadCount: 1 })
+        .mockResolvedValue(REVIEW_OK) as never,
+      dispatchFixMessage: vi.fn(async () => {
+        duringFix = demand();
+        return FIX_TURN_ENDED;
+      }) as never,
+    });
+
+    await runFinalize(deps, baseOpts());
+
+    expect(duringFix).toBe(0);
+    expect(demand()).toBe(0);
+  });
+
+  it('does not reserve on the local backend', async () => {
+    delete process.env.FINALIZE_RUNNER_BACKEND;
+    let duringReview = -1;
+    const { deps } = makeDeps({
+      loadCiConfigFromFile: fakeRunCi(FLEET_CI as never),
+      runReviewerDispatch: vi.fn(async () => {
+        duringReview = demand();
+        return REVIEW_OK;
+      }) as never,
+    });
+
+    await runFinalize(deps, baseOpts());
+
+    expect(duringReview).toBe(0);
   });
 });

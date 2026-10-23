@@ -42,6 +42,7 @@ import {
   runnerLiveEnvironmentCount,
   reapExpiredRunnerLeases,
 } from './runner-queue.js';
+import { DB_PREWARM_QUEUE, fleetPrewarmDemand } from './runner-fleet-prewarm.js';
 import type { ReapedRunnerJob, RunnerClassFilter } from './runner-queue.js';
 import { DEFAULT_RUNNER_CLASS, ONDEMAND_RUNNER_CLASS } from './runner-images.js';
 import { clearHubTaskProtection, loadHubTaskProtectionConfig } from './hub-task-protection.js';
@@ -465,7 +466,11 @@ async function reconcilePool(
   const reapedHere = reaped.filter((r) => poolServesClass(cfg, r.runnerClass)).length;
   // Include just-reaped jobs: they re-enqueue immediately, and the post-reap
   // COUNT would otherwise under-scale (no replacement agent for the retry).
-  const depth = queueDepthForScale(runnerQueueDepth(undefined, cfg.classes), reapedHere);
+  // Plus shards Finalize runs still in review will enqueue (runner-fleet-prewarm.ts),
+  // so agents boot during review instead of after it.
+  const depth =
+    queueDepthForScale(runnerQueueDepth(undefined, cfg.classes), reapedHere) +
+    fleetPrewarmDemand(cfg.classes, DB_PREWARM_QUEUE, now);
   // claimed+running only — the floor a dynamic shrink must never cross. Cheap
   // extra COUNT, so only taken when dynamic scale-down is actually enabled.
   const inflight = cfg.dynamicScaleDown ? runnerInflightCount(undefined, cfg.classes) : depth;

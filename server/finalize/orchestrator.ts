@@ -85,6 +85,8 @@ import type {
 import type { StepRunResult } from './step-runner.js';
 import { runJobPhase } from './job-runner.js';
 import { resolveCiRunnerClass } from './runner-images.js';
+import { releaseFleetPrewarm, syncFleetPrewarm } from './runner-fleet-prewarm.js';
+import { reconcileFleetCapacity } from './runner-fleet-scaler.js';
 import { reconcileFinalizeRunTerminalSteps } from './reconcile-terminal-steps.js';
 import type { FinalizeStepLogStore } from './finalize-log-store.js';
 import {
@@ -963,7 +965,7 @@ export async function runFinalize(
   // runner's own layout check cannot see that. The retry chain runs inside this
   // one call, so the parent's entry is always here when the retry needs it.
   const attemptCiFingerprints = new Map<string, string>();
-  const driveAttempt = async (
+  const driveAttemptInner = async (
     runId: string,
     retryOfRunId: string | null,
     initialSessionId: string | null,
@@ -1822,6 +1824,19 @@ export async function runFinalize(
         return cancelTerminal(deps, runId, log);
       }
 
+      // Boot fleet agents for this round's shards while the reviewer runs:
+      // CI only starts after review, and a cold agent takes minutes to come up.
+      if (reviewRequired && checksRequired && parsedCi) {
+        const reserved = syncFleetPrewarm(runId, parsedCi, {
+          runnerClass: resolveCiRunnerClass(opts.project),
+          orgId: activeOrgIdOrUndefined(),
+        });
+        if (reserved > 0) {
+          trace('fleet_prewarm', { round: loopCount, shards: reserved });
+          void reconcileFleetCapacity();
+        }
+      }
+
       // Phase 3: reviewer
       // Skipped entirely in `checks` mode ("Run Tests" button): we
       // synthesize an `approved` verdict so the combined gate is driven
@@ -2143,6 +2158,16 @@ export async function runFinalize(
               total: selection.instances.length,
             });
           }
+          // Shrink the prewarm to the shards that will actually run.
+          syncFleetPrewarm(runId, parsedCi, {
+            runnerClass: ciRunnerClass,
+            orgId,
+            skip: new Set([
+              ...(notSelectedInstances ?? []),
+              ...(reuseInstances ?? []),
+              ...(carryOver?.instances ?? []),
+            ]),
+          });
           lastStepOutcome = await runJobs(
             {
               stmts: deps.stmts,
@@ -2194,6 +2219,10 @@ export async function runFinalize(
             `step phase threw: ${msg}`,
             log,
           );
+        } finally {
+          // Every shard is enqueued or done now; a fix turn may follow, and
+          // the fleet should not idle through it.
+          releaseFleetPrewarm(runId);
         }
 
         // A Stop pressed during the checks phase now kills the in-flight step
@@ -2381,6 +2410,7 @@ export async function runFinalize(
         trace('checks', { round: loopCount, status: 'skipped' });
       } else {
         // Reviewer requested changes — skip CI; fix dispatch comes next.
+        releaseFleetPrewarm(runId);
         lastStepOutcome = null;
         trace('checks', { round: loopCount, status: 'skipped_changes_requested' });
       }
@@ -2988,6 +3018,20 @@ export async function runFinalize(
     );
   }; // end driveAttempt
 
+  // Every exit path (terminal, cancel, throw) drops the attempt's fleet prewarm.
+  const driveAttempt = async (
+    runId: string,
+    retryOfRunId: string | null,
+    initialSessionId: string | null,
+    initialWorktreePath: string | null,
+  ): Promise<OrchestratorOutcome> => {
+    try {
+      return await driveAttemptInner(runId, retryOfRunId, initialSessionId, initialWorktreePath);
+    } finally {
+      releaseFleetPrewarm(runId);
+    }
+  };
+
   // §10: drive original attempt + generation-aware infra-retry chain
   // The first attempt receives the trigger-time session/worktree (which
   // may be null when the card has no live session — in that case the
@@ -3138,6 +3182,15 @@ export async function runFinalize(
  * `FINALIZE_TRACE=off` (also `0` / `false`) silences it for a deploy that
  * wants quieter logs.
  */
+/** Active org for the runner queue lookup, or undefined before one is selected. */
+function activeOrgIdOrUndefined(): string | undefined {
+  try {
+    return getActiveOrgId() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function finalizeTraceEnabled(): boolean {
   const raw = process.env.FINALIZE_TRACE?.trim().toLowerCase();
   return raw !== 'off' && raw !== '0' && raw !== 'false';

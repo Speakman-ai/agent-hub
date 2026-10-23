@@ -604,6 +604,47 @@ export function runnerInflightCount(orgId?: string, filter?: RunnerClassFilter):
 }
 
 /**
+ * Highest runner_jobs rowid so far (0 when empty). Rows inserted later always
+ * get a larger rowid, so this marks "everything enqueued before now".
+ */
+export function runnerJobWatermark(): number {
+  const row = getOrgsDb().prepare('SELECT COALESCE(MAX(rowid), 0) AS n FROM runner_jobs').get() as {
+    n: number;
+  };
+  return row.n;
+}
+
+/**
+ * Distinct shards (job_id + matrix_key) of one runner class that a run has
+ * enqueued after `sinceRowid`, in any state. Retry rows of a shard count once,
+ * and a finished shard keeps counting, so the fleet prewarm's demand falls
+ * exactly as shards first reach the queue.
+ */
+export function runnerShardsEnqueuedSince(args: {
+  runId: string;
+  runnerClass: string;
+  sinceRowid: number;
+  orgId?: string;
+}): number {
+  // With the org known the lookup rides idx_runner_jobs_run (org_id, run_id).
+  const orgClause = args.orgId ? 'org_id=@orgId AND ' : '';
+  const row = getOrgsDb()
+    .prepare(
+      `SELECT COUNT(*) AS n FROM (
+         SELECT DISTINCT job_id, matrix_key FROM runner_jobs
+          WHERE ${orgClause}run_id=@runId AND runner_class=@runnerClass AND rowid > @since
+       )`,
+    )
+    .get({
+      runId: args.runId,
+      runnerClass: args.runnerClass,
+      since: args.sinceRowid,
+      ...(args.orgId ? { orgId: args.orgId } : {}),
+    }) as { n: number };
+  return row.n;
+}
+
+/**
  * Environment and desktop jobs that currently hold an agent (claimed +
  * running). Each pins its agent until the Hub stops it, so the scaler treats
  * them as standing capacity rather than a backlog that will drain.
