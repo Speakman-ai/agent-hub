@@ -8,6 +8,8 @@ import {
   httpTransport,
   resolveEcsTaskArn,
   runAgentClaimLoop,
+  installShutdownSignals,
+  AGENT_SHUTDOWN_DETAIL,
   runAgentJob,
   runClaimedJobWithRecovery,
   runExecStepChild,
@@ -1085,6 +1087,73 @@ describe('runAgentClaimLoop bring-up timeout isolation', () => {
     finishStaleBringup();
     await staleBringup;
     expect(transport.claim).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('runAgentClaimLoop shutdown (SIGTERM)', () => {
+  it('stops claiming once the shutdown signal fires', async () => {
+    const ctl = new AbortController();
+    ctl.abort();
+    const { transport } = fakes([], () => 0);
+    transport.claim = vi.fn(async () => null);
+    await runAgentClaimLoop({
+      transport,
+      isDraining: async () => false,
+      shutdown: ctl.signal,
+      runJob: async () => {},
+    });
+    expect(transport.claim).not.toHaveBeenCalled();
+  });
+
+  it('hands back a job claimed after SIGTERM instead of starting it', async () => {
+    // Regression: an ECS scale-in SIGTERMed an idle agent, which ignored it
+    // (PID 1), claimed a PR environment 50s later, and was SIGKILLed; the Hub
+    // only found out when the lease expired five minutes on.
+    const ctl = new AbortController();
+    const { transport } = fakes([], () => 0);
+    const errors: Array<{ jobId: string; detail: string }> = [];
+    transport.reportError = vi.fn(async (jobId: string, detail: string) => {
+      errors.push({ jobId, detail });
+    });
+    transport.claim = vi.fn(async () => {
+      ctl.abort();
+      return { jobId: 'env-job', spec: wire({ jobId: 'environment' }) };
+    });
+    const runJob = vi.fn(async () => {});
+    await runAgentClaimLoop({
+      transport,
+      isDraining: async () => false,
+      shutdown: ctl.signal,
+      runJob,
+    });
+    expect(runJob).not.toHaveBeenCalled();
+    expect(transport.claim).toHaveBeenCalledTimes(1);
+    expect(errors).toEqual([{ jobId: 'env-job', detail: AGENT_SHUTDOWN_DETAIL }]);
+  });
+
+  it('finishes the running job, then exits without another claim', async () => {
+    const ctl = new AbortController();
+    const { transport } = fakes([], () => 0);
+    transport.claim = vi.fn(async () => ({ jobId: 'job-1', spec: wire({ jobId: 'first' }) }));
+    const runJob = vi.fn(async () => {
+      ctl.abort();
+    });
+    await runAgentClaimLoop({
+      transport,
+      isDraining: async () => false,
+      shutdown: ctl.signal,
+      runJob,
+    });
+    expect(runJob).toHaveBeenCalledTimes(1);
+    expect(transport.claim).toHaveBeenCalledTimes(1);
+  });
+
+  it('installShutdownSignals aborts on SIGTERM', () => {
+    const proc = new EventEmitter();
+    const signal = installShutdownSignals(proc as unknown as Pick<NodeJS.Process, 'once'>);
+    expect(signal.aborted).toBe(false);
+    proc.emit('SIGTERM');
+    expect(signal.aborted).toBe(true);
   });
 });
 

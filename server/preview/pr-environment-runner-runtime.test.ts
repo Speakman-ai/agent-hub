@@ -208,6 +208,115 @@ describe('runner PR environment runtime', () => {
     }
   });
 
+  it('keeps the count across the teardown that is part of a requeue', async () => {
+    const f = fakeRunner();
+    const { rt } = make(f, { maxLossRequeues: 1 });
+    const r1 = reporter();
+    await rt.build({ project: PROJECT, env: env(), reporter: r1 });
+    f.set('job-1', { state: 'lost', detail: 'lease expired' });
+    await rt.tick();
+    expect(r1.lost).toHaveBeenCalledWith(expect.any(String), { requeue: true });
+    // The service tears the lost stack down before it rebuilds.
+    await rt.teardown({ project: PROJECT, env: env({ runnerRef: 'job-1' }) });
+
+    const r2 = reporter();
+    await rt.build({ project: PROJECT, env: env(), reporter: r2 });
+    f.set('job-2', { state: 'lost', detail: 'lease expired' });
+    await rt.tick();
+    expect(r2.lost).toHaveBeenCalledWith(expect.stringContaining('2 times in a row'), {
+      requeue: false,
+    });
+  });
+
+  it('a stop ends the run of losses, so the next build starts counting from zero', async () => {
+    // Regression: a loss before the environment was stopped overnight still
+    // counted the next day, so two losses in the new build read as "3 times
+    // in a row" and the second one was not rebuilt.
+    const f = fakeRunner();
+    const { rt } = make(f, { maxLossRequeues: 1 });
+    const r1 = reporter();
+    await rt.build({ project: PROJECT, env: env(), reporter: r1 });
+    f.set('job-1', { state: 'lost', detail: 'lease expired' });
+    await rt.tick();
+    await rt.teardown({ project: PROJECT, env: env({ runnerRef: 'job-1' }) });
+    const r2 = reporter();
+    await rt.build({ project: PROJECT, env: env(), reporter: r2 });
+    // Stopped by the user (or idle) while running.
+    await rt.teardown({ project: PROJECT, env: env({ runnerRef: 'job-2' }) });
+
+    const r3 = reporter();
+    await rt.build({ project: PROJECT, env: env(), reporter: r3 });
+    f.set('job-3', { state: 'lost', detail: 'lease expired' });
+    await rt.tick();
+    expect(r3.lost).toHaveBeenCalledWith(expect.any(String), { requeue: true });
+  });
+
+  it('a stop between the rebuild cleanup and the rebuild resets the count', async () => {
+    const f = fakeRunner();
+    const { rt } = make(f, { maxLossRequeues: 1 });
+    const r1 = reporter();
+    await rt.build({ project: PROJECT, env: env(), reporter: r1 });
+    f.set('job-1', { state: 'lost', detail: 'lease expired' });
+    await rt.tick();
+    expect(r1.lost).toHaveBeenCalledWith(expect.any(String), { requeue: true });
+    // Rebuild cleanup, then a stop before the rebuild was dispatched.
+    await rt.teardown({ project: PROJECT, env: env({ runnerRef: 'job-1' }) });
+    await rt.teardown({ project: PROJECT, env: env() });
+
+    const r2 = reporter();
+    await rt.build({ project: PROJECT, env: env(), reporter: r2 });
+    f.set('job-2', { state: 'lost', detail: 'lease expired' });
+    await rt.tick();
+    expect(r2.lost).toHaveBeenCalledWith(expect.any(String), { requeue: true });
+  });
+
+  it('a failed rebuild cleanup keeps the count through its retry', async () => {
+    const f = fakeRunner();
+    const { rt } = make(f, { maxLossRequeues: 1 });
+    const r1 = reporter();
+    await rt.build({ project: PROJECT, env: env(), reporter: r1 });
+    f.set('job-1', { state: 'lost', detail: 'lease expired' });
+    await rt.tick();
+    f.runner.stop.mockRejectedValueOnce(new Error('docker hiccup'));
+    await expect(
+      rt.teardown({ project: PROJECT, env: env({ runnerRef: 'job-1' }) }),
+    ).rejects.toThrow('docker hiccup');
+    await rt.teardown({ project: PROJECT, env: env({ runnerRef: 'job-1' }) });
+
+    const r2 = reporter();
+    await rt.build({ project: PROJECT, env: env(), reporter: r2 });
+    f.set('job-2', { state: 'lost', detail: 'lease expired' });
+    await rt.tick();
+    expect(r2.lost).toHaveBeenCalledWith(expect.any(String), { requeue: false });
+  });
+
+  it('Retry after the cap starts a fresh count', async () => {
+    const f = fakeRunner();
+    const { rt } = make(f, { maxLossRequeues: 0 });
+    const r1 = reporter();
+    await rt.build({ project: PROJECT, env: env(), reporter: r1 });
+    f.set('job-1', { state: 'lost', detail: 'lease expired' });
+    await rt.tick();
+    expect(r1.lost).toHaveBeenCalledWith(
+      'The runner hosting this environment was lost (lease expired). Retry to rebuild.',
+      {
+        requeue: false,
+      },
+    );
+    await rt.teardown({ project: PROJECT, env: env({ runnerRef: 'job-1' }) });
+
+    const r2 = reporter();
+    await rt.build({ project: PROJECT, env: env(), reporter: r2 });
+    f.set('job-2', { state: 'lost', detail: 'lease expired' });
+    await rt.tick();
+    expect(r2.lost).toHaveBeenCalledWith(
+      'The runner hosting this environment was lost (lease expired). Retry to rebuild.',
+      {
+        requeue: false,
+      },
+    );
+  });
+
   it('teardown is idempotent and stops a start that resolves after it', async () => {
     const f = fakeRunner();
     const { rt } = make(f);

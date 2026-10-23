@@ -1177,6 +1177,34 @@ export async function agentIsDraining(
   return interrupted || rebalance;
 }
 
+/** Loss detail when an agent returns a job it claimed while shutting down. */
+export const AGENT_SHUTDOWN_DETAIL =
+  'runner task stopping (SIGTERM) before the job started; requeued on another runner';
+
+/**
+ * Turn SIGTERM / SIGINT into an abort signal for the claim loop. The agent runs
+ * as PID 1 in its container (`exec node` in the entrypoint), and PID 1 ignores
+ * any signal it has no handler for. Without this, an ECS scale-in's SIGTERM did
+ * nothing: the idle agent kept claiming jobs (PR environments included) until
+ * the stop timeout SIGKILLed it, and each such job sat until its lease expired.
+ *
+ * The loop stops claiming and returns, so the process exits. It does not exit
+ * from the handler: a claim long-poll in flight may already hold a job on the
+ * Hub, and the loop hands that job back. A job already running keeps running;
+ * ECS task protection is what keeps busy tasks alive.
+ */
+export function installShutdownSignals(proc: Pick<NodeJS.Process, 'once'> = process): AbortSignal {
+  const ctl = new AbortController();
+  const onSignal = (sig: string) => {
+    if (ctl.signal.aborted) return;
+    console.log(`[runner-agent] ${sig} received; finishing up without claiming new work`);
+    ctl.abort();
+  };
+  proc.once('SIGTERM', () => onSignal('SIGTERM'));
+  proc.once('SIGINT', () => onSignal('SIGINT'));
+  return ctl.signal;
+}
+
 /**
  * Claim and run one job at a time. Exported so the fatal-timeout guarantee is
  * regression-testable without booting a real HTTP transport or Docker daemon.
@@ -1186,11 +1214,17 @@ export async function runAgentClaimLoop(args: {
   runJob: (job: { jobId: string; spec: RunnerJobWireSpec }) => Promise<unknown>;
   isDraining?: () => Promise<boolean>;
   pauseAfterClaimError?: () => Promise<void>;
+  /** Aborted when the task is being stopped (SIGTERM from an ECS scale-in or deploy). */
+  shutdown?: AbortSignal;
 }): Promise<void> {
   const isDraining = args.isDraining ?? agentIsDraining;
   const pauseAfterClaimError =
     args.pauseAfterClaimError ?? (() => new Promise<void>((resolve) => setTimeout(resolve, 2_000)));
   for (;;) {
+    if (args.shutdown?.aborted) {
+      console.log('[runner-agent] shutting down; not claiming new work');
+      return;
+    }
     // A draining instance (Spot interruption notice or rebalance
     // recommendation) must NOT claim new work — a job it picks up now is likely
     // to be lost mid-run. Exit instead;
@@ -1211,6 +1245,14 @@ export async function runAgentClaimLoop(args: {
       continue;
     }
     if (!claimed) continue;
+    // The claim long-poll can hand out a job after SIGTERM arrived. The task is
+    // about to be killed, so give the job back now instead of starting it and
+    // leaving the Hub to wait out the lease.
+    if (args.shutdown?.aborted) {
+      console.log(`[runner-agent] shutting down; returning claimed job ${claimed.jobId}`);
+      await args.transport.reportError(claimed.jobId, AGENT_SHUTDOWN_DETAIL).catch(() => {});
+      return;
+    }
     console.log(`[runner-agent] claimed job ${claimed.jobId} (${claimed.spec.jobId})`);
     await runClaimedJobWithRecovery(args.transport, claimed.jobId, () => args.runJob(claimed));
   }
@@ -1263,6 +1305,7 @@ export async function runAgentMain(): Promise<void> {
   console.log(`[runner-agent] registered; polling ${hubUrl} (scope=${orgScope})`);
   await runAgentClaimLoop({
     transport,
+    shutdown: installShutdownSignals(),
     runJob: (job) => {
       // A desktop holds this agent until the Hub stops it.
       if (job.spec.kind === 'desktop') {

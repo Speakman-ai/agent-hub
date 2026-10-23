@@ -9,7 +9,9 @@
  * environment is failed and requeued, a bounded number of times in a row. A
  * loss only starts a new run of losses when the environment had stayed ready
  * for {@link DEFAULT_STABLE_READY_MS}: an environment that comes up and dies
- * again minutes later is still failing, and must not rebuild forever.
+ * again minutes later is still failing, and must not rebuild forever. Stopping
+ * the environment, or giving up after the cap, ends the run: the next build
+ * starts counting from zero.
  */
 import { randomUUID } from 'crypto';
 import type { Project } from '../types.js';
@@ -126,6 +128,13 @@ export function createRunnerPrEnvironmentRuntime(
   // Runner losses in a row per environment. Reaching ready does not reset it;
   // a loss after a long enough ready period does (see reportLoss).
   const losses = new Map<string, number>();
+  // Environments whose last loss was requeued and whose cleanup has not
+  // finished yet. That one teardown is part of the rebuild and keeps the
+  // count; it consumes the marker once it succeeds (a failed teardown is
+  // retried and still counts as the rebuild's). Any other teardown (a stop,
+  // even one before the rebuild starts, or the cleanup after the cap was hit)
+  // ends the run of losses.
+  const rebuilding = new Set<string>();
   // Bumped by every teardown so a start that resolves afterwards is undone.
   const epochs = new Map<string, number>();
   let timer: { stop: () => void } | null = null;
@@ -164,11 +173,13 @@ export function createRunnerPrEnvironmentRuntime(
     const count = stable ? 0 : (losses.get(w.envId) ?? 0);
     const requeue = count < maxRequeues;
     losses.set(w.envId, count + 1);
+    if (requeue) rebuilding.add(w.envId);
+    else rebuilding.delete(w.envId);
     w.reporter.log(`Runner lost: ${detail}${requeue ? ' (rebuilding)' : ''}`);
     w.reporter.lost(
       requeue
         ? `The runner hosting this environment was lost (${detail}). Rebuilding.`
-        : `The runner hosting this environment was lost (${detail}) ${count + 1} times in a row. Retry to rebuild.`,
+        : `The runner hosting this environment was lost (${detail})${count > 0 ? ` ${count + 1} times in a row` : ''}. Retry to rebuild.`,
       { requeue },
     );
   }
@@ -230,6 +241,7 @@ export function createRunnerPrEnvironmentRuntime(
 
   const self: RunnerPrEnvironmentRuntime = {
     async build({ project, env, reporter }) {
+      rebuilding.delete(env.id);
       const epoch = epochs.get(env.id) ?? 0;
       let preview: PreviewConfig | null;
       try {
@@ -277,6 +289,8 @@ export function createRunnerPrEnvironmentRuntime(
 
     async teardown({ env }: { project: Project; env: PrEnvironmentDto }) {
       epochs.set(env.id, (epochs.get(env.id) ?? 0) + 1);
+      const rebuildCleanup = rebuilding.has(env.id);
+      if (!rebuildCleanup) losses.delete(env.id);
       const refs = new Set<string>();
       if (env.runnerRef) refs.add(env.runnerRef);
       for (const w of watches.values()) if (w.envId === env.id) refs.add(w.ref);
@@ -285,6 +299,7 @@ export function createRunnerPrEnvironmentRuntime(
         // Throws on failure: the service records it and retries.
         await runner.stop(ref);
       }
+      if (rebuildCleanup) rebuilding.delete(env.id);
     },
 
     async reattach({ env, reporter }) {

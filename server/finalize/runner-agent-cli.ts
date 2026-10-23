@@ -8,7 +8,11 @@
  */
 import { runAgentMain } from './runner-agent.js';
 
-runAgentMain().catch((err) => {
-  console.error('[runner-agent] fatal:', err);
-  process.exit(1);
-});
+// The loop only returns when the agent is done (shutdown signal or a draining
+// instance); exit even if a stray handle would keep the event loop alive.
+runAgentMain()
+  .then(() => process.exit(0))
+  .catch((err) => {
+    console.error('[runner-agent] fatal:', err);
+    process.exit(1);
+  });
