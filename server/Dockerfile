@@ -74,6 +74,11 @@ FROM node:22-slim AS runtime
 # The build stage already installs python3 to compile better-sqlite3, but
 # that stage is discarded, so we install it again here for the runtime
 # container.
+#
+# `imagemagick` brings the MagickWand shared library that the Python `wand`
+# package loads at import time (project test suites import it). Use the
+# metapackage, not `libmagickwand-6.q16-6`: the versioned library name differs
+# between Debian releases and `node:22-slim` is not pinned to one.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     openssh-client \
@@ -91,6 +96,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     python3-packaging \
     python3-setuptools \
+    imagemagick \
  && git config --system --add safe.directory '*' \
  && rm -rf /var/lib/apt/lists/*
 

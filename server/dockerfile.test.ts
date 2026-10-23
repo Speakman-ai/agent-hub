@@ -108,6 +108,18 @@ describe('server/Dockerfile', () => {
     }
   });
 
+  it('installs ImageMagick in the runtime stage so Python `wand` can import', () => {
+    // `wand` raises "MagickWand shared library not found" at import time when
+    // the library is missing, which broke project test runs inside sessions.
+    const dockerfile = readFileSync(dockerfilePath, 'utf8');
+    const runtimeIdx = dockerfile.indexOf('FROM node:22-slim AS runtime');
+    expect(runtimeIdx).toBeGreaterThan(-1);
+    const runtimeStage = dockerfile.slice(runtimeIdx);
+    expect(runtimeStage, 'expected runtime stage to install `imagemagick`').toMatch(
+      /(^|\s)imagemagick(\s|$|\\)/m,
+    );
+  });
+
   it('installs ripgrep in the runtime stage for agent searches', () => {
     const dockerfile = readFileSync(dockerfilePath, 'utf8');
     const runtimeIdx = dockerfile.indexOf('FROM node:22-slim AS runtime');
