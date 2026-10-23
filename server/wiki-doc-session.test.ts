@@ -70,6 +70,8 @@ function fakeStmts(overrides: Record<string, unknown> = {}) {
     insertBackgroundTask: { run: vi.fn() },
     updateBackgroundTaskStatus: { run: vi.fn() },
     getRunningBackgroundTasks: { all: vi.fn(() => []) },
+    // Every listed running task has a live turn unless a test overrides this.
+    getActiveTask: { get: vi.fn(() => ({ status: 'running' })) },
     createKanbanCardComment: { run: vi.fn() },
     getKanbanCardBySession: { get: vi.fn(() => undefined) },
     markCardDocumented: { run: vi.fn() },
@@ -146,11 +148,29 @@ describe('findActiveWikiDocSession', () => {
   ) {
     return {
       getRunningBackgroundTasks: { all: () => tasks },
+      getActiveTask: { get: () => ({ status: 'running' }) },
       getSession: {
         get: (id: string) => sessions[id],
       },
     } as unknown as Stmts;
   }
+
+  it('ignores a running task whose turn died in a restart (no active_tasks row, past grace)', () => {
+    const s = {
+      getRunningBackgroundTasks: {
+        all: () => [{ session_id: 'x', agent_id: 'docs-1', created_at: '2026-01-01 00:00:00' }],
+      },
+      getActiveTask: { get: () => undefined },
+      getSession: {
+        get: () => ({
+          id: 'x',
+          agent_id: 'docs-1',
+          name: wikiDocSessionNameForCard('card-uuid-1'),
+        }),
+      },
+    } as unknown as Stmts;
+    expect(findActiveWikiDocSession(s, p, { cardId: 'card-uuid-1' })).toBeNull();
+  });
 
   it('matches a running merge session for the same card', () => {
     const s = mk([{ session_id: 'x', agent_id: 'docs-1' }], {

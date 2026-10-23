@@ -154,6 +154,7 @@ describe('findActiveSecurityFixSession', () => {
   const mk = (tasks: unknown[], sessions: Record<string, unknown>) =>
     ({
       getRunningBackgroundTasks: { all: () => tasks },
+      getActiveTask: { get: () => ({ status: 'running' }) },
       getSession: { get: (id: string) => sessions[id] },
     }) as any;
 
@@ -168,6 +169,21 @@ describe('findActiveSecurityFixSession', () => {
     const s = mk([{ session_id: 'x', agent_id: 'other' }], {
       x: { id: 'x', agent_id: 'other', name: '[Security fix] 1 dep', deleted_at: null },
     });
+    expect(findActiveSecurityFixSession(s, project)).toBeNull();
+  });
+
+  it('ignores a stale running task whose turn died (no active_tasks row, past grace)', () => {
+    // Regression: a Hub restart wipes active_tasks but leaves the background
+    // task `running`, so "Fix all" kept saying a fix session was already running.
+    const s = {
+      getRunningBackgroundTasks: {
+        all: () => [{ session_id: 'x', agent_id: 'lead', created_at: '2026-01-01 00:00:00' }],
+      },
+      getActiveTask: { get: () => undefined },
+      getSession: {
+        get: () => ({ id: 'x', agent_id: 'lead', name: '[Security fix] 1 dep', deleted_at: null }),
+      },
+    } as any;
     expect(findActiveSecurityFixSession(s, project)).toBeNull();
   });
 
@@ -190,6 +206,7 @@ describe('dispatchSecurityFixSession', () => {
       updateBackgroundTaskStatus: { run: vi.fn() },
       // No active fix session by default (idempotency guard sees an empty list).
       getRunningBackgroundTasks: { all: vi.fn(() => []) },
+      getActiveTask: { get: vi.fn(() => ({ status: 'running' })) },
       ...overrides,
     } as any;
   }
@@ -342,7 +359,36 @@ describe('dispatchSecurityFixSession', () => {
     expect(stmts.createSession.run).toHaveBeenCalledOnce();
   });
 
-  it('marks the background task failed (no unhandled rejection) when the kickoff rejects', async () => {
+  it('starts a new session when the only running fix task is stale', () => {
+    const stmts = fakeStmts({
+      getRunningBackgroundTasks: {
+        all: vi.fn(() => [
+          { session_id: 'dead', agent_id: 'lead', created_at: '2026-01-01 00:00:00' },
+        ]),
+      },
+      getActiveTask: { get: vi.fn(() => undefined) },
+      getSession: {
+        get: vi.fn((id: string) =>
+          id === 'dead'
+            ? { id: 'dead', agent_id: 'lead', name: '[Security fix] 3 deps', deleted_at: null }
+            : { id: 'sess', name: '[Security fix]' },
+        ),
+      },
+    });
+    const result = dispatchSecurityFixSession(
+      {
+        stmts,
+        config: {} as any,
+        findAgent: vi.fn(() => ({ agent: agent({ id: 'lead' }), project })) as any,
+        handleChat: vi.fn().mockResolvedValue(undefined),
+      },
+      { project, findings: [row()], ownerUserId: null },
+    );
+    expect(result!.reused).toBe(false);
+    expect(stmts.createSession.run).toHaveBeenCalledOnce();
+  });
+
+  it('marks the background task error (no unhandled rejection) when the kickoff rejects', async () => {
     const stmts = fakeStmts();
     // handleChat rejects after the rows are created: the function must still
     // return the session synchronously, and the rejection must be caught and
@@ -356,7 +402,7 @@ describe('dispatchSecurityFixSession', () => {
     expect(result).not.toBeNull();
     // Let the rejected promise's .catch handler run.
     await new Promise((r) => setImmediate(r));
-    expect(stmts.updateBackgroundTaskStatus.run).toHaveBeenCalledWith('failed', expect.any(String));
+    expect(stmts.updateBackgroundTaskStatus.run).toHaveBeenCalledWith('error', expect.any(String));
   });
 
   it('returns null (no dispatch) when there are no findings', () => {

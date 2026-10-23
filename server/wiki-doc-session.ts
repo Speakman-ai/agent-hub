@@ -28,6 +28,7 @@ import type {
 import { setSessionOwner, resolveWikiDocOwnerUserId } from './session-ownership.js';
 import { broadcastSessionCreated } from './session-checkpoint-rewind.js';
 import { resolveAgentSpawnEngineAndModel } from './effective-model.js';
+import { isBackgroundTaskLive } from './background-task-liveness.js';
 
 /** Session name prefix stamped on every wiki-doc session (idempotency key). */
 export const WIKI_DOC_SESSION_PREFIX = '[Wiki]';
@@ -256,9 +257,11 @@ export function findActiveWikiDocSession(
   const running = stmts.getRunningBackgroundTasks.all() as Array<{
     session_id: string;
     agent_id: string;
+    created_at?: string | null;
   }>;
   for (const task of running) {
     if (!agentIds.has(task.agent_id)) continue;
+    if (!isBackgroundTaskLive(stmts, task)) continue;
     const session = stmts.getSession.get(task.session_id) as SessionRow | undefined;
     if (!session || session.deleted_at) continue;
     if (typeof session.name !== 'string' || !session.name.startsWith(WIKI_DOC_SESSION_PREFIX)) {

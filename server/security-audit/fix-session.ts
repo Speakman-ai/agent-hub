@@ -29,6 +29,7 @@ import { agentAcceptsAutonomousTickets } from '../agent-autonomy.js';
 import { resolveAgentSpawnEngineAndModel } from '../effective-model.js';
 import { defaultSessionUseWorktreeFlag } from '../project-mode.js';
 import { setSessionOwner } from '../session-ownership.js';
+import { isBackgroundTaskLive } from '../background-task-liveness.js';
 import type { FinalizeAutomationLevel } from '../finalize/automation.js';
 
 const SEVERITY_ORDER: Severity[] = ['critical', 'high', 'medium', 'low', 'unknown'];
@@ -196,7 +197,7 @@ export const SECURITY_FIX_SESSION_PREFIX = '[Security fix]';
  * Find an already-active security-fix session for `project`, if one exists.
  * "Active" = a not-deleted session named with {@link SECURITY_FIX_SESSION_PREFIX},
  * owned by one of the project's agents, whose background task is still
- * `running`. Used to stop a double-click / two-admin race from spawning
+ * `running` and backed by a turn that is actually in flight. Used to stop a double-click / two-admin race from spawning
  * duplicate agents that would fight over the same dependency manifests and open
  * competing PRs. Returns the live session row, or null.
  *
@@ -211,9 +212,13 @@ export function findActiveSecurityFixSession(stmts: Stmts, project: Project): Se
   const running = stmts.getRunningBackgroundTasks.all() as Array<{
     session_id: string;
     agent_id: string;
+    created_at?: string | null;
   }>;
   for (const task of running) {
     if (!agentIds.has(task.agent_id)) continue;
+    // A `running` row whose turn died (Hub restart, crash) is not a live fix
+    // session; trusting it blocked every new fix with "already running".
+    if (!isBackgroundTaskLive(stmts, task)) continue;
     const session = stmts.getSession.get(task.session_id) as SessionRow | undefined;
     if (!session || session.deleted_at) continue;
     if (typeof session.name === 'string' && session.name.startsWith(SECURITY_FIX_SESSION_PREFIX)) {
@@ -303,7 +308,7 @@ export function dispatchSecurityFixSession(
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[security-audit] fix session ${sessionId} kickoff failed: ${msg}`);
       try {
-        deps.stmts.updateBackgroundTaskStatus.run('failed', taskId);
+        deps.stmts.updateBackgroundTaskStatus.run('error', taskId);
       } catch {
         /* best-effort: the task row / db may be gone; the log above still fires */
       }

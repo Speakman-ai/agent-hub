@@ -88,6 +88,7 @@ describe('dispatchWikiDocScan', () => {
     const deps = {
       stmts: {
         getRunningBackgroundTasks: { all: () => [{ session_id: 's-scan', agent_id: 'docs-1' }] },
+        getActiveTask: { get: () => ({ status: 'running' }) },
         getSession: { get: () => running },
       },
       config: {},
