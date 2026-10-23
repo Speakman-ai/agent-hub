@@ -346,11 +346,18 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // 10.5.1 then fixed two classifier gaps that let an address slip past an
     // SSRF / trust-boundary check: GHSA-2vr4-cq9g-pvrc (NAT64 local-use
     // 64:ff9b:1::/48 unrecognized) and GHSA-rpw4-54j3-4h4q (isLinkLocal() only
-    // matched fe80::/64 instead of fe80::/10).
+    // matched fe80::/64 instead of fe80::/10). GHSA-rxp7-6hxx-x8q5 (10.7.4):
+    // Address6 matched a zone identifier in quadratic time before applying its
+    // length limit, so one long string could stall the event loop.
     {
       pkg: 'ip-address',
-      min: '10.5.1',
-      advisory: ['GHSA-v2v4-37r5-5v8g', 'GHSA-2vr4-cq9g-pvrc', 'GHSA-rpw4-54j3-4h4q'],
+      min: '10.7.4',
+      advisory: [
+        'GHSA-v2v4-37r5-5v8g',
+        'GHSA-2vr4-cq9g-pvrc',
+        'GHSA-rpw4-54j3-4h4q',
+        'GHSA-rxp7-6hxx-x8q5',
+      ],
     },
     // GHSA-v422-hmwv-36x6: an invalid `limit` silently disables size enforcement.
     // Patched separately on each supported line, and both lines are live here
@@ -371,10 +378,22 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // GHSA-p98j-92pf-mc4p (3.4.16): the same neutralization was wired only into
     // the before/upon hook sites, so a node removed by an afterSanitizeElements
     // or afterSanitizeAttributes hook kept its descendants' handlers armed.
+    // 3.4.17 then fixed three more: GHSA-mrv2-3pqr-j5jr (a hook removing a
+    // parent or sibling still left the detached subtree armed, an incomplete
+    // fix for GHSA-p98j-92pf-mc4p), GHSA-cg2g-xh64-v4q7 (SAFE_FOR_TEMPLATES
+    // split expressions survive in attached shadow roots) and
+    // GHSA-c6gr-qvv4-5v3f (SMIL attributeName=href guard skipped under
+    // application/xhtml+xml).
     {
       pkg: 'dompurify',
-      min: '3.4.16',
-      advisory: ['GHSA-55q2-fjhq-7xh7', 'GHSA-p98j-92pf-mc4p'],
+      min: '3.4.17',
+      advisory: [
+        'GHSA-55q2-fjhq-7xh7',
+        'GHSA-p98j-92pf-mc4p',
+        'GHSA-mrv2-3pqr-j5jr',
+        'GHSA-cg2g-xh64-v4q7',
+        'GHSA-c6gr-qvv4-5v3f',
+      ],
     },
     // GHSA-4x5r-pxfx-6jf8: arbitrary file read via a sourceMappingURL comment.
     { pkg: '@babel/core', min: '7.29.6', advisory: 'GHSA-4x5r-pxfx-6jf8' },
@@ -1725,6 +1744,65 @@ describe('unpatched advisories (containment guards)', () => {
       'an iframe now delegates hid/usb, which electron < 42.11.3 checks against the top-level ' +
         'origin (GHSA-fw47-9c62-h3vw). Bump electron to >= 42.11.3 first.',
     ).toEqual([]);
+  });
+
+  /**
+   * Six more Electron advisories fixed only on 42.x, deferred with the same
+   * Electron 42 bump as GHSA-fw47-9c62-h3vw above. Each needs a shell feature
+   * the desktop app does not use, so these scans fail the moment one appears:
+   *
+   *   GHSA-x562-297c-g43g  pointer lock attributed to the wrong frame (42.11.9)
+   *   GHSA-997q-gvvc-jwmx  openExternal attributed to the wrong origin (42.11.3)
+   *     Both only matter to a permission handler that decides by origin. The
+   *     media handler never reads the requesting origin or URL.
+   *   GHSA-2p8c-gr87-2676  SameSite skipped for windows opened from links (42.11.3)
+   *     Every setWindowOpenHandler returns `deny` and opens http(s) externally.
+   *   GHSA-98mx-cjp9-gchm  extension tabs.query leaks tab URLs (42.11.1)
+   *     No extensions are loaded.
+   *   GHSA-h3v5-h239-pg29  macOS off-screen rendering trusts GPU geometry (42.11.6)
+   *   GHSA-3qxv-5xgr-q7w9  frame subscription trusts GPU geometry (42.11.6)
+   *     No offscreen windows and no beginFrameSubscription.
+   */
+  it('electron: origin-sensitive permission, link-window, extension and OSR paths stay unreachable', () => {
+    const root = join(here, '..');
+    const out = spawnSync('git', ['ls-files', '-z', 'electron'], { cwd: root, encoding: 'utf8' });
+    expect(out.status, `git ls-files electron failed: ${out.stderr}`).toBe(0);
+    const shell = out.stdout
+      .split('\0')
+      .filter((f) => /\.[cm]?[jt]s$/.test(f) && !/\.(test|spec)\.[cm]?[jt]sx?$/.test(f));
+    expect(shell.length, 'expected electron/ sources').toBeGreaterThan(0);
+    const sources = shell.map((f) => [f, readFileSync(join(root, f), 'utf8')] as const);
+
+    const preconditions: Array<{ pattern: RegExp; advisory: string }> = [
+      {
+        pattern: /requestingOrigin|requestingUrl|securityOrigin|embeddingOrigin/,
+        advisory:
+          'a permission handler now reads the requesting origin, which electron < 42.11.9 can ' +
+          'misattribute for pointer lock and openExternal (GHSA-x562-297c-g43g, GHSA-997q-gvvc-jwmx)',
+      },
+      {
+        pattern: /action\s*:\s*['"`]allow['"`]/,
+        advisory:
+          'a window-open handler now allows a child window, which electron < 42.11.3 opens ' +
+          'without SameSite cookie restrictions (GHSA-2p8c-gr87-2676)',
+      },
+      {
+        pattern: /loadExtension|\.extensions\b/,
+        advisory:
+          'the shell now loads extensions, whose tabs.query leaks tab URLs on electron < 42.11.1 ' +
+          '(GHSA-98mx-cjp9-gchm)',
+      },
+      {
+        pattern: /offscreen|beginFrameSubscription/,
+        advisory:
+          'the shell now uses off-screen rendering or frame subscription, which trust GPU frame ' +
+          'geometry on electron < 42.11.6 (GHSA-h3v5-h239-pg29, GHSA-3qxv-5xgr-q7w9)',
+      },
+    ];
+    for (const { pattern, advisory } of preconditions) {
+      const hits = sources.filter(([, text]) => pattern.test(text)).map(([f]) => f);
+      expect(hits, `${advisory}. Bump electron to >= 42.11.9 first.`).toEqual([]);
+    }
   });
 
   /**
