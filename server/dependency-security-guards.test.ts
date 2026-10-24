@@ -190,15 +190,25 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // percent-encoded octets) followed on 3.1.8, which subsumes every earlier
     // fix. Every copy sits under `ajv`'s `fast-uri: ^3.0.1`, so each patch
     // re-resolves in range with no override.
+    //
+    // Four more first patched on 3.1.9, which subsumes 3.1.8:
+    //   GHSA-w74x-v6f9-j3xg  scheme spoofing via percent-encoded scheme decoding
+    //   GHSA-wjr9-j795-jxcr  host confusion via unchecked WHATWG host canonicalization
+    //   GHSA-333x-w4r6-6crp  scheme injection via a first-segment colon in suffix refs
+    //   GHSA-xhq7-xmqj-769h  improper path equivalence in relative-ref normalization
     {
       pkg: 'fast-uri',
-      min: '3.1.8',
+      min: '3.1.9',
       advisory: [
         'GHSA-f65p-4m7j-42xc',
         'GHSA-fph4-wmhf-6fwf',
         'GHSA-jqff-g426-hqxp',
         'GHSA-5jgf-p345-68v8',
         'GHSA-hrr3-gc8f-f4qj',
+        'GHSA-w74x-v6f9-j3xg',
+        'GHSA-wjr9-j795-jxcr',
+        'GHSA-333x-w4r6-6crp',
+        'GHSA-xhq7-xmqj-769h',
       ],
     },
     // GHSA-v245-v573-v5vm: quadratic-complexity DoS in the `mailto:` validator.
@@ -362,8 +372,21 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // GHSA-v422-hmwv-36x6: an invalid `limit` silently disables size enforcement.
     // Patched separately on each supported line, and both lines are live here
     // (express@4 pulls 1.x, express@5 under @slack/bolt + MCP SDK pulls 2.x).
-    { pkg: 'body-parser', min: '1.20.6', advisory: 'GHSA-v422-hmwv-36x6', line: '1.x' },
-    { pkg: 'body-parser', min: '2.3.0', advisory: 'GHSA-v422-hmwv-36x6', line: '2.x' },
+    // GHSA-27r3-jxmh-p828 (DoS via trailing bytes after a compressed body) then
+    // raised both lines to 1.20.9 / 2.4.0. express@4 declares `~1.20.5` and
+    // express@5 `^2.2.1`, so both re-resolve in range with no override.
+    {
+      pkg: 'body-parser',
+      min: '1.20.9',
+      advisory: ['GHSA-v422-hmwv-36x6', 'GHSA-27r3-jxmh-p828'],
+      line: '1.x',
+    },
+    {
+      pkg: 'body-parser',
+      min: '2.4.0',
+      advisory: ['GHSA-v422-hmwv-36x6', 'GHSA-27r3-jxmh-p828'],
+      line: '2.x',
+    },
     // GHSA-r292-9mhp-454m: uncatchable stack-overflow DoS via a crafted long-path tar.
     { pkg: 'tar', min: '7.5.21', advisory: 'GHSA-r292-9mhp-454m' },
     // GHSA-c2j3-45gr-mqc4 (3.4.12): CUSTOM_ELEMENT_HANDLING bypasses
@@ -434,16 +457,32 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // GHSA-3wwx-pv8p-q78v (unhandled error in WebSocket permessage-deflate
     // decompression, DoS) raised both lines again: patched in 6.28.1 and 7.29.1.
     // Same plain re-resolve, still inside every parent's range.
+    //
+    // Three more raised both lines to 6.29.1 / 7.30.1, again in range:
+    //   GHSA-xjj6-f33q-929c  unhandled error on excessive content-encodings (DoS)
+    //   GHSA-4qv8-2p9j-2685  unbounded memory in the EventSource parser (DoS)
+    //   GHSA-f72v-6w45-q472  SRI bypass via non-lowercase algorithm tokens (7.x only)
     {
       pkg: 'undici',
-      min: '6.28.1',
-      advisory: ['GHSA-8xcm-r25x-g524', 'GHSA-3wwx-pv8p-q78v'],
+      min: '6.29.1',
+      advisory: [
+        'GHSA-8xcm-r25x-g524',
+        'GHSA-3wwx-pv8p-q78v',
+        'GHSA-xjj6-f33q-929c',
+        'GHSA-4qv8-2p9j-2685',
+      ],
       line: '6.x',
     },
     {
       pkg: 'undici',
-      min: '7.29.1',
-      advisory: ['GHSA-4cwx-7wf7-3272', 'GHSA-3wwx-pv8p-q78v'],
+      min: '7.30.1',
+      advisory: [
+        'GHSA-4cwx-7wf7-3272',
+        'GHSA-3wwx-pv8p-q78v',
+        'GHSA-xjj6-f33q-929c',
+        'GHSA-4qv8-2p9j-2685',
+        'GHSA-f72v-6w45-q472',
+      ],
       line: '7.x',
     },
 
@@ -574,11 +613,17 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // TLS `servername` across transports (cross-tenant SMTP credential
     // disclosure), patched only on the 10.x line at 10.0.2. The server manifest
     // moved to `^10.0.12`; 10.0.0's only breaking change is Node >= 20.
-    // Server-only.
+    // Three addressparser flaws that turn display text into a recipient were
+    // then patched on 10.1.4 (GHSA-85x2-q946-cp5h `>` in a quoted local part,
+    // GHSA-m943-m63m-w62w `;` in a quoted string, GHSA-8c8m-p3m8-cjg8 nested
+    // comments); the manifest moved to `^10.1.4`. Server-only.
     {
       pkg: 'nodemailer',
-      min: '10.0.2',
+      min: '10.1.4',
       advisory: [
+        'GHSA-85x2-q946-cp5h',
+        'GHSA-m943-m63m-w62w',
+        'GHSA-8c8m-p3m8-cjg8',
         'GHSA-6vj9-mwq6-2f5v',
         'GHSA-2x7j-588g-ccc2',
         'GHSA-cc9r-2j5m-2m83',
@@ -726,6 +771,16 @@ describe('dependency security guards (high-severity advisory floors)', () => {
       advisory: ['GHSA-cv27-6wvh-8x7j', 'GHSA-x3q4-9hxx-gx8m', 'GHSA-374f-7chj-9948'],
       only: ['server'],
     },
+
+    // --- 40-finding audit (zod / body-parser / undici / fast-uri / nodemailer) ---
+
+    // GHSA-mrhx-c7xc-m3w5: memory exhaustion validating oversized constrained
+    // collections. Patched only at 4.6.6 (`< 4.6.6`, no 3.x backport). The
+    // server's own zod moved to `^4.6.6`; zod-to-openapi and the @ai-sdk family
+    // all admit 4.x. The 3.x copies that remain cannot take 4.x and are
+    // contained by the zod 3.x guard further down, so this floor is scoped to
+    // the 4.x line.
+    { pkg: 'zod', min: '4.6.6', advisory: 'GHSA-mrhx-c7xc-m3w5', line: '4.x', only: ['server'] },
   ];
 
   for (const { pkg, min, advisory, line, only } of FLOORS) {
@@ -1504,6 +1559,19 @@ describe('unpatched advisories (containment guards)', () => {
     // CSR, sign-then-verify), not attacker-supplied signatures, and none of it
     // ships in the app bundle. Even the newest @expo/cli (57.x) and
     // code-signing-certificates (0.0.7) still depend on node-forge `^1.4.0`.
+    // Memory exhaustion validating oversized constrained collections. Patched
+    // only on zod 4.6.6 with no 3.x backport. @expo/cli declares `zod ^3.25.76`
+    // and imports the 3.x API, so an override across the major would break the
+    // dev CLI. It validates the project's own app config and dev-server
+    // messages on the developer's machine; nothing ships in the app bundle.
+    {
+      workspace: 'mobile',
+      pkg: 'zod',
+      advisory: ['GHSA-mrhx-c7xc-m3w5'],
+      vulnerableRange: '< 4.6.6',
+      dependents: ['@expo/cli'],
+      why: 'the fix is only on zod 4 and @expo/cli declares ^3.25.76; the only consumer is the local Expo dev CLI validating first-party config',
+    },
     {
       workspace: 'mobile',
       pkg: 'node-forge',
@@ -1689,6 +1757,71 @@ describe('unpatched advisories (containment guards)', () => {
       });
     }
   }
+
+  /**
+   * GHSA-mrhx-c7xc-m3w5 is patched only on zod 4.6.6. The server's own copy is
+   * on 4.x and floored above, but three 3.x copies remain nested under parents
+   * that import the 3.x API and declare 3.x-only ranges:
+   *
+   *   @langchain/core 0.3 (`^3.25.32`) and @langchain/openai 0.4 (`^3.22.4`),
+   *     both pulled in by @browserbasehq/stagehand, plus the nested `openai`
+   *   chromium-bidi (exactly `3.23.8`), optional, via puppeteer-core
+   *
+   * Forcing zod 4 under them breaks their schema code. None of it runs: the
+   * server imports stagehand for types only, so neither langchain nor
+   * puppeteer is ever loaded. This guard pins the set of packages that resolve
+   * to a vulnerable copy, so a new consumer (or a runtime stagehand import
+   * that makes these reachable) forces the note to be re-derived.
+   */
+  it('server: zod copies below 4.6.6 stay confined to stagehand internals (GHSA-mrhx-c7xc-m3w5)', () => {
+    const packages = lockPackages(LOCKFILES.find((l) => l.name === 'server')!.lock);
+    const consumers = new Set<string>();
+    for (const [key, meta] of Object.entries(packages)) {
+      const declared = {
+        ...(meta.dependencies ?? {}),
+        ...(meta.optionalDependencies ?? {}),
+        ...(meta.peerDependencies ?? {}),
+      };
+      if (!declared.zod) continue;
+      const resolved = resolveDependency(packages, key, 'zod');
+      const version = resolved ? packages[resolved]?.version : undefined;
+      if (version && compareSemver(version, '4.6.6') < 0) consumers.add(key);
+    }
+    expect(
+      [...consumers].sort(),
+      'a new package resolves to a zod copy below 4.6.6 (GHSA-mrhx-c7xc-m3w5, no 3.x fix); ' +
+        'the accepted-risk note only covers stagehand-internal consumers the server never loads',
+    ).toEqual(
+      [
+        'node_modules/@langchain/core',
+        'node_modules/@langchain/openai',
+        'node_modules/@langchain/openai/node_modules/openai',
+        'node_modules/chromium-bidi',
+      ].sort(),
+    );
+
+    const listed = spawnSync('git', ['grep', '-l', '@browserbasehq/stagehand', '--', '*.ts'], {
+      cwd: here,
+      encoding: 'utf8',
+    });
+    const runtimeLoad = /(\bfrom|\bimport\s*\(|\brequire\s*\()\s*['"]@browserbasehq\/stagehand/;
+    const runtimeImports = listed.stdout
+      .split('\n')
+      .filter((f) => f && !/\.test\.ts$/.test(f))
+      .filter((f) =>
+        runtimeLoad.test(
+          readFileSync(join(here, f), 'utf8').replace(
+            /import\s+type\s[^;]*?from\s*['"][^'"]+['"]/g,
+            '',
+          ),
+        ),
+      );
+    expect(
+      runtimeImports,
+      'the server now loads stagehand at runtime, which makes its zod 3.x copies reachable ' +
+        '(GHSA-mrhx-c7xc-m3w5); re-assess before shipping',
+    ).toEqual([]);
+  });
 
   it('root: electron no longer pulls in extract-zip (GHSA-jmr9-qjv8-65gv, GHSA-7pqw-9j4j-h8q3)', () => {
     const packages = lockPackages(LOCKFILES.find((l) => l.name === 'root')!.lock);
