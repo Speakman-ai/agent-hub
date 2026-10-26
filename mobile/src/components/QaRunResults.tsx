@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { artifactRenderKind } from '@shared/utils/artifactView';
+import { artifactRenderKind, isGenericArtifactType } from '@shared/utils/artifactView';
 import { colors } from '../theme/colors';
 import { buildArtifactContentUrl } from '../utils/artifactContent';
 import { getApiBaseUrl, getAuthHeaders } from '../utils/config';
@@ -21,15 +21,22 @@ function ScreenshotThumb({
 }: {
   sessionId: string;
   shot: QaScreenshot;
-  onOpen: () => void;
+  onOpen: (contentType: string) => void;
 }) {
   const [failed, setFailed] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   const base = getApiBaseUrl();
-  const isImage = artifactRenderKind(shot.contentType, shot.filename) === 'image';
+  // Screenshots uploaded from a host without `file` were stored as generic
+  // `.dat` blobs; the content route sniffs their bytes, so try those as images
+  // too and fall back to the filename tile on error.
+  const generic = isGenericArtifactType(shot.contentType);
+  const isImage = artifactRenderKind(shot.contentType, shot.filename) === 'image' || generic;
   const uri = base ? buildArtifactContentUrl(base, sessionId, shot.id) : '';
+  // The viewer only needs a raster image type to pick its image renderer.
+  const openType = generic && loaded ? 'image/png' : shot.contentType;
   return (
     <TouchableOpacity
-      onPress={onOpen}
+      onPress={() => onOpen(openType)}
       style={styles.thumb}
       accessibilityLabel={shot.filename}
       testID={`qa-screenshot-${shot.id}`}
@@ -39,6 +46,7 @@ function ScreenshotThumb({
           source={{ uri, headers: getAuthHeaders() as Record<string, string> }}
           style={styles.thumbImage}
           resizeMode="cover"
+          onLoad={() => setLoaded(true)}
           onError={() => setFailed(true)}
         />
       ) : (
@@ -68,7 +76,7 @@ export function QaScreenshotGallery({
             key={shot.id}
             sessionId={sessionId}
             shot={shot}
-            onOpen={() => setOpen(shot)}
+            onOpen={(contentType) => setOpen({ ...shot, contentType })}
           />
         ))}
       </ScrollView>

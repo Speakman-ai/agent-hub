@@ -15,7 +15,12 @@ import type { RouteDeps, ArtifactRow } from '../types.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { userOwnsSession, getSessionOwner } from '../session-ownership.js';
 import { validateUploadContent } from '../upload-validation.js';
-import { ensureFilenameExtension, reconcileContentType } from '../mime-extensions.js';
+import {
+  ensureFilenameExtension,
+  isGenericContentType,
+  reconcileContentType,
+  sniffContentType,
+} from '../mime-extensions.js';
 import {
   getArtifactStoreForLocation,
   ArtifactStoreUnavailableError,
@@ -159,8 +164,13 @@ export default function createArtifactRoutes(deps: RouteDeps): Router {
           .json({ error: `File too large. Max size: ${MAX_ARTIFACT_SIZE / 1024 / 1024}MB` });
       }
 
-      const declaredType =
+      const headerType =
         (req.headers['content-type'] as string | undefined) || 'application/octet-stream';
+      // A generic type tells us nothing, so read the bytes: a PNG uploaded from a
+      // host without `file` must still be stored as an image with a `.png` name.
+      const declaredType = isGenericContentType(headerType)
+        ? (sniffContentType(buf) ?? headerType)
+        : headerType;
       // Guarantee every stored artifact carries an extension (derived from the
       // content type when the caller's name lacks one) so downloads open in the
       // right app and the Artifacts panel shows a real file type. The 255-char
@@ -237,6 +247,10 @@ export default function createArtifactRoutes(deps: RouteDeps): Router {
       // The active-content guard below runs on this reconciled type, so
       // deriving e.g. `text/html` from a `.html` name still forces a download.
       const effectiveType = reconcileContentType(row.content_type, row.filename);
+      // Still generic (e.g. a screenshot stored as `shot.dat` before uploads
+      // sniffed their bytes): the type can only come from the bytes, so skip
+      // the presigned redirect and stream instead.
+      const needsSniff = isGenericContentType(effectiveType);
 
       // Agent-controlled artifacts must never execute script in the app origin:
       // active content (HTML/SVG/XML/JS) is forced to download with a neutral
@@ -255,7 +269,7 @@ export default function createArtifactRoutes(deps: RouteDeps): Router {
       // with the reconciled type + disposition so a redirect corrects an older
       // object stored as a generic `application/octet-stream` (e.g. a PDF)
       // instead of serving it with that stale type.
-      if (req.query.redirect === '1' && !active) {
+      if (req.query.redirect === '1' && !active && !needsSniff) {
         try {
           const url = await store.presignGet(row.storage_key, {
             responseContentType: contentType,
@@ -268,7 +282,17 @@ export default function createArtifactRoutes(deps: RouteDeps): Router {
       }
       try {
         const buf = await store.getBuffer(row.storage_key);
-        res.setHeader('Content-Type', contentType);
+        const sniffed = needsSniff ? sniffContentType(buf) : null;
+        if (sniffed) {
+          // Repair the row so listings (Artifacts panel, QA screenshots) see
+          // the real type from now on.
+          try {
+            stmts.updateArtifactContentType?.run(sniffed, row.id);
+          } catch (err: unknown) {
+            console.warn('Artifact content-type repair failed:', err);
+          }
+        }
+        res.setHeader('Content-Type', sniffed ?? contentType);
         res.setHeader('Content-Length', String(buf.length));
         res.setHeader('Content-Disposition', contentDisposition(disposition, row.filename));
         res.send(buf);

@@ -3,7 +3,9 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   statSync,
+  symlinkSync,
   readFileSync,
   writeFileSync,
   rmSync,
@@ -260,6 +262,61 @@ describe('agent-hub deterministic script wrappers — shape', () => {
           presentation: 'inline',
           body: '# Report\n',
         });
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    }, 15_000);
+
+    it('declares image/png for a .png upload even when the host has no `file`', async () => {
+      const tempDir = mkdtempSync(path.join(os.tmpdir(), 'artifact-mime-test-'));
+      const sourcePath = path.join(tempDir, 'shot.png');
+      writeFileSync(sourcePath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+      // A PATH that mirrors the host's tools minus `file`, so the wrapper must
+      // take its extension fallback even on hosts that have `file` installed.
+      const binDir = path.join(tempDir, 'bin');
+      mkdirSync(binDir);
+      for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+        if (!dir || !existsSync(dir)) continue;
+        for (const name of readdirSync(dir)) {
+          if (name === 'file' || existsSync(path.join(binDir, name))) continue;
+          try {
+            symlinkSync(path.join(dir, name), path.join(binDir, name));
+          } catch {
+            /* a name raced in from another PATH entry; first one wins */
+          }
+        }
+      }
+      expect(
+        spawnSync('bash', ['-c', 'command -v file'], { env: { PATH: binDir } }).status,
+      ).not.toBe(0);
+      let contentType: string | undefined;
+      const server = http.createServer((req, res) => {
+        contentType = req.headers['content-type'];
+        req.resume();
+        req.on('end', () => {
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ id: 'artifact-1' }));
+        });
+      });
+
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      try {
+        const { port } = server.address() as AddressInfo;
+        const result = await spawnAsync(
+          path.join(DEFAULT_SCRIPTS, 'artifacts.sh'),
+          ['put', sourcePath, 'case 1: page loaded'],
+          {
+            ...process.env,
+            PATH: binDir,
+            AGENT_HUB_URL: `http://127.0.0.1:${port}`,
+            AGENT_HUB_API_KEY: 'test-key',
+            AGENT_HUB_SESSION_ID: 'session-1',
+            AGENT_HUB_DATA_DIR: tempDir,
+          },
+        );
+        expect(result.status, `stderr: ${result.stderr}`).toBe(0);
+        expect(contentType).toBe('image/png');
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()));
         rmSync(tempDir, { recursive: true, force: true });

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  sniffContentType,
   extensionForContentType,
   hasFileExtension,
   ensureFilenameExtension,
@@ -190,5 +191,26 @@ describe('truncateFilename', () => {
 
   it('is a no-op for a non-positive limit', () => {
     expect(truncateFilename('report.pdf', 0)).toBe('report.pdf');
+  });
+});
+
+describe('sniffContentType', () => {
+  it('recognises image and PDF signatures', () => {
+    expect(sniffContentType(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))).toBe(
+      'image/png',
+    );
+    expect(sniffContentType(Buffer.from([0xff, 0xd8, 0xff, 0xe0]))).toBe('image/jpeg');
+    expect(sniffContentType(Buffer.from('GIF89a'))).toBe('image/gif');
+    expect(sniffContentType(Buffer.from('RIFF\x00\x00\x00\x00WEBPVP8 ', 'latin1'))).toBe(
+      'image/webp',
+    );
+    expect(sniffContentType(Buffer.from('%PDF-1.7'))).toBe('application/pdf');
+  });
+
+  it('returns null for anything else, including active content', () => {
+    expect(sniffContentType(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg">'))).toBeNull();
+    expect(sniffContentType(Buffer.from('<html>'))).toBeNull();
+    expect(sniffContentType(Buffer.from([0x89, 0x50]))).toBeNull();
+    expect(sniffContentType(null)).toBeNull();
   });
 });

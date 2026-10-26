@@ -235,6 +235,25 @@ describe('POST /api/sessions/:id/artifacts', () => {
     expect(content.headers['content-disposition']).toContain('inline');
   });
 
+  it('sniffs a PNG uploaded as octet-stream with an extensionless label', async () => {
+    // artifacts.sh falls back to octet-stream on hosts without `file`, and QA
+    // agents pass a label like "case 1: page loaded" as the display name.
+    const id = await newSessionId();
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d]);
+    const upload = await request
+      .post(`/api/sessions/${id}/artifacts`)
+      .set('Content-Type', 'application/octet-stream')
+      .set('x-filename', encodeURIComponent('case 1: page loaded'))
+      .send(png)
+      .expect(200);
+    expect(upload.body.contentType).toBe('image/png');
+    expect(upload.body.filename).toBe('case 1: page loaded.png');
+    const content = await request
+      .get(`/api/sessions/${id}/artifacts/${upload.body.id as string}/content`)
+      .expect(200);
+    expect(content.headers['content-type']).toContain('image/png');
+  });
+
   it('leaves an octet-stream blob with an unknown extension as octet-stream', async () => {
     const id = await newSessionId();
     const upload = await request

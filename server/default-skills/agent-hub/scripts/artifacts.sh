@@ -51,9 +51,24 @@ mime_of() {
   local f="$1"
   if command -v file >/dev/null 2>&1; then
     file --mime-type -b "$f" 2>/dev/null || echo 'application/octet-stream'
-  else
-    echo 'application/octet-stream'
+    return
   fi
+  # No `file` binary (the Hub container ships without one): go by extension.
+  # The server also sniffs image/PDF bytes when the type stays generic.
+  local ext="${f##*.}"
+  [[ "$ext" == "$f" ]] && ext=""
+  case "$(printf '%s' "$ext" | tr '[:upper:]' '[:lower:]')" in
+    png) echo 'image/png' ;;
+    jpg | jpeg) echo 'image/jpeg' ;;
+    gif) echo 'image/gif' ;;
+    webp) echo 'image/webp' ;;
+    pdf) echo 'application/pdf' ;;
+    md) echo 'text/markdown' ;;
+    txt | log) echo 'text/plain' ;;
+    csv) echo 'text/csv' ;;
+    json) echo 'application/json' ;;
+    *) echo 'application/octet-stream' ;;
+  esac
 }
 
 cmd_put() {

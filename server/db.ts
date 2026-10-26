@@ -4348,6 +4348,7 @@ function initDb(dataDir: string): void {
     countArtifactsBySession: db.prepare('SELECT COUNT(*) AS n FROM artifacts WHERE session_id = ?'),
     getArtifact: db.prepare('SELECT * FROM artifacts WHERE id = ?'),
     deleteArtifact: db.prepare('DELETE FROM artifacts WHERE id = ?'),
+    updateArtifactContentType: db.prepare('UPDATE artifacts SET content_type = ? WHERE id = ?'),
     // QA Validation. Status / approval / sign-off writers are called only by
     // qa-status.ts so plan transitions stay in one place.
     insertQaPlan: db.prepare(

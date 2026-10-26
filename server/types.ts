@@ -2190,6 +2190,7 @@ export interface Stmts {
   getArtifactsBySession: Stmt;
   countArtifactsBySession: Stmt;
   getArtifact: Stmt;
+  updateArtifactContentType: Stmt;
   deleteArtifact: Stmt;
   // QA Validation
   insertQaPlan: Stmt<

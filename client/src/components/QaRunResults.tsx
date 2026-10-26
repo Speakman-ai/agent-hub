@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ImageIcon, X } from 'lucide-react';
-import { artifactRenderKind } from '@shared/utils/artifactView';
+import { artifactRenderKind, isGenericArtifactType } from '@shared/utils/artifactView';
 import type { QaCaseWire, QaResultWire, QaRunWire, QaScreenshotWire } from '../utils/api';
 import { fetchArtifactBlob } from '../utils/artifactContent';
 import { VERDICT_CLASS, VERDICT_LABELS } from '../utils/qaLabels';
@@ -35,19 +35,26 @@ function ScreenshotThumb({
 }: {
   sessionId: string;
   shot: QaScreenshotWire;
-  onOpen: () => void;
+  onOpen: (contentType: string) => void;
 }) {
-  const isImage = artifactRenderKind(shot.contentType, shot.filename) === 'image';
+  // Screenshots uploaded from a host without `file` were stored as generic
+  // `.dat` blobs. The content route sniffs their bytes, so fetch those too and
+  // trust the type it serves.
+  const shouldFetch =
+    artifactRenderKind(shot.contentType, shot.filename) === 'image' ||
+    isGenericArtifactType(shot.contentType);
   const [url, setUrl] = useState<string | null>(null);
+  const [servedType, setServedType] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!isImage) return undefined;
+    if (!shouldFetch) return undefined;
     let disposed = false;
     let objectUrl = '';
     fetchArtifactBlob(sessionId, shot.id)
       .then((blob) => {
-        if (disposed) return;
+        if (disposed || !blob.type.startsWith('image/')) return;
         objectUrl = URL.createObjectURL(blob);
+        setServedType(blob.type);
         setUrl(objectUrl);
       })
       .catch(() => {
@@ -57,12 +64,12 @@ function ScreenshotThumb({
       disposed = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [isImage, sessionId, shot.id]);
+  }, [shouldFetch, sessionId, shot.id]);
 
   return (
     <button
       type="button"
-      onClick={onOpen}
+      onClick={() => onOpen(servedType ?? shot.contentType)}
       title={shot.filename}
       data-testid={`qa-screenshot-${shot.id}`}
       className="flex h-20 w-28 flex-shrink-0 items-center justify-center overflow-hidden rounded border border-gray-700 bg-gray-900 hover:border-blue-500"
@@ -149,7 +156,7 @@ export function QaScreenshotGallery({
             key={shot.id}
             sessionId={sessionId}
             shot={shot}
-            onOpen={() => setOpen(shot)}
+            onOpen={(contentType) => setOpen({ ...shot, contentType })}
           />
         ))}
       </div>

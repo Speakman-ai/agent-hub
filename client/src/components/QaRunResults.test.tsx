@@ -111,6 +111,64 @@ describe('QaRunResults', () => {
     expect(screen.queryByTestId('qa-screenshot-viewer')).toBeNull();
   });
 
+  it('renders a screenshot stored as a generic .dat blob once the server serves an image type', async () => {
+    render(
+      <QaRunResults
+        run={{
+          id: 'r1',
+          sessionId: 's1',
+          results: [
+            result('a', {
+              screenshotArtifactIds: ['art-2'],
+              screenshots: [
+                {
+                  id: 'art-2',
+                  filename: 'case 1: page loaded.dat',
+                  contentType: 'application/octet-stream',
+                },
+              ],
+            }),
+          ],
+        }}
+        cases={cases}
+      />,
+    );
+    const thumb = screen.getByTestId('qa-screenshot-art-2');
+    await waitFor(() => expect(within(thumb).getByRole('img')).toBeTruthy());
+    expect(fetchArtifactBlob).toHaveBeenCalledWith('s1', 'art-2');
+
+    fireEvent.click(thumb);
+    const viewer = screen.getByTestId('qa-screenshot-viewer');
+    await waitFor(() =>
+      expect(within(viewer).getByTestId('session-artifact-viewer-image')).toBeTruthy(),
+    );
+  });
+
+  it('keeps the filename tile when a generic blob is not an image', async () => {
+    fetchArtifactBlob.mockResolvedValue(new Blob(['x'], { type: 'application/octet-stream' }));
+    render(
+      <QaRunResults
+        run={{
+          id: 'r1',
+          sessionId: 's1',
+          results: [
+            result('a', {
+              screenshotArtifactIds: ['art-3'],
+              screenshots: [
+                { id: 'art-3', filename: 'notes.dat', contentType: 'application/octet-stream' },
+              ],
+            }),
+          ],
+        }}
+        cases={cases}
+      />,
+    );
+    const thumb = screen.getByTestId('qa-screenshot-art-3');
+    await waitFor(() => expect(fetchArtifactBlob).toHaveBeenCalledWith('s1', 'art-3'));
+    expect(within(thumb).queryByRole('img')).toBeNull();
+    expect(within(thumb).getByText('notes.dat')).toBeTruthy();
+  });
+
   it('says so when a run has no results', () => {
     render(<QaRunResults run={{ id: 'r1', sessionId: 's1', results: [] }} cases={cases} />);
     expect(screen.getByTestId('qa-run-results-empty')).toBeTruthy();

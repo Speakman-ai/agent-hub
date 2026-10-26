@@ -78,6 +78,12 @@ export function isInlineViewable(contentType: any, filename: any) {
   return false;
 }
 
+/** True when a stored type says nothing about the bytes (missing or octet-stream). */
+export function isGenericArtifactType(contentType: string | null | undefined): boolean {
+  const t = (contentType || '').split(';')[0].trim().toLowerCase();
+  return !t || t === 'application/octet-stream' || t === 'binary/octet-stream';
+}
+
 export type ArtifactRenderKind = 'pdf' | 'image' | 'markdown' | 'text';
 
 /**

@@ -110,7 +110,7 @@ registerPath({
   tags: ['Artifacts'],
   summary: 'Download or view an artifact’s bytes',
   description:
-    'Streams the artifact bytes with `X-Content-Type-Options: nosniff`. Inert types render inline by default; pass `?download=1` for an attachment disposition. Active/scriptable content (HTML, SVG, XML, JS) is always forced to download with a neutral `application/octet-stream` type so it cannot execute in the app origin. When the backend is S3 and `?redirect=1` is set (non-active content only), responds 302 to a short-lived presigned URL instead of proxying the bytes. The store is resolved from the artifact row’s recorded backend, so reads survive a later storage reconfiguration.',
+    'Streams the artifact bytes with `X-Content-Type-Options: nosniff`. Inert types render inline by default; pass `?download=1` for an attachment disposition. Active/scriptable content (HTML, SVG, XML, JS) is always forced to download with a neutral `application/octet-stream` type so it cannot execute in the app origin. A row still stored as a generic `application/octet-stream` is served with the type sniffed from its image/PDF signature, and the row is updated to that type. When the backend is S3 and `?redirect=1` is set (non-active content whose type is already known), responds 302 to a short-lived presigned URL instead of proxying the bytes. The store is resolved from the artifact row’s recorded backend, so reads survive a later storage reconfiguration.',
   request: { params: artifactIdParam },
   responses: {
     200: { description: 'Artifact bytes.' },
