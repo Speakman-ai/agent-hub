@@ -17,6 +17,15 @@ import { Router, type Request, type Response } from 'express';
 import type { z } from 'zod';
 import type { AuthenticatedRequest } from '../auth.js';
 import { getDb, getStmts } from '../db.js';
+import { resolveAgentSpawnEngineAndModel } from '../effective-model.js';
+import {
+  buildQaAuthoringSeed,
+  findProjectQaAgent,
+  loadQaAuthoringContext,
+} from '../qa-authoring.js';
+import { abandonUnseededSession, kickoffSeededTurn } from '../seeded-session-kickoff.js';
+import { broadcastSessionCreated } from '../session-checkpoint-rewind.js';
+import { resolveOwnerUserId, setSessionOwner } from '../session-ownership.js';
 import { QA_VERDICTS } from '../qa-schema.js';
 import {
   addQaCase,
@@ -43,6 +52,7 @@ import type {
   QaResultRow,
   QaRunRow,
   RouteDeps,
+  SessionRow,
 } from '../types.js';
 import {
   CreateQaCaseRequestSchema,
@@ -75,6 +85,7 @@ export function serializeQaPlan(p: QaPlanRow) {
     autoRerun: p.auto_rerun === 1,
     maxIterations: p.max_iterations,
     createdBy: p.created_by,
+    authoringSessionId: p.authoring_session_id ?? null,
     createdAt: p.created_at,
     updatedAt: p.updated_at,
   };
@@ -310,7 +321,7 @@ export default function createQaRoutes(deps: RouteDeps): Router {
         fn(req, res);
       } catch (e) {
         if (e instanceof QaStatusError) {
-          res.status(e.status).json({ error: e.message, code: e.code });
+          res.status(e.status).json({ ...e.details, error: e.message, code: e.code });
           return;
         }
         console.error('[qa] route error:', e);
@@ -523,7 +534,8 @@ export default function createQaRoutes(deps: RouteDeps): Router {
       if (!loadCase(req, res, plan)) return;
       const body = parse(UpdateQaCaseRequestSchema, req.body, res);
       if (!body) return;
-      const qaCase = editQaCase(req.params.caseId as string, body);
+      const { expectedBase, ...fields } = body;
+      const qaCase = editQaCase(req.params.caseId as string, fields, expectedBase);
       emit(plan.project_id, plan.id, { action: 'case_updated' });
       res.json({
         case: serializeQaCase(qaCase),
@@ -559,6 +571,117 @@ export default function createQaRoutes(deps: RouteDeps): Router {
         res.json({ plan: serializeQaPlan(updated) });
       }),
     );
+
+  type AuthoringOutcome = { status: number; body: Record<string, unknown> };
+
+  /**
+   * Seeds in flight, by plan id. A second open while the first seed is still
+   * pending waits for that outcome instead of creating another session or
+   * reporting a session whose seed may still fail.
+   */
+  const authoringInFlight = new Map<string, Promise<AuthoringOutcome>>();
+
+  const startAuthoringSession = async (
+    plan: QaPlanRow,
+    project: NonNullable<ReturnType<typeof findProject>>,
+    ownerUserId: string | null,
+  ): Promise<AuthoringOutcome> => {
+    const s = getStmts();
+    const agent = findProjectQaAgent(project);
+    if (!agent) {
+      return {
+        status: 409,
+        body: {
+          error: 'This project has no QA agent. Add an agent with the qa role first.',
+          code: 'no_qa_agent',
+        },
+      };
+    }
+    if (!deps.handleChat) {
+      return { status: 503, body: { error: 'Chat is unavailable on this server' } };
+    }
+    const seed = buildQaAuthoringSeed({ project, plan, context: loadQaAuthoringContext(plan) });
+    const sessionId = randomUUID();
+    try {
+      const { engine, model } = resolveAgentSpawnEngineAndModel(deps.config, agent, ownerUserId);
+      // QA sessions never get a worktree: they are read-only on code.
+      s.createSession.run(
+        sessionId,
+        agent.id,
+        `[QA plan] ${plan.title}`.slice(0, 100),
+        engine,
+        model,
+        0,
+        0,
+        1,
+      );
+      setSessionOwner(sessionId, ownerUserId);
+      s.updateSessionMode.run('qa', sessionId);
+      await kickoffSeededTurn({
+        handleChat: deps.handleChat,
+        agentId: agent.id,
+        sessionId,
+        content: seed,
+      });
+    } catch (e) {
+      console.error('[qa] authoring session failed to start:', e);
+      abandonUnseededSession(s, sessionId);
+      return { status: 502, body: { error: 'Failed to start the QA authoring session' } };
+    }
+    // Linked only once the seed is accepted, so the plan never points at a
+    // session that is about to be dropped.
+    s.setQaPlanAuthoringSession.run(sessionId, plan.id);
+    const session = s.getSession.get(sessionId) as SessionRow;
+    broadcastSessionCreated(broadcast, agent.id, session, s, project);
+    emit(plan.project_id, plan.id, { action: 'authoring_session_opened' });
+    return { status: 201, body: { sessionId, agentId: agent.id, created: true } };
+  };
+
+  /**
+   * Open (or reopen) the plan's authoring conversation with the project's QA
+   * agent. The first call creates a QA session seeded with the plan and its
+   * linked epic / card; later calls return that session while it is live.
+   */
+  router.post(`${BASE}/:planId/authoring-session`, async (req: Request, res: Response) => {
+    try {
+      const plan = loadPlan(req, res);
+      if (!plan) return;
+
+      const pending = authoringInFlight.get(plan.id);
+      if (pending) {
+        const outcome = await pending;
+        if (outcome.status === 201) {
+          res.json({ ...outcome.body, created: false });
+        } else {
+          res.status(outcome.status).json(outcome.body);
+        }
+        return;
+      }
+
+      const existing = plan.authoring_session_id
+        ? (getStmts().getSession.get(plan.authoring_session_id) as SessionRow | undefined)
+        : undefined;
+      if (existing && !existing.deleted_at) {
+        res.json({ sessionId: existing.id, agentId: existing.agent_id, created: false });
+        return;
+      }
+
+      const project = findProject(plan.project_id)!;
+      const ownerUserId = resolveOwnerUserId(req as AuthenticatedRequest);
+      const started = startAuthoringSession(plan, project, ownerUserId);
+      authoringInFlight.set(plan.id, started);
+      let outcome: AuthoringOutcome;
+      try {
+        outcome = await started;
+      } finally {
+        authoringInFlight.delete(plan.id);
+      }
+      res.status(outcome.status).json(outcome.body);
+    } catch (e) {
+      console.error('[qa] route error:', e);
+      if (!res.headersSent) res.status(500).json({ error: 'Internal error' });
+    }
+  });
 
   planAction('approve', 'plan_approved', (plan, req) => approveQaPlan(plan.id, userId(req)));
   planAction('revoke-approval', 'plan_unapproved', (plan) => revokeQaPlanApproval(plan.id));

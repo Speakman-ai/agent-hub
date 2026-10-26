@@ -2106,6 +2106,8 @@ export interface QaPlanRow {
   auto_rerun: 0 | 1;
   max_iterations: number;
   created_by: string | null;
+  /** QA session where the cases were drafted. Null until one is opened. */
+  authoring_session_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -2224,6 +2226,7 @@ export interface Stmts {
   setQaPlanStatus: Stmt<[QaPlanStatus, string]>;
   setQaPlanApproval: Stmt<[string | null, string]>;
   clearQaPlanApproval: Stmt<[string]>;
+  setQaPlanAuthoringSession: Stmt<[string | null, string]>;
   setQaPlanSignOff: Stmt<[string | null, string]>;
   clearQaPlanSignOff: Stmt<[string]>;
   insertQaCase: Stmt<[string, string, number, string, string, string]>;

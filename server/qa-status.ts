@@ -45,17 +45,21 @@ export type QaStatusErrorCode =
   | 'run_active'
   | 'run_not_running'
   | 'not_all_pass'
-  | 'invalid_order';
+  | 'invalid_order'
+  | 'edit_conflict';
 
 export class QaStatusError extends Error {
   readonly code: QaStatusErrorCode;
   /** HTTP status a route should answer with. */
   readonly status: 400 | 404 | 409;
+  /** Extra fields for the error response body. */
+  readonly details?: Record<string, unknown>;
 
-  constructor(code: QaStatusErrorCode, message: string) {
+  constructor(code: QaStatusErrorCode, message: string, details?: Record<string, unknown>) {
     super(message);
     this.name = 'QaStatusError';
     this.code = code;
+    this.details = details;
     this.status = code === 'not_found' ? 404 : code === 'invalid_order' ? 400 : 409;
   }
 }
@@ -234,15 +238,56 @@ export function addQaCase(planId: string, input: QaCaseInput): QaCaseRow {
   })();
 }
 
+export type QaCaseField = 'title' | 'steps' | 'expected';
+
+/**
+ * Fields whose saved value moved away from the text the edit was made against
+ * and does not already equal the new value. Pure.
+ */
+export function qaCaseEditConflicts(
+  current: Pick<QaCaseRow, QaCaseField>,
+  input: Partial<QaCaseInput>,
+  expectedBase: Partial<Record<QaCaseField, string>>,
+): QaCaseField[] {
+  return (Object.keys(expectedBase) as QaCaseField[]).filter((field) => {
+    const base = expectedBase[field];
+    const next = input[field];
+    return (
+      base !== undefined && next !== undefined && current[field] !== base && current[field] !== next
+    );
+  });
+}
+
 /**
  * Edit a case: bumps its version, so verdicts recorded against the old text
  * no longer count toward sign-off, and revokes approval.
+ *
+ * `expectedBase` makes the edit conditional: for each listed field, the saved
+ * value must still be the text the caller edited (or already equal the new
+ * value). The check and the write share one transaction, so an edit made
+ * against stale text is refused with `edit_conflict` instead of overwriting a
+ * change the caller never saw. Without it the edit is unconditional.
  */
-export function editQaCase(caseId: string, input: Partial<QaCaseInput>): QaCaseRow {
+export function editQaCase(
+  caseId: string,
+  input: Partial<QaCaseInput>,
+  expectedBase?: Partial<Record<QaCaseField, string>>,
+): QaCaseRow {
   return getDb().transaction(() => {
     const s = getStmts();
     const current = requireCase(caseId);
     assertPlanEditable(requirePlan(current.plan_id));
+    const conflicts = expectedBase ? qaCaseEditConflicts(current, input, expectedBase) : [];
+    if (conflicts.length > 0) {
+      throw new QaStatusError(
+        'edit_conflict',
+        `QA case changed since it was edited: ${conflicts.join(', ')}`,
+        {
+          conflicts,
+          case: { title: current.title, steps: current.steps, expected: current.expected },
+        },
+      );
+    }
     s.updateQaCase.run(
       input.title ?? current.title,
       input.steps ?? current.steps,

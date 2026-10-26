@@ -3,11 +3,40 @@ import { render, screen, waitFor, fireEvent, within, act } from '@testing-librar
 import type { QaCaseWire, QaPlanDetailWire, QaRunWire } from '../utils/api';
 
 const getQaPlan = vi.fn<(projectId: string, planId: string) => Promise<QaPlanDetailWire>>();
+const mutations = {
+  approveQaPlan: vi.fn(),
+  revokeQaPlanApproval: vi.fn(),
+  addQaCase: vi.fn(),
+  updateQaCase: vi.fn(),
+  deleteQaCase: vi.fn(),
+  reorderQaCases: vi.fn(),
+  openQaAuthoringSession: vi.fn(),
+};
 vi.mock('../utils/api', () => ({
-  api: { getQaPlan: (p: string, id: string) => getQaPlan(p, id) },
+  api: {
+    getQaPlan: (p: string, id: string) => getQaPlan(p, id),
+    approveQaPlan: (...a: unknown[]) => mutations.approveQaPlan(...a),
+    revokeQaPlanApproval: (...a: unknown[]) => mutations.revokeQaPlanApproval(...a),
+    addQaCase: (...a: unknown[]) => mutations.addQaCase(...a),
+    updateQaCase: (...a: unknown[]) => mutations.updateQaCase(...a),
+    deleteQaCase: (...a: unknown[]) => mutations.deleteQaCase(...a),
+    reorderQaCases: (...a: unknown[]) => mutations.reorderQaCases(...a),
+    openQaAuthoringSession: (...a: unknown[]) => mutations.openQaAuthoringSession(...a),
+  },
 }));
 
-import QaPlanDetail, { VerdictCell, caseVerdictLabel, runDuration } from './QaPlanDetail';
+import QaPlanDetail, {
+  VerdictCell,
+  applyCaseFieldEdit,
+  caseEditExpectedBase,
+  editConflictCase,
+  planCaseSave,
+  rebaseCaseFieldEdits,
+  caseListLockReason,
+  caseVerdictLabel,
+  moveCaseIds,
+  runDuration,
+} from './QaPlanDetail';
 
 function qaCase(id: string, latestVerdict: QaCaseWire['latestVerdict'] = null): QaCaseWire {
   return {
@@ -64,6 +93,7 @@ function detail(over: Partial<QaPlanDetailWire> & { approved?: boolean } = {}): 
       autoRerun: true,
       maxIterations: 5,
       createdBy: 'u1',
+      authoringSessionId: null,
       createdAt: '2026-10-26 00:00:00',
       updatedAt: '2026-10-26 00:00:00',
     },
@@ -77,6 +107,7 @@ function detail(over: Partial<QaPlanDetailWire> & { approved?: boolean } = {}): 
 
 beforeEach(() => {
   getQaPlan.mockReset();
+  for (const m of Object.values(mutations)) m.mockReset().mockResolvedValue({});
 });
 
 describe('caseVerdictLabel', () => {
@@ -272,5 +303,432 @@ describe('QaPlanDetail', () => {
     getQaPlan.mockRejectedValue(new Error('QA plan not found'));
     render(<QaPlanDetail projectId="proj" planId="p1" onBack={() => {}} />);
     await waitFor(() => expect(screen.getByText('QA plan not found')).toBeTruthy());
+  });
+});
+
+describe('case list helpers', () => {
+  it('moveCaseIds swaps neighbours and refuses out-of-range moves', () => {
+    expect(moveCaseIds(['a', 'b', 'c'], 0, 1)).toEqual(['b', 'a', 'c']);
+    expect(moveCaseIds(['a', 'b', 'c'], 2, -1)).toEqual(['a', 'c', 'b']);
+    expect(moveCaseIds(['a', 'b'], 0, -1)).toBeNull();
+    expect(moveCaseIds(['a', 'b'], 1, 1)).toBeNull();
+  });
+
+  it('applyCaseFieldEdit captures the base on the first keystroke of each field', () => {
+    const shown = { title: 'Login', steps: 'B', expected: 'Dashboard' };
+    let edits = applyCaseFieldEdit({}, 'steps', 'B1', shown);
+    edits = applyCaseFieldEdit(edits, 'steps', 'A', { ...shown, steps: 'B1' });
+    expect(edits).toEqual({ steps: { value: 'A', base: 'B' } });
+  });
+
+  it('planCaseSave sends only typed-in fields whose text differs from their start', () => {
+    expect(planCaseSave({ title: { value: ' Login ', base: 'Login' } })).toBeNull();
+    // Setting a live-updated value back to its earlier text is a real edit.
+    expect(planCaseSave({ steps: { value: 'A', base: 'B' } })).toEqual({ steps: 'A' });
+    expect(planCaseSave({})).toBeNull();
+  });
+
+  it('builds the server precondition and reads a server conflict', () => {
+    const edits = {
+      title: { value: 'Sign in', base: 'Login' },
+      steps: { value: 'Same', base: 'Same' },
+    };
+    expect(caseEditExpectedBase(edits, { title: 'Sign in' })).toEqual({ title: 'Login' });
+    const saved = { title: 'Agent title', steps: 'Agent', expected: 'x' };
+    // Only sent fields are rebased; a reverted field is dropped, not turned into an edit.
+    expect(rebaseCaseFieldEdits(edits, saved, ['title'])).toEqual({
+      title: { value: 'Sign in', base: 'Agent title' },
+    });
+    expect(editConflictCase({ code: 'edit_conflict', body: { case: saved } })).toEqual(saved);
+    expect(editConflictCase({ code: 'run_active', body: { case: saved } })).toBeNull();
+    expect(editConflictCase(new Error('boom'))).toBeNull();
+  });
+
+  it('caseListLockReason freezes done plans and plans with an active run', () => {
+    expect(caseListLockReason(detail())).toBeNull();
+    const done = detail();
+    done.plan.status = 'done';
+    expect(caseListLockReason(done)).toMatch(/Signed off/);
+    expect(
+      caseListLockReason(detail({ runs: [run('r', { status: 'running', iteration: 3 })] })),
+    ).toBe('Run 3 is running. Cancel it to edit cases.');
+  });
+});
+
+type CaseText = { title: string; steps: string; expected: string };
+
+/**
+ * Make updateQaCase behave like the server: an edit whose expectedBase no
+ * longer matches the saved text (and does not already equal the new value)
+ * is refused with edit_conflict and the saved text.
+ */
+function serverHolds(saved: CaseText) {
+  const state = { ...saved };
+  mutations.updateQaCase.mockImplementation(
+    async (
+      _p: string,
+      _plan: string,
+      _id: string,
+      body: Partial<CaseText> & { expectedBase?: Partial<CaseText> },
+    ) => {
+      const { expectedBase = {}, ...fields } = body;
+      const conflicts = (Object.keys(expectedBase) as Array<keyof CaseText>).filter(
+        (f) => state[f] !== expectedBase[f] && state[f] !== fields[f],
+      );
+      if (conflicts.length > 0) {
+        throw Object.assign(new Error('edit_conflict'), {
+          code: 'edit_conflict',
+          body: { conflicts, case: { ...state } },
+        });
+      }
+      Object.assign(state, fields);
+      return {};
+    },
+  );
+  return state;
+}
+
+describe('QaPlanDetail authoring', () => {
+  const renderDetail = (d: QaPlanDetailWire, onOpenSession = vi.fn()) => {
+    getQaPlan.mockResolvedValue(d);
+    render(
+      <QaPlanDetail projectId="proj" planId="p1" onBack={() => {}} onOpenSession={onOpenSession} />,
+    );
+    return onOpenSession;
+  };
+
+  it('approves a draft plan with cases', async () => {
+    renderDetail(detail({ approved: false, cases: [qaCase('c1')] }));
+    fireEvent.click(await screen.findByTestId('qa-approve'));
+    await waitFor(() => expect(mutations.approveQaPlan).toHaveBeenCalledWith('proj', 'p1'));
+    expect(getQaPlan).toHaveBeenCalledTimes(2);
+  });
+
+  it('disables Approve on a plan with no cases', async () => {
+    renderDetail(detail({ approved: false }));
+    expect(await screen.findByTestId('qa-approve')).toBeDisabled();
+  });
+
+  it('edits a case inline, confirming that approval is revoked', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderDetail(detail({ cases: [qaCase('c1')] }));
+    expect(await screen.findByTestId('qa-detail-approved-note')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('qa-case-edit'));
+    fireEvent.change(screen.getByTestId('qa-case-form-expected'), {
+      target: { value: 'Shows the receipt' },
+    });
+    fireEvent.click(screen.getByTestId('qa-case-form-save'));
+    await waitFor(() =>
+      expect(mutations.updateQaCase).toHaveBeenCalledWith('proj', 'p1', 'c1', {
+        expected: 'Shows the receipt',
+        expectedBase: { expected: 'It loads' },
+      }),
+    );
+    expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/revokes approval/));
+    confirm.mockRestore();
+  });
+
+  it('keeps concurrent agent edits to other fields when the case refreshes mid-edit', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderDetail(detail({ approved: false, cases: [qaCase('c1')] }));
+    fireEvent.click(await screen.findByTestId('qa-case-edit'));
+    fireEvent.change(screen.getByTestId('qa-case-form-title'), { target: { value: 'Renamed' } });
+
+    // The agent rewrites the steps while the form is open.
+    getQaPlan.mockResolvedValue(
+      detail({ approved: false, cases: [{ ...qaCase('c1'), steps: 'Agent steps', version: 2 }] }),
+    );
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('qa_update', { detail: { projectId: 'proj', planId: 'p1' } }),
+      );
+    });
+    await waitFor(() => expect(getQaPlan).toHaveBeenCalledTimes(2));
+
+    fireEvent.click(screen.getByTestId('qa-case-form-save'));
+    await waitFor(() =>
+      expect(mutations.updateQaCase).toHaveBeenCalledWith('proj', 'p1', 'c1', {
+        title: 'Renamed',
+        expectedBase: { title: 'Case c1' },
+      }),
+    );
+    confirm.mockRestore();
+  });
+
+  it('refuses an overlapping edit once, then overwrites on the second Save', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderDetail(detail({ approved: false, cases: [qaCase('c1')] }));
+    fireEvent.click(await screen.findByTestId('qa-case-edit'));
+    fireEvent.change(screen.getByTestId('qa-case-form-steps'), { target: { value: 'My steps' } });
+
+    getQaPlan.mockResolvedValue(
+      detail({ approved: false, cases: [{ ...qaCase('c1'), steps: 'Agent steps', version: 2 }] }),
+    );
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('qa_update', { detail: { projectId: 'proj', planId: 'p1' } }),
+      );
+    });
+    await waitFor(() => expect(getQaPlan).toHaveBeenCalledTimes(2));
+    serverHolds({ title: 'Case c1', steps: 'Agent steps', expected: 'It loads' });
+
+    fireEvent.click(screen.getByTestId('qa-case-form-save'));
+    expect(await screen.findByText(/changed \(steps\) while you were editing/)).toBeInTheDocument();
+    expect(mutations.updateQaCase).toHaveBeenLastCalledWith('proj', 'p1', 'c1', {
+      steps: 'My steps',
+      expectedBase: { steps: 'Open the page' },
+    });
+    expect(screen.getByTestId('qa-case-form-steps')).toHaveValue('My steps');
+
+    fireEvent.click(screen.getByTestId('qa-case-form-save'));
+    await waitFor(() =>
+      expect(mutations.updateQaCase).toHaveBeenCalledWith('proj', 'p1', 'c1', {
+        steps: 'My steps',
+        expectedBase: { steps: 'Agent steps' },
+      }),
+    );
+    confirm.mockRestore();
+  });
+
+  it('after a conflict, a second Save sends only the field the user typed in', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderDetail(detail({ approved: false, cases: [qaCase('c1')] }));
+    fireEvent.click(await screen.findByTestId('qa-case-edit'));
+    fireEvent.change(screen.getByTestId('qa-case-form-steps'), { target: { value: 'My steps' } });
+
+    // The agent changes the same field and an unrelated one.
+    getQaPlan.mockResolvedValue(
+      detail({
+        approved: false,
+        cases: [{ ...qaCase('c1'), steps: 'Agent steps', expected: 'Agent expected', version: 2 }],
+      }),
+    );
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('qa_update', { detail: { projectId: 'proj', planId: 'p1' } }),
+      );
+    });
+    await waitFor(() => expect(getQaPlan).toHaveBeenCalledTimes(2));
+    // Untouched fields follow the latest saved text; the user's field keeps theirs.
+    expect(screen.getByTestId('qa-case-form-expected')).toHaveValue('Agent expected');
+    expect(screen.getByTestId('qa-case-form-steps')).toHaveValue('My steps');
+
+    const server = serverHolds({
+      title: 'Case c1',
+      steps: 'Agent steps',
+      expected: 'Agent expected',
+    });
+    fireEvent.click(screen.getByTestId('qa-case-form-save'));
+    expect(await screen.findByText(/changed \(steps\) while you were editing/)).toBeInTheDocument();
+    expect(mutations.updateQaCase).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByTestId('qa-case-form-save'));
+    await waitFor(() => expect(mutations.updateQaCase).toHaveBeenCalledTimes(2));
+    expect(server).toEqual({ title: 'Case c1', steps: 'My steps', expected: 'Agent expected' });
+    expect(mutations.updateQaCase).toHaveBeenLastCalledWith('proj', 'p1', 'c1', {
+      steps: 'My steps',
+      expectedBase: { steps: 'Agent steps' },
+    });
+    confirm.mockRestore();
+  });
+
+  it('saves an edit that sets a live-updated field back to its earlier text', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderDetail(detail({ approved: false, cases: [{ ...qaCase('c1'), steps: 'A' }] }));
+    fireEvent.click(await screen.findByTestId('qa-case-edit'));
+
+    getQaPlan.mockResolvedValue(
+      detail({ approved: false, cases: [{ ...qaCase('c1'), steps: 'B', version: 2 }] }),
+    );
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('qa_update', { detail: { projectId: 'proj', planId: 'p1' } }),
+      );
+    });
+    await waitFor(() => expect(screen.getByTestId('qa-case-form-steps')).toHaveValue('B'));
+
+    fireEvent.change(screen.getByTestId('qa-case-form-steps'), { target: { value: 'A' } });
+    fireEvent.click(screen.getByTestId('qa-case-form-save'));
+    await waitFor(() =>
+      expect(mutations.updateQaCase).toHaveBeenCalledWith('proj', 'p1', 'c1', {
+        steps: 'A',
+        expectedBase: { steps: 'B' },
+      }),
+    );
+    expect(screen.queryByText(/while you were editing/)).not.toBeInTheDocument();
+    confirm.mockRestore();
+  });
+
+  it('shows a server-side conflict when the case changed before the save reached it', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    // The page never sees the agent's change: every refresh still returns the old case.
+    renderDetail(detail({ approved: false, cases: [qaCase('c1')] }));
+    fireEvent.click(await screen.findByTestId('qa-case-edit'));
+    fireEvent.change(screen.getByTestId('qa-case-form-steps'), { target: { value: 'My steps' } });
+
+    const conflict = Object.assign(new Error('QA case changed since it was edited: steps'), {
+      code: 'edit_conflict',
+      body: {
+        conflicts: ['steps'],
+        case: { title: 'Case c1', steps: 'Server steps', expected: 'It loads' },
+      },
+    });
+    mutations.updateQaCase.mockRejectedValueOnce(conflict).mockResolvedValue({});
+
+    fireEvent.click(screen.getByTestId('qa-case-form-save'));
+    expect(await screen.findByText(/changed \(steps\) while you were editing/)).toBeInTheDocument();
+    expect(mutations.updateQaCase).toHaveBeenLastCalledWith('proj', 'p1', 'c1', {
+      steps: 'My steps',
+      expectedBase: { steps: 'Open the page' },
+    });
+    expect(screen.getByTestId('qa-case-form-steps')).toHaveValue('My steps');
+
+    // The second Save is a deliberate overwrite of the text the server reported.
+    fireEvent.click(screen.getByTestId('qa-case-form-save'));
+    await waitFor(() => expect(mutations.updateQaCase).toHaveBeenCalledTimes(2));
+    expect(mutations.updateQaCase).toHaveBeenLastCalledWith('proj', 'p1', 'c1', {
+      steps: 'My steps',
+      expectedBase: { steps: 'Server steps' },
+    });
+    await waitFor(() => expect(screen.queryByTestId('qa-case-edit-form')).not.toBeInTheDocument());
+    confirm.mockRestore();
+  });
+
+  it('a field typed back to its start is not overwritten after another field conflicts', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderDetail(detail({ approved: false, cases: [qaCase('c1')] }));
+    fireEvent.click(await screen.findByTestId('qa-case-edit'));
+    // Edit the steps and restore them, then change the title.
+    fireEvent.change(screen.getByTestId('qa-case-form-steps'), { target: { value: 'Temp' } });
+    fireEvent.change(screen.getByTestId('qa-case-form-steps'), {
+      target: { value: 'Open the page' },
+    });
+    fireEvent.change(screen.getByTestId('qa-case-form-title'), { target: { value: 'Mine' } });
+
+    // The agent changes both fields before the save; the page has not refreshed.
+    const server = serverHolds({
+      title: 'Agent title',
+      steps: 'Agent steps',
+      expected: 'It loads',
+    });
+
+    fireEvent.click(screen.getByTestId('qa-case-form-save'));
+    expect(await screen.findByText(/changed \(title\) while you were editing/)).toBeInTheDocument();
+    expect(mutations.updateQaCase).toHaveBeenLastCalledWith('proj', 'p1', 'c1', {
+      title: 'Mine',
+      expectedBase: { title: 'Case c1' },
+    });
+
+    fireEvent.click(screen.getByTestId('qa-case-form-save'));
+    await waitFor(() => expect(mutations.updateQaCase).toHaveBeenCalledTimes(2));
+    expect(mutations.updateQaCase).toHaveBeenLastCalledWith('proj', 'p1', 'c1', {
+      title: 'Mine',
+      expectedBase: { title: 'Agent title' },
+    });
+    expect(server).toEqual({ title: 'Mine', steps: 'Agent steps', expected: 'It loads' });
+    confirm.mockRestore();
+  });
+
+  it('locks the edit form while a save is pending, then closes with what was sent', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    let finish!: () => void;
+    mutations.updateQaCase.mockImplementation(
+      () => new Promise<object>((resolve) => (finish = () => resolve({}))),
+    );
+    renderDetail(detail({ approved: false, cases: [qaCase('c1')] }));
+    fireEvent.click(await screen.findByTestId('qa-case-edit'));
+    fireEvent.change(screen.getByTestId('qa-case-form-title'), { target: { value: 'Renamed' } });
+    fireEvent.click(screen.getByTestId('qa-case-form-save'));
+
+    await waitFor(() => expect(mutations.updateQaCase).toHaveBeenCalledTimes(1));
+    expect(screen.getByTestId('qa-case-form-fields')).toBeDisabled();
+    expect(screen.getByTestId('qa-case-form-steps')).toBeDisabled();
+    // A second submit while pending is ignored.
+    fireEvent.submit(screen.getByTestId('qa-case-edit-form'));
+    expect(mutations.updateQaCase).toHaveBeenCalledTimes(1);
+
+    await act(async () => finish());
+    await waitFor(() => expect(screen.queryByTestId('qa-case-edit-form')).not.toBeInTheDocument());
+    confirm.mockRestore();
+  });
+
+  it('locks the add form while the add is pending and unlocks it on failure', async () => {
+    let fail!: () => void;
+    mutations.addQaCase.mockImplementation(
+      () => new Promise<object>((_r, reject) => (fail = () => reject(new Error('nope')))),
+    );
+    renderDetail(detail({ approved: false, cases: [] }));
+    fireEvent.click(await screen.findByTestId('qa-case-add'));
+    fireEvent.change(screen.getByTestId('qa-case-form-title'), { target: { value: 'Pay' } });
+    fireEvent.click(screen.getByTestId('qa-case-form-save'));
+    await waitFor(() => expect(screen.getByTestId('qa-case-form-fields')).toBeDisabled());
+
+    await act(async () => fail());
+    await waitFor(() => expect(screen.getByTestId('qa-case-form-fields')).not.toBeDisabled());
+    expect(screen.getByTestId('qa-case-form-title')).toHaveValue('Pay');
+  });
+
+  it('does not edit when the user cancels the approval warning', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    renderDetail(detail({ cases: [qaCase('c1')] }));
+    fireEvent.click(await screen.findByTestId('qa-case-edit'));
+    fireEvent.change(screen.getByTestId('qa-case-form-title'), { target: { value: 'New' } });
+    fireEvent.click(screen.getByTestId('qa-case-form-save'));
+    await waitFor(() => expect(confirm).toHaveBeenCalled());
+    expect(mutations.updateQaCase).not.toHaveBeenCalled();
+    confirm.mockRestore();
+  });
+
+  it('adds, reorders, and deletes cases on a draft plan', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderDetail(detail({ approved: false, cases: [qaCase('c1'), qaCase('c2')] }));
+    const row1 = await screen.findByTestId('qa-case-row-c1');
+    fireEvent.click(within(row1).getByTestId('qa-case-down'));
+    await waitFor(() =>
+      expect(mutations.reorderQaCases).toHaveBeenCalledWith('proj', 'p1', ['c2', 'c1']),
+    );
+
+    fireEvent.click(within(screen.getByTestId('qa-case-row-c2')).getByTestId('qa-case-delete'));
+    await waitFor(() => expect(mutations.deleteQaCase).toHaveBeenCalledWith('proj', 'p1', 'c2'));
+
+    fireEvent.click(screen.getByTestId('qa-case-add'));
+    fireEvent.change(screen.getByTestId('qa-case-form-title'), { target: { value: ' Pay ' } });
+    fireEvent.click(screen.getByTestId('qa-case-form-save'));
+    await waitFor(() =>
+      expect(mutations.addQaCase).toHaveBeenCalledWith('proj', 'p1', {
+        title: 'Pay',
+        steps: '',
+        expected: '',
+      }),
+    );
+    confirm.mockRestore();
+  });
+
+  it('hides edit controls while a run is active', async () => {
+    renderDetail(
+      detail({ cases: [qaCase('c1')], runs: [run('r1', { status: 'running', finishedAt: null })] }),
+    );
+    expect(await screen.findByTestId('qa-detail-locked')).toHaveTextContent('Cancel it');
+    expect(screen.queryByTestId('qa-case-edit')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('qa-case-add')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('qa-revoke-approval')).not.toBeInTheDocument();
+  });
+
+  it('shows a refused mutation as an error', async () => {
+    mutations.approveQaPlan.mockRejectedValue(new Error('Cannot approve a QA plan with no cases'));
+    renderDetail(detail({ approved: false, cases: [qaCase('c1')] }));
+    fireEvent.click(await screen.findByTestId('qa-approve'));
+    expect(await screen.findByText('Cannot approve a QA plan with no cases')).toBeInTheDocument();
+  });
+
+  it('opens the authoring chat', async () => {
+    mutations.openQaAuthoringSession.mockResolvedValue({
+      sessionId: 's9',
+      agentId: 'proj-qa',
+      created: false,
+    });
+    const onOpenSession = renderDetail(detail());
+    fireEvent.click(await screen.findByTestId('qa-open-chat'));
+    await waitFor(() => expect(onOpenSession).toHaveBeenCalledWith('proj-qa', 's9'));
   });
 });

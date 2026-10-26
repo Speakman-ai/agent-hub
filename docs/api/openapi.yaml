@@ -15076,7 +15076,30 @@ components:
           type: string
         code:
           type: string
-          description: Lifecycle error code from qa-status (e.g. not_approved, run_active, plan_done, not_all_pass).
+          description: Lifecycle error code from qa-status (e.g. not_approved, run_active, plan_done, not_all_pass, edit_conflict).
+        conflicts:
+          type: array
+          items:
+            type: string
+            enum:
+              - title
+              - steps
+              - expected
+          description: "edit_conflict only: fields that changed since they were edited."
+        case:
+          type: object
+          properties:
+            title:
+              type: string
+            steps:
+              type: string
+            expected:
+              type: string
+          required:
+            - title
+            - steps
+            - expected
+          description: "edit_conflict only: the saved text of the case now."
         details:
           type: array
           items:
@@ -15147,6 +15170,10 @@ components:
         createdBy:
           type: string
           nullable: true
+        authoringSessionId:
+          type: string
+          nullable: true
+          description: QA session where the cases were drafted. Null until one is opened.
         createdAt:
           type: string
         updatedAt:
@@ -15170,6 +15197,7 @@ components:
         - autoRerun
         - maxIterations
         - createdBy
+        - authoringSessionId
         - createdAt
         - updatedAt
       description: A QA validation plan for one target.
@@ -57846,7 +57874,6 @@ paths:
                   minLength: 1
                 targetUrl:
                   type: string
-                  format: uri
                 goal:
                   type: string
                 epicId:
@@ -58007,7 +58034,6 @@ paths:
                   minLength: 1
                 targetUrl:
                   type: string
-                  format: uri
                   description: Changing the target revokes approval and is refused while done or running.
                 goal:
                   type: string
@@ -58193,6 +58219,16 @@ paths:
                   type: string
                 expected:
                   type: string
+                expectedBase:
+                  type: object
+                  properties:
+                    title:
+                      type: string
+                    steps:
+                      type: string
+                    expected:
+                      type: string
+                  description: "Optional precondition: the saved text each edited field was edited against. When a listed field has since changed to something other than the new value, the edit is refused with 409 `edit_conflict`, `conflicts`, and the current `case` text."
       responses:
         "200":
           description: Updated case and plan.
@@ -58367,6 +58403,75 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
         "409":
           description: Refused by the plan or run lifecycle (see `code`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+  /api/projects/{projectId}/qa/plans/{planId}/authoring-session:
+    post:
+      tags: *a8
+      summary: Open the plan's authoring session with the project's QA agent
+      description: "The first call creates a QA-mode session seeded with the plan id, target URL, goal, and the linked epic / card descriptions, and records it on the plan. Later calls return that session while it is live (200, `created: false`)."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: planId
+          in: path
+      responses:
+        "200":
+          description: Existing authoring session.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId:
+                    type: string
+                  agentId:
+                    type: string
+                  created:
+                    type: boolean
+                required:
+                  - sessionId
+                  - agentId
+                  - created
+        "201":
+          description: New seeded authoring session.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId:
+                    type: string
+                  agentId:
+                    type: string
+                  created:
+                    type: boolean
+                required:
+                  - sessionId
+                  - agentId
+                  - created
+        "404":
+          description: Project, plan, case, or run not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+        "409":
+          description: "The project has no QA agent (`code: no_qa_agent`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+        "502":
+          description: The seeded first turn was not accepted.
           content:
             application/json:
               schema:

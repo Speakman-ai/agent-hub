@@ -14,8 +14,18 @@ const ErrorResponse = registerComponent(
       error: z.string(),
       code: z.string().optional().openapi({
         description:
-          'Lifecycle error code from qa-status (e.g. not_approved, run_active, plan_done, not_all_pass).',
+          'Lifecycle error code from qa-status (e.g. not_approved, run_active, plan_done, not_all_pass, edit_conflict).',
       }),
+      conflicts: z
+        .array(z.enum(['title', 'steps', 'expected']))
+        .optional()
+        .openapi({
+          description: 'edit_conflict only: fields that changed since they were edited.',
+        }),
+      case: z
+        .object({ title: z.string(), steps: z.string(), expected: z.string() })
+        .optional()
+        .openapi({ description: 'edit_conflict only: the saved text of the case now.' }),
       details: z.array(z.object({ path: z.array(z.any()), message: z.string() })).optional(),
     })
     .openapi({ description: 'Error envelope for QA routes.' }),
@@ -52,6 +62,9 @@ export const QaPlanComponent = registerComponent(
       autoRerun: z.boolean(),
       maxIterations: z.number().int(),
       createdBy: z.string().nullable(),
+      authoringSessionId: z.string().nullable().openapi({
+        description: 'QA session where the cases were drafted. Null until one is opened.',
+      }),
       createdAt: z.string(),
       updatedAt: z.string(),
     })
@@ -124,9 +137,24 @@ export const QaResultComponent = registerComponent(
 
 const nullableId = z.string().min(1).nullable().optional();
 
+/** The QA agent drives the target in a browser, so only http(s) URLs make sense. */
+export function isHttpUrl(value: string): boolean {
+  try {
+    const { protocol } = new URL(value);
+    return protocol === 'http:' || protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+const TargetUrl = z
+  .string()
+  .trim()
+  .refine(isHttpUrl, { message: 'targetUrl must be an http(s) URL' });
+
 export const CreateQaPlanRequestSchema = z.object({
   title: z.string().trim().min(1, 'title is required'),
-  targetUrl: z.string().url('targetUrl must be a valid URL'),
+  targetUrl: TargetUrl,
   goal: z.string().optional(),
   epicId: nullableId,
   cardId: nullableId,
@@ -137,7 +165,7 @@ export const CreateQaPlanRequestSchema = z.object({
 
 export const UpdateQaPlanRequestSchema = z.object({
   title: z.string().trim().min(1).optional(),
-  targetUrl: z.string().url('targetUrl must be a valid URL').optional().openapi({
+  targetUrl: TargetUrl.optional().openapi({
     description: 'Changing the target revokes approval and is refused while done or running.',
   }),
   goal: z.string().optional(),
@@ -159,6 +187,19 @@ export const UpdateQaCaseRequestSchema = z
     title: z.string().trim().min(1).optional(),
     steps: z.string().optional(),
     expected: z.string().optional(),
+    expectedBase: z
+      .object({
+        title: z.string().optional(),
+        steps: z.string().optional(),
+        expected: z.string().optional(),
+      })
+      .optional()
+      .openapi({
+        description:
+          'Optional precondition: the saved text each edited field was edited against. ' +
+          'When a listed field has since changed to something other than the new value, the ' +
+          'edit is refused with 409 `edit_conflict`, `conflicts`, and the current `case` text.',
+      }),
   })
   .refine((v) => v.title !== undefined || v.steps !== undefined || v.expected !== undefined, {
     message: 'Provide at least one of title, steps, expected',
@@ -239,6 +280,11 @@ export const QaPlanListItemComponent = registerComponent(
 );
 
 const PlanEnvelope = z.object({ plan: QaPlanComponent });
+const AuthoringSessionResponse = z.object({
+  sessionId: z.string(),
+  agentId: z.string(),
+  created: z.boolean(),
+});
 const RunEnvelope = z.object({ run: QaRunComponent });
 
 registerPath({
@@ -400,6 +446,25 @@ registerPath({
   summary: 'Approve the case list',
   request: { params: planParams },
   responses: { 200: ok('Approved plan.', PlanEnvelope), 404: notFound, 409: conflict },
+});
+
+registerPath({
+  method: 'post',
+  path: `${BASE}/{planId}/authoring-session`,
+  tags: TAGS,
+  summary: "Open the plan's authoring session with the project's QA agent",
+  description:
+    'The first call creates a QA-mode session seeded with the plan id, target URL, goal, and the ' +
+    'linked epic / card descriptions, and records it on the plan. Later calls return that session ' +
+    'while it is live (200, `created: false`).',
+  request: { params: planParams },
+  responses: {
+    200: ok('Existing authoring session.', AuthoringSessionResponse),
+    201: ok('New seeded authoring session.', AuthoringSessionResponse),
+    404: notFound,
+    409: err('The project has no QA agent (`code: no_qa_agent`).'),
+    502: err('The seeded first turn was not accepted.'),
+  },
 });
 
 registerPath({

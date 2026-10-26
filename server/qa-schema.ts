@@ -52,6 +52,7 @@ export const QA_SCHEMA = `
     auto_rerun         INTEGER NOT NULL DEFAULT 1 CHECK (auto_rerun IN (0, 1)),
     max_iterations     INTEGER NOT NULL DEFAULT 5 CHECK (max_iterations >= 1),
     created_by         TEXT,
+    authoring_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
     created_at         TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
   );

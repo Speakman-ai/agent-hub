@@ -102,6 +102,16 @@ describe('plans', () => {
     expect(broadcast).not.toHaveBeenCalled();
   });
 
+  it('accepts only http(s) target URLs, on create and update', async () => {
+    for (const targetUrl of ['javascript:alert(1)', 'ftp://example.com', 'example.com']) {
+      const res = await request(app).post(base).send({ title: 'x', targetUrl }).expect(400);
+      expect(res.body.error).toBe('targetUrl must be an http(s) URL');
+    }
+    const plan = await createPlan({ targetUrl: '  http://localhost:3050/app  ' });
+    expect((plan as unknown as { targetUrl: string }).targetUrl).toBe('http://localhost:3050/app');
+    await request(app).patch(`${base}/${plan.id}`).send({ targetUrl: 'file:///etc' }).expect(400);
+  });
+
   it('404s an unknown project and an epic from another project', async () => {
     await request(app)
       .post('/api/projects/missing/qa/plans')
@@ -264,6 +274,44 @@ describe('cases', () => {
     await request(app).post(`${base}/${planId}/approve`).expect(200);
     const removed = await request(app).delete(`${base}/${planId}/cases/${caseIds[1]}`).expect(200);
     expect(removed.body.plan.approved).toBe(false);
+  });
+
+  it('refuses a conditional edit whose base text is stale, without writing', async () => {
+    const plan = await createPlan();
+    const c = await addCase(plan.id, 'Login');
+    const url = `${base}/${plan.id}/cases/${c.id}`;
+    // Someone else rewrites the steps first.
+    await request(app).patch(url).send({ steps: 'Agent steps' }).expect(200);
+
+    const refused = await request(app)
+      .patch(url)
+      .send({ steps: 'My steps', title: 'Sign in', expectedBase: { steps: '', title: 'Login' } })
+      .expect(409);
+    expect(refused.body).toMatchObject({
+      code: 'edit_conflict',
+      conflicts: ['steps'],
+      case: { title: 'Login', steps: 'Agent steps', expected: '' },
+    });
+    const after = await request(app).get(`${base}/${plan.id}`).expect(200);
+    expect(after.body.cases[0]).toMatchObject({ title: 'Login', steps: 'Agent steps', version: 2 });
+  });
+
+  it('applies a conditional edit when only other fields changed or the value already matches', async () => {
+    const plan = await createPlan();
+    const c = await addCase(plan.id, 'Login');
+    const url = `${base}/${plan.id}/cases/${c.id}`;
+    await request(app).patch(url).send({ steps: 'Agent steps' }).expect(200);
+
+    const titled = await request(app)
+      .patch(url)
+      .send({ title: 'Sign in', expectedBase: { title: 'Login' } })
+      .expect(200);
+    expect(titled.body.case).toMatchObject({ title: 'Sign in', steps: 'Agent steps' });
+
+    await request(app)
+      .patch(url)
+      .send({ steps: 'Agent steps', expectedBase: { steps: 'stale' } })
+      .expect(200);
   });
 
   it('rejects an empty edit with 400 and an unknown case with 404', async () => {

@@ -1,6 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowLeft, ExternalLink, MessageSquare } from 'lucide-react';
-import { api, type QaCaseWire, type QaPlanDetailWire, type QaRunWire } from '../utils/api';
+import {
+  ArrowDown,
+  ArrowLeft,
+  ArrowUp,
+  ExternalLink,
+  MessageSquare,
+  Pencil,
+  Plus,
+  Trash2,
+} from 'lucide-react';
+import {
+  api,
+  type QaCaseInput,
+  type QaCaseWire,
+  type QaPlanDetailWire,
+  type QaRunWire,
+} from '../utils/api';
 import {
   QA_STATUS_LABELS,
   RUN_STATUS_CLASS,
@@ -67,50 +82,419 @@ export function VerdictCell({ latest }: { latest: LatestVerdict }) {
   );
 }
 
-function CaseTable({ cases, approved }: { cases: QaCaseWire[]; approved: boolean }) {
+/**
+ * Why the case list cannot change right now, or null when it can. Mirrors the
+ * server's freeze rule: signed-off plans and plans with a queued or running
+ * run are frozen.
+ */
+export function caseListLockReason(detail: Pick<QaPlanDetailWire, 'plan' | 'runs'>): string | null {
+  if (detail.plan.status === 'done') return 'Signed off. Start a run to reopen the plan.';
+  const latest = detail.runs[0];
+  if (latest && (latest.status === 'queued' || latest.status === 'running')) {
+    return `Run ${latest.iteration} is ${latest.status}. Cancel it to edit cases.`;
+  }
+  return null;
+}
+
+/** `ids` with the item at `index` moved by `delta`, or null when it cannot move. */
+export function moveCaseIds(ids: string[], index: number, delta: -1 | 1): string[] | null {
+  const to = index + delta;
+  if (index < 0 || index >= ids.length || to < 0 || to >= ids.length) return null;
+  const next = [...ids];
+  [next[index], next[to]] = [next[to]!, next[index]!];
+  return next;
+}
+
+type CaseDraft = Required<QaCaseInput>;
+
+type CaseField = keyof CaseDraft;
+
+/**
+ * One field the user typed in: their text, and the saved value the field
+ * showed when they started typing (the value their edit was made against).
+ */
+export interface CaseFieldEdit {
+  value: string;
+  base: string;
+}
+
+export type CaseFieldEdits = Partial<Record<CaseField, CaseFieldEdit>>;
+
+/**
+ * Record a keystroke. The base is captured on the first edit of a field, from
+ * what the field displayed then, and kept for later keystrokes.
+ */
+export function applyCaseFieldEdit(
+  edits: CaseFieldEdits,
+  field: CaseField,
+  value: string,
+  displayed: CaseDraft,
+): CaseFieldEdits {
+  return { ...edits, [field]: { value, base: edits[field]?.base ?? displayed[field] } };
+}
+
+/**
+ * The fields to send: those the user typed in whose text differs from the
+ * text they started from. Untouched fields are never sent, so another
+ * writer's change to them cannot be reverted. Null when nothing changed (so
+ * no version bump).
+ *
+ * Conflicts are not judged here. The page's copy of the case can lag the
+ * server, so the server checks each field's base inside the update (see
+ * `caseEditExpectedBase`) and is the only judge of a conflict.
+ */
+export function planCaseSave(edits: CaseFieldEdits): QaCaseInput | null {
+  const patch: QaCaseInput = {};
+  for (const field of Object.keys(edits) as CaseField[]) {
+    const edit = edits[field];
+    if (!edit) continue;
+    const value = field === 'title' ? edit.value.trim() : edit.value;
+    if (value !== edit.base) patch[field] = value;
+  }
+  return Object.keys(patch).length > 0 ? patch : null;
+}
+
+/**
+ * After the server refuses a save, the fields that were sent now stand
+ * against the text it returned, so a second Save overwrites deliberately.
+ * Every other tracked field was typed back to its starting text (the form is
+ * locked while a save is pending, so nothing else can be tracked); those are
+ * dropped so they show the saved text again and are never sent.
+ */
+export function rebaseCaseFieldEdits(
+  edits: CaseFieldEdits,
+  saved: CaseDraft,
+  sent: readonly CaseField[],
+): CaseFieldEdits {
+  const next: CaseFieldEdits = {};
+  for (const field of sent) {
+    const edit = edits[field];
+    if (edit) next[field] = { value: edit.value, base: saved[field] };
+  }
+  return next;
+}
+
+/** A conflict carries the saved text and the fields that were sent. */
+export type CaseSaveResult = 'saved' | 'failed' | { conflict: CaseDraft; sent: CaseField[] };
+
+/** The saved case text from a server `edit_conflict` rejection, or null. */
+export function editConflictCase(err: unknown): CaseDraft | null {
+  const e = err as { code?: unknown; body?: { case?: unknown } } | null;
+  if (e?.code !== 'edit_conflict') return null;
+  const c = e.body?.case as Partial<CaseDraft> | undefined;
+  if (
+    !c ||
+    typeof c.title !== 'string' ||
+    typeof c.steps !== 'string' ||
+    typeof c.expected !== 'string'
+  ) {
+    return null;
+  }
+  return { title: c.title, steps: c.steps, expected: c.expected };
+}
+
+/** The base text of each field in `patch`, sent as the server-side precondition. */
+export function caseEditExpectedBase(edits: CaseFieldEdits, patch: QaCaseInput): QaCaseInput {
+  const base: QaCaseInput = {};
+  for (const field of Object.keys(patch) as CaseField[]) {
+    const edit = edits[field];
+    if (edit) base[field] = edit.base;
+  }
+  return base;
+}
+
+const fieldClass =
+  'w-full rounded-md border border-gray-700 bg-gray-950 px-2 py-1 text-sm text-gray-100 focus:border-blue-500 focus:outline-none';
+
+function CaseForm({
+  initial,
+  submitLabel,
+  busy,
+  onSubmit,
+  onCancel,
+  testId,
+}: {
+  /** Latest saved values; fields the user has not typed in follow them live. */
+  initial: CaseDraft;
+  submitLabel: string;
+  busy: boolean;
+  /** `edits` holds only the fields the user typed in; `values` is what the form shows. */
+  onSubmit: (edits: CaseFieldEdits, values: CaseDraft) => Promise<CaseSaveResult>;
+  onCancel: () => void;
+  testId: string;
+}) {
+  const [edits, setEdits] = useState<CaseFieldEdits>({});
+  // Locked from Save until the outcome is known. A successful save closes the
+  // form, so anything typed meanwhile would be lost; a refused one is rebased
+  // from exactly what was sent.
+  const [submitting, setSubmitting] = useState(false);
+  const values: CaseDraft = { ...initial };
+  for (const field of Object.keys(edits) as CaseField[]) {
+    const edit = edits[field];
+    if (edit) values[field] = edit.value;
+  }
+  const edit = (field: CaseField, value: string) =>
+    setEdits((e) => applyCaseFieldEdit(e, field, value, values));
+  return (
+    <form
+      data-testid={testId}
+      className="flex flex-col gap-2"
+      onSubmit={async (e) => {
+        e.preventDefault();
+        if (submitting || !values.title.trim()) return;
+        setSubmitting(true);
+        try {
+          const result = await onSubmit(edits, values);
+          // The user was shown the conflict; a second Save overwrites deliberately.
+          if (typeof result === 'object') {
+            setEdits((cur) => rebaseCaseFieldEdits(cur, result.conflict, result.sent));
+          }
+        } finally {
+          setSubmitting(false);
+        }
+      }}
+    >
+      <fieldset
+        disabled={submitting}
+        data-testid="qa-case-form-fields"
+        className="m-0 flex min-w-0 flex-col gap-2 border-0 p-0"
+      >
+        <input
+          aria-label="Case title"
+          data-testid="qa-case-form-title"
+          className={fieldClass}
+          placeholder="What is being checked"
+          value={values.title}
+          onChange={(e) => edit('title', e.target.value)}
+          autoFocus
+        />
+        <textarea
+          aria-label="Steps"
+          data-testid="qa-case-form-steps"
+          className={`${fieldClass} min-h-[60px]`}
+          placeholder="1. Open …"
+          value={values.steps}
+          onChange={(e) => edit('steps', e.target.value)}
+        />
+        <textarea
+          aria-label="Expected result"
+          data-testid="qa-case-form-expected"
+          className={`${fieldClass} min-h-[40px]`}
+          placeholder="What you should see"
+          value={values.expected}
+          onChange={(e) => edit('expected', e.target.value)}
+        />
+        <div className="flex gap-2">
+          <button
+            type="submit"
+            data-testid="qa-case-form-save"
+            disabled={busy || !values.title.trim()}
+            className="rounded-md bg-blue-600 px-2.5 py-1 text-xs text-white hover:bg-blue-500 disabled:opacity-60"
+          >
+            {submitLabel}
+          </button>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-md px-2.5 py-1 text-xs text-gray-400 hover:text-gray-200"
+          >
+            Cancel
+          </button>
+        </div>
+      </fieldset>
+    </form>
+  );
+}
+
+const iconButton =
+  'rounded p-1 text-gray-500 hover:bg-gray-800 hover:text-gray-200 disabled:opacity-30 disabled:hover:bg-transparent';
+
+function CaseTable({
+  cases,
+  approved,
+  lockReason,
+  busy,
+  onAdd,
+  onEdit,
+  onDelete,
+  onMove,
+}: {
+  cases: QaCaseWire[];
+  approved: boolean;
+  lockReason: string | null;
+  busy: boolean;
+  onAdd: (draft: CaseDraft) => Promise<boolean>;
+  onEdit: (c: QaCaseWire, edits: CaseFieldEdits) => Promise<CaseSaveResult>;
+  onDelete: (c: QaCaseWire) => void;
+  onMove: (index: number, delta: -1 | 1) => void;
+}) {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const editable = lockReason === null;
+
+  const addButton = editable && !adding && (
+    <button
+      type="button"
+      data-testid="qa-case-add"
+      onClick={() => setAdding(true)}
+      className="inline-flex w-fit items-center gap-1 text-xs text-blue-400 hover:text-blue-300"
+    >
+      <Plus size={12} />
+      Add case
+    </button>
+  );
+  const addForm = adding && (
+    <div className="rounded-lg border border-gray-800 p-3">
+      <CaseForm
+        testId="qa-case-add-form"
+        initial={{ title: '', steps: '', expected: '' }}
+        submitLabel="Add case"
+        busy={busy}
+        onSubmit={async (_edits, values) => {
+          const ok = await onAdd(values);
+          if (ok) setAdding(false);
+          return ok ? 'saved' : 'failed';
+        }}
+        onCancel={() => setAdding(false)}
+      />
+    </div>
+  );
+
   if (cases.length === 0) {
     return (
-      <div className="text-sm text-gray-500" data-testid="qa-cases-empty">
-        No cases yet. The QA agent proposes cases in the plan&apos;s session
-        {approved ? '.' : '; approve the plan once the list looks right.'}
+      <div className="flex flex-col gap-2">
+        <div className="text-sm text-gray-500" data-testid="qa-cases-empty">
+          No cases yet. The QA agent proposes cases in the plan&apos;s chat
+          {approved ? '.' : '; approve the plan once the list looks right.'}
+        </div>
+        {addButton}
+        {addForm}
       </div>
     );
   }
   return (
-    <div className="overflow-x-auto rounded-lg border border-gray-800">
-      <table className="w-full text-left text-sm" data-testid="qa-case-table">
-        <thead className="border-b border-gray-800 text-xs text-gray-500">
-          <tr>
-            <th className="px-3 py-2 font-normal">#</th>
-            <th className="px-3 py-2 font-normal">Case</th>
-            <th className="px-3 py-2 font-normal">Expected</th>
-            <th className="px-3 py-2 font-normal">Latest verdict</th>
-          </tr>
-        </thead>
-        <tbody>
-          {cases.map((c, i) => (
-            <tr
-              key={c.id}
-              data-testid={`qa-case-row-${c.id}`}
-              className="border-b border-gray-800 align-top last:border-b-0"
-            >
-              <td className="px-3 py-2 text-gray-500">{i + 1}</td>
-              <td className="px-3 py-2">
-                <div className="text-gray-100">{c.title}</div>
-                {c.steps && (
-                  <div className="mt-0.5 whitespace-pre-wrap text-xs text-gray-500">{c.steps}</div>
-                )}
-              </td>
-              <td className="whitespace-pre-wrap px-3 py-2 text-xs text-gray-400">
-                {c.expected || <span className="text-gray-600">None given</span>}
-              </td>
-              <td className="px-3 py-2 text-xs">
-                <VerdictCell latest={c.latestVerdict ?? null} />
-              </td>
+    <div className="flex flex-col gap-2">
+      <div className="overflow-x-auto rounded-lg border border-gray-800">
+        <table className="w-full text-left text-sm" data-testid="qa-case-table">
+          <thead className="border-b border-gray-800 text-xs text-gray-500">
+            <tr>
+              <th className="px-3 py-2 font-normal">#</th>
+              <th className="px-3 py-2 font-normal">Case</th>
+              <th className="px-3 py-2 font-normal">Expected</th>
+              <th className="px-3 py-2 font-normal">Latest verdict</th>
+              {editable && (
+                <th className="px-3 py-2 font-normal">
+                  <span className="sr-only">Actions</span>
+                </th>
+              )}
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {cases.map((c, i) =>
+              editingId === c.id ? (
+                <tr
+                  key={c.id}
+                  data-testid={`qa-case-row-${c.id}`}
+                  className="border-b border-gray-800"
+                >
+                  <td className="px-3 py-2 align-top text-gray-500">{i + 1}</td>
+                  <td colSpan={editable ? 4 : 3} className="px-3 py-2">
+                    <CaseForm
+                      testId="qa-case-edit-form"
+                      initial={{ title: c.title, steps: c.steps, expected: c.expected }}
+                      submitLabel="Save"
+                      busy={busy}
+                      onSubmit={async (edits) => {
+                        const result = await onEdit(c, edits);
+                        if (result === 'saved') setEditingId(null);
+                        return result;
+                      }}
+                      onCancel={() => setEditingId(null)}
+                    />
+                  </td>
+                </tr>
+              ) : (
+                <tr
+                  key={c.id}
+                  data-testid={`qa-case-row-${c.id}`}
+                  className="border-b border-gray-800 align-top last:border-b-0"
+                >
+                  <td className="px-3 py-2 text-gray-500">{i + 1}</td>
+                  <td className="px-3 py-2">
+                    <div className="text-gray-100">
+                      {c.title}
+                      {c.version > 1 && (
+                        <span className="ml-1.5 text-[10px] text-gray-500" title="Case version">
+                          v{c.version}
+                        </span>
+                      )}
+                    </div>
+                    {c.steps && (
+                      <div className="mt-0.5 whitespace-pre-wrap text-xs text-gray-500">
+                        {c.steps}
+                      </div>
+                    )}
+                  </td>
+                  <td className="whitespace-pre-wrap px-3 py-2 text-xs text-gray-400">
+                    {c.expected || <span className="text-gray-600">None given</span>}
+                  </td>
+                  <td className="px-3 py-2 text-xs">
+                    <VerdictCell latest={c.latestVerdict ?? null} />
+                  </td>
+                  {editable && (
+                    <td className="px-2 py-1.5">
+                      <div className="flex items-center gap-0.5">
+                        <button
+                          type="button"
+                          aria-label={`Move ${c.title} up`}
+                          data-testid="qa-case-up"
+                          className={iconButton}
+                          disabled={busy || i === 0}
+                          onClick={() => onMove(i, -1)}
+                        >
+                          <ArrowUp size={12} />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={`Move ${c.title} down`}
+                          data-testid="qa-case-down"
+                          className={iconButton}
+                          disabled={busy || i === cases.length - 1}
+                          onClick={() => onMove(i, 1)}
+                        >
+                          <ArrowDown size={12} />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={`Edit ${c.title}`}
+                          data-testid="qa-case-edit"
+                          className={iconButton}
+                          disabled={busy}
+                          onClick={() => setEditingId(c.id)}
+                        >
+                          <Pencil size={12} />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={`Delete ${c.title}`}
+                          data-testid="qa-case-delete"
+                          className={`${iconButton} hover:text-red-400`}
+                          disabled={busy}
+                          onClick={() => onDelete(c)}
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    </td>
+                  )}
+                </tr>
+              ),
+            )}
+          </tbody>
+        </table>
+      </div>
+      {addButton}
+      {addForm}
     </div>
   );
 }
@@ -177,6 +561,8 @@ function RunHistory({
 export interface QaPlanDetailProps extends LinkProps {
   projectId: string;
   planId: string;
+  /** Message from the page, e.g. the authoring chat failed to open after create. */
+  notice?: string | null;
   onBack: () => void;
   onOpenSession?: (agentId: string | null, sessionId: string) => void;
 }
@@ -184,6 +570,7 @@ export interface QaPlanDetailProps extends LinkProps {
 export default function QaPlanDetail({
   projectId,
   planId,
+  notice,
   onBack,
   onOpenEpic,
   onOpenCard,
@@ -191,6 +578,8 @@ export default function QaPlanDetail({
 }: QaPlanDetailProps) {
   const [detail, setDetail] = useState<QaPlanDetailWire | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const requestSeq = useRef(0);
 
   // Same newest-wins sequencing as the list: a slow response for a previous
@@ -229,6 +618,41 @@ export default function QaPlanDetail({
   }, [load, projectId, planId]);
 
   const plan = detail?.plan;
+  const lockReason = detail ? caseListLockReason(detail) : null;
+
+  /** Run one mutation, then refresh. Returns false (with the error shown) on failure. */
+  const act = async (fn: () => Promise<unknown>): Promise<boolean> => {
+    setBusy(true);
+    setActionError(null);
+    try {
+      await fn();
+      await load();
+      return true;
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : 'Request failed');
+      await load();
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openChat = async () => {
+    setBusy(true);
+    setActionError(null);
+    try {
+      const { agentId, sessionId } = await api.openQaAuthoringSession(projectId, planId);
+      onOpenSession?.(agentId, sessionId);
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : 'Failed to open the QA chat');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmApprovalLoss = (): boolean =>
+    !plan?.approved ||
+    window.confirm('This plan is approved. Changing its cases revokes approval. Continue?');
 
   return (
     <div className="flex h-full flex-col gap-4" data-testid="qa-plan-detail">
@@ -244,11 +668,15 @@ export default function QaPlanDetail({
         </button>
       </div>
 
-      {error && (
-        <div className="rounded-md border border-red-900 bg-red-950/40 px-3 py-2 text-sm text-red-300">
-          {error}
+      {[notice, error, actionError].filter(Boolean).map((msg) => (
+        <div
+          key={msg}
+          data-testid="qa-detail-error"
+          className="rounded-md border border-red-900 bg-red-950/40 px-3 py-2 text-sm text-red-300"
+        >
+          {msg}
         </div>
-      )}
+      ))}
 
       {!plan ? (
         !error && <div className="text-sm text-gray-500">Loading…</div>
@@ -281,6 +709,41 @@ export default function QaPlanDetail({
                   Signed off {formatDateTime(plan.signedOffAt)}
                 </span>
               )}
+              <div className="ml-auto flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  data-testid="qa-open-chat"
+                  disabled={busy}
+                  onClick={() => void openChat()}
+                  className="inline-flex items-center gap-1 rounded-md border border-gray-700 px-2.5 py-1 text-xs text-gray-300 hover:bg-gray-800 disabled:opacity-60"
+                >
+                  <MessageSquare size={12} />
+                  {plan.authoringSessionId ? 'Open QA chat' : 'Draft cases with QA agent'}
+                </button>
+                {lockReason === null &&
+                  (plan.approved ? (
+                    <button
+                      type="button"
+                      data-testid="qa-revoke-approval"
+                      disabled={busy}
+                      onClick={() => void act(() => api.revokeQaPlanApproval(projectId, planId))}
+                      className="rounded-md border border-gray-700 px-2.5 py-1 text-xs text-gray-300 hover:bg-gray-800 disabled:opacity-60"
+                    >
+                      Revoke approval
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      data-testid="qa-approve"
+                      disabled={busy || detail.cases.length === 0}
+                      title={detail.cases.length === 0 ? 'Add at least one case first' : undefined}
+                      onClick={() => void act(() => api.approveQaPlan(projectId, planId))}
+                      className="rounded-md bg-emerald-700 px-2.5 py-1 text-xs text-white hover:bg-emerald-600 disabled:opacity-60"
+                    >
+                      Approve
+                    </button>
+                  ))}
+              </div>
             </div>
             <a
               href={plan.targetUrl}
@@ -310,12 +773,86 @@ export default function QaPlanDetail({
               approves the case list.
             </div>
           )}
+          {plan.approved && lockReason === null && (
+            <div data-testid="qa-detail-approved-note" className="text-xs text-gray-500">
+              Approved: the case list is locked for runs. Editing, adding, or deleting a case
+              revokes approval, and an edited case gets a new version.
+            </div>
+          )}
+          {lockReason && (
+            <div data-testid="qa-detail-locked" className="text-xs text-gray-500">
+              Cases are read-only. {lockReason}
+            </div>
+          )}
 
           <section className="flex flex-col gap-2">
             <h2 className="text-sm font-medium text-gray-300">
               Cases <span className="text-gray-500">{detail.cases.length}</span>
             </h2>
-            <CaseTable cases={detail.cases} approved={plan.approved} />
+            <CaseTable
+              cases={detail.cases}
+              approved={plan.approved}
+              lockReason={lockReason}
+              busy={busy}
+              onAdd={(draft) =>
+                confirmApprovalLoss()
+                  ? act(() =>
+                      api.addQaCase(projectId, planId, { ...draft, title: draft.title.trim() }),
+                    )
+                  : Promise.resolve(false)
+              }
+              onEdit={async (c, edits) => {
+                const patch = planCaseSave(edits);
+                if (!patch) return 'saved';
+                const sent = Object.keys(patch) as CaseField[];
+                const conflictWith = (fields: string[], saved: CaseDraft): CaseSaveResult => {
+                  setActionError(
+                    `"${c.title}" changed (${fields.join(', ')}) while you were editing. ` +
+                      'Your text is still in the form; Save again to overwrite the new version.',
+                  );
+                  return { conflict: saved, sent };
+                };
+                if (!confirmApprovalLoss()) return 'failed';
+                setBusy(true);
+                setActionError(null);
+                try {
+                  // The server re-checks each field's base inside the update, so
+                  // a change this page has not seen yet is refused, not overwritten.
+                  await api.updateQaCase(projectId, planId, c.id, {
+                    ...patch,
+                    expectedBase: caseEditExpectedBase(edits, patch),
+                  });
+                  await load();
+                  return 'saved';
+                } catch (e) {
+                  const saved = editConflictCase(e);
+                  const fields = (e as { body?: { conflicts?: unknown } }).body?.conflicts;
+                  await load();
+                  if (saved) {
+                    return conflictWith(Array.isArray(fields) ? fields.map(String) : sent, saved);
+                  }
+                  setActionError(e instanceof Error ? e.message : 'Request failed');
+                  return 'failed';
+                } finally {
+                  setBusy(false);
+                }
+              }}
+              onDelete={(c) => {
+                const msg = plan.approved
+                  ? `Delete "${c.title}"? This revokes the plan's approval.`
+                  : `Delete "${c.title}"?`;
+                if (!window.confirm(msg)) return;
+                void act(() => api.deleteQaCase(projectId, planId, c.id));
+              }}
+              onMove={(index, delta) => {
+                const ids = moveCaseIds(
+                  detail.cases.map((c) => c.id),
+                  index,
+                  delta,
+                );
+                if (ids) void act(() => api.reorderQaCases(projectId, planId, ids));
+              }}
+            />
           </section>
 
           <section className="flex flex-col gap-2">

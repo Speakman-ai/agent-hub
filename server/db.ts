@@ -3904,6 +3904,14 @@ function initDb(dataDir: string): void {
   // QA Validation: plans, cases, runs, results. Plan status transitions live in
   // qa-status.ts; the DDL is shared with its tests via qa-schema.ts.
   db.exec(QA_SCHEMA);
+  // The QA session where the plan's cases were drafted with the user.
+  try {
+    db.exec(
+      'ALTER TABLE qa_plans ADD COLUMN authoring_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL',
+    );
+  } catch (_e) {
+    /* column already present */
+  }
   try {
     db.exec('ALTER TABLE release_notification_outbox ADD COLUMN next_attempt_at TEXT');
   } catch (_e) {
@@ -4359,6 +4367,9 @@ function initDb(dataDir: string): void {
     ),
     setQaPlanSignOff: db.prepare(
       "UPDATE qa_plans SET signed_off_at = datetime('now'), signed_off_by = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    setQaPlanAuthoringSession: db.prepare(
+      "UPDATE qa_plans SET authoring_session_id = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     clearQaPlanSignOff: db.prepare(
       "UPDATE qa_plans SET signed_off_at = NULL, signed_off_by = NULL, updated_at = datetime('now') WHERE id = ?",

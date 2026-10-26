@@ -159,8 +159,30 @@ export interface QaPlanWire {
   autoRerun: boolean;
   maxIterations: number;
   createdBy: string | null;
+  /** QA session where the cases were drafted. Null until one is opened. */
+  authoringSessionId: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface QaCreatePlanInput {
+  title: string;
+  targetUrl: string;
+  goal?: string;
+  epicId?: string | null;
+  cardId?: string | null;
+}
+
+export interface QaCaseInput {
+  title?: string;
+  steps?: string;
+  expected?: string;
+}
+
+export interface QaAuthoringSessionWire {
+  sessionId: string;
+  agentId: string;
+  created: boolean;
 }
 
 export interface QaCaseWire {
@@ -209,6 +231,9 @@ export interface QaPlanDetailWire {
   runs: QaRunWire[];
   signOffBlocker: string | null;
 }
+
+const qaPlanPath = (projectId: string, planId: string) =>
+  `/projects/${encodeURIComponent(projectId)}/qa/plans/${encodeURIComponent(planId)}`;
 
 export interface QaPlanListWire {
   plans: QaPlanListItemWire[];
@@ -624,8 +649,10 @@ async function fetchJSON<T = any>(url: string, options: FetchJsonOptions = {}): 
       status?: number;
       code?: string;
       helpUrl?: string;
+      body?: unknown;
     };
     error.status = res.status;
+    error.body = errBody;
     if (typeof errBody?.code === 'string') error.code = errBody.code;
     if (typeof errBody?.helpUrl === 'string') error.helpUrl = errBody.helpUrl;
     throw error;
@@ -2619,9 +2646,54 @@ export const api = {
   listQaPlans: (projectId: string) =>
     fetchJSON<QaPlanListWire>(`/projects/${encodeURIComponent(projectId)}/qa/plans`),
   getQaPlan: (projectId: string, planId: string) =>
-    fetchJSON<QaPlanDetailWire>(
-      `/projects/${encodeURIComponent(projectId)}/qa/plans/${encodeURIComponent(planId)}`,
+    fetchJSON<QaPlanDetailWire>(qaPlanPath(projectId, planId)),
+  createQaPlan: (projectId: string, input: QaCreatePlanInput) =>
+    fetchJSON<{ plan: QaPlanWire }>(`/projects/${encodeURIComponent(projectId)}/qa/plans`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  openQaAuthoringSession: (projectId: string, planId: string) =>
+    fetchJSON<QaAuthoringSessionWire>(`${qaPlanPath(projectId, planId)}/authoring-session`, {
+      method: 'POST',
+    }),
+  addQaCase: (projectId: string, planId: string, input: QaCaseInput & { title: string }) =>
+    fetchJSON<{ case: QaCaseWire; plan: QaPlanWire }>(`${qaPlanPath(projectId, planId)}/cases`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  /**
+   * With `expectedBase`, the edit only applies if each listed field still holds
+   * the text it was edited against; otherwise it rejects with code
+   * `edit_conflict` and `body.case` holding the saved text.
+   */
+  updateQaCase: (
+    projectId: string,
+    planId: string,
+    caseId: string,
+    input: QaCaseInput & { expectedBase?: QaCaseInput },
+  ) =>
+    fetchJSON<{ case: QaCaseWire; plan: QaPlanWire }>(
+      `${qaPlanPath(projectId, planId)}/cases/${encodeURIComponent(caseId)}`,
+      { method: 'PATCH', body: JSON.stringify(input) },
     ),
+  deleteQaCase: (projectId: string, planId: string, caseId: string) =>
+    fetchJSON<{ ok: true; plan: QaPlanWire }>(
+      `${qaPlanPath(projectId, planId)}/cases/${encodeURIComponent(caseId)}`,
+      { method: 'DELETE' },
+    ),
+  reorderQaCases: (projectId: string, planId: string, orderedIds: string[]) =>
+    fetchJSON<{ cases: QaCaseWire[] }>(`${qaPlanPath(projectId, planId)}/cases/reorder`, {
+      method: 'POST',
+      body: JSON.stringify({ orderedIds }),
+    }),
+  approveQaPlan: (projectId: string, planId: string) =>
+    fetchJSON<{ plan: QaPlanWire }>(`${qaPlanPath(projectId, planId)}/approve`, {
+      method: 'POST',
+    }),
+  revokeQaPlanApproval: (projectId: string, planId: string) =>
+    fetchJSON<{ plan: QaPlanWire }>(`${qaPlanPath(projectId, planId)}/revoke-approval`, {
+      method: 'POST',
+    }),
   // Per-project Stats page — daily/weekly/monthly product metrics.
   getProjectStats: (projectId: any, { granularity = 'day', buckets }: any = {}) => {
     const qs = new URLSearchParams({ granularity });

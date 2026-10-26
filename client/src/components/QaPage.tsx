@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ClipboardCheck, List, SquareKanban } from 'lucide-react';
+import { ClipboardCheck, List, Plus, SquareKanban } from 'lucide-react';
 import { api, type QaPlanListItemWire, type QaPlanStatus, type QaVerdict } from '../utils/api';
 import { QA_STATUSES, VERDICT_CLASS, VERDICT_LABELS } from '../utils/qaLabels';
 import { LinkChips, type LinkProps } from './QaLinkChips';
+import NewQaPlanDialog from './NewQaPlanDialog';
 import QaPlanDetail from './QaPlanDetail';
 
 export { QA_STATUSES };
@@ -148,6 +149,29 @@ export default function QaPage({
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<QaPlanStatus>('new');
   const [viewMode, setViewModeState] = useState<ViewMode>(readViewMode);
+  const [creating, setCreating] = useState(false);
+  const [detailNotice, setDetailNotice] = useState<string | null>(null);
+
+  /**
+   * A new plan opens its detail and its seeded authoring chat. The plan
+   * already exists if the chat fails to open, so the detail says why and
+   * offers the chat button again.
+   */
+  const handlePlanCreated = async (planId: string) => {
+    setCreating(false);
+    setTab('new');
+    setSelectedPlanId(planId);
+    setDetailNotice(null);
+    void load();
+    try {
+      const { agentId, sessionId } = await api.openQaAuthoringSession(projectId, planId);
+      onOpenSession?.(agentId, sessionId);
+    } catch (e) {
+      setDetailNotice(
+        `Plan created, but the QA chat did not open: ${e instanceof Error ? e.message : 'unknown error'}`,
+      );
+    }
+  };
 
   const setViewMode = (mode: ViewMode) => {
     setViewModeState(mode);
@@ -217,7 +241,11 @@ export default function QaPage({
         key={selectedPlanId}
         projectId={projectId}
         planId={selectedPlanId}
-        onBack={() => setSelectedPlanId(null)}
+        notice={detailNotice}
+        onBack={() => {
+          setSelectedPlanId(null);
+          setDetailNotice(null);
+        }}
         onOpenEpic={onOpenEpic}
         onOpenCard={onOpenCard}
         onOpenSession={onOpenSession}
@@ -232,10 +260,19 @@ export default function QaPage({
         <h1 className="text-lg font-semibold text-gray-100">
           QA{projectName ? <span className="text-gray-500"> · {projectName}</span> : null}
         </h1>
+        <button
+          type="button"
+          data-testid="qa-new-plan"
+          onClick={() => setCreating(true)}
+          className="ml-auto inline-flex items-center gap-1 rounded-md bg-blue-600 px-2.5 py-1 text-xs text-white hover:bg-blue-500"
+        >
+          <Plus size={12} />
+          New QA plan
+        </button>
         <div
           role="group"
           aria-label="QA view"
-          className="ml-auto inline-flex overflow-hidden rounded-md border border-gray-700"
+          className="inline-flex overflow-hidden rounded-md border border-gray-700"
         >
           {(
             [
@@ -261,6 +298,14 @@ export default function QaPage({
           ))}
         </div>
       </div>
+
+      {creating && (
+        <NewQaPlanDialog
+          projectId={projectId}
+          onClose={() => setCreating(false)}
+          onCreated={handlePlanCreated}
+        />
+      )}
 
       {error && (
         <div className="rounded-md border border-red-900 bg-red-950/40 px-3 py-2 text-sm text-red-300">

@@ -4,10 +4,16 @@ import type { QaPlanListItemWire, QaPlanListWire } from '../utils/api';
 
 const listQaPlans = vi.fn<(projectId: string) => Promise<QaPlanListWire>>();
 const getQaPlan = vi.fn();
+const createQaPlan = vi.fn();
+const openQaAuthoringSession = vi.fn();
 vi.mock('../utils/api', () => ({
   api: {
     listQaPlans: (id: string) => listQaPlans(id),
     getQaPlan: (projectId: string, planId: string) => getQaPlan(projectId, planId),
+    createQaPlan: (...a: unknown[]) => createQaPlan(...a),
+    openQaAuthoringSession: (...a: unknown[]) => openQaAuthoringSession(...a),
+    getEpics: () => Promise.resolve([]),
+    getBoardCards: () => Promise.resolve([]),
   },
 }));
 
@@ -257,5 +263,55 @@ describe('QaPage', () => {
     );
     expect(screen.getByTestId('qa-plan-row-fresh')).toBeInTheDocument();
     expect(screen.queryByTestId('qa-plan-row-old')).toBeNull();
+  });
+});
+
+describe('QaPage new plan', () => {
+  const fillAndSubmit = async () => {
+    fireEvent.click(await screen.findByTestId('qa-new-plan'));
+    fireEvent.change(screen.getByTestId('qa-new-title'), { target: { value: 'Signup' } });
+    fireEvent.change(screen.getByTestId('qa-new-target'), {
+      target: { value: 'https://staging.example.com' },
+    });
+    fireEvent.click(screen.getByTestId('qa-new-submit'));
+  };
+
+  beforeEach(() => {
+    respond();
+    createQaPlan.mockReset().mockResolvedValue({ plan: { id: 'new-1' } });
+    openQaAuthoringSession.mockReset();
+    getQaPlan.mockReset().mockReturnValue(new Promise(() => {}));
+  });
+
+  it('creates the plan, opens its detail, and opens the seeded QA chat', async () => {
+    openQaAuthoringSession.mockResolvedValue({
+      sessionId: 's1',
+      agentId: 'proj-qa',
+      created: true,
+    });
+    const onOpenSession = vi.fn();
+    render(<QaPage projectId="proj" onOpenSession={onOpenSession} />);
+    await fillAndSubmit();
+    await waitFor(() => expect(onOpenSession).toHaveBeenCalledWith('proj-qa', 's1'));
+    expect(createQaPlan).toHaveBeenCalledWith('proj', {
+      title: 'Signup',
+      targetUrl: 'https://staging.example.com',
+      goal: '',
+      epicId: null,
+      cardId: null,
+    });
+    expect(openQaAuthoringSession).toHaveBeenCalledWith('proj', 'new-1');
+    expect(screen.getByTestId('qa-plan-detail')).toBeInTheDocument();
+    expect(screen.queryByTestId('qa-new-plan-dialog')).not.toBeInTheDocument();
+  });
+
+  it('keeps the new plan open with a notice when the chat cannot open', async () => {
+    openQaAuthoringSession.mockRejectedValue(new Error('This project has no QA agent.'));
+    render(<QaPage projectId="proj" onOpenSession={vi.fn()} />);
+    await fillAndSubmit();
+    expect(
+      await screen.findByText(/did not open: This project has no QA agent/),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('qa-plan-detail')).toBeInTheDocument();
   });
 });
