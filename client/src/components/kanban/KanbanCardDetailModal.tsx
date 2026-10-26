@@ -13,6 +13,8 @@ import { hasUnresolvedBlockers } from '../../utils/blockers';
 import { MarkdownContent } from '../MarkdownRenderer';
 import ReplayPlayerModal from '../ReplayPlayerModal';
 import LinkedTodosPanel from './LinkedTodosPanel';
+import LinkedQaPlansPanel from './LinkedQaPlansPanel';
+import type { QaPlansByLink } from '../../utils/qaLinks';
 import HubChatBacklinks from '../HubChatBacklinks';
 import type { KanbanCardDetailState } from '../../hooks/useKanbanCardDetail';
 
@@ -27,6 +29,8 @@ type Props = {
   agents: any[];
   assignableUsers?: AssignableUser[];
   onOpenEpic?: (epicId: string) => void;
+  qaPlans?: QaPlansByLink;
+  onOpenQaPlan?: (planId: string) => void;
 };
 
 export default function KanbanCardDetailModal({
@@ -34,6 +38,8 @@ export default function KanbanCardDetailModal({
   agents,
   assignableUsers = [],
   onOpenEpic,
+  qaPlans,
+  onOpenQaPlan,
 }: Props) {
   const {
     selectedCard,
@@ -361,6 +367,12 @@ export default function KanbanCardDetailModal({
                       targetType="card"
                       entity={selectedCard}
                       projectId={projectId}
+                    />
+                  ) : null}
+                  {!isCreating && selectedCard?.id ? (
+                    <LinkedQaPlansPanel
+                      plans={qaPlans?.byCard.get(selectedCard.id)}
+                      onOpenPlan={onOpenQaPlan}
                     />
                   ) : null}
                   {/* Priority */}

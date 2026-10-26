@@ -49,6 +49,7 @@ import { api } from '../utils/api';
     // whenever the card has a session_id. Mocked to "no run" so the badge
     // is invisible in kanban-flow tests that don't care about finalize.
     getLatestFinalizeRunForSession: vi.fn().mockResolvedValue({ run: null }),
+    listQaPlans: vi.fn().mockResolvedValue({ plans: [], counts: {} }),
   },
 }));
 
@@ -420,6 +421,73 @@ describe('KanbanBoard card detail modal', () => {
 
     // Exactly one badge — only the orphaned card carries it.
     expect(screen.getAllByTestId('card-orphaned-badge')).toHaveLength(1);
+  });
+
+  it('marks a card whose linked QA plan is failing, and lists the plan in card detail', async () => {
+    const qaPlan = (id: string, cardId: string, status: string, runStatus: string | null) => ({
+      id,
+      projectId: 'p1',
+      title: `Plan ${id}`,
+      goal: '',
+      targetUrl: 'https://example.com',
+      epicId: null,
+      cardId,
+      status,
+      approved: true,
+      signedOffAt: null,
+      createdAt: '',
+      updatedAt: '',
+      summary: {
+        caseCount: 1,
+        latestRun: runStatus
+          ? {
+              id: `r-${id}`,
+              iteration: 1,
+              status: runStatus,
+              scope: 'full',
+              finishedAt: null,
+              verdicts: { pass: 0, fail: 1, needs_change: 0, blocked: 0 },
+            }
+          : null,
+        epic: null,
+        card: null,
+      },
+    });
+    (api.listQaPlans as any).mockResolvedValueOnce({
+      plans: [
+        qaPlan('q1', 'card-qa', 'in_progress', 'failed'),
+        qaPlan('q2', 'card-new', 'new', null),
+      ],
+      counts: {},
+    });
+    (api.getBoard as any).mockResolvedValue(
+      makeBoard([
+        { id: 'card-qa', title: 'QA card', column_id: 'col-todo', position: 0 },
+        { id: 'card-new', title: 'New-plan card', column_id: 'col-todo', position: 1 },
+      ]),
+    );
+    (api.getCardComments as any).mockResolvedValue([]);
+    const onOpenQaPlan = vi.fn();
+
+    render(
+      <KanbanBoard
+        projectId="p1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        onOpenQaPlan={onOpenQaPlan}
+      />,
+    );
+    const badge = await screen.findByTestId('card-qa-badge');
+    expect(badge).toHaveAttribute('data-tone', 'failing');
+    // A plan that has never run does not flag its card.
+    expect(screen.getAllByTestId('card-qa-badge')).toHaveLength(1);
+    expect(within(screen.getByTestId('card-draggable-card-qa')).getByTestId('card-qa-badge')).toBe(
+      badge,
+    );
+
+    fireEvent.click(screen.getByText('QA card'));
+    fireEvent.click(await screen.findByTestId('linked-qa-plan'));
+    expect(onOpenQaPlan).toHaveBeenCalledWith('q1');
   });
 
   it('renders markdown images in the card detail preview when the card is opened', async () => {

@@ -172,6 +172,28 @@ describe('QaPage', () => {
     expect(getQaPlan).toHaveBeenLastCalledWith('proj', 'd');
   });
 
+  it('opens straight into the plan passed by an epic or card badge', async () => {
+    getQaPlan.mockResolvedValue({
+      plan: {
+        ...PLANS[1],
+        deployEnvironment: null,
+        approvalSeq: 1,
+        autoRerun: true,
+        maxIterations: 5,
+      },
+      links: { epic: null, card: PLANS[1].summary.card },
+      cases: [],
+      runs: [],
+      signOffBlocker: null,
+    });
+    const consumed = vi.fn();
+    render(<QaPage projectId="proj" initialPlanId="b" onInitialPlanConsumed={consumed} />);
+    await screen.findByTestId('qa-plan-detail');
+    expect(getQaPlan).toHaveBeenLastCalledWith('proj', 'b');
+    expect(consumed).toHaveBeenCalled();
+    expect(screen.queryByTestId('qa-page')).toBeNull();
+  });
+
   it('refetches on qa_update for this project only', async () => {
     render(<QaPage projectId="proj" />);
     await screen.findByTestId('qa-plan-row-a');

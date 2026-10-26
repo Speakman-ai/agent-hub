@@ -35,6 +35,8 @@ import { specProgress, ticketsForEpic } from '../utils/epicScopeStats';
 import type { AssignableUser } from '../utils/kanbanUserFilter';
 import KanbanCardDetailModal from './kanban/KanbanCardDetailModal';
 import LinkedTodosPanel from './kanban/LinkedTodosPanel';
+import LinkedQaPlansPanel from './kanban/LinkedQaPlansPanel';
+import { useProjectQaPlans } from '../hooks/useProjectQaPlans';
 import { useKanbanCardDetail } from '../hooks/useKanbanCardDetail';
 
 function SectionCard({ title, description, children, action }: any) {
@@ -66,7 +68,9 @@ export default function EpicView({
   onOpenEpicsList,
   onNavigateToSession,
   onOpenPull,
+  onOpenQaPlan,
 }: any) {
+  const qaPlans = useProjectQaPlans(projectId);
   const [columns, setColumns] = useState<any[]>([]);
   const [cards, setCards] = useState<any[]>([]);
   const [epics, setEpics] = useState<any[]>([]);
@@ -1210,12 +1214,21 @@ export default function EpicView({
                   todos linked to this epic. Renders nothing when there are
                   none, so it only surfaces when the viewer has linked a todo. */}
               <LinkedTodosPanel targetType="epic" entity={epic} projectId={projectId} />
+              <LinkedQaPlansPanel
+                plans={epic ? qaPlans.byEpic.get(epic.id) : undefined}
+                onOpenPlan={onOpenQaPlan}
+              />
             </div>
           )}
         </div>
       </div>
 
-      <KanbanCardDetailModal detail={cardDetail} agents={agents} />
+      <KanbanCardDetailModal
+        detail={cardDetail}
+        agents={agents}
+        qaPlans={qaPlans}
+        onOpenQaPlan={onOpenQaPlan}
+      />
     </div>
   );
 }

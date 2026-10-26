@@ -123,6 +123,9 @@ export interface QaPageProps extends LinkProps {
   projectId: string;
   projectName?: string;
   onOpenSession?: (agentId: string | null, sessionId: string) => void;
+  /** Open straight into this plan's detail (from an epic or card QA badge). */
+  initialPlanId?: string | null;
+  onInitialPlanConsumed?: () => void;
 }
 
 export default function QaPage({
@@ -131,8 +134,10 @@ export default function QaPage({
   onOpenEpic,
   onOpenCard,
   onOpenSession,
+  initialPlanId = null,
+  onInitialPlanConsumed,
 }: QaPageProps) {
-  const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
+  const [selectedPlanId, setSelectedPlanId] = useState<string | null>(initialPlanId);
   const [plans, setPlans] = useState<QaPlanListItemWire[]>([]);
   const [counts, setCounts] = useState<Record<QaPlanStatus, number>>({
     new: 0,
@@ -195,6 +200,14 @@ export default function QaPage({
     window.addEventListener('qa_update', onUpdate);
     return () => window.removeEventListener('qa_update', onUpdate);
   }, [load, projectId]);
+
+  // Declared after the project-reset effect so a badge click (mount or
+  // already-mounted) wins over the reset to the list.
+  useEffect(() => {
+    if (!initialPlanId) return;
+    setSelectedPlanId(initialPlanId);
+    onInitialPlanConsumed?.();
+  }, [initialPlanId, onInitialPlanConsumed]);
 
   const grouped = useMemo(() => groupPlansByStatus(plans), [plans]);
 

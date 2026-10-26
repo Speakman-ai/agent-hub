@@ -22,6 +22,7 @@ import {
   ChevronLeft,
   ChevronRight,
   UserPlus,
+  ClipboardCheck,
 } from 'lucide-react';
 import {
   DndContext,
@@ -75,6 +76,8 @@ import CardContextMenu from './CardContextMenu';
 import KanbanCardDetailModal from './kanban/KanbanCardDetailModal';
 import KanbanColumnDialog from './kanban/KanbanColumnDialog';
 import { useKanbanCardDetail } from '../hooks/useKanbanCardDetail';
+import { useProjectQaPlans } from '../hooks/useProjectQaPlans';
+import { QA_TONE_CLASS, qaBoardIndicator, type QaLinkTone } from '../utils/qaLinks';
 
 const PRIORITY_ACCENT = {
   urgent: 'border-l-red-500',
@@ -246,6 +249,7 @@ const KanbanCard = memo(function KanbanCard({
   showCheckbox = false,
   onToggleSelect,
   onToggleHighPriority,
+  qaIndicator = null,
 }: any) {
   const cardEpic = card.epic_id ? epics.find((e: any) => e.id === card.epic_id) : null;
   const shortLabel = cardShortLabel(board?.card_prefix, card.short_id);
@@ -359,6 +363,17 @@ const KanbanCard = memo(function KanbanCard({
                   {card.pr_url.match(/\d+$/)?.[0] || 'PR'}
                 </span>
               ))}
+            {qaIndicator && (
+              <span
+                className={`inline-flex items-center gap-0.5 rounded border px-1 text-[10px] font-medium ${QA_TONE_CLASS[qaIndicator.tone as QaLinkTone]}`}
+                title={qaIndicator.title}
+                data-testid="card-qa-badge"
+                data-tone={qaIndicator.tone}
+              >
+                <ClipboardCheck size={10} />
+                QA
+              </span>
+            )}
             <ReviewGlyph status={card.review_status} />
             {card.session_id && (
               <FinalizeCardBadge
@@ -459,6 +474,7 @@ const SortableCard = memo(function SortableCard({
   selectedCount,
   dragDisabled,
   onClearSelection,
+  qaIndicator = null,
 }: any) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: card.id,
@@ -500,6 +516,7 @@ const SortableCard = memo(function SortableCard({
         showCheckbox={showCheckbox}
         onToggleSelect={onToggleSelect}
         onToggleHighPriority={onToggleHighPriority}
+        qaIndicator={qaIndicator}
       />
     </div>
   );
@@ -862,7 +879,17 @@ export default function KanbanBoard({
   onOpenTemplates,
   focusCardId = null,
   onFocusCardConsumed,
+  onOpenQaPlan,
 }: any) {
+  const qaPlans = useProjectQaPlans(projectId);
+  const qaIndicatorByCard = useMemo(() => {
+    const out = new Map<string, NonNullable<ReturnType<typeof qaBoardIndicator>>>();
+    for (const [cardId, plans] of qaPlans.byCard) {
+      const indicator = qaBoardIndicator(plans);
+      if (indicator) out.set(cardId, indicator);
+    }
+    return out;
+  }, [qaPlans]);
   // The assignment dropdown must only offer agents that belong to this
   // project — agents are loaded app-wide and flattened across every visible
   // project, so scope them to `projectId` before rendering options.
@@ -2318,6 +2345,7 @@ export default function KanbanBoard({
                               }
                               onClearSelection={clearSelection}
                               onToggleHighPriority={quickToggleHighPriority}
+                              qaIndicator={qaIndicatorByCard.get(card.id) ?? null}
                             />
                           ))}
                         </SortableContext>
@@ -2393,6 +2421,8 @@ export default function KanbanBoard({
         agents={agents}
         assignableUsers={assignableUsers}
         onOpenEpic={onOpenEpic}
+        qaPlans={qaPlans}
+        onOpenQaPlan={onOpenQaPlan}
       />
 
       {/* Confirm move — blocked-card → blocker-sensitive column */}

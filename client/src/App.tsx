@@ -856,6 +856,9 @@ export default function App({ initialView }: any = {}) {
   // A card another surface asked the board to open (e.g. the card a support
   // ticket was converted into, or a pasted `/projects/<id>/board?card=<id>`
   // deep link). Cleared once the board consumes it.
+  // QA plan to open when a badge on an epic or card navigates to the QA page.
+  const [qaFocusPlanId, setQaFocusPlanId] = useState<string | null>(null);
+  const clearQaFocusPlan = useCallback(() => setQaFocusPlanId(null), []);
   const [kanbanFocusCardId, setKanbanFocusCardId] = useState<string | null>(
     typeof initialNavigation.view === 'string' && initialNavigation.view.startsWith('kanban:')
       ? initialNavigation.cardId || null
@@ -7162,6 +7165,11 @@ export default function App({ initialView }: any = {}) {
                   }}
                   focusCardId={kanbanFocusCardId}
                   onFocusCardConsumed={() => setKanbanFocusCardId(null)}
+                  onOpenQaPlan={(planId: string) => {
+                    const projectId = currentView.split(':')[1];
+                    setQaFocusPlanId(planId);
+                    setCurrentView(`qa:${projectId}`);
+                  }}
                   showToast={showToast}
                   onProjectsRefresh={() => {
                     // Re-pull the project list so derived flags reflect any
@@ -7236,6 +7244,13 @@ export default function App({ initialView }: any = {}) {
                       ? currentView.slice('epics:'.length)
                       : currentView.split(':')[1];
                     setCurrentView(`epic:${projectId}:${epicId}`);
+                  }}
+                  onOpenQaPlan={(planId: string) => {
+                    const projectId = currentView.startsWith('epics:')
+                      ? currentView.slice('epics:'.length)
+                      : currentView.split(':')[1];
+                    setQaFocusPlanId(planId);
+                    setCurrentView(`qa:${projectId}`);
                   }}
                   onOpenPull={(prNumber: any) => {
                     const projectId = currentView.startsWith('epics:')
@@ -7351,6 +7366,8 @@ export default function App({ initialView }: any = {}) {
                         <QaPage
                           projectId={qaProjectId}
                           projectName={qaProject?.name}
+                          initialPlanId={qaFocusPlanId}
+                          onInitialPlanConsumed={clearQaFocusPlan}
                           onOpenEpic={(epicId: string) => {
                             setCurrentView(`epic:${qaProjectId}:${epicId}`);
                             setSidebarOpen(false);
