@@ -3,6 +3,8 @@ import {
   ArrowDown,
   ArrowLeft,
   ArrowUp,
+  ChevronDown,
+  ChevronRight,
   ExternalLink,
   MessageSquare,
   Pencil,
@@ -24,6 +26,7 @@ import {
 } from '../utils/qaLabels';
 import { formatDateTime, parseDate } from '../utils/time';
 import { LinkChips, type LinkProps } from './QaLinkChips';
+import QaRunResults from './QaRunResults';
 
 type LatestVerdict = QaCaseWire['latestVerdict'];
 
@@ -501,13 +504,19 @@ function CaseTable({
 
 function RunHistory({
   runs,
+  cases,
   approved,
   onOpenSession,
+  onOpenCard,
 }: {
   runs: QaRunWire[];
+  cases: QaCaseWire[];
   approved: boolean;
   onOpenSession?: (agentId: string | null, sessionId: string) => void;
+  onOpenCard?: (cardId: string) => void;
 }) {
+  // Newest run open by default; the user's toggles win afterwards.
+  const [toggled, setToggled] = useState<Record<string, boolean>>({});
   if (runs.length === 0) {
     return (
       <div className="text-sm text-gray-500" data-testid="qa-runs-empty">
@@ -520,36 +529,57 @@ function RunHistory({
   }
   return (
     <ul className="rounded-lg border border-gray-800" data-testid="qa-run-list">
-      {runs.map((r) => {
+      {runs.map((r, i) => {
         const duration = runDuration(r);
+        const resultCount = r.results?.length ?? 0;
+        const expanded = toggled[r.id] ?? i === 0;
         return (
           <li
             key={r.id}
             data-testid={`qa-run-row-${r.id}`}
-            className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-gray-800 px-3 py-2 text-xs last:border-b-0"
+            className="border-b border-gray-800 last:border-b-0"
           >
-            <span className="text-sm text-gray-100">Run {r.iteration}</span>
-            <span className="text-gray-400">
-              {r.scope === 'failed_only' ? 'Failed only' : 'Full'}
-            </span>
-            <span className={RUN_STATUS_CLASS[r.status]} data-testid="qa-run-status">
-              {r.status}
-            </span>
-            <span className="text-gray-500">
-              {r.startedAt ? `Started ${formatDateTime(r.startedAt)}` : 'Not started'}
-              {duration ? ` · ${duration}${r.finishedAt ? '' : ' so far'}` : ''}
-            </span>
-            {r.sessionId && (
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-2 text-xs">
               <button
                 type="button"
-                data-testid="qa-run-session"
-                className="ml-auto inline-flex items-center gap-1 text-blue-400 hover:text-blue-300 disabled:text-gray-500"
-                disabled={!onOpenSession}
-                onClick={() => onOpenSession?.(r.sessionAgentId, r.sessionId!)}
+                data-testid="qa-run-toggle"
+                aria-expanded={expanded}
+                onClick={() => setToggled((cur) => ({ ...cur, [r.id]: !expanded }))}
+                className="inline-flex items-center gap-1 text-sm text-gray-100 hover:text-white"
               >
-                <MessageSquare size={12} />
-                Session
+                {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                Run {r.iteration}
               </button>
+              <span className="text-gray-400">
+                {r.scope === 'failed_only' ? 'Failed only' : 'Full'}
+              </span>
+              <span className={RUN_STATUS_CLASS[r.status]} data-testid="qa-run-status">
+                {r.status}
+              </span>
+              <span className="text-gray-500">
+                {resultCount} result{resultCount === 1 ? '' : 's'}
+              </span>
+              <span className="text-gray-500">
+                {r.startedAt ? `Started ${formatDateTime(r.startedAt)}` : 'Not started'}
+                {duration ? ` · ${duration}${r.finishedAt ? '' : ' so far'}` : ''}
+              </span>
+              {r.sessionId && (
+                <button
+                  type="button"
+                  data-testid="qa-run-session"
+                  className="ml-auto inline-flex items-center gap-1 text-blue-400 hover:text-blue-300 disabled:text-gray-500"
+                  disabled={!onOpenSession}
+                  onClick={() => onOpenSession?.(r.sessionAgentId, r.sessionId!)}
+                >
+                  <MessageSquare size={12} />
+                  Session
+                </button>
+              )}
+            </div>
+            {expanded && (
+              <div className="border-t border-gray-800 bg-gray-950/40">
+                <QaRunResults run={r} cases={cases} onOpenCard={onOpenCard} />
+              </div>
             )}
           </li>
         );
@@ -857,7 +887,13 @@ export default function QaPlanDetail({
 
           <section className="flex flex-col gap-2">
             <h2 className="text-sm font-medium text-gray-300">Run history</h2>
-            <RunHistory runs={detail.runs} approved={plan.approved} onOpenSession={onOpenSession} />
+            <RunHistory
+              runs={detail.runs}
+              cases={detail.cases}
+              approved={plan.approved}
+              onOpenSession={onOpenSession}
+              onOpenCard={onOpenCard}
+            />
           </section>
         </>
       )}

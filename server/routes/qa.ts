@@ -29,6 +29,12 @@ import { broadcastSessionCreated } from '../session-checkpoint-rewind.js';
 import { resolveOwnerUserId, setSessionOwner } from '../session-ownership.js';
 import { QA_VERDICTS } from '../qa-schema.js';
 import {
+  parseQaArtifactIds,
+  postQaRunSummary,
+  qaScreenshotsBySession,
+  type QaScreenshot,
+} from '../qa-results.js';
+import {
   addQaCase,
   approveQaPlan,
   cancelQaRun,
@@ -137,16 +143,8 @@ export function serializeQaRun(r: QaRunRow) {
   };
 }
 
-function parseArtifactIds(raw: string): string[] {
-  try {
-    const v: unknown = JSON.parse(raw);
-    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
-  } catch {
-    return [];
-  }
-}
-
-export function serializeQaResult(r: QaResultRow) {
+export function serializeQaResult(r: QaResultRow, screenshots?: Map<string, QaScreenshot>) {
+  const ids = parseQaArtifactIds(r.screenshot_artifact_ids);
   return {
     id: r.id,
     runId: r.run_id,
@@ -155,11 +153,24 @@ export function serializeQaResult(r: QaResultRow) {
     verdict: r.verdict,
     actual: r.actual,
     notes: r.notes,
-    screenshotArtifactIds: parseArtifactIds(r.screenshot_artifact_ids),
+    screenshotArtifactIds: ids,
+    screenshots: screenshots
+      ? ids.map((id) => screenshots.get(id)).filter((x): x is QaScreenshot => !!x)
+      : [],
     findingCardId: r.finding_card_id,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
+}
+
+/** A run's results with screenshot metadata from the run session's artifacts. */
+export function serializeQaRunResults(run: QaRunRow) {
+  const results = getStmts().listQaResultsByRun.all(run.id);
+  const screenshots = qaScreenshotsBySession(
+    run.session_id,
+    results.flatMap((r) => parseQaArtifactIds(r.screenshot_artifact_ids)),
+  );
+  return results.map((r) => serializeQaResult(r, screenshots));
 }
 
 function parse<T extends z.ZodTypeAny>(
@@ -470,6 +481,7 @@ export default function createQaRoutes(deps: RouteDeps): Router {
         runs: s.listQaRunsByPlan.all(plan.id).map((r) => ({
           ...serializeQaRun(r),
           sessionAgentId: agents.get(r.id) ?? null,
+          results: serializeQaRunResults(r),
         })),
         signOffBlocker: qaPlanSignOffBlocker(plan.id),
       });
@@ -820,12 +832,17 @@ export default function createQaRoutes(deps: RouteDeps): Router {
       if (!run) return;
       res.json({
         run: serializeQaRun(run),
-        results: getStmts().listQaResultsByRun.all(run.id).map(serializeQaResult),
+        results: serializeQaRunResults(run),
       });
     }),
   );
 
-  const runAction = (path: string, action: string, apply: (runId: string) => QaRunRow) =>
+  const runAction = (
+    path: string,
+    action: string,
+    apply: (runId: string) => QaRunRow,
+    after?: (plan: QaPlanRow, run: QaRunRow) => void,
+  ) =>
     router.post(
       `${BASE}/:planId/runs/:runId/${path}`,
       guard((req, res) => {
@@ -835,12 +852,15 @@ export default function createQaRoutes(deps: RouteDeps): Router {
         if (!run) return;
         const updated = apply(run.id);
         emit(plan.project_id, plan.id, { action, runId: run.id });
+        after?.(plan, updated);
         res.json({ run: serializeQaRun(updated) });
       }),
     );
 
   runAction('begin', 'run_running', markQaRunRunning);
-  runAction('finish', 'run_finished', finishQaRun);
+  runAction('finish', 'run_finished', finishQaRun, (plan, run) =>
+    postQaRunSummary({ broadcast, project: findProject(plan.project_id)! }, run.id),
+  );
   // Cancelling also stops the run's session, so the agent stops driving the target.
   runAction('cancel', 'run_cancelled', (runId) => {
     const cancelled = cancelQaRun(runId);
@@ -864,9 +884,12 @@ export default function createQaRoutes(deps: RouteDeps): Router {
       const result = recordQaResult(run.id, caseId, input);
       emit(plan.project_id, plan.id, { action: 'result_recorded', runId: run.id, caseId });
       const finished = completeQaRunIfCovered(run.id);
-      if (finished) emit(plan.project_id, plan.id, { action: 'run_finished', runId: run.id });
+      if (finished) {
+        emit(plan.project_id, plan.id, { action: 'run_finished', runId: run.id });
+        postQaRunSummary({ broadcast, project: findProject(plan.project_id)! }, run.id);
+      }
       res.json({
-        result: serializeQaResult(result),
+        result: serializeQaRunResults(finished ?? run).find((r) => r.id === result.id)!,
         run: serializeQaRun(finished ?? getStmts().getQaRun.get(run.id)!),
       });
     }),

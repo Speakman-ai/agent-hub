@@ -54,6 +54,7 @@ beforeAll(() => {
 beforeEach(() => {
   const db = getDb();
   db.exec('DELETE FROM qa_plans');
+  db.exec('DELETE FROM artifacts');
   db.exec("DELETE FROM sessions WHERE agent_id = 'proj-qa'");
   db.exec("DELETE FROM kanban_epics WHERE id IN ('epic-1', 'epic-x')");
   db.exec("DELETE FROM kanban_boards WHERE id IN ('board-proj', 'board-other')");
@@ -92,6 +93,22 @@ async function approvedPlan() {
   const b = await addCase(plan.id, 'Pay');
   await request(app).post(`${base}/${plan.id}/approve`).expect(200);
   return { planId: plan.id, caseIds: [a.id, b.id] };
+}
+
+function addArtifact(id: string, sessionId: string, filename = `${id}.png`) {
+  getDb()
+    .prepare(
+      `INSERT INTO artifacts (id, session_id, filename, content_type, size, storage_kind, storage_key)
+       VALUES (?, ?, ?, 'image/png', 10, 'local', ?)`,
+    )
+    .run(id, sessionId, filename, id);
+}
+
+/** Messages the server posted into a session, oldest first. */
+function sessionMessages(sessionId: string) {
+  return getDb()
+    .prepare('SELECT role, content, metadata FROM messages WHERE session_id = ? ORDER BY rowid')
+    .all(sessionId) as Array<{ role: string; content: string; metadata: string | null }>;
 }
 
 function lastBroadcast() {
@@ -214,6 +231,7 @@ describe('plans', () => {
     const { planId, caseIds } = await approvedPlan();
     const started = await request(app).post(`${base}/${planId}/runs`).send({}).expect(201);
     const runId = started.body.run.id;
+    addArtifact('art-1', started.body.sessionId, 'login.png');
     await request(app)
       .post(`${base}/${planId}/runs/${runId}/results`)
       .send({ caseId: caseIds[0], verdict: 'fail', screenshotArtifactIds: ['art-1'] })
@@ -235,6 +253,14 @@ describe('plans', () => {
       sessionAgentId: 'proj-qa',
       caseIds,
     });
+    expect(res.body.runs[0].results).toEqual([
+      expect.objectContaining({
+        caseId: caseIds[0],
+        verdict: 'fail',
+        screenshotArtifactIds: ['art-1'],
+        screenshots: [{ id: 'art-1', filename: 'login.png', contentType: 'image/png' }],
+      }),
+    ]);
     expect(res.body.links).toEqual({ epic: null, card: null });
     expect(res.body.signOffBlocker).toMatch(/running/);
   });
@@ -407,8 +433,11 @@ describe('approval and runs', () => {
     }
     // The last in-scope result finishes the run server-side.
     expect(statuses).toEqual(['running', 'passed']);
-    expect(broadcast).toHaveBeenCalledTimes(3);
-    expect(lastBroadcast()).toMatchObject({
+    const qaUpdates = broadcast.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((e) => e.type === 'qa_update');
+    expect(qaUpdates).toHaveLength(3);
+    expect(qaUpdates.at(-1)).toMatchObject({
       type: 'qa_update',
       planId,
       runId,
@@ -481,5 +510,124 @@ describe('approval and runs', () => {
       .post(`${base}/${planId}/runs/${runId}/results`)
       .send({ caseId: caseIds[0], verdict: 'maybe' })
       .expect(400);
+  });
+});
+
+describe('result screenshots', () => {
+  async function runningRun() {
+    const { planId, caseIds } = await approvedPlan();
+    const started = await request(app).post(`${base}/${planId}/runs`).send({}).expect(201);
+    return {
+      planId,
+      caseIds,
+      runId: started.body.run.id as string,
+      sessionId: started.body.sessionId as string,
+    };
+  }
+
+  it('refuses screenshot ids the run session did not upload', async () => {
+    const { planId, caseIds, runId, sessionId } = await runningRun();
+    addArtifact('own', sessionId);
+    addArtifact('foreign', 'some-other-session');
+
+    for (const ids of [['foreign'], ['own', 'missing']]) {
+      const res = await request(app)
+        .post(`${base}/${planId}/runs/${runId}/results`)
+        .send({ caseId: caseIds[0], verdict: 'pass', screenshotArtifactIds: ids })
+        .expect(400);
+      expect(res.body.code).toBe('artifact_not_owned');
+      expect(res.body.artifactIds).toEqual(ids.filter((id) => id !== 'own'));
+    }
+    const run = await request(app).get(`${base}/${planId}/runs/${runId}`).expect(200);
+    expect(run.body.results).toEqual([]);
+
+    const ok = await request(app)
+      .post(`${base}/${planId}/runs/${runId}/results`)
+      .send({ caseId: caseIds[0], verdict: 'pass', screenshotArtifactIds: ['own', 'own'] })
+      .expect(200);
+    expect(ok.body.result).toMatchObject({
+      screenshotArtifactIds: ['own'],
+      screenshots: [{ id: 'own', filename: 'own.png', contentType: 'image/png' }],
+    });
+  });
+
+  it('refuses screenshots on a run that has no session', async () => {
+    const { planId, caseIds } = await approvedPlan();
+    const runId = startQaRun(planId).run.id;
+    getDb().prepare("UPDATE qa_runs SET status = 'running' WHERE id = ?").run(runId);
+    addArtifact('loose', 'anything');
+    const res = await request(app)
+      .post(`${base}/${planId}/runs/${runId}/results`)
+      .send({ caseId: caseIds[0], verdict: 'pass', screenshotArtifactIds: ['loose'] })
+      .expect(400);
+    expect(res.body.code).toBe('artifact_not_owned');
+  });
+});
+
+describe('run summary', () => {
+  it('posts a summary with counts, finding links, and screenshots when the last result lands', async () => {
+    const { planId, caseIds, runId, sessionId } = await (async () => {
+      const p = await approvedPlan();
+      const started = await request(app).post(`${base}/${p.planId}/runs`).send({}).expect(201);
+      return { ...p, runId: started.body.run.id, sessionId: started.body.sessionId };
+    })();
+    const db = getDb();
+    db.exec(
+      `INSERT OR IGNORE INTO kanban_columns (id, board_id, name, position) VALUES ('col-proj', 'board-proj', 'To Do', 0);
+       INSERT INTO kanban_cards (id, column_id, board_id, title) VALUES ('card-f', 'col-proj', 'board-proj', 'QA: Pay');`,
+    );
+    addArtifact('shot-1', sessionId, 'login.png');
+
+    await request(app)
+      .post(`${base}/${planId}/runs/${runId}/results`)
+      .send({ caseId: caseIds[0], verdict: 'pass', screenshotArtifactIds: ['shot-1'] })
+      .expect(200);
+    expect(sessionMessages(sessionId).filter((m) => m.role === 'assistant')).toEqual([]);
+
+    broadcast.mockClear();
+    await request(app)
+      .post(`${base}/${planId}/runs/${runId}/results`)
+      .send({ caseId: caseIds[1], verdict: 'fail', findingCardId: 'card-f' })
+      .expect(200);
+
+    const summaries = sessionMessages(sessionId).filter((m) => m.role === 'assistant');
+    expect(summaries).toHaveLength(1);
+    expect(JSON.parse(summaries[0].metadata!)).toEqual({ kind: 'qa_run_summary', planId, runId });
+    const text = summaries[0].content;
+    expect(text).toContain('QA run #1 failed');
+    expect(text).toContain('2 case(s): 1 passed, 1 failed.');
+    expect(text).toContain('1. **Login**: pass · screenshots: `login.png`');
+    expect(text).toContain('2. **Pay**: fail · [QA: Pay](/projects/proj/board?card=card-f)');
+    expect(broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'message_added', sessionId }),
+    );
+    db.exec("DELETE FROM kanban_cards WHERE id = 'card-f'");
+  });
+
+  it('posts a summary when the agent finishes early, counting missing cases', async () => {
+    const { planId, caseIds } = await approvedPlan();
+    const started = await request(app).post(`${base}/${planId}/runs`).send({}).expect(201);
+    const { sessionId } = started.body;
+    const runId = started.body.run.id;
+    await request(app)
+      .post(`${base}/${planId}/runs/${runId}/results`)
+      .send({ caseId: caseIds[0], verdict: 'blocked' })
+      .expect(200);
+    await request(app).post(`${base}/${planId}/runs/${runId}/finish`).expect(200);
+
+    const [summary] = sessionMessages(sessionId).filter((m) => m.role === 'assistant');
+    expect(summary.content).toContain(
+      '2 case(s): 0 passed, 0 failed, 1 blocked, 1 without a result.',
+    );
+    expect(summary.content).toContain('2. **Pay**: no result');
+  });
+
+  it('does not post a summary when a run is cancelled', async () => {
+    const { planId } = await approvedPlan();
+    const started = await request(app).post(`${base}/${planId}/runs`).send({}).expect(201);
+    await request(app).post(`${base}/${planId}/runs/${started.body.run.id}/cancel`).expect(200);
+    expect(sessionMessages(started.body.sessionId).filter((m) => m.role === 'assistant')).toEqual(
+      [],
+    );
   });
 });

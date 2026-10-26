@@ -218,6 +218,30 @@ export interface QaRunWire {
   startedAt: string | null;
   finishedAt: string | null;
   createdAt: string;
+  /** Recorded verdicts, one per case. Present on plan detail. */
+  results?: QaResultWire[];
+}
+
+export interface QaScreenshotWire {
+  id: string;
+  filename: string;
+  contentType: string;
+}
+
+export interface QaResultWire {
+  id: string;
+  runId: string;
+  caseId: string;
+  caseVersion: number;
+  verdict: QaVerdict;
+  actual: string;
+  notes: string;
+  screenshotArtifactIds: string[];
+  /** Screenshots still present in the run session's artifacts, in order. */
+  screenshots: QaScreenshotWire[];
+  findingCardId: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface QaPlanDetailWire {

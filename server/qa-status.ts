@@ -53,7 +53,8 @@ export type QaStatusErrorCode =
   | 'invalid_order'
   | 'edit_conflict'
   | 'nothing_to_rerun'
-  | 'out_of_scope';
+  | 'out_of_scope'
+  | 'artifact_not_owned';
 
 export class QaStatusError extends Error {
   readonly code: QaStatusErrorCode;
@@ -67,7 +68,12 @@ export class QaStatusError extends Error {
     this.name = 'QaStatusError';
     this.code = code;
     this.details = details;
-    this.status = code === 'not_found' ? 404 : code === 'invalid_order' ? 400 : 409;
+    this.status =
+      code === 'not_found'
+        ? 404
+        : code === 'invalid_order' || code === 'artifact_not_owned'
+          ? 400
+          : 409;
   }
 }
 
@@ -504,6 +510,28 @@ export function cancelQaRun(runId: string): QaRunRow {
   })();
 }
 
+/**
+ * Ids from `ids` that are not artifacts of `sessionId`. A run's screenshots
+ * must come from its own session: the plan detail opens them through that
+ * session's artifact routes, and an id from any other session would either
+ * not resolve or expose a document the run never produced.
+ */
+export function unownedQaArtifactIds(ids: string[], sessionId: string | null): string[] {
+  const unique = [...new Set(ids)];
+  if (unique.length === 0) return [];
+  if (!sessionId) return unique;
+  const owned = new Set(
+    (
+      getDb()
+        .prepare(
+          `SELECT id FROM artifacts WHERE session_id = ? AND id IN (${unique.map(() => '?').join(',')})`,
+        )
+        .all(sessionId, ...unique) as Array<{ id: string }>
+    ).map((r) => r.id),
+  );
+  return unique.filter((id) => !owned.has(id));
+}
+
 export interface QaResultInput {
   verdict: QaVerdict;
   actual?: string;
@@ -534,6 +562,15 @@ export function recordQaResult(runId: string, caseId: string, input: QaResultInp
     if (!plan.approved_at || run.approval_seq !== plan.approval_seq) {
       throw new QaStatusError('stale_run', 'QA plan changed since this run started');
     }
+    const screenshots = [...new Set(input.screenshotArtifactIds ?? [])];
+    const unowned = unownedQaArtifactIds(screenshots, run.session_id);
+    if (unowned.length > 0) {
+      throw new QaStatusError(
+        'artifact_not_owned',
+        `Screenshot artifact(s) not uploaded by this run's session: ${unowned.join(', ')}`,
+        { artifactIds: unowned },
+      );
+    }
     s.upsertQaResult.run(
       randomUUID(),
       runId,
@@ -541,7 +578,7 @@ export function recordQaResult(runId: string, caseId: string, input: QaResultInp
       input.verdict,
       input.actual ?? '',
       input.notes ?? '',
-      JSON.stringify(input.screenshotArtifactIds ?? []),
+      JSON.stringify(screenshots),
       input.findingCardId ?? null,
     );
     return s.listQaResultsByRun.all(runId).find((r) => r.case_id === caseId)!;

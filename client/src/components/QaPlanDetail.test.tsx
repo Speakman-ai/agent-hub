@@ -255,6 +255,13 @@ describe('QaPlanDetail', () => {
     fireEvent.click(within(newest).getByTestId('qa-run-session'));
     expect(onOpenSession).toHaveBeenCalledWith('qa-agent', 's2');
     expect(within(screen.getByTestId('qa-run-row-r1')).queryByTestId('qa-run-session')).toBeNull();
+
+    // The newest run's results are open; older runs open on demand.
+    expect(within(newest).getByTestId('qa-run-results-empty')).toBeTruthy();
+    const older = screen.getByTestId('qa-run-row-r1');
+    expect(within(older).queryByTestId('qa-run-results-empty')).toBeNull();
+    fireEvent.click(within(older).getByTestId('qa-run-toggle'));
+    expect(within(older).getByTestId('qa-run-results-empty')).toBeTruthy();
   });
 
   it('shows empty states for an unapproved plan with no cases and no runs', async () => {

@@ -109,9 +109,11 @@ tool to drive the target with. The server has already marked the run
    message, a purchase), request the `approval` tool and wait for the answer.
 5. For each case in scope, in order: follow the steps, take **at least one**
    screenshot, upload it, and post the result (below) before moving on.
-6. The server finishes the run, and derives `passed` / `failed`, as soon as
-   every in-scope case has a result. Call `qa.sh run finish` only to stop
-   early; any case still missing makes the run `failed`.
+6. The server finishes the run, derives `passed` / `failed`, and posts a
+   verdict summary (counts, finding card links, screenshot names) into this
+   session as soon as every in-scope case has a result. Call
+   `qa.sh run finish` only to stop early; any case still missing makes the
+   run `failed`. Do not repeat the summary yourself.
 
 A `failed_only` run covers every case whose latest verdict is missing, not
 `pass`, or was recorded against an older version of the case. If a human
@@ -120,7 +122,8 @@ cancels the run, your turn is stopped and later results are refused.
 ## 3. Screenshots
 
 `screenshot` (browser or preview) returns a saved image path. Upload it as a
-session artifact and keep the id:
+session artifact **from this run session** and keep the id. The results API
+refuses (`400`, code `artifact_not_owned`) any id this session did not upload:
 
 ```bash
 ART=$(artifacts.sh put ./shot.png "case 3: dashboard after login" | jq -r .id)

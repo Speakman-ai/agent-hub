@@ -134,7 +134,16 @@ export const QaResultComponent = registerComponent(
     verdict: Verdict,
     actual: z.string(),
     notes: z.string(),
-    screenshotArtifactIds: z.array(z.string()),
+    screenshotArtifactIds: z.array(z.string()).openapi({
+      description:
+        "Artifact ids uploaded by the run's session. Ids from any other session are refused (400, code `artifact_not_owned`).",
+    }),
+    screenshots: z
+      .array(z.object({ id: z.string(), filename: z.string(), contentType: z.string() }))
+      .openapi({
+        description:
+          "Metadata for screenshotArtifactIds still present in the run session's artifacts, in order. Open each through that session's artifact content route.",
+      }),
     findingCardId: z.string().nullable(),
     createdAt: z.string(),
     updatedAt: z.string(),
@@ -344,6 +353,9 @@ registerPath({
             QaRunComponent.extend({
               sessionAgentId: z.string().nullable().openapi({
                 description: 'Agent that owns the run session, null before a session exists.',
+              }),
+              results: z.array(QaResultComponent).openapi({
+                description: 'Results recorded in this run, one per case.',
               }),
             }),
           )
@@ -562,7 +574,7 @@ registerPath({
   tags: TAGS,
   summary: 'Record or replace the verdict for one case in a running run',
   description:
-    'Once every in-scope case has a result the run finishes on its own, passed when all verdicts are `pass`. 409 `out_of_scope` for a case outside the run.',
+    'Once every in-scope case has a result the run finishes on its own, passed when all verdicts are `pass`, and the run session gets a chat summary. 409 `out_of_scope` for a case outside the run; 400 `artifact_not_owned` when a screenshot id was not uploaded by the run session.',
   request: { params: runParams, body: { content: json(RecordQaResultRequestSchema) } },
   responses: {
     200: ok(

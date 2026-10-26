@@ -254,7 +254,7 @@ export function buildQaRunSeed(args: {
     `   \`qa.sh result post ${plan.id} ${run.id} --case <caseId> --verdict pass|fail|needs_change|blocked --actual "<what you saw>" --screenshot <artifactId>\``,
     '3. A case you could not reach or execute is `blocked`, never `pass`. Use skill credentials or an `agenthub:credential-request` card for logins, and the `approval` tool before any destructive action on the target.',
     '4. File finding cards for `fail` / `needs_change` results as the `agent-hub-qa` skill describes.',
-    '5. The server finishes the run and derives passed / failed once every case above has a result. Finish with a short summary of the verdicts here.',
+    '5. The server finishes the run, derives passed / failed, and posts a verdict summary here once every case above has a result. Screenshot ids must be artifacts you uploaded in this session; any other id is refused. Close with one line noting anything the summary cannot show.',
     '',
     'Do not edit code, commit, or touch the plan or its cases.',
   ].join('\n');
