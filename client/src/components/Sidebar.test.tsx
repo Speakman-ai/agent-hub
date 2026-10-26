@@ -1515,6 +1515,9 @@ describe('Sidebar — per-project nav groups', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Board' } as any) as any);
     expect(onNavigate!).toHaveBeenCalledWith(`kanban:${PROJECT_ID}`);
 
+    fireEvent.click(screen.getByRole('button', { name: 'QA' } as any) as any);
+    expect(onNavigate!).toHaveBeenCalledWith(`qa:${PROJECT_ID}`);
+
     fireEvent.click(screen.getByRole('button', { name: 'Skills' } as any) as any);
     expect(onNavigate!).toHaveBeenCalledWith(`skills:${PROJECT_ID}`);
 

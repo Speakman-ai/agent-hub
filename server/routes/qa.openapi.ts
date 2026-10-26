@@ -205,6 +205,39 @@ const notFound = err('Project, plan, case, or run not found.');
 const conflict = err('Refused by the plan or run lifecycle (see `code`).');
 const invalid = err('Validation failed.');
 
+const VerdictCounts = z.object({
+  pass: z.number().int(),
+  fail: z.number().int(),
+  needs_change: z.number().int(),
+  blocked: z.number().int(),
+});
+
+export const QaPlanListItemComponent = registerComponent(
+  'QaPlanListItem',
+  QaPlanComponent.extend({
+    summary: z
+      .object({
+        caseCount: z.number().int(),
+        latestRun: z
+          .object({
+            id: z.string(),
+            iteration: z.number().int(),
+            status: RunStatus,
+            scope: RunScope,
+            finishedAt: z.string().nullable(),
+            verdicts: VerdictCounts.openapi({
+              description: 'Result count per verdict recorded in this run.',
+            }),
+          })
+          .nullable()
+          .openapi({ description: 'Highest-iteration run, or null when the plan never ran.' }),
+        epic: z.object({ id: z.string(), name: z.string() }).nullable(),
+        card: z.object({ id: z.string(), title: z.string() }).nullable(),
+      })
+      .openapi({ description: 'List-row extras for the QA page.' }),
+  }).openapi({ description: 'A QA plan as returned by the list endpoint.' }),
+);
+
 const PlanEnvelope = z.object({ plan: QaPlanComponent });
 const RunEnvelope = z.object({ run: QaRunComponent });
 
@@ -218,7 +251,7 @@ registerPath({
     200: ok(
       'Plans (newest first) plus per-status counts across the whole project.',
       z.object({
-        plans: z.array(QaPlanComponent),
+        plans: z.array(QaPlanListItemComponent),
         counts: z.object({ new: z.number(), in_progress: z.number(), done: z.number() }),
       }),
     ),

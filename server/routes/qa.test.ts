@@ -129,6 +129,54 @@ describe('plans', () => {
     await request(app).get(`${base}?status=bogus`).expect(400);
   });
 
+  it('summarizes the latest run verdicts, case count, and linked epic per plan', async () => {
+    const { planId, caseIds } = await approvedPlan();
+    await request(app).patch(`${base}/${planId}`).send({ epicId: 'epic-1' }).expect(200);
+    const draft = await createPlan();
+
+    const first = await request(app).post(`${base}/${planId}/runs`).send({}).expect(201);
+    const firstRun = first.body.run.id;
+    await request(app).post(`${base}/${planId}/runs/${firstRun}/begin`).expect(200);
+    for (const caseId of caseIds) {
+      await request(app)
+        .post(`${base}/${planId}/runs/${firstRun}/results`)
+        .send({ caseId, verdict: 'fail' })
+        .expect(200);
+    }
+    await request(app).post(`${base}/${planId}/runs/${firstRun}/finish`).expect(200);
+
+    const second = await request(app).post(`${base}/${planId}/runs`).send({}).expect(201);
+    const secondRun = second.body.run.id;
+    await request(app).post(`${base}/${planId}/runs/${secondRun}/begin`).expect(200);
+    await request(app)
+      .post(`${base}/${planId}/runs/${secondRun}/results`)
+      .send({ caseId: caseIds[0], verdict: 'pass' })
+      .expect(200);
+    await request(app)
+      .post(`${base}/${planId}/runs/${secondRun}/results`)
+      .send({ caseId: caseIds[1], verdict: 'needs_change' })
+      .expect(200);
+
+    const res = await request(app).get(base).expect(200);
+    const byId = new Map(
+      res.body.plans.map((p: { id: string; summary: unknown }) => [p.id, p.summary]),
+    );
+    expect(byId.get(planId)).toEqual({
+      caseCount: 2,
+      latestRun: {
+        id: secondRun,
+        iteration: 2,
+        status: 'running',
+        scope: 'full',
+        finishedAt: null,
+        verdicts: { pass: 1, fail: 0, needs_change: 1, blocked: 0 },
+      },
+      epic: { id: 'epic-1', name: 'Epic' },
+      card: null,
+    });
+    expect(byId.get(draft.id)).toEqual({ caseCount: 0, latestRun: null, epic: null, card: null });
+  });
+
   it('does not leak a plan through another project', async () => {
     const plan = await createPlan();
     await request(app).get(`/api/projects/other/qa/plans/${plan.id}`).expect(404);

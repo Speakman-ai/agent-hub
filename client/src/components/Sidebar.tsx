@@ -46,6 +46,7 @@ import {
   MessagesSquare,
   MessageCircle,
   FolderInput,
+  ClipboardCheck,
 } from 'lucide-react';
 import { formatUnreadCount } from '../utils/googleChatPush';
 import { getServerBase } from '../utils/connection';
@@ -1308,6 +1309,15 @@ export default function Sidebar({
                                   <span className="truncate">Epics</span>
                                 </button>
                               )}
+                              <button
+                                type="button"
+                                data-testid={`sidebar-qa-link-${project.id}`}
+                                onClick={() => onNavigate(`qa:${project.id}`)}
+                                className={projectMenuLinkClass(currentView === `qa:${project.id}`)}
+                              >
+                                <ClipboardCheck size={14} className="flex-shrink-0" />
+                                <span className="truncate">QA</span>
+                              </button>
                               {showStats && (
                                 <button
                                   type="button"

@@ -15211,6 +15211,96 @@ components:
         - findingCardId
         - createdAt
         - updatedAt
+    QaPlanListItem:
+      allOf:
+        - $ref: "#/components/schemas/QaPlan"
+        - type: object
+          properties:
+            summary:
+              type: object
+              properties:
+                caseCount:
+                  type: integer
+                latestRun:
+                  type: object
+                  nullable: true
+                  properties:
+                    id:
+                      type: string
+                    iteration:
+                      type: integer
+                    status:
+                      type: string
+                      enum:
+                        - queued
+                        - running
+                        - passed
+                        - failed
+                        - cancelled
+                    scope:
+                      type: string
+                      enum:
+                        - full
+                        - failed_only
+                    finishedAt:
+                      type: string
+                      nullable: true
+                    verdicts:
+                      type: object
+                      properties:
+                        pass:
+                          type: integer
+                        fail:
+                          type: integer
+                        needs_change:
+                          type: integer
+                        blocked:
+                          type: integer
+                      required:
+                        - pass
+                        - fail
+                        - needs_change
+                        - blocked
+                      description: Result count per verdict recorded in this run.
+                  required:
+                    - id
+                    - iteration
+                    - status
+                    - scope
+                    - finishedAt
+                    - verdicts
+                  description: Highest-iteration run, or null when the plan never ran.
+                epic:
+                  type: object
+                  nullable: true
+                  properties:
+                    id:
+                      type: string
+                    name:
+                      type: string
+                  required:
+                    - id
+                    - name
+                card:
+                  type: object
+                  nullable: true
+                  properties:
+                    id:
+                      type: string
+                    title:
+                      type: string
+                  required:
+                    - id
+                    - title
+              required:
+                - caseCount
+                - latestRun
+                - epic
+                - card
+              description: List-row extras for the QA page.
+          required:
+            - summary
+      description: A QA plan as returned by the list endpoint.
     ReleaseDigestRecipient:
       type: object
       properties:
@@ -57479,7 +57569,7 @@ paths:
                   plans:
                     type: array
                     items:
-                      $ref: "#/components/schemas/QaPlan"
+                      $ref: "#/components/schemas/QaPlanListItem"
                   counts:
                     type: object
                     properties:

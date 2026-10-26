@@ -177,6 +177,7 @@ import DevServerSection from './components/DevServerSection';
 import RumSettingsSection from './components/RumSettingsSection';
 import LogsPage from './components/logs/LogsPage';
 import InfrastructurePage from './components/infra/InfrastructurePage';
+import QaPage from './components/QaPage';
 import ProjectAwsProfilesEditor from './components/ProjectAwsProfilesEditor';
 import ShortcutsHelpModal from './components/ShortcutsHelpModal';
 import ReleasesView from './components/ReleasesView';
@@ -3413,6 +3414,10 @@ export default function App({ initialView }: any = {}) {
           window.dispatchEvent(new CustomEvent('wiki_update', { detail: data }));
           break;
 
+        case 'qa_update':
+          window.dispatchEvent(new CustomEvent('qa_update', { detail: data }));
+          break;
+
         // Cross-project personal todos (spec TODO-MODEL). The server filters this
         // event to the owner, so any delivery means *our* todos changed (a
         // create/update/delete/reorder, or a promote-to-ticket). Bridged to a
@@ -6323,6 +6328,7 @@ export default function App({ initialView }: any = {}) {
     if (currentView.startsWith('devserver:')) return currentView.slice('devserver:'.length);
     if (currentView.startsWith('aws:')) return currentView.slice('aws:'.length);
     if (currentView.startsWith('infra:')) return currentView.slice('infra:'.length);
+    if (currentView.startsWith('qa:')) return currentView.slice('qa:'.length);
     if (workflowEditRoute) return workflowEditRoute.projectId;
     if (currentView === 'wiki' && wikiProjectId) return wikiProjectId;
     if (currentView === 'notes' && notesProjectId) return notesProjectId;
@@ -7330,6 +7336,30 @@ export default function App({ initialView }: any = {}) {
                           onOpenSession={({ sessionId, agentId }: any) =>
                             focusAgentSession(agentId, sessionId)
                           }
+                        />
+                      </div>
+                    </div>
+                  );
+                })()
+              ) : currentView.startsWith('qa:') ? (
+                (() => {
+                  const qaProjectId = currentView.slice('qa:'.length);
+                  const qaProject = projects.find((p: any) => p.id === qaProjectId);
+                  return (
+                    <div className="flex-1 overflow-y-auto p-4 md:p-6">
+                      <div className="mx-auto flex h-full max-w-6xl flex-col">
+                        <QaPage
+                          projectId={qaProjectId}
+                          projectName={qaProject?.name}
+                          onOpenEpic={(epicId: string) => {
+                            setCurrentView(`epic:${qaProjectId}:${epicId}`);
+                            setSidebarOpen(false);
+                          }}
+                          onOpenCard={(cardId: string) => {
+                            setKanbanFocusCardId(cardId);
+                            setCurrentView(`kanban:${qaProjectId}`);
+                            setSidebarOpen(false);
+                          }}
                         />
                       </div>
                     </div>

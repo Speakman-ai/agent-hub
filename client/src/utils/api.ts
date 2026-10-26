@@ -108,6 +108,43 @@ interface UpdateDeployReleaseGateBody {
 }
 
 /** Todo priority — reuses the kanban-card enum so a promote maps 1:1. */
+export type QaPlanStatus = 'new' | 'in_progress' | 'done';
+export type QaRunStatus = 'queued' | 'running' | 'passed' | 'failed' | 'cancelled';
+export type QaVerdict = 'pass' | 'fail' | 'needs_change' | 'blocked';
+
+export interface QaPlanListItemWire {
+  id: string;
+  projectId: string;
+  title: string;
+  goal: string;
+  targetUrl: string;
+  epicId: string | null;
+  cardId: string | null;
+  status: QaPlanStatus;
+  approved: boolean;
+  signedOffAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  summary: {
+    caseCount: number;
+    latestRun: {
+      id: string;
+      iteration: number;
+      status: QaRunStatus;
+      scope: 'full' | 'failed_only';
+      finishedAt: string | null;
+      verdicts: Record<QaVerdict, number>;
+    } | null;
+    epic: { id: string; name: string } | null;
+    card: { id: string; title: string } | null;
+  };
+}
+
+export interface QaPlanListWire {
+  plans: QaPlanListItemWire[];
+  counts: Record<QaPlanStatus, number>;
+}
+
 export interface SupportTicketLinkTargetCard {
   id: string;
   short_id: number | null;
@@ -2495,6 +2532,8 @@ export const api = {
     fetchJSON(`/projects/${projectId}/ci-runs/${runId}`),
   getDefaultBranchHealth: (projectId: any) =>
     fetchJSON(`/projects/${encodeURIComponent(projectId)}/finalize/default-branch-health`),
+  listQaPlans: (projectId: string) =>
+    fetchJSON<QaPlanListWire>(`/projects/${encodeURIComponent(projectId)}/qa/plans`),
   // Per-project Stats page — daily/weekly/monthly product metrics.
   getProjectStats: (projectId: any, { granularity = 'day', buckets }: any = {}) => {
     const qs = new URLSearchParams({ granularity });

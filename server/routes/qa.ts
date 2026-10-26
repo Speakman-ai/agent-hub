@@ -17,6 +17,7 @@ import { Router, type Request, type Response } from 'express';
 import type { z } from 'zod';
 import type { AuthenticatedRequest } from '../auth.js';
 import { getDb, getStmts } from '../db.js';
+import { QA_VERDICTS } from '../qa-schema.js';
 import {
   addQaCase,
   approveQaPlan,
@@ -162,6 +163,105 @@ function parse<T extends z.ZodTypeAny>(
   return result.data;
 }
 
+type QaVerdictCounts = Record<(typeof QA_VERDICTS)[number], number>;
+
+export interface QaPlanSummary {
+  caseCount: number;
+  latestRun: {
+    id: string;
+    iteration: number;
+    status: QaRunRow['status'];
+    scope: QaRunRow['scope'];
+    finishedAt: string | null;
+    verdicts: QaVerdictCounts;
+  } | null;
+  epic: { id: string; name: string } | null;
+  card: { id: string; title: string } | null;
+}
+
+export const emptyPlanSummary = (): QaPlanSummary => ({
+  caseCount: 0,
+  latestRun: null,
+  epic: null,
+  card: null,
+});
+
+const emptyVerdicts = (): QaVerdictCounts => ({ pass: 0, fail: 0, needs_change: 0, blocked: 0 });
+
+/**
+ * List-row extras for every plan in a project: case count, the latest run with
+ * its verdict tally, and linked epic/card names. Set-based so the list stays
+ * one query per facet rather than per plan.
+ */
+export function listPlanSummaries(projectId: string): Map<string, QaPlanSummary> {
+  const db = getDb();
+  const out = new Map<string, QaPlanSummary>();
+  const links = db
+    .prepare(
+      `SELECT p.id, p.epic_id, e.name AS epic_name, p.card_id, c.title AS card_title,
+              (SELECT COUNT(*) FROM qa_cases qc WHERE qc.plan_id = p.id) AS case_count
+         FROM qa_plans p
+         LEFT JOIN kanban_epics e ON e.id = p.epic_id
+         LEFT JOIN kanban_cards c ON c.id = p.card_id
+        WHERE p.project_id = ?`,
+    )
+    .all(projectId) as Array<{
+    id: string;
+    epic_id: string | null;
+    epic_name: string | null;
+    card_id: string | null;
+    card_title: string | null;
+    case_count: number;
+  }>;
+  for (const l of links) {
+    out.set(l.id, {
+      caseCount: l.case_count,
+      latestRun: null,
+      epic: l.epic_id && l.epic_name !== null ? { id: l.epic_id, name: l.epic_name } : null,
+      card: l.card_id && l.card_title !== null ? { id: l.card_id, title: l.card_title } : null,
+    });
+  }
+  const runs = db
+    .prepare(
+      `SELECT r.* FROM qa_runs r JOIN qa_plans p ON p.id = r.plan_id
+        WHERE p.project_id = ?
+          AND r.iteration = (SELECT MAX(iteration) FROM qa_runs r2 WHERE r2.plan_id = r.plan_id)`,
+    )
+    .all(projectId) as QaRunRow[];
+  const byRun = new Map<string, QaVerdictCounts>();
+  for (const r of runs) {
+    const summary = out.get(r.plan_id);
+    if (!summary) continue;
+    const verdicts = emptyVerdicts();
+    byRun.set(r.id, verdicts);
+    summary.latestRun = {
+      id: r.id,
+      iteration: r.iteration,
+      status: r.status,
+      scope: r.scope,
+      finishedAt: r.finished_at,
+      verdicts,
+    };
+  }
+  if (byRun.size > 0) {
+    const tallies = db
+      .prepare(
+        `SELECT res.run_id, res.verdict, COUNT(*) AS n
+           FROM qa_results res
+           JOIN qa_runs r ON r.id = res.run_id
+           JOIN qa_plans p ON p.id = r.plan_id
+          WHERE p.project_id = ?
+          GROUP BY res.run_id, res.verdict`,
+      )
+      .all(projectId) as Array<{ run_id: string; verdict: keyof QaVerdictCounts; n: number }>;
+    for (const t of tallies) {
+      const v = byRun.get(t.run_id);
+      if (v && t.verdict in v) v[t.verdict] = t.n;
+    }
+  }
+  return out;
+}
+
 const notFound = (res: Response, what: string) =>
   res.status(404).json({ error: `${what} not found` });
 
@@ -270,7 +370,14 @@ export default function createQaRoutes(deps: RouteDeps): Router {
       const counts = { new: 0, in_progress: 0, done: 0 };
       for (const p of all) counts[p.status] += 1;
       const plans = query.status ? all.filter((p) => p.status === query.status) : all;
-      res.json({ plans: plans.map(serializeQaPlan), counts });
+      const summaries = listPlanSummaries(projectId);
+      res.json({
+        plans: plans.map((p) => ({
+          ...serializeQaPlan(p),
+          summary: summaries.get(p.id) ?? emptyPlanSummary(),
+        })),
+        counts,
+      });
     }),
   );
 
