@@ -50,7 +50,7 @@ import {
 import { createPage } from '../wiki.js';
 import { getEngineAuthStatus } from '../engine-auth-status.js';
 import { userHasEngineCreds, resolveUserCliCredOverride } from '../per-user-cli-spawn.js';
-import type { AuthenticatedRequest } from '../auth.js';
+import { isLocalBundledServer, type AuthenticatedRequest } from '../auth.js';
 import {
   isEligibleSecurityActor,
   resolveSecurityActorForWrite,
@@ -1467,6 +1467,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     res.json({
       firstRun: projects.length === 0,
       authConfigured,
+      localMode: isLocalBundledServer(),
       onboardingComplete,
       canCompleteOnboarding,
       hasAnyAiCredentials: engineAuth.any,

@@ -517,7 +517,8 @@ describe('GET /api/auth/status — activeOrgIsLocal field', () => {
   it.each([
     { mode: 'local', preview: '1', needsEmailUpdate: false },
     { mode: 'remote', preview: '1', needsEmailUpdate: true },
-    { mode: 'local', preview: '', needsEmailUpdate: true },
+    // Local mode never signs in, so a non-email Owner is never asked for one.
+    { mode: 'local', preview: '', needsEmailUpdate: false },
   ])('reports email setup for mode=$mode preview=$preview', async (scenario) => {
     process.env.AGENT_HUB_MODE = scenario.mode;
     process.env.AGENT_HUB_PREVIEW = scenario.preview;
@@ -585,6 +586,78 @@ describe('GET /api/auth/status — activeOrgIsLocal field', () => {
     } finally {
       setOrgsDbPathForTests(null);
     }
+  });
+});
+
+describe('POST /api/auth/local-setup', () => {
+  const originalMode = process.env.AGENT_HUB_MODE;
+  beforeEach(() => {
+    TMP_DIR = mkdtempSync(path.join(tmpdir(), 'agent-hub-auth-test-'));
+    setAuthFilePathForTests(path.join(TMP_DIR, 'auth.json'));
+    reloadAuthRecord();
+    useTmpOrgsDb();
+    process.env.AGENT_HUB_MODE = 'local';
+  });
+
+  afterEach(() => {
+    setOrgsDbPathForTests(null);
+    if (originalMode === undefined) delete process.env.AGENT_HUB_MODE;
+    else process.env.AGENT_HUB_MODE = originalMode;
+  });
+
+  it('creates the Owner from a username alone, with no email prompt afterwards', async () => {
+    const res = await supertest(buildGatedApp())
+      .post('/api/auth/local-setup')
+      .send({ username: 'ryan' });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true, username: 'ryan' });
+    expect(getAuthRecord()).toMatchObject({ username: 'ryan', role: 'Owner' });
+    expect(getUserByUsername('ryan')?.id).toBeTruthy();
+
+    const status = await supertest(buildGatedApp()).get('/api/auth/status');
+    expect(status.body).toMatchObject({
+      authConfigured: true,
+      activeOrgIsLocal: true,
+      needsEmailUpdate: false,
+    });
+  });
+
+  it('rejects an invalid username', async () => {
+    const res = await supertest(buildGatedApp())
+      .post('/api/auth/local-setup')
+      .send({ username: 'has spaces!' });
+    expect(res.status).toBe(400);
+    expect(getAuthRecord()).toBeNull();
+  });
+
+  it('refuses once an Owner exists', async () => {
+    await supertest(buildGatedApp()).post('/api/auth/local-setup').send({ username: 'ryan' });
+    const res = await supertest(buildGatedApp())
+      .post('/api/auth/local-setup')
+      .send({ username: 'mallory' });
+    expect(res.status).toBe(409);
+    expect(getAuthRecord()?.username).toBe('ryan');
+  });
+
+  it('lets exactly one of two concurrent requests create the Owner', async () => {
+    const app = buildGatedApp();
+    const [a, b] = await Promise.all([
+      supertest(app).post('/api/auth/local-setup').send({ username: 'ryan' }),
+      supertest(app).post('/api/auth/local-setup').send({ username: 'mallory' }),
+    ]);
+    const statuses = [a.status, b.status].sort();
+    expect(statuses).toEqual([200, 409]);
+    const winner = a.status === 200 ? a : b;
+    expect(getAuthRecord()?.username).toBe(winner.body.username);
+  });
+
+  it('is unavailable outside local mode', async () => {
+    delete process.env.AGENT_HUB_MODE;
+    const res = await supertest(buildApp())
+      .post('/api/auth/local-setup')
+      .send({ username: 'ryan' });
+    expect(res.status).toBe(404);
+    expect(getAuthRecord()).toBeNull();
   });
 });
 

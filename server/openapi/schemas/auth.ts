@@ -128,6 +128,13 @@ export const SetupBody = registerComponent(
   ),
 );
 
+export const LocalSetupBody = registerComponent(
+  'AuthLocalSetupBody',
+  z.object({ username: z.string() }).openapi({
+    description: 'Display username for the local-mode Owner. 1-64 chars of [a-zA-Z0-9_.-@].',
+  }),
+);
+
 export const LoginBody = registerComponent(
   'AuthLoginBody',
   credentialBody(

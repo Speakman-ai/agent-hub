@@ -12,7 +12,7 @@
  * the default org, so the wizard never fired on a real fresh clone.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, waitFor, cleanup, screen } from '@testing-library/react';
+import { render, waitFor, cleanup, screen, fireEvent } from '@testing-library/react';
 
 // Default-org cached locally — mirrors what `fetchOrgs()` does on a
 // fresh install after `initOrgsDb()` seeds the default row server-side.
@@ -178,6 +178,43 @@ describe('App — first-run SetupWizard gating', () => {
       expect(screen.getByTestId('setup-wizard-mock')).toBeInTheDocument();
     });
     expect(screen.queryByTestId('adaptive-flow-mock')).not.toBeInTheDocument();
+  });
+
+  it('asks only for a username in local mode, then posts it with no password', async () => {
+    const fetchMock = vi.fn((url: any, init?: any) => {
+      const u = String(url);
+      if (u.includes('/setup/status')) {
+        return Promise.resolve(
+          Response.json({
+            firstRun: true,
+            authConfigured: false,
+            localMode: true,
+            hasAnyAiCredentials: true,
+          }),
+        );
+      }
+      if (u.includes('/auth/local-setup')) {
+        return Promise.resolve(
+          Response.json({ ok: true, username: JSON.parse(init.body).username }),
+        );
+      }
+      return Promise.resolve(Response.json({}));
+    });
+    globalThis.fetch = fetchMock as any;
+
+    render(<App />);
+
+    const input = await screen.findByTestId('local-username');
+    expect(screen.queryByTestId('setup-wizard-mock')).not.toBeInTheDocument();
+    expect(document.querySelector('input[type="password"]')).toBeNull();
+
+    fireEvent.change(input, { target: { value: 'ryan' } });
+    fireEvent.click(screen.getByTestId('local-username-continue'));
+
+    await waitFor(() => expect(screen.queryByTestId('local-username')).not.toBeInTheDocument());
+    const setupCall = fetchMock.mock.calls.find(([u]) => String(u).includes('/auth/local-setup'));
+    expect(JSON.parse((setupCall as any)[1].body)).toEqual({ username: 'ryan' });
+    expect(api.completeSetup).toHaveBeenCalled();
   });
 
   it('skips the wizard for a returning user with no projects yet (Owner exists, orgs cached)', async () => {

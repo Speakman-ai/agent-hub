@@ -237,6 +237,20 @@ export async function setup({ baseUrl, username, password, apiKey = '' }: any) {
   return data;
 }
 
+/** Local mode only: create the Owner from a username. No token is issued. */
+export async function localSetup({ baseUrl, username }: { baseUrl: string; username: string }) {
+  const res = await fetch(`${baseUrl}/auth/local-setup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Setup failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function updateEmail({ baseUrl, email }: any) {
   const token = getToken();
   const res = await fetch(`${baseUrl}/auth/me/email`, {

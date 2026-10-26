@@ -518,6 +518,10 @@ export const SetupStatusComponent = registerComponent(
         description:
           'True once the interactive SetupWizard has finished. Authoritative gate for resuming an interrupted first-run (e.g. password-manager kickout after Owner creation). Legacy installs without the flag treat authConfigured as complete.',
       }),
+      localMode: z.boolean().openapi({
+        description:
+          'True when the server runs with `AGENT_HUB_MODE=local`. The client then asks only for a username on first run (POST /api/auth/local-setup) instead of an email and password.',
+      }),
       canCompleteOnboarding: z.boolean().openapi({
         description:
           "Whether THIS caller may finish instance onboarding (POST /api/setup/complete). Resolved server-side from the caller's CURRENT org-membership role (same gate the complete endpoint enforces) so a promotion/demotion after login cannot strand them. The client keys the Owner-only wizard ending off this rather than the login-cached role.",

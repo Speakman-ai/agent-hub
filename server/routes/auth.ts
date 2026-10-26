@@ -24,6 +24,7 @@
  * `/login`, and the invite landing/accept endpoints through without
  * authentication. Everything else goes through the auth middleware.
  */
+import { randomBytes } from 'crypto';
 import { Router, Request, Response } from 'express';
 import { existsSync } from 'fs';
 import rateLimit, { type Options as RateLimitOptions } from 'express-rate-limit';
@@ -109,6 +110,7 @@ import {
 import {
   sanitizeLoginIdentifier,
   sanitizeEmailIdentifier,
+  sanitizeUsername,
   isEmailIdentifier,
   sanitizePassword,
   MIN_PASSWORD_LEN,
@@ -133,7 +135,7 @@ import {
 } from '../per-user-codex-device-login.js';
 import { createApiKey, listApiKeys, revokeApiKey, countApiKeysForUser } from '../api-keys-store.js';
 import { recoverActiveSessionsAfterSetup } from '../spawn-creds-setup-recovery.js';
-import { markOnboardingIncomplete } from '../onboarding-complete.js';
+import { markOnboardingComplete, markOnboardingIncomplete } from '../onboarding-complete.js';
 import {
   listMaskedUserSkillCredentials,
   upsertUserSkillCredential,
@@ -159,6 +161,7 @@ import {
   ForgotPasswordBody,
   CreateUserBody,
   ErrorResponse,
+  LocalSetupBody,
   LoginBody,
   MfaCodeBody,
   MfaLoginBody,
@@ -302,6 +305,38 @@ registerPath({
     400: {
       description: 'Invalid body or domain validation failure.',
       content: { 'application/json': { schema: ZodErrorResponse } },
+    },
+    409: {
+      description: 'Auth already configured.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/auth/local-setup',
+  tags: ['Auth'],
+  summary: 'Local mode only: create the Owner from a username, no password.',
+  description:
+    'Only available when the server runs with `AGENT_HUB_MODE=local`, where the auth gate is bypassed. Records the Owner under the given username with an unusable random password and marks onboarding complete. Returns 404 outside local mode.',
+  request: { body: { content: { 'application/json': { schema: LocalSetupBody } } } },
+  responses: {
+    200: {
+      description: 'Owner created.',
+      content: {
+        'application/json': {
+          schema: z.object({ ok: z.literal(true), username: z.string() }),
+        },
+      },
+    },
+    400: {
+      description: 'Invalid username.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: 'Server is not running in local mode.',
+      content: { 'application/json': { schema: ErrorResponse } },
     },
     409: {
       description: 'Auth already configured.',
@@ -2512,8 +2547,8 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     // the AuthGate consumes it to suppress the login screen on local.
     const activeOrgIsLocal = isLocalBundledServer();
     const emailStatus = publicStatusEmailPayload(record?.username);
-    // Throwaway preview Owners do not need an email to inspect the workspace.
-    if (activeOrgIsLocal && process.env.AGENT_HUB_PREVIEW === '1') {
+    // Local mode never signs in, so the Owner never needs an email.
+    if (activeOrgIsLocal) {
       emailStatus.needsEmailUpdate = false;
     }
     let devAutoLogin: ReturnType<typeof ensureDevEmailUser> = null;
@@ -2645,6 +2680,62 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       expiresAt,
       user: tokenUserPayload(user, record.role),
     });
+  });
+
+  // Local mode never shows a login screen, so the Owner only needs a name.
+  // The password hash is random bytes nobody knows; if the install is later
+  // run without AGENT_HUB_MODE=local, the Owner recovers via password reset.
+  router.post('/api/auth/local-setup', async (req: Request, res: Response) => {
+    if (!isLocalBundledServer()) {
+      res.status(404).json({ error: 'Not found' });
+      return;
+    }
+    if (isAuthConfigured()) {
+      res.status(409).json({ error: 'Auth already configured' });
+      return;
+    }
+    const parsed = LocalSetupBody.safeParse(req.body ?? {});
+    const username = parsed.success ? sanitizeUsername(parsed.data.username) : null;
+    if (!username) {
+      res.status(400).json({
+        error: 'username must be 1-64 characters: letters, numbers, . _ - @',
+      });
+      return;
+    }
+    const passwordHash = await hashPassword(randomBytes(32).toString('base64url'));
+    // A concurrent request may have created the Owner while we hashed. The
+    // check and the synchronous save below run without yielding, so only
+    // one request can win.
+    if (isAuthConfigured()) {
+      res.status(409).json({ error: 'Auth already configured' });
+      return;
+    }
+    saveAuthRecord({
+      username,
+      passwordHash,
+      jwtSecret: generateJwtSecret(),
+      role: 'Owner',
+    });
+    let user = null;
+    try {
+      migrateAuthRecordIfNeeded();
+      user = ensureOwnerUserFromAuthRecord();
+      if (!user) user = getUserByUsername(username);
+    } catch (err) {
+      console.error('[Auth] Owner user seed after /local-setup failed:', err);
+    }
+    if (!user?.id) {
+      res.status(500).json({ error: 'Failed to create owner user record.' });
+      return;
+    }
+    try {
+      markOnboardingComplete(config.dataDir);
+    } catch (err) {
+      console.warn(
+        `[Auth] markOnboardingComplete after /local-setup failed: ${(err as Error).message}`,
+      );
+    }
+    res.json({ ok: true, username });
   });
 
   // Login (public, rate-limited per IP)

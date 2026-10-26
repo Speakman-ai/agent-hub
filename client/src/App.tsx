@@ -97,6 +97,7 @@ import OrchestrationTimelinePanel from './components/OrchestrationTimelinePanel'
 import OpenProjectWizard from './components/OpenProjectWizard';
 import NewProjectAdaptiveFlow from './components/NewProjectAdaptiveFlow';
 import SetupWizard from './components/SetupWizard';
+import LocalUsernameSetup from './components/LocalUsernameSetup';
 import { createUseAiSignInGuide } from '@shared/hooks/useAiSignInGuide';
 import { promoteQueuedMessage } from '@shared/utils/promoteQueuedMessage';
 import {
@@ -802,6 +803,24 @@ export default function App({ initialView }: any = {}) {
   // First-run setup
   const [setupStatus, setSetupStatus] = useState<any>(null);
   const [showSetup, setShowSetup] = useState(false);
+  const handleSetupComplete = useCallback(async () => {
+    await api.completeSetup();
+    setSetupStatus((status: any) => ({
+      ...status,
+      authConfigured: true,
+      onboardingComplete: true,
+    }));
+    setShowSetup(false);
+    try {
+      const response = await fetch(`${getApiBase()}/setup/status`, {
+        headers: getAuthHeaders(),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (response.ok) setSetupStatus(await response.json());
+    } catch {
+      /* The app remains usable if the credential probe is unavailable. */
+    }
+  }, []);
   const { showAiSignInGuide, dismissAiSignInGuide } = useAiSignInGuide({
     server: getApiBase(),
     user: getAuthRecord()?.user,
@@ -8820,28 +8839,13 @@ export default function App({ initialView }: any = {}) {
         )}
 
         {/* First-run setup wizard */}
-        {showSetup && setupStatus && (
-          <SetupWizard
-            onComplete={async () => {
-              await api.completeSetup();
-              setSetupStatus((status: any) => ({
-                ...status,
-                authConfigured: true,
-                onboardingComplete: true,
-              }));
-              setShowSetup(false);
-              try {
-                const response = await fetch(`${getApiBase()}/setup/status`, {
-                  headers: getAuthHeaders(),
-                  signal: AbortSignal.timeout(10000),
-                });
-                if (response.ok) setSetupStatus(await response.json());
-              } catch {
-                /* The app remains usable if the credential probe is unavailable. */
-              }
-            }}
-          />
-        )}
+        {showSetup &&
+          setupStatus &&
+          (setupStatus.localMode ? (
+            <LocalUsernameSetup onComplete={handleSetupComplete} />
+          ) : (
+            <SetupWizard onComplete={handleSetupComplete} />
+          ))}
 
         {/* Import existing project — full-screen wizard (draft survives
             Back / Close / Esc). Two view keys mount the same component:
