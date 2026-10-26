@@ -168,6 +168,24 @@ export default function ProjectSettingsScreen({ route, navigation }: any) {
           </View>
         )}
 
+        <View style={styles.toggleRow}>
+          <View style={styles.toggleTextCol}>
+            <Text style={styles.toggleTitle}>Commit as my GitHub account</Text>
+            <Text style={styles.toggleDesc}>
+              Author session commits as the session owner&apos;s connected GitHub account (GitHub
+              username and noreply email) instead of Agent Hub. Sessions whose owner has not
+              connected GitHub keep the Agent Hub identity. Off by default.
+            </Text>
+          </View>
+          <Switch
+            testID={`project-commit-as-owner-${projectId}`}
+            value={project.commitAsOwner?.enabled === true}
+            disabled={saving}
+            onValueChange={(next: boolean) => saveField({ commitAsOwner: { enabled: next } })}
+            trackColor={{ true: colors.emerald600, false: colors.gray600 }}
+          />
+        </View>
+
         <View style={{ marginTop: 12 }}>
           <ProjectDefaultAutomationSection projectId={projectId} />
         </View>

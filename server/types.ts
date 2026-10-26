@@ -3789,6 +3789,14 @@ export interface Project {
    */
   noGuardrails?: { enabled?: boolean };
   /**
+   * When enabled, session worktree commits are authored as the session
+   * owner's connected GitHub account (GitHub login + ID-based noreply email)
+   * instead of the Agent Hub identity. Sessions whose owner has no GitHub
+   * connection keep the Agent Hub identity. Default off. See
+   * `server/commit-identity.ts`.
+   */
+  commitAsOwner?: { enabled?: boolean };
+  /**
    * Dependabot-style auto-PR for the dependency security audit (Agent
    * Hub-hosted projects only). When `enabled`, a scan that persists findings
    * (default-branch tip, not a dry run) opens/refreshes one native Hub PR per

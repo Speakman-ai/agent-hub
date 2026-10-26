@@ -146,3 +146,35 @@ describe('ProjectSettingsScreen — No Guardrails toggle', () => {
     flushSync(() => root.unmount());
   });
 });
+
+describe('ProjectSettingsScreen — commit as my GitHub account toggle', () => {
+  beforeEach(() => vi.clearAllMocks());
+  afterEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  it('defaults off and persists commitAsOwner.enabled via updateProject', async () => {
+    const project = { id: 'p1', name: 'Acme', color: '#6366f1', githubRepo: 'me/acme' };
+    const { container, root } = mount();
+    flushSync(() =>
+      root.render(
+        <ProjectSettingsScreen route={{ params: { projectId: 'p1', project } }} navigation={{}} />,
+      ),
+    );
+    await flush();
+
+    const toggle = container.querySelector(
+      '[data-testid="project-commit-as-owner-p1"]',
+    ) as HTMLInputElement;
+    expect(toggle).toBeTruthy();
+    expect(toggle.checked).toBe(false);
+
+    toggle.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(apiMocks.updateProject).toHaveBeenCalledWith('p1', {
+      commitAsOwner: { enabled: true },
+    });
+    flushSync(() => root.unmount());
+  });
+});

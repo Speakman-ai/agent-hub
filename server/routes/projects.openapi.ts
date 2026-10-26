@@ -792,6 +792,10 @@ export const ProjectUpdateRequestSchema = z
       description:
         'Allows the No Guardrails session mode, where the agent may `git push` / `gh pr create` directly. Default off; `null` clears it. Requires an Admin or Owner signed in as a person: the global API key and session spawn keys get `403`.',
     }),
+    commitAsOwner: z.object({ enabled: z.boolean().optional() }).nullable().optional().openapi({
+      description:
+        "When enabled, session commits are authored as the session owner's connected GitHub account (GitHub username and ID-based noreply email). Sessions whose owner has no GitHub connection keep the Agent Hub identity. Default off; `null` clears it.",
+    }),
   })
   .passthrough();
 

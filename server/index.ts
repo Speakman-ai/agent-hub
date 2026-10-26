@@ -184,6 +184,7 @@ import {
   sessionWorkspaceNeedsProvisionProgress,
   type OnBaseBranchAdvancedFn,
 } from './worktree.js';
+import { applySessionCommitIdentity } from './commit-identity.js';
 import { handleWorktreeFailure } from './worktree-failure.js';
 import { installShutdownHandlers, registerShutdownTask } from './process-groups.js';
 import { installUnhandledRejectionLogger } from './unhandled-rejection.js';
@@ -790,7 +791,7 @@ async function ensureWorktree(
       });
     }
   }
-  return ensureSessionWorkspace(
+  const wsPath = await ensureSessionWorkspace(
     session,
     projectCwd,
     agentId,
@@ -814,6 +815,20 @@ async function ensureWorktree(
     githubRepo ?? null,
     hostedBarePath ?? null,
   );
+  // Runs on every ensure (not only at clone time) so flipping the project
+  // toggle takes effect on the next turn of an existing session.
+  if (wsPath !== projectCwd) {
+    await applySessionCommitIdentity({
+      cwd: wsPath,
+      projectCwd,
+      project: projectId ? findProject(projectId) : null,
+      ownerUserId: session.owner_user_id ?? null,
+    }).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[Workspace] Commit identity update failed for ${session.id}: ${msg}`);
+    });
+  }
+  return wsPath;
 }
 
 const app = express();

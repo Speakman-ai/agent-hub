@@ -2491,6 +2491,23 @@ This workspace has no git repo and no PR automation — your job is planning, or
         };
       }
     }
+    if (Object.prototype.hasOwnProperty.call(req.body as object, 'commitAsOwner')) {
+      const rawCommitAs = (req.body as Record<string, unknown>).commitAsOwner;
+      if (rawCommitAs === null) {
+        delete (project as Record<string, unknown>).commitAsOwner;
+      } else if (typeof rawCommitAs !== 'object' || Array.isArray(rawCommitAs)) {
+        return res.status(400).json({ error: 'commitAsOwner must be an object or null' });
+      } else {
+        const enabled = (rawCommitAs as Record<string, unknown>).enabled;
+        if (enabled !== undefined && typeof enabled !== 'boolean') {
+          return res.status(400).json({ error: 'commitAsOwner.enabled must be a boolean' });
+        }
+        project.commitAsOwner = {
+          ...(project.commitAsOwner ?? {}),
+          ...(enabled !== undefined ? { enabled } : {}),
+        };
+      }
+    }
     if (Object.prototype.hasOwnProperty.call(req.body as object, 'securityAutoPr')) {
       const rawSec = (req.body as Record<string, unknown>).securityAutoPr;
       if (rawSec === null) {

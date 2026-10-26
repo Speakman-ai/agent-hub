@@ -32,6 +32,7 @@ import PerUserEngineSelect from './PerUserEngineSelect';
 import { orderServerLogsNewestFirst } from '../utils/serverLogs';
 import ProjectSecretsEditor from './ProjectSecretsEditor';
 import GitHostSettingsSection from './GitHostSettingsSection';
+import CommitIdentitySection from './CommitIdentitySection';
 import ProjectDefaultAutomationSection from './finalize/ProjectDefaultAutomationSection';
 import ProjectMembersSection from './ProjectMembersSection';
 import ContextFilePanel from './ContextFilePanel';
@@ -1612,6 +1613,12 @@ export function ProjectsSection({
           </button>
         </div>
       )}
+
+      <CommitIdentitySection
+        project={p}
+        showToast={showToast}
+        onProjectsChange={onProjectsChange}
+      />
 
       {/* Test Connection */}
       <div className="pt-2 border-t border-gray-800">

@@ -28,7 +28,7 @@ describe('feature branch lazy creation contract', () => {
       'await ensureOperatorBaseBranch(project, trimmedPrBase',
       ensureWorktreeStart,
     );
-    const workspaceCall = indexSrc.indexOf('return ensureSessionWorkspace(', ensureWorktreeStart);
+    const workspaceCall = indexSrc.indexOf('await ensureSessionWorkspace(', ensureWorktreeStart);
     expect(ensureWorktreeStart).toBeGreaterThanOrEqual(0);
     expect(ensureCall).toBeGreaterThan(ensureWorktreeStart);
     expect(workspaceCall).toBeGreaterThan(ensureCall);
