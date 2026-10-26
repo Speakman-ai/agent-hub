@@ -9,6 +9,7 @@ import {
   Palette,
   Rocket,
   Sparkles,
+  Zap,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -20,6 +21,7 @@ export const SESSION_CONTROL_ICON_MAP: Record<string, LucideIcon> = {
   'skill-builder': Sparkles,
   isolated: Box,
   autopilot: Rocket,
+  'no-guardrails': Zap,
   manual: Hammer,
   review: FlaskConical,
   push: CloudUpload,

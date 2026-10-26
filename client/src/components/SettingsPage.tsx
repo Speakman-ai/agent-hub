@@ -1336,6 +1336,8 @@ export function ProjectsSection({
   const [infraSaving, setInfraSaving] = useState<Record<string, any>>({});
   // Per-project feature-request voting/approval toggle (in-flight guard).
   const [votingSaving, setVotingSaving] = useState<Record<string, any>>({});
+  // Per-project No Guardrails session-mode toggle (in-flight guard).
+  const [noGuardrailsSaving, setNoGuardrailsSaving] = useState<Record<string, any>>({});
 
   // Project delete confirmation (inline toggle pattern)
   const [confirmDeleteProject, setConfirmDeleteProject] = useState<any>(null);
@@ -1395,6 +1397,21 @@ export function ProjectsSection({
       else alert(msg);
     } finally {
       setVotingSaving((prev: any) => ({ ...prev, [project.id]: false }));
+    }
+  };
+
+  const toggleNoGuardrailsEnabled = async (project: any) => {
+    const next = !project.noGuardrails?.enabled;
+    setNoGuardrailsSaving((prev: any) => ({ ...prev, [project.id]: true }));
+    try {
+      await api.updateProject(project.id, { noGuardrails: { enabled: next } });
+      if (onProjectsChange) onProjectsChange();
+    } catch (err: any) {
+      const msg = String(err?.message || err || 'Failed to update');
+      if (showToast) showToast(msg, 'error');
+      else alert(msg);
+    } finally {
+      setNoGuardrailsSaving((prev: any) => ({ ...prev, [project.id]: false }));
     }
   };
 
@@ -1564,6 +1581,37 @@ export function ProjectsSection({
           />
         </button>
       </div>
+
+      {/* No Guardrails toggle: offers the No Guardrails session mode, where the
+          agent may push and open PRs directly. Off by default; Admin only. */}
+      {p.mode !== 'workflow' && (
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex-1 min-w-0">
+            <span className="text-sm text-gray-200">No Guardrails sessions</span>
+            <p className="text-xs text-gray-500">
+              Adds a <strong>No Guardrails</strong> mode to the session picker. In that mode the
+              agent can run <code>git push</code> and open PRs on its own at any point, without
+              Finalize review or checks. Meant for one-off builds and deploys. Off by default;
+              requires the <strong>Admin</strong> role.
+            </p>
+          </div>
+          <button
+            onClick={() => toggleNoGuardrailsEnabled(p)}
+            disabled={noGuardrailsSaving[p.id]}
+            data-testid={`project-no-guardrails-enabled-${p.id}`}
+            aria-pressed={!!p.noGuardrails?.enabled}
+            className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 disabled:opacity-50 ${
+              p.noGuardrails?.enabled ? 'bg-amber-600' : 'bg-gray-600'
+            }`}
+          >
+            <span
+              className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                p.noGuardrails?.enabled ? 'translate-x-4' : 'translate-x-0.5'
+              }`}
+            />
+          </button>
+        </div>
+      )}
 
       {/* Test Connection */}
       <div className="pt-2 border-t border-gray-800">

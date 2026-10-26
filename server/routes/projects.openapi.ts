@@ -788,6 +788,10 @@ export const ProjectUpdateRequestSchema = z
       description:
         'Merged over the stored value; `null` clears it. `mode: dynamic` is rejected with `400` unless `ciOnPush.enabled` is on, and turning `ciOnPush` off while dynamic is on is rejected the same way.',
     }),
+    noGuardrails: z.object({ enabled: z.boolean().optional() }).nullable().optional().openapi({
+      description:
+        'Allows the No Guardrails session mode, where the agent may `git push` / `gh pr create` directly. Default off; `null` clears it. Requires an Admin or Owner signed in as a person: the global API key and session spawn keys get `403`.',
+    }),
   })
   .passthrough();
 

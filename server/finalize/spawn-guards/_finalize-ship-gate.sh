@@ -7,6 +7,10 @@ _finalize_direct_ship_gate() {
   if [ -z "${AGENT_HUB_SESSION_ID:-}" ]; then
     return 0
   fi
+  # No Guardrails session on a project that allows it (set by the Hub at spawn).
+  if [ "${AGENT_HUB_NO_GUARDRAILS:-}" = "1" ]; then
+    return 0
+  fi
   if [ -z "${AGENT_HUB_URL:-}" ] || [ -z "${AGENT_HUB_API_KEY:-}" ]; then
     echo "error: ${_cmd_name} blocked: cannot verify shipping policy. Commit locally and use Finalize Code Changes." >&2
     return 2

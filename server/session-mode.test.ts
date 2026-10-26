@@ -29,6 +29,7 @@ describe('session-mode helpers', () => {
       'consult',
       'hub',
       'qa',
+      'no-guardrails',
     ]);
     expect(DEFAULT_SESSION_MODE).toBe('chat');
     expect(SESSION_MODES).toContain(DEFAULT_SESSION_MODE);

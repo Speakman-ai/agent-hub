@@ -148,6 +148,26 @@ export default function ProjectSettingsScreen({ route, navigation }: any) {
           />
         </View>
 
+        {project.mode !== 'workflow' && (
+          <View style={styles.toggleRow}>
+            <View style={styles.toggleTextCol}>
+              <Text style={styles.toggleTitle}>No Guardrails sessions</Text>
+              <Text style={styles.toggleDesc}>
+                Adds a No Guardrails mode to the session picker. In that mode the agent can push and
+                open PRs on its own at any point, without Finalize review or checks. Meant for
+                one-off builds and deploys. Off by default; requires the Admin role.
+              </Text>
+            </View>
+            <Switch
+              testID={`project-no-guardrails-enabled-${projectId}`}
+              value={!!project.noGuardrails?.enabled}
+              disabled={saving}
+              onValueChange={(next: boolean) => saveField({ noGuardrails: { enabled: next } })}
+              trackColor={{ true: colors.amber400, false: colors.gray600 }}
+            />
+          </View>
+        )}
+
         <View style={{ marginTop: 12 }}>
           <ProjectDefaultAutomationSection projectId={projectId} />
         </View>

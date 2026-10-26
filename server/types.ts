@@ -3773,6 +3773,13 @@ export interface Project {
    */
   voting?: { enabled?: boolean };
   /**
+   * Allows the No Guardrails session mode: sessions in that mode may run
+   * `git push` / `gh pr create` directly instead of shipping only through
+   * Finalize. Meant for one-off deploy builds. Default off; only an Admin or
+   * Owner may change it. See `server/no-guardrails.ts`.
+   */
+  noGuardrails?: { enabled?: boolean };
+  /**
    * Dependabot-style auto-PR for the dependency security audit (Agent
    * Hub-hosted projects only). When `enabled`, a scan that persists findings
    * (default-branch tip, not a dry run) opens/refreshes one native Hub PR per

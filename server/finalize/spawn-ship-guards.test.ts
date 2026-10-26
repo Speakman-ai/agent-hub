@@ -55,6 +55,16 @@ describe('applySessionGitGuards', () => {
     expect(env.AGENT_HUB_FINALIZE_CI_CONFIGURED).toBeUndefined();
   });
 
+  it('sets the No Guardrails flag only when asked, and clears an inherited one', () => {
+    const on: NodeJS.ProcessEnv = { PATH: '/usr/bin:/bin' };
+    applySessionGitGuards(on, null, { noGuardrails: true });
+    expect(on.AGENT_HUB_NO_GUARDRAILS).toBe('1');
+
+    const inherited: NodeJS.ProcessEnv = { PATH: '/usr/bin:/bin', AGENT_HUB_NO_GUARDRAILS: '1' };
+    applySessionGitGuards(inherited, null);
+    expect(inherited.AGENT_HUB_NO_GUARDRAILS).toBeUndefined();
+  });
+
   it('installs shipping guards without branch protection when there is no worktree', () => {
     const env: NodeJS.ProcessEnv = { PATH: '/usr/bin:/bin' };
     applySessionGitGuards(env, null);
@@ -205,6 +215,25 @@ describe('session direct-shipping guards', () => {
       expect(result.stderr).toContain('Finalize Code Changes');
       expect(result.stdout).not.toContain('PASSTHROUGH');
     }
+  });
+
+  it.each(commands)('lets $script $args through in a No Guardrails session', ({ script, args }) => {
+    const result = spawnSync('bash', [script, ...args], {
+      encoding: 'utf8',
+      env: {
+        PATH: `${stubDir}:/usr/bin:/bin`,
+        AGENT_HUB_SESSION_ID: 'test-session',
+        AGENT_HUB_URL: 'http://127.0.0.1',
+        AGENT_HUB_API_KEY: 'test-key',
+        AGENT_HUB_REAL_GIT: path.join(stubDir, 'git'),
+        AGENT_HUB_REAL_GH: path.join(stubDir, 'gh'),
+        AGENT_HUB_NO_GUARDRAILS: '1',
+        GH_TOKEN: 'gho_test',
+        TEST_GATE_RESPONSE: JSON.stringify({ allowed: false, message: 'blocked' }),
+      },
+    });
+    expect(result.stderr).not.toContain('blocked');
+    expect(result.stdout).toContain('PASSTHROUGH');
   });
 
   it('leaves platform git/gh execution outside the session PATH untouched', () => {

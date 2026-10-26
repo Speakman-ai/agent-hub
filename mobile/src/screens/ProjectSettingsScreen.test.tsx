@@ -103,3 +103,46 @@ describe('ProjectSettingsScreen — feature request approval toggle', () => {
     flushSync(() => root.unmount());
   });
 });
+
+describe('ProjectSettingsScreen — No Guardrails toggle', () => {
+  beforeEach(() => vi.clearAllMocks());
+  afterEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  it('defaults off and persists noGuardrails.enabled via updateProject', async () => {
+    const project = { id: 'p1', name: 'Acme', color: '#6366f1', githubRepo: '' };
+    const { container, root } = mount();
+    flushSync(() =>
+      root.render(
+        <ProjectSettingsScreen route={{ params: { projectId: 'p1', project } }} navigation={{}} />,
+      ),
+    );
+    await flush();
+
+    const toggle = container.querySelector(
+      '[data-testid="project-no-guardrails-enabled-p1"]',
+    ) as HTMLInputElement;
+    expect(toggle).toBeTruthy();
+    expect(toggle.checked).toBe(false);
+
+    toggle.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(apiMocks.updateProject).toHaveBeenCalledWith('p1', { noGuardrails: { enabled: true } });
+    flushSync(() => root.unmount());
+  });
+
+  it('is hidden on workflow projects', async () => {
+    const project = { id: 'p2', name: 'Ops', color: '#6366f1', githubRepo: '', mode: 'workflow' };
+    const { container, root } = mount();
+    flushSync(() =>
+      root.render(
+        <ProjectSettingsScreen route={{ params: { projectId: 'p2', project } }} navigation={{}} />,
+      ),
+    );
+    await flush();
+    expect(container.querySelector('[data-testid="project-no-guardrails-enabled-p2"]')).toBeNull();
+    flushSync(() => root.unmount());
+  });
+});

@@ -68,6 +68,15 @@ export function validateSessionModeForProject(
         'Workflow projects only support Consult, Scoping, Skill Builder, Design, Hub, and QA session modes. Use a dev project for build/chat/VM sessions.',
     };
   }
+  // Kept inline (not via no-guardrails.ts) so that module can import this one
+  // without a cycle. Same rule as `noGuardrailsEnabledForProject`.
+  if (mode === 'no-guardrails' && project?.noGuardrails?.enabled !== true) {
+    return {
+      error: 'no_guardrails_not_enabled',
+      message:
+        'No Guardrails mode is turned off for this project. An Admin can enable it in project settings.',
+    };
+  }
   return null;
 }
 

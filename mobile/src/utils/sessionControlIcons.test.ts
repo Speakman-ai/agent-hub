@@ -14,5 +14,6 @@ describe('sessionControlAppIcon', () => {
 
   it('maps Autopilot to rocket-outline', () => {
     expect(sessionControlAppIcon('autopilot')).toBe('rocket-outline');
+    expect(sessionControlAppIcon('no-guardrails')).toBe('flash');
   });
 });

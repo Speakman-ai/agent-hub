@@ -64,6 +64,7 @@ describe('SESSION_CONTROL_OPTIONS', () => {
       'skill-builder',
       'isolated',
       'autopilot',
+      'no-guardrails',
       'manual',
       'review',
       'push',
@@ -240,5 +241,42 @@ describe('sessionControlOptionsForAgent', () => {
     expect(sessionControlOptionsForAgent(null).some((o) => o.value === 'skill-builder')).toBe(
       false,
     );
+  });
+});
+
+describe('No Guardrails session control', () => {
+  it('is hidden unless the project turned it on', () => {
+    const values = (project: any) =>
+      sessionControlOptionsForProject(project, { role: 'sub' }).map((o: any) => o.value);
+    expect(values({ mode: 'dev' })).not.toContain('no-guardrails');
+    expect(values({ mode: 'dev', noGuardrails: { enabled: false } })).not.toContain(
+      'no-guardrails',
+    );
+    expect(values({ mode: 'dev', noGuardrails: { enabled: true } })).toContain('no-guardrails');
+    expect(values({ mode: 'workflow', noGuardrails: { enabled: true } })).not.toContain(
+      'no-guardrails',
+    );
+    expect(values(null)).not.toContain('no-guardrails');
+  });
+
+  it('maps session_mode no-guardrails to its own control value', () => {
+    expect(sessionControlValue({ sessionMode: 'no-guardrails', automation: 'merge' })).toBe(
+      'no-guardrails',
+    );
+  });
+
+  it('entering clears Finalize ship intent; leaving for a ship level returns to chat', () => {
+    expect(
+      sessionControlPatch(
+        { sessionMode: 'chat', askMode: false, automation: 'merge' },
+        'no-guardrails',
+      ),
+    ).toEqual({ session_mode: 'no-guardrails', finalize_automation: 'manual' });
+    expect(
+      sessionControlPatch(
+        { sessionMode: 'no-guardrails', askMode: false, automation: 'manual' },
+        'push',
+      ),
+    ).toEqual({ session_mode: 'chat', finalize_automation: 'push' });
   });
 });

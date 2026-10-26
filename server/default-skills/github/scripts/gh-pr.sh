@@ -90,6 +90,10 @@ _finalize_ship_gate() {
   if [[ -z "${AGENT_HUB_SESSION_ID:-}" ]]; then
     return 0
   fi
+  # No Guardrails session on a project that allows it (set by the Hub at spawn).
+  if [[ "${AGENT_HUB_NO_GUARDRAILS:-}" == "1" ]]; then
+    return 0
+  fi
   local resp msg="Shipping policy could not be verified."
   if [[ -n "${AGENT_HUB_URL:-}" && -n "${AGENT_HUB_API_KEY:-}" ]]; then
     if resp=$(curl -sS -m 12 -H "x-api-key: $AGENT_HUB_API_KEY" \

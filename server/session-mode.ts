@@ -35,6 +35,7 @@ export const SESSION_MODES = [
   'consult',
   'hub',
   'qa',
+  'no-guardrails',
 ] as const;
 
 export type SessionMode = (typeof SESSION_MODES)[number];
@@ -114,13 +115,19 @@ export function isAutopilotModeActive(
 /**
  * Modes that share chat's ship / Finalize surface (Build → Auto Merge allowed;
  * entering them must not clear finalize automation). Autopilot pins to push
- * (never merge) but is still a shipping mode.
+ * (never merge) but is still a shipping mode. No Guardrails keeps Finalize
+ * available on top of letting the agent push directly.
  */
 export function isShippingCompatibleSessionMode(
   mode: SessionMode | string | null | undefined,
 ): boolean {
   const normalized = normalizeSessionMode(mode);
-  return normalized === 'chat' || normalized === 'isolated' || normalized === 'autopilot';
+  return (
+    normalized === 'chat' ||
+    normalized === 'isolated' ||
+    normalized === 'autopilot' ||
+    normalized === 'no-guardrails'
+  );
 }
 
 /**

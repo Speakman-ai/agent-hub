@@ -69,6 +69,13 @@ export const VM_AUTOMATION_OPTION = {
     'Run this session in an intentional Firecracker microVM — Build/Push/Merge still work like chat',
 } as Record<string, any>;
 
+export const NO_GUARDRAILS_AUTOMATION_OPTION = {
+  value: 'no-guardrails',
+  label: 'No Guardrails',
+  description:
+    'The agent can push and open PRs on its own at any point, for one-off builds and deploys',
+} as Record<string, any>;
+
 export const AUTOPILOT_AUTOMATION_OPTION = {
   value: 'autopilot',
   label: 'Autopilot',
@@ -98,8 +105,14 @@ export const SESSION_CONTROL_OPTIONS = [
   SKILL_BUILDER_AUTOMATION_OPTION,
   VM_AUTOMATION_OPTION,
   AUTOPILOT_AUTOMATION_OPTION,
+  NO_GUARDRAILS_AUTOMATION_OPTION,
   ...FINALIZE_AUTOMATION_OPTIONS,
 ];
+
+/** No Guardrails is offered only when the project opted in (default off). */
+export function projectAllowsNoGuardrails(project: any): boolean {
+  return project?.mode !== 'workflow' && project?.noGuardrails?.enabled === true;
+}
 
 export const SKILL_BUILDER_INELIGIBLE_ROLES = [
   'skill-builder',
@@ -125,7 +138,9 @@ export function sessionControlOptionsForProject(
   capabilities: { canUseVm?: boolean } = {},
 ): typeof SESSION_CONTROL_OPTIONS {
   const base = sessionControlOptionsForAgent(agent).filter(
-    (o: any) => o.value !== 'isolated' || capabilities.canUseVm === true,
+    (o: any) =>
+      (o.value !== 'isolated' || capabilities.canUseVm === true) &&
+      (o.value !== 'no-guardrails' || projectAllowsNoGuardrails(project)),
   );
   if (project?.mode === 'workflow') {
     return base.filter((o: any) => WORKFLOW_SESSION_CONTROL_VALUES.has(o.value));
@@ -152,6 +167,7 @@ export function sessionControlValue({ sessionMode, askMode, automation }: any = 
   if (sessionMode === 'qa') return 'consult';
   if (sessionMode === 'isolated') return 'isolated';
   if (sessionMode === 'autopilot') return 'autopilot';
+  if (sessionMode === 'no-guardrails') return 'no-guardrails';
   if (askMode) return 'consult';
   return parseFinalizeAutomation(automation);
 }
@@ -178,7 +194,9 @@ export function planSessionControlChange(current: any, target: any, options: any
                 ? 'isolated'
                 : current?.sessionMode === 'autopilot'
                   ? 'autopilot'
-                  : 'chat';
+                  : current?.sessionMode === 'no-guardrails'
+                    ? 'no-guardrails'
+                    : 'chat';
   const askMode = !!current?.askMode;
   const automation = parseFinalizeAutomation(current?.automation);
   const currentValue = sessionControlValue({ sessionMode, askMode, automation });
@@ -228,6 +246,15 @@ export function planSessionControlChange(current: any, target: any, options: any
     return steps;
   }
 
+  // The agent ships on its own here, so drop any Finalize auto-push/merge
+  // intent rather than racing it.
+  if (target === 'no-guardrails') {
+    clearLegacyAsk();
+    clearShipIntent();
+    steps.push({ type: 'mode', value: 'no-guardrails' });
+    return steps;
+  }
+
   if (target === 'autopilot') {
     clearLegacyAsk();
     if (automation !== 'push') steps.push({ type: 'automation', value: 'push' });
@@ -242,7 +269,8 @@ export function planSessionControlChange(current: any, target: any, options: any
     sessionMode === 'scoping' ||
     sessionMode === 'skill-builder' ||
     sessionMode === 'consult' ||
-    sessionMode === 'autopilot'
+    sessionMode === 'autopilot' ||
+    sessionMode === 'no-guardrails'
   ) {
     steps.push({ type: 'mode', value: 'chat' });
   }

@@ -6,6 +6,7 @@ export const SESSION_CONTROL_APP_ICON_MAP: Record<string, string> = {
   'skill-builder': 'sparkles-outline',
   isolated: 'cube-outline',
   autopilot: 'rocket-outline',
+  'no-guardrails': 'flash',
   manual: 'hammer-outline',
   review: 'flask-outline',
   push: 'cloud-upload-outline',

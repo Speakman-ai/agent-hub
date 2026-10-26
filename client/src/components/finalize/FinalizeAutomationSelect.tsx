@@ -65,7 +65,9 @@ export default function FinalizeAutomationSelect({
               ? 'isolated'
               : session?.session_mode === 'autopilot'
                 ? 'autopilot'
-                : 'chat';
+                : session?.session_mode === 'no-guardrails'
+                  ? 'no-guardrails'
+                  : 'chat';
   // Design mode runs when the session has an isolated worktree (dev projects) OR
   // the project is workflow/no-code (artifacts go to the Hub data-dir store). The
   // server's `can_design_mode` covers the worktree arm; we OR in the workflow arm

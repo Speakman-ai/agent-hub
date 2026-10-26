@@ -72,6 +72,7 @@ import {
   listProjectMembers,
 } from '../project-members-store.js';
 import { getMembershipRole } from '../memberships-store.js';
+import { hasAtLeastRole } from '../roles.js';
 import { getActiveOrgId } from '../orgs.js';
 import { deleteProjectScopedRows } from '../project-owner-cascade.js';
 import {
@@ -2199,6 +2200,40 @@ This workspace has no git repo and no PR automation — your job is planning, or
         .json({ error: backstopError, code: 'test_selection_requires_ci_on_push' });
     }
 
+    // Checked before any in-place mutation so a refused toggle cannot leave
+    // other fields of the same PATCH half-applied.
+    let pendingNoGuardrails: { enabled?: boolean } | null | undefined;
+    if (Object.prototype.hasOwnProperty.call(req.body as object, 'noGuardrails')) {
+      // A person must flip this, never an agent: the global API key and
+      // per-session spawn keys are what spawned sessions authenticate with, and
+      // an agent must not be able to lift its own direct-ship gate.
+      const areq = req as AuthenticatedRequest;
+      if (areq.authViaApiKey || areq.authSpawnSessionId) {
+        return res.status(403).json({
+          error: 'No Guardrails mode must be changed by an Admin in project settings.',
+          code: 'no_guardrails_requires_person',
+        });
+      }
+      if (!areq.authLocalOrgBypass && !hasAtLeastRole(areq.authRole, 'Admin')) {
+        return res.status(403).json({
+          error: 'Changing No Guardrails mode requires the Admin role or higher.',
+          code: 'no_guardrails_requires_admin',
+        });
+      }
+      const rawNg = (req.body as Record<string, unknown>).noGuardrails;
+      if (rawNg === null) {
+        pendingNoGuardrails = null;
+      } else if (typeof rawNg !== 'object' || Array.isArray(rawNg)) {
+        return res.status(400).json({ error: 'noGuardrails must be an object or null' });
+      } else {
+        const enabled = (rawNg as Record<string, unknown>).enabled;
+        if (enabled !== undefined && typeof enabled !== 'boolean') {
+          return res.status(400).json({ error: 'noGuardrails.enabled must be a boolean' });
+        }
+        pendingNoGuardrails = enabled !== undefined ? { enabled } : {};
+      }
+    }
+
     const allowed = ['name', 'cwd', 'color', 'defaultReviewer', 'githubRepo'] as const;
     for (const key of allowed) {
       if ((req.body as Record<string, unknown>)[key] !== undefined)
@@ -2433,6 +2468,11 @@ This workspace has no git repo and no PR automation — your job is planning, or
           ...next,
         };
       }
+    }
+    if (pendingNoGuardrails === null) {
+      delete (project as Record<string, unknown>).noGuardrails;
+    } else if (pendingNoGuardrails) {
+      project.noGuardrails = { ...(project.noGuardrails ?? {}), ...pendingNoGuardrails };
     }
     if (Object.prototype.hasOwnProperty.call(req.body as object, 'voting')) {
       const rawVoting = (req.body as Record<string, unknown>).voting;

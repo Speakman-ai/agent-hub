@@ -2656,6 +2656,7 @@ components:
             - consult
             - hub
             - qa
+            - no-guardrails
             - null
           description: "Session mode picker dimension: `chat` (default), `isolated` (opt-in Firecracker VM; same ship surface as chat), `autopilot` (named-branch implement/push/preview-verify loop; never auto-merges), `design`, `scoping`, `skill-builder`, or `consult`. NULL/absent on legacy rows → treated as `chat`. Set via `PATCH /api/sessions/{sessionId}` or `PUT .../mode`."
         finalize_pushed_count:
@@ -26045,6 +26046,7 @@ paths:
                     - consult
                     - hub
                     - qa
+                    - no-guardrails
                 seedMessage:
                   type: string
                   maxLength: 50000
@@ -26336,6 +26338,7 @@ paths:
                     - consult
                     - hub
                     - qa
+                    - no-guardrails
                 ask_mode:
                   type: boolean
       responses:
@@ -27500,6 +27503,7 @@ paths:
                     - consult
                     - hub
                     - qa
+                    - no-guardrails
               required:
                 - mode
       responses:
@@ -56793,6 +56797,13 @@ paths:
                       maxItems: 100
                       description: Globs that force a full run when a changed file matches. Added to the built-in defaults (lockfiles, manifests, test-runner config, `.agent-hub/ci.yaml`, Dockerfiles, compose files, migrations).
                   description: "Merged over the stored value; `null` clears it. `mode: dynamic` is rejected with `400` unless `ciOnPush.enabled` is on, and turning `ciOnPush` off while dynamic is on is rejected the same way."
+                noGuardrails:
+                  type: object
+                  nullable: true
+                  properties:
+                    enabled:
+                      type: boolean
+                  description: "Allows the No Guardrails session mode, where the agent may `git push` / `gh pr create` directly. Default off; `null` clears it. Requires an Admin or Owner signed in as a person: the global API key and session spawn keys get `403`."
               additionalProperties:
                 nullable: true
       responses:
@@ -57354,6 +57365,13 @@ paths:
                       maxItems: 100
                       description: Globs that force a full run when a changed file matches. Added to the built-in defaults (lockfiles, manifests, test-runner config, `.agent-hub/ci.yaml`, Dockerfiles, compose files, migrations).
                   description: "Merged over the stored value; `null` clears it. `mode: dynamic` is rejected with `400` unless `ciOnPush.enabled` is on, and turning `ciOnPush` off while dynamic is on is rejected the same way."
+                noGuardrails:
+                  type: object
+                  nullable: true
+                  properties:
+                    enabled:
+                      type: boolean
+                  description: "Allows the No Guardrails session mode, where the agent may `git push` / `gh pr create` directly. Default off; `null` clears it. Requires an Admin or Owner signed in as a person: the global API key and session spawn keys get `403`."
                 id:
                   type: string
                   pattern: ^[a-zA-Z0-9-]+$

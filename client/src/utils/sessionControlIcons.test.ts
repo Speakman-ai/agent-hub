@@ -10,6 +10,7 @@ describe('sessionControlIcons', () => {
       'skill-builder',
       'isolated',
       'autopilot',
+      'no-guardrails',
       'manual',
       'review',
       'push',

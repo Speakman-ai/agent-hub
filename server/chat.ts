@@ -284,6 +284,7 @@ import {
   shouldNotifyFinalizeOfTermination,
 } from './finalize/turn-end.js';
 import { applySessionGitGuards } from './finalize/spawn-ship-guards.js';
+import { buildNoGuardrailsPreamble, sessionRunsWithoutGuardrails } from './no-guardrails.js';
 import { worktreeHasFinalizeCi } from './finalize/worktree-has-ci.js';
 import { hostedBarePathForProject } from './git-host/repo-store.js';
 import { applyAgentHubGitSpawnCredentials } from './git-host/spawn-credentials.js';
@@ -501,6 +502,11 @@ interface BuildEnrichedPromptOptions {
    * local test guidance; shipping always belongs to Finalize.
    */
   finalizeConfigured?: boolean;
+  /**
+   * No Guardrails session on a project that allows it. Drops the
+   * "No Direct Ship" block; the per-turn No Guardrails preamble replaces it.
+   */
+  noGuardrails?: boolean;
   /** Absolute path to this session's git worktree (when useWorktree). */
   sessionWorktreePath?: string | null;
   /** Feature branch checked out in the session worktree. */
@@ -1325,7 +1331,8 @@ Do **not** emit \`<agenthub:preview>\` blocks — the host ignores them. Start t
     if (
       !options.omitDevLifecycle &&
       (isGitHubConnected || promptWorktree) &&
-      projectMode !== 'workflow'
+      projectMode !== 'workflow' &&
+      !options.noGuardrails
     ) {
       prompt += `\n\n## Finalize Code Changes — No Direct Ship
 **You must not run \`git push\` or \`gh pr create\`**. Commit locally and stop. The operator or session automation ships through **Finalize Code Changes** and **Push to ${pushTargetLabel}**. This applies even without \`.agent-hub/ci.yaml\`. Configure checks in Finalize settings or commit a CI config; missing CI does not authorize direct shipping.
@@ -3439,6 +3446,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           sessionHasLinkedCard: !!linkedCardForPr,
           epicSpecContext,
           finalizeConfigured: worktreeHasFinalizeCi(session!.worktree_path),
+          noGuardrails: sessionRunsWithoutGuardrails(project as Project, session),
           sessionWorktreePath: session!.worktree_path ?? null,
           sessionWorktreeBranch: session!.worktree_branch ?? null,
           omitWorkspaceMemory:
@@ -3485,6 +3493,14 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         enrichedPrompt += `\n\n${designTurn.skillInjections.join('\n\n')}`;
       }
       if (designTurn.preamble) enrichedPrompt = `${designTurn.preamble}\n\n${enrichedPrompt}`;
+
+      if (sessionRunsWithoutGuardrails(project as Project, session)) {
+        const preamble = buildNoGuardrailsPreamble({
+          branch: session!.worktree_branch ?? null,
+          pushTargetLabel: (project as Project).gitHost === 'agenthub' ? 'Agent Hub' : 'GitHub',
+        });
+        enrichedPrompt = `${preamble}\n\n${enrichedPrompt}`;
+      }
 
       if (isScopingModeActive(session!)) {
         const linkedEpicId = (session as { linked_epic_id?: string | null }).linked_epic_id;
@@ -4950,7 +4966,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           mergeProjectSecretsSpawnEnv(base, { projectId: project.id, sessionId });
           mergeProjectAwsSpawnEnv(base, project, projectAwsFiles);
         }
-        applySessionGitGuards(base, session!.worktree_path);
+        applySessionGitGuards(base, session!.worktree_path, {
+          noGuardrails: sessionRunsWithoutGuardrails(project as Project, session),
+        });
         return base;
       })();
 

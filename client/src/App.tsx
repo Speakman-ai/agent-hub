@@ -5892,7 +5892,9 @@ export default function App({ initialView }: any = {}) {
                 ? 'isolated'
                 : activeSession?.session_mode === 'autopilot'
                   ? 'autopilot'
-                  : 'chat';
+                  : activeSession?.session_mode === 'no-guardrails'
+                    ? 'no-guardrails'
+                    : 'chat';
   const designModeActive = sessionMode === 'design';
   const scopingModeActive = sessionMode === 'scoping';
   // The scoping pane consumes board updates while the main view is chat.
@@ -5917,6 +5919,7 @@ export default function App({ initialView }: any = {}) {
         patch.session_mode === 'chat' ||
         patch.session_mode === 'isolated' ||
         patch.session_mode === 'autopilot' ||
+        patch.session_mode === 'no-guardrails' ||
         patch.finalize_automation !== undefined
       ) {
         setSessionConsultMode(false);
