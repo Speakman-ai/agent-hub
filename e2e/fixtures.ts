@@ -6,7 +6,16 @@
  * tests start with known state.
  */
 
-import { test as base, expect, type APIRequestContext, type Page } from '@playwright/test';
+import {
+  test as base,
+  expect,
+  request as playwrightRequest,
+  type APIRequestContext,
+  type Page,
+} from '@playwright/test';
+import { readFileSync, writeFileSync } from 'fs';
+import os from 'os';
+import path from 'path';
 
 const SERVER_PORT = process.env.E2E_SERVER_PORT || 4051;
 const API_BASE = `http://localhost:${SERVER_PORT}`;
@@ -42,6 +51,55 @@ export interface SeedCard {
 export interface SeedWikiPage {
   id: string;
   title: string;
+}
+
+// First-run auth
+
+const OWNER_EMAIL = 'e2e-owner@example.com';
+const OWNER_PASSWORD = 'e2e-owner-password-123';
+// Playwright starts a new worker after every failed test. Sharing the token
+// keeps those restarts from tripping the server's per-IP login rate limit.
+const AUTH_CACHE = path.join(os.tmpdir(), `agent-hub-e2e-auth-${SERVER_PORT}.json`);
+
+export interface HubAuth {
+  token: string;
+  expiresAt: string | null;
+  user: unknown;
+}
+
+/**
+ * A fresh Hub shows the "Create your Hub account" wizard over the whole app
+ * until an Owner exists, and every API route needs a token after that. Create
+ * the Owner on first use (or sign in when an earlier worker already did) so
+ * specs start on the normal UI.
+ */
+async function ensureOwner(): Promise<HubAuth> {
+  const ctx = await playwrightRequest.newContext();
+  try {
+    try {
+      const cached = JSON.parse(readFileSync(AUTH_CACHE, 'utf-8')) as HubAuth;
+      const me = await ctx.get(`${API_BASE}/api/auth/me`, {
+        headers: { authorization: `Bearer ${cached.token}` },
+      });
+      if (me.ok()) return cached;
+    } catch {
+      // No cache yet, or it belongs to an earlier server.
+    }
+    const credentials = { data: { email: OWNER_EMAIL, password: OWNER_PASSWORD } };
+    // Setup status needs a token once an Owner exists, so try signing in first.
+    let res = await ctx.post(`${API_BASE}/api/auth/login`, credentials);
+    if (!res.ok()) res = await ctx.post(`${API_BASE}/api/auth/setup`, credentials);
+    expect(res.ok(), `Owner sign-in failed: ${await res.text()}`).toBeTruthy();
+    const auth = (await res.json()) as HubAuth;
+    const done = await ctx.post(`${API_BASE}/api/setup/complete`, {
+      headers: { authorization: `Bearer ${auth.token}` },
+    });
+    expect(done.ok()).toBeTruthy();
+    writeFileSync(AUTH_CACHE, JSON.stringify(auth));
+    return auth;
+  } finally {
+    await ctx.dispose();
+  }
 }
 
 // API helpers (used in fixtures and tests)
@@ -177,9 +235,34 @@ type AgentHubFixtures = {
   seededApp: SeededAppFixture;
 };
 
+type AgentHubWorkerFixtures = {
+  hubAuth: HubAuth;
+};
+
 // Extended test fixture
 
-export const test = base.extend<AgentHubFixtures>({
+export const test = base.extend<AgentHubFixtures, AgentHubWorkerFixtures>({
+  hubAuth: [
+    // eslint-disable-next-line no-empty-pattern
+    async ({}, use) => {
+      await use(await ensureOwner());
+    },
+    { scope: 'worker' },
+  ],
+
+  // `request` and `page.request` both send the Owner token.
+  extraHTTPHeaders: async ({ hubAuth }, use) => {
+    await use({ authorization: `Bearer ${hubAuth.token}` });
+  },
+
+  // The web app reads its session from localStorage before the first fetch.
+  page: async ({ page, hubAuth }, use) => {
+    await page.addInitScript((record) => {
+      localStorage.setItem('agent-hub-jwt', JSON.stringify(record));
+    }, hubAuth);
+    await use(page);
+  },
+
   /**
    * Seed helpers bound to the current request context.
    * Usage: const project = await seed.project({ name: 'My Project' });

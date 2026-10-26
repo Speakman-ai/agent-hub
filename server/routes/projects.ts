@@ -133,7 +133,7 @@ JSON schema:
   },
   "contextFiles": {
     "SOUL.md": "Content describing the project's philosophy, coding standards, and architectural principles.",
-    "AGENTS.md": "Content describing the team of agents and their roles.",
+    "AGENTS.md": "Content describing the dev agent, its role, and the platform-seeded QA agent.",
     "USER.md": "Placeholder for user preferences with reasonable defaults.",
     "TOOLS.md": "Key tools, scripts, and commands found in this project.",
     "MEMORY.md": "Key architectural decisions, important file locations, and project structure."
@@ -164,7 +164,7 @@ Guidelines for commands:
 
 Guidelines for contextFiles:
 - SOUL.md: capture actual coding style (indentation, naming conventions, patterns observed)
-- AGENTS.md: describe the single dev agent and the kinds of work they own. The flat-agent model means there is no team to coordinate — write this from the perspective of one full-stack developer agent. Include that GitHub shipping goes through Finalize Code Changes (not dev-agent \`gh pr create\`).
+- AGENTS.md: describe the single dev agent and the kinds of work they own. The flat-agent model means there is no team to coordinate — write this from the perspective of one full-stack developer agent. Include that GitHub shipping goes through Finalize Code Changes (not dev-agent \`gh pr create\`). Also add a short "QA agent" section: Agent Hub seeds a read-only QA agent (role \`qa\`) per project that runs human-approved QA plans against a target URL and files failing cases as \`qa-finding\` cards for the dev agent to fix. It never edits code and is not part of the dev team.
 - TOOLS.md: list actual commands from package.json scripts, Makefile targets, etc.
 - MEMORY.md: note the project structure and key directories
 - All content must be specific to this project, not generic

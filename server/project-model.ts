@@ -1,3 +1,4 @@
+import { buildStarterContextFiles } from './project-context-starters.js';
 import { revalidateOrganizationAccess } from './organization-spawn-policy.js';
 import {
   readFileSync,
@@ -720,13 +721,7 @@ function ensureContextFiles(): void {
     const dataDir = project.ahw;
     mkdirSync(dataDir, { recursive: true });
 
-    const starters: Record<string, string> = {
-      'AGENTS.md': `# AGENTS.md - ${project.name}\n\nThis folder is home. Treat it that way.\n\n## Session Startup\n\n1. Read \`SOUL.md\` — this is who you are\n2. Read \`USER.md\` — this is who you're helping\n3. Read \`memory/YYYY-MM-DD.md\` (today + yesterday) for recent context\n4. If in a main session: Also read \`MEMORY.md\`\n`,
-      'SOUL.md': `# SOUL.md - ${project.name}\n\n## Identity\n\nDescribe what this project is, its architecture, and its principles here.\n`,
-      'USER.md': `# USER.md\n\n- **Name**: (your name)\n- **Timezone**: (your timezone)\n- **GitHub**: (your handle)\n\nAdd preferences and context about yourself here.\n`,
-      'TOOLS.md': `# TOOLS.md - ${project.name}\n\nDocument project-specific tools, CLI commands, deployment steps, and integrations here.\n`,
-      'MEMORY.md': `# MEMORY.md - ${project.name}\n\nLong-term memory for key decisions, preferences, and known issues.\n`,
-    };
+    const starters = buildStarterContextFiles(project.name);
 
     let seeded = false;
     for (const [filename, content] of Object.entries(starters)) {

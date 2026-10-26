@@ -2,6 +2,7 @@ import { defineConfig, devices } from '@playwright/test';
 import { mkdirSync, writeFileSync, existsSync } from 'fs';
 import path from 'path';
 import os from 'os';
+import { fileURLToPath } from 'url';
 import { finalizeJunitReporter } from './finalize-junit.js';
 
 /**
@@ -20,6 +21,13 @@ const SERVER_PORT = Number(process.env.E2E_SERVER_PORT) || 4051;
 const CLIENT_PORT = Number(process.env.E2E_CLIENT_PORT) || 4050;
 const TEST_DIR = './tests';
 const DATA_DIR = path.join(os.tmpdir(), 'agent-hub-e2e-data');
+// Any spec that starts a chat turn (QA runs, finding-card assignment) must never
+// reach a real agent CLI, so every engine points at the canned stand-in.
+const FAKE_CLI = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  'organizations',
+  'fake-agent-cli.sh',
+);
 
 // Ensure the data directory exists before the webServer processes start.
 // Playwright starts webServers before globalSetup, so we prepare here.
@@ -79,6 +87,11 @@ export default defineConfig({
         // happy-path e2e under a few seconds — no npm install, no gh CLI,
         // no shell commands against the workspace tree.
         AGENT_HUB_PROVISIONING_STUB: '1',
+        CLAUDE_BIN: FAKE_CLI,
+        CURSOR_BIN: FAKE_CLI,
+        CODEX_BIN: FAKE_CLI,
+        GEMINI_BIN: FAKE_CLI,
+        GROK_BIN: FAKE_CLI,
       },
       timeout: 30_000,
     },
