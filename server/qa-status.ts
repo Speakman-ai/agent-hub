@@ -44,18 +44,19 @@ export type QaStatusErrorCode =
   | 'plan_done'
   | 'run_active'
   | 'run_not_running'
-  | 'not_all_pass';
+  | 'not_all_pass'
+  | 'invalid_order';
 
 export class QaStatusError extends Error {
   readonly code: QaStatusErrorCode;
   /** HTTP status a route should answer with. */
-  readonly status: 404 | 409;
+  readonly status: 400 | 404 | 409;
 
   constructor(code: QaStatusErrorCode, message: string) {
     super(message);
     this.name = 'QaStatusError';
     this.code = code;
-    this.status = code === 'not_found' ? 404 : 409;
+    this.status = code === 'not_found' ? 404 : code === 'invalid_order' ? 400 : 409;
   }
 }
 
@@ -133,6 +134,84 @@ export function revokeQaPlanApproval(planId: string): QaPlanRow {
     assertPlanEditable(requirePlan(planId));
     getStmts().clearQaPlanApproval.run(planId);
     return requirePlan(planId);
+  })();
+}
+
+export interface QaPlanPatch {
+  title?: string;
+  goal?: string;
+  targetUrl?: string;
+  epicId?: string | null;
+  cardId?: string | null;
+  deployEnvironment?: string | null;
+  autoRerun?: boolean;
+  maxIterations?: number;
+}
+
+/**
+ * Edit plan fields. The target URL is what the run evidence was gathered
+ * against, so changing it follows the case-list rules (frozen while done or
+ * running, revokes approval). The other fields are labels and rerun settings
+ * and can change at any time.
+ */
+export function updateQaPlan(planId: string, patch: QaPlanPatch): QaPlanRow {
+  return getDb().transaction(() => {
+    const s = getStmts();
+    const plan = requirePlan(planId);
+    const targetChanged = patch.targetUrl !== undefined && patch.targetUrl !== plan.target_url;
+    if (targetChanged) assertPlanEditable(plan);
+    s.updateQaPlan.run({
+      id: planId,
+      title: patch.title ?? plan.title,
+      goal: patch.goal ?? plan.goal,
+      target_url: patch.targetUrl ?? plan.target_url,
+      epic_id: patch.epicId !== undefined ? patch.epicId : plan.epic_id,
+      card_id: patch.cardId !== undefined ? patch.cardId : plan.card_id,
+      deploy_environment:
+        patch.deployEnvironment !== undefined ? patch.deployEnvironment : plan.deploy_environment,
+      auto_rerun: patch.autoRerun !== undefined ? (patch.autoRerun ? 1 : 0) : plan.auto_rerun,
+      max_iterations: patch.maxIterations ?? plan.max_iterations,
+    });
+    if (targetChanged) s.clearQaPlanApproval.run(planId);
+    return requirePlan(planId);
+  })();
+}
+
+/** Delete a plan and its history. Refused while a run is queued or running. */
+export function deleteQaPlan(planId: string): void {
+  getDb().transaction(() => {
+    requirePlan(planId);
+    const run = activeRun(planId);
+    if (run) {
+      throw new QaStatusError(
+        'run_active',
+        `QA run ${run.iteration} is ${run.status}; cancel it first`,
+      );
+    }
+    getStmts().deleteQaPlan.run(planId);
+  })();
+}
+
+/**
+ * Reorder the case list. `orderedIds` must name every case exactly once.
+ * Order does not change what is tested, so approval is kept, but the list is
+ * still frozen while done or running.
+ */
+export function reorderQaCases(planId: string, orderedIds: string[]): QaCaseRow[] {
+  return getDb().transaction(() => {
+    const s = getStmts();
+    assertPlanEditable(requirePlan(planId));
+    const current = s.listQaCasesByPlan.all(planId);
+    const known = new Set(current.map((c) => c.id));
+    if (
+      orderedIds.length !== current.length ||
+      new Set(orderedIds).size !== orderedIds.length ||
+      !orderedIds.every((id) => known.has(id))
+    ) {
+      throw new QaStatusError('invalid_order', 'orderedIds must list every case in the plan once');
+    }
+    orderedIds.forEach((id, i) => s.setQaCasePosition.run(i, id));
+    return s.listQaCasesByPlan.all(planId);
   })();
 }
 

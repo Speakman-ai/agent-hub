@@ -4335,6 +4335,12 @@ function initDb(dataDir: string): void {
     listQaPlansByCard: db.prepare(
       'SELECT * FROM qa_plans WHERE card_id = ? ORDER BY created_at DESC, id DESC',
     ),
+    updateQaPlan: db.prepare(
+      `UPDATE qa_plans SET title = @title, goal = @goal, target_url = @target_url,
+         epic_id = @epic_id, card_id = @card_id, deploy_environment = @deploy_environment,
+         auto_rerun = @auto_rerun, max_iterations = @max_iterations, updated_at = datetime('now')
+       WHERE id = @id`,
+    ),
     deleteQaPlan: db.prepare('DELETE FROM qa_plans WHERE id = ?'),
     deleteQaPlansByProject: db.prepare('DELETE FROM qa_plans WHERE project_id = ?'),
     setQaPlanStatus: db.prepare(
@@ -4367,6 +4373,7 @@ function initDb(dataDir: string): void {
       'SELECT COALESCE(MAX(position), -1) + 1 AS next FROM qa_cases WHERE plan_id = ?',
     ),
     deleteQaCase: db.prepare('DELETE FROM qa_cases WHERE id = ?'),
+    setQaCasePosition: db.prepare('UPDATE qa_cases SET position = ? WHERE id = ?'),
     updateQaCase: db.prepare(
       `UPDATE qa_cases SET title = ?, steps = ?, expected = ?, version = version + 1,
          updated_at = datetime('now')

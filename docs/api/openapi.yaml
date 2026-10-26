@@ -14952,6 +14952,263 @@ components:
       required:
         - error
       description: Error envelope for the project-member routes.
+    QaErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+          description: Lifecycle error code from qa-status (e.g. not_approved, run_active, plan_done, not_all_pass).
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: array
+                items:
+                  nullable: true
+              message:
+                type: string
+            required:
+              - path
+              - message
+      required:
+        - error
+      description: Error envelope for QA routes.
+    QaPlan:
+      type: object
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        title:
+          type: string
+        goal:
+          type: string
+        targetUrl:
+          type: string
+        epicId:
+          type: string
+          nullable: true
+        cardId:
+          type: string
+          nullable: true
+        deployEnvironment:
+          type: string
+          nullable: true
+          description: Deployment environment auto-rerun waits on. Null disables auto-rerun.
+        status:
+          type: string
+          enum:
+            - new
+            - in_progress
+            - done
+          description: "Derived by the server: new (never run), in_progress, done (signed off)."
+        approved:
+          type: boolean
+        approvedAt:
+          type: string
+          nullable: true
+        approvedBy:
+          type: string
+          nullable: true
+        approvalSeq:
+          type: integer
+        signedOffAt:
+          type: string
+          nullable: true
+        signedOffBy:
+          type: string
+          nullable: true
+        autoRerun:
+          type: boolean
+        maxIterations:
+          type: integer
+        createdBy:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - projectId
+        - title
+        - goal
+        - targetUrl
+        - epicId
+        - cardId
+        - deployEnvironment
+        - status
+        - approved
+        - approvedAt
+        - approvedBy
+        - approvalSeq
+        - signedOffAt
+        - signedOffBy
+        - autoRerun
+        - maxIterations
+        - createdBy
+        - createdAt
+        - updatedAt
+      description: A QA validation plan for one target.
+    QaCase:
+      type: object
+      properties:
+        id:
+          type: string
+        planId:
+          type: string
+        position:
+          type: integer
+        title:
+          type: string
+        steps:
+          type: string
+        expected:
+          type: string
+        version:
+          type: integer
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+        latestVerdict:
+          type: object
+          nullable: true
+          properties:
+            verdict:
+              type: string
+              enum:
+                - pass
+                - fail
+                - needs_change
+                - blocked
+            caseVersion:
+              type: integer
+            current:
+              type: boolean
+              description: False when the case was edited after this verdict was recorded.
+            runId:
+              type: string
+            iteration:
+              type: integer
+          required:
+            - verdict
+            - caseVersion
+            - current
+            - runId
+            - iteration
+          description: Newest non-cancelled verdict for this case. Present on plan detail only.
+      required:
+        - id
+        - planId
+        - position
+        - title
+        - steps
+        - expected
+        - version
+        - createdAt
+        - updatedAt
+    QaRun:
+      type: object
+      properties:
+        id:
+          type: string
+        planId:
+          type: string
+        iteration:
+          type: integer
+        scope:
+          type: string
+          enum:
+            - full
+            - failed_only
+        status:
+          type: string
+          enum:
+            - queued
+            - running
+            - passed
+            - failed
+            - cancelled
+        approvalSeq:
+          type: integer
+        sessionId:
+          type: string
+          nullable: true
+        startedBy:
+          type: string
+          nullable: true
+        startedAt:
+          type: string
+          nullable: true
+        finishedAt:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+      required:
+        - id
+        - planId
+        - iteration
+        - scope
+        - status
+        - approvalSeq
+        - sessionId
+        - startedBy
+        - startedAt
+        - finishedAt
+        - createdAt
+    QaResult:
+      type: object
+      properties:
+        id:
+          type: string
+        runId:
+          type: string
+        caseId:
+          type: string
+        caseVersion:
+          type: integer
+        verdict:
+          type: string
+          enum:
+            - pass
+            - fail
+            - needs_change
+            - blocked
+        actual:
+          type: string
+        notes:
+          type: string
+        screenshotArtifactIds:
+          type: array
+          items:
+            type: string
+        findingCardId:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - runId
+        - caseId
+        - caseVersion
+        - verdict
+        - actual
+        - notes
+        - screenshotArtifactIds
+        - findingCardId
+        - createdAt
+        - updatedAt
     ReleaseDigestRecipient:
       type: object
       properties:
@@ -57169,6 +57426,966 @@ paths:
           description: Missing description or no connected Claude account.
         "502":
           description: Model invocation failed.
+  /api/projects/{projectId}/qa/plans:
+    get:
+      tags: &a8
+        - QA
+      summary: List the project's QA plans
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            enum:
+              - new
+              - in_progress
+              - done
+          required: false
+          name: status
+          in: query
+      responses:
+        "200":
+          description: Plans (newest first) plus per-status counts across the whole project.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plans:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/QaPlan"
+                  counts:
+                    type: object
+                    properties:
+                      new:
+                        type: number
+                      in_progress:
+                        type: number
+                      done:
+                        type: number
+                    required:
+                      - new
+                      - in_progress
+                      - done
+                required:
+                  - plans
+                  - counts
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+        "404":
+          description: Project, plan, case, or run not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+    post:
+      tags: *a8
+      summary: Create a draft QA plan
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                targetUrl:
+                  type: string
+                  format: uri
+                goal:
+                  type: string
+                epicId:
+                  type: string
+                  nullable: true
+                  minLength: 1
+                cardId:
+                  type: string
+                  nullable: true
+                  minLength: 1
+                deployEnvironment:
+                  type: string
+                  nullable: true
+                  minLength: 1
+                autoRerun:
+                  type: boolean
+                maxIterations:
+                  type: integer
+                  minimum: 1
+                  maximum: 100
+              required:
+                - title
+                - targetUrl
+      responses:
+        "201":
+          description: Created plan.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plan:
+                    $ref: "#/components/schemas/QaPlan"
+                required:
+                  - plan
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+        "404":
+          description: Project, plan, case, or run not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+  /api/projects/{projectId}/qa/plans/{planId}:
+    get:
+      tags: *a8
+      summary: Get a QA plan with cases, latest verdicts, and runs
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: planId
+          in: path
+      responses:
+        "200":
+          description: Plan detail.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plan:
+                    $ref: "#/components/schemas/QaPlan"
+                  cases:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/QaCase"
+                  runs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/QaRun"
+                    description: Newest iteration first.
+                  signOffBlocker:
+                    type: string
+                    nullable: true
+                    description: Why the plan cannot be signed off, or null when it can.
+                required:
+                  - plan
+                  - cases
+                  - runs
+                  - signOffBlocker
+        "404":
+          description: Project, plan, case, or run not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+    patch:
+      tags: *a8
+      summary: Update a QA plan
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: planId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                targetUrl:
+                  type: string
+                  format: uri
+                  description: Changing the target revokes approval and is refused while done or running.
+                goal:
+                  type: string
+                epicId:
+                  type: string
+                  nullable: true
+                  minLength: 1
+                cardId:
+                  type: string
+                  nullable: true
+                  minLength: 1
+                deployEnvironment:
+                  type: string
+                  nullable: true
+                  minLength: 1
+                autoRerun:
+                  type: boolean
+                maxIterations:
+                  type: integer
+                  minimum: 1
+                  maximum: 100
+      responses:
+        "200":
+          description: Updated plan.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plan:
+                    $ref: "#/components/schemas/QaPlan"
+                required:
+                  - plan
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+        "404":
+          description: Project, plan, case, or run not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+        "409":
+          description: Refused by the plan or run lifecycle (see `code`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+    delete:
+      tags: *a8
+      summary: Delete a QA plan and its history
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: planId
+          in: path
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+        "404":
+          description: Project, plan, case, or run not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+        "409":
+          description: A run is queued or running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+  /api/projects/{projectId}/qa/plans/{planId}/cases:
+    post:
+      tags: *a8
+      summary: Append a case (revokes approval)
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: planId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                steps:
+                  type: string
+                expected:
+                  type: string
+              required:
+                - title
+      responses:
+        "201":
+          description: Created case and the updated plan.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  case:
+                    $ref: "#/components/schemas/QaCase"
+                  plan:
+                    $ref: "#/components/schemas/QaPlan"
+                required:
+                  - case
+                  - plan
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+        "404":
+          description: Project, plan, case, or run not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+        "409":
+          description: Refused by the plan or run lifecycle (see `code`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+  /api/projects/{projectId}/qa/plans/{planId}/cases/{caseId}:
+    patch:
+      tags: *a8
+      summary: Edit a case (bumps its version, revokes approval)
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: planId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: caseId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                steps:
+                  type: string
+                expected:
+                  type: string
+      responses:
+        "200":
+          description: Updated case and plan.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  case:
+                    $ref: "#/components/schemas/QaCase"
+                  plan:
+                    $ref: "#/components/schemas/QaPlan"
+                required:
+                  - case
+                  - plan
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+        "404":
+          description: Project, plan, case, or run not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+        "409":
+          description: Refused by the plan or run lifecycle (see `code`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+    delete:
+      tags: *a8
+      summary: Remove a case (revokes approval)
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: planId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: caseId
+          in: path
+      responses:
+        "200":
+          description: Deleted; returns the updated plan.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  plan:
+                    $ref: "#/components/schemas/QaPlan"
+                required:
+                  - ok
+                  - plan
+        "404":
+          description: Project, plan, case, or run not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+        "409":
+          description: Refused by the plan or run lifecycle (see `code`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+  /api/projects/{projectId}/qa/plans/{planId}/cases/reorder:
+    post:
+      tags: *a8
+      summary: Reorder the case list (keeps approval)
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: planId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                orderedIds:
+                  type: array
+                  items:
+                    type: string
+                  description: Every case id in the plan, once each, in the desired order.
+              required:
+                - orderedIds
+      responses:
+        "200":
+          description: Cases in their new order.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cases:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/QaCase"
+                required:
+                  - cases
+        "400":
+          description: orderedIds does not list every case exactly once.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+        "404":
+          description: Project, plan, case, or run not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+        "409":
+          description: Refused by the plan or run lifecycle (see `code`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+  /api/projects/{projectId}/qa/plans/{planId}/approve:
+    post:
+      tags: *a8
+      summary: Approve the case list
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: planId
+          in: path
+      responses:
+        "200":
+          description: Approved plan.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plan:
+                    $ref: "#/components/schemas/QaPlan"
+                required:
+                  - plan
+        "404":
+          description: Project, plan, case, or run not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+        "409":
+          description: Refused by the plan or run lifecycle (see `code`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+  /api/projects/{projectId}/qa/plans/{planId}/revoke-approval:
+    post:
+      tags: *a8
+      summary: Return the plan to draft
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: planId
+          in: path
+      responses:
+        "200":
+          description: Draft plan.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plan:
+                    $ref: "#/components/schemas/QaPlan"
+                required:
+                  - plan
+        "404":
+          description: Project, plan, case, or run not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+        "409":
+          description: Refused by the plan or run lifecycle (see `code`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+  /api/projects/{projectId}/qa/plans/{planId}/sign-off:
+    post:
+      tags: *a8
+      summary: "Human sign-off: moves an all-pass plan to done"
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: planId
+          in: path
+      responses:
+        "200":
+          description: Signed-off plan.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plan:
+                    $ref: "#/components/schemas/QaPlan"
+                required:
+                  - plan
+        "404":
+          description: Project, plan, case, or run not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+        "409":
+          description: Refused by the plan or run lifecycle (see `code`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+  /api/projects/{projectId}/qa/plans/{planId}/runs:
+    post:
+      tags: *a8
+      summary: Queue a run (409 when unapproved or a run is active)
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: planId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                scope:
+                  type: string
+                  enum:
+                    - full
+                    - failed_only
+                  description: Defaults to full.
+      responses:
+        "201":
+          description: Queued run and the updated plan.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plan:
+                    $ref: "#/components/schemas/QaPlan"
+                  run:
+                    $ref: "#/components/schemas/QaRun"
+                required:
+                  - plan
+                  - run
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+        "404":
+          description: Project, plan, case, or run not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+        "409":
+          description: Refused by the plan or run lifecycle (see `code`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+  /api/projects/{projectId}/qa/plans/{planId}/runs/{runId}:
+    get:
+      tags: *a8
+      summary: Get a run with its results
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: planId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: runId
+          in: path
+      responses:
+        "200":
+          description: Run detail.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run:
+                    $ref: "#/components/schemas/QaRun"
+                  results:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/QaResult"
+                required:
+                  - run
+                  - results
+        "404":
+          description: Project, plan, case, or run not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+  /api/projects/{projectId}/qa/plans/{planId}/runs/{runId}/begin:
+    post:
+      tags: *a8
+      summary: Mark a queued run as running
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: planId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: runId
+          in: path
+      responses:
+        "200":
+          description: Updated run.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run:
+                    $ref: "#/components/schemas/QaRun"
+                required:
+                  - run
+        "404":
+          description: Project, plan, case, or run not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+        "409":
+          description: Refused by the plan or run lifecycle (see `code`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+  /api/projects/{projectId}/qa/plans/{planId}/runs/{runId}/finish:
+    post:
+      tags: *a8
+      summary: Finish a running run; passed/failed is derived from the verdicts
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: planId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: runId
+          in: path
+      responses:
+        "200":
+          description: Updated run.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run:
+                    $ref: "#/components/schemas/QaRun"
+                required:
+                  - run
+        "404":
+          description: Project, plan, case, or run not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+        "409":
+          description: Refused by the plan or run lifecycle (see `code`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+  /api/projects/{projectId}/qa/plans/{planId}/runs/{runId}/cancel:
+    post:
+      tags: *a8
+      summary: Cancel a queued or running run
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: planId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: runId
+          in: path
+      responses:
+        "200":
+          description: Updated run.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run:
+                    $ref: "#/components/schemas/QaRun"
+                required:
+                  - run
+        "404":
+          description: Project, plan, case, or run not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+        "409":
+          description: Refused by the plan or run lifecycle (see `code`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+  /api/projects/{projectId}/qa/plans/{planId}/runs/{runId}/results:
+    post:
+      tags: *a8
+      summary: Record or replace the verdict for one case in a running run
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: planId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: runId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                caseId:
+                  type: string
+                  minLength: 1
+                verdict:
+                  type: string
+                  enum:
+                    - pass
+                    - fail
+                    - needs_change
+                    - blocked
+                actual:
+                  type: string
+                notes:
+                  type: string
+                screenshotArtifactIds:
+                  type: array
+                  items:
+                    type: string
+                findingCardId:
+                  type: string
+                  nullable: true
+                  minLength: 1
+              required:
+                - caseId
+                - verdict
+      responses:
+        "200":
+          description: Stored result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    $ref: "#/components/schemas/QaResult"
+                required:
+                  - result
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+        "404":
+          description: Project, plan, case, or run not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+        "409":
+          description: Refused by the plan or run lifecycle (see `code`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/release-notification-settings:
     get:
       tags:

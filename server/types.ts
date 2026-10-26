@@ -2204,6 +2204,21 @@ export interface Stmts {
   listQaPlansByProjectStatus: Stmt<[string, QaPlanStatus], QaPlanRow>;
   listQaPlansByEpic: Stmt<[string], QaPlanRow>;
   listQaPlansByCard: Stmt<[string], QaPlanRow>;
+  updateQaPlan: Stmt<
+    [
+      {
+        id: string;
+        title: string;
+        goal: string;
+        target_url: string;
+        epic_id: string | null;
+        card_id: string | null;
+        deploy_environment: string | null;
+        auto_rerun: 0 | 1;
+        max_iterations: number;
+      },
+    ]
+  >;
   deleteQaPlan: Stmt<[string]>;
   deleteQaPlansByProject: Stmt<[string]>;
   setQaPlanStatus: Stmt<[QaPlanStatus, string]>;
@@ -2217,6 +2232,7 @@ export interface Stmts {
   countQaCasesByPlan: Stmt<[string], { n: number }>;
   getNextQaCasePosition: Stmt<[string], { next: number }>;
   deleteQaCase: Stmt<[string]>;
+  setQaCasePosition: Stmt<[number, string]>;
   updateQaCase: Stmt<[string, string, string, string]>;
   insertQaRun: Stmt<[string, string, number, QaRunScope, number, string | null]>;
   getQaRun: Stmt<[string], QaRunRow>;
