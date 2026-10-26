@@ -14,6 +14,10 @@
  * edited, which also clears plan approval.
  *
  * qa_runs: one row per execution. `iteration` is 1-based and unique per plan.
+ * `case_ids` is the JSON array of case ids in scope, fixed when the run is
+ * queued; NULL on rows from before scope was recorded. `preview_session_id`
+ * is the session whose preview the run drives when the target is a Hub
+ * session preview (or a loopback port one serves).
  *
  * qa_results: one verdict per (run, case). `case_version` is the case version
  * that was tested, so a verdict stops counting once the case is edited.
@@ -81,6 +85,8 @@ export const QA_SCHEMA = `
     status      TEXT NOT NULL DEFAULT 'queued' CHECK (status IN (${inList(QA_RUN_STATUSES)})),
     session_id  TEXT REFERENCES sessions(id) ON DELETE SET NULL,
     approval_seq INTEGER NOT NULL,
+    case_ids    TEXT CHECK (case_ids IS NULL OR json_valid(case_ids)),
+    preview_session_id TEXT,
     started_by  TEXT,
     started_at  TEXT,
     finished_at TEXT,

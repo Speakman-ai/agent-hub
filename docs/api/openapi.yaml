@@ -15330,6 +15330,15 @@ components:
             - cancelled
         approvalSeq:
           type: integer
+        caseIds:
+          type: array
+          items:
+            type: string
+          description: Case ids in scope, fixed when the run is queued.
+        previewSessionId:
+          type: string
+          nullable: true
+          description: Session whose preview the run drives, when the target is a session preview.
         sessionId:
           type: string
           nullable: true
@@ -15351,6 +15360,8 @@ components:
         - scope
         - status
         - approvalSeq
+        - caseIds
+        - previewSessionId
         - sessionId
         - startedBy
         - startedAt
@@ -58756,7 +58767,8 @@ paths:
   /api/projects/{projectId}/qa/plans/{planId}/runs:
     post:
       tags: *a8
-      summary: Queue a run (409 when unapproved or a run is active)
+      summary: Start a run in a new QA agent session
+      description: Queues the run, opens a QA session seeded with the in-scope cases, target URL, and the tool to drive it with (`preview` for loopback, private, or session-preview targets, `browser` otherwise), and marks it running. 409 when unapproved, a run is active, the project has no QA agent (`no_qa_agent`), a preview-routed target is not served by a session preview in this project (`target_unreachable`), or a failed_only run has nothing to rerun (`nothing_to_rerun`). If the session cannot start, the run is cancelled and the route answers 502.
       parameters:
         - schema:
             type: string
@@ -58782,7 +58794,7 @@ paths:
                   description: Defaults to full.
       responses:
         "201":
-          description: Queued run and the updated plan.
+          description: Running run, the updated plan, and the session executing it.
           content:
             application/json:
               schema:
@@ -58792,9 +58804,15 @@ paths:
                     $ref: "#/components/schemas/QaPlan"
                   run:
                     $ref: "#/components/schemas/QaRun"
+                  sessionId:
+                    type: string
+                  agentId:
+                    type: string
                 required:
                   - plan
                   - run
+                  - sessionId
+                  - agentId
         "400":
           description: Validation failed.
           content:
@@ -58809,6 +58827,18 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
         "409":
           description: Refused by the plan or run lifecycle (see `code`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+        "502":
+          description: The run session could not be started; the run was cancelled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+        "503":
+          description: Chat is unavailable on this server.
           content:
             application/json:
               schema:
@@ -58859,7 +58889,7 @@ paths:
   /api/projects/{projectId}/qa/plans/{planId}/runs/{runId}/begin:
     post:
       tags: *a8
-      summary: Mark a queued run as running
+      summary: Mark a queued run as running (no-op when already running)
       parameters:
         - schema:
             type: string
@@ -58947,7 +58977,7 @@ paths:
   /api/projects/{projectId}/qa/plans/{planId}/runs/{runId}/cancel:
     post:
       tags: *a8
-      summary: Cancel a queued or running run
+      summary: Cancel a queued or running run and stop its session
       parameters:
         - schema:
             type: string
@@ -58992,6 +59022,7 @@ paths:
     post:
       tags: *a8
       summary: Record or replace the verdict for one case in a running run
+      description: Once every in-scope case has a result the run finishes on its own, passed when all verdicts are `pass`. 409 `out_of_scope` for a case outside the run.
       parameters:
         - schema:
             type: string
@@ -59041,7 +59072,7 @@ paths:
                 - verdict
       responses:
         "200":
-          description: Stored result.
+          description: Stored result and the run, finished when this was the last in-scope case.
           content:
             application/json:
               schema:
@@ -59049,8 +59080,11 @@ paths:
                 properties:
                   result:
                     $ref: "#/components/schemas/QaResult"
+                  run:
+                    $ref: "#/components/schemas/QaRun"
                 required:
                   - result
+                  - run
         "400":
           description: Validation failed.
           content:

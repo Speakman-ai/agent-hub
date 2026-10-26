@@ -23,6 +23,7 @@ import {
   findProjectQaAgent,
   loadQaAuthoringContext,
 } from '../qa-authoring.js';
+import { buildQaRunSeed, resolveQaTarget } from '../qa-run-kickoff.js';
 import { abandonUnseededSession, kickoffSeededTurn } from '../seeded-session-kickoff.js';
 import { broadcastSessionCreated } from '../session-checkpoint-rewind.js';
 import { resolveOwnerUserId, setSessionOwner } from '../session-ownership.js';
@@ -31,11 +32,13 @@ import {
   addQaCase,
   approveQaPlan,
   cancelQaRun,
+  completeQaRunIfCovered,
   deleteQaPlan,
   editQaCase,
   finishQaRun,
   markQaRunRunning,
   qaPlanSignOffBlocker,
+  qaRunCaseIds,
   QaStatusError,
   recordQaResult,
   removeQaCase,
@@ -124,6 +127,8 @@ export function serializeQaRun(r: QaRunRow) {
     scope: r.scope,
     status: r.status,
     approvalSeq: r.approval_seq,
+    caseIds: qaRunCaseIds(r),
+    previewSessionId: r.preview_session_id ?? null,
     sessionId: r.session_id,
     startedBy: r.started_by,
     startedAt: r.started_at,
@@ -687,20 +692,124 @@ export default function createQaRoutes(deps: RouteDeps): Router {
   planAction('revoke-approval', 'plan_unapproved', (plan) => revokeQaPlanApproval(plan.id));
   planAction('sign-off', 'plan_signed_off', (plan, req) => signOffQaPlan(plan.id, userId(req)));
 
-  router.post(
-    `${BASE}/:planId/runs`,
-    guard((req, res) => {
+  /**
+   * Start a run: queue it, open a fresh QA session seeded with the in-scope
+   * cases, target URL, and the tool to drive it with, then mark it running.
+   * Answers 201 once the seed is accepted. If the session cannot be started
+   * the run is cancelled, so it never blocks the plan as a phantom active run.
+   */
+  router.post(`${BASE}/:planId/runs`, async (req: Request, res: Response) => {
+    try {
       const plan = loadPlan(req, res);
       if (!plan) return;
       const body = parse(StartQaRunRequestSchema, req.body ?? {}, res);
       if (!body) return;
+      const project = findProject(plan.project_id)!;
+      const agent = findProjectQaAgent(project);
+      if (!agent) {
+        res.status(409).json({
+          error: 'This project has no QA agent. Add an agent with the qa role first.',
+          code: 'no_qa_agent',
+        });
+        return;
+      }
+      if (!deps.handleChat) {
+        res.status(503).json({ error: 'Chat is unavailable on this server' });
+        return;
+      }
+
+      const s = getStmts();
+      // One decision for tool and preview session. A preview-routed target must
+      // identify exactly one live session of this project; otherwise refuse.
+      const devServer = deps.getDevServerRuntime?.() ?? null;
+      const routing = resolveQaTarget(plan.target_url, {
+        previewSubdomainBase: deps.config?.previewSubdomainBase,
+        hubPublicUrl: deps.config?.publicUrl,
+        activePreviews: devServer?.listActive?.() ?? [],
+        primaryInternalPort: (id) => {
+          const group = devServer?.getActiveBySessionId?.(id);
+          if (!group) return null;
+          return devServer?.getPorts?.(group.id).find((p) => p.primary)?.internalPort ?? null;
+        },
+        isProjectSession: (id) => {
+          const row = s.getSession.get(id) as SessionRow | undefined;
+          return !!row && !row.deleted_at && !!project.agents?.some((a) => a.id === row.agent_id);
+        },
+      });
+      if (routing.tool === 'unreachable') {
+        res.status(409).json({ error: routing.reason, code: 'target_unreachable' });
+        return;
+      }
+      const previewSessionId = routing.tool === 'preview' ? routing.previewSessionId : null;
+
       const started = startQaRun(plan.id, { scope: body.scope, startedBy: userId(req) });
-      emit(plan.project_id, plan.id, { action: 'run_started', runId: started.run.id });
-      res
-        .status(201)
-        .json({ plan: serializeQaPlan(started.plan), run: serializeQaRun(started.run) });
-    }),
-  );
+      const run = started.run;
+      const ownerUserId = resolveOwnerUserId(req as AuthenticatedRequest);
+      const inScope = new Set(qaRunCaseIds(run));
+      const seed = buildQaRunSeed({
+        project,
+        plan: started.plan,
+        run,
+        cases: s.listQaCasesByPlan.all(plan.id).filter((c) => inScope.has(c.id)),
+        routing,
+      });
+      const sessionId = randomUUID();
+      try {
+        const { engine, model } = resolveAgentSpawnEngineAndModel(deps.config, agent, ownerUserId);
+        // QA sessions never get a worktree: they are read-only on code.
+        s.createSession.run(
+          sessionId,
+          agent.id,
+          `[QA run #${run.iteration}] ${plan.title}`.slice(0, 100),
+          engine,
+          model,
+          0,
+          0,
+          1,
+        );
+        setSessionOwner(sessionId, ownerUserId);
+        s.updateSessionMode.run('qa', sessionId);
+        s.setQaRunSession.run(sessionId, run.id);
+        if (previewSessionId) s.setQaRunPreviewSession.run(previewSessionId, run.id);
+        markQaRunRunning(run.id);
+        await kickoffSeededTurn({
+          handleChat: deps.handleChat,
+          agentId: agent.id,
+          sessionId,
+          content: seed,
+          // A cancel that lands before the seed persists drops the turn.
+          acceptTurn: () => s.getQaRun.get(run.id)?.status === 'running',
+        });
+      } catch (e) {
+        console.error('[qa] run session failed to start:', e);
+        s.setQaRunSession.run(null, run.id);
+        abandonUnseededSession(s, sessionId);
+        const current = s.getQaRun.get(run.id);
+        if (current && (current.status === 'queued' || current.status === 'running')) {
+          cancelQaRun(run.id);
+        }
+        emit(plan.project_id, plan.id, { action: 'run_cancelled', runId: run.id });
+        res.status(502).json({ error: 'Failed to start the QA run session', runId: run.id });
+        return;
+      }
+      const session = s.getSession.get(sessionId) as SessionRow;
+      broadcastSessionCreated(broadcast, agent.id, session, s, project);
+      emit(plan.project_id, plan.id, { action: 'run_started', runId: run.id });
+      res.status(201).json({
+        plan: serializeQaPlan(s.getQaPlan.get(plan.id)!),
+        run: serializeQaRun(s.getQaRun.get(run.id)!),
+        sessionId,
+        agentId: agent.id,
+      });
+    } catch (e) {
+      if (e instanceof QaStatusError) {
+        res.status(e.status).json({ ...e.details, error: e.message, code: e.code });
+        return;
+      }
+      console.error('[qa] route error:', e);
+      if (!res.headersSent) res.status(500).json({ error: 'Internal error' });
+    }
+  });
 
   router.get(
     `${BASE}/:planId/runs/:runId`,
@@ -732,7 +841,12 @@ export default function createQaRoutes(deps: RouteDeps): Router {
 
   runAction('begin', 'run_running', markQaRunRunning);
   runAction('finish', 'run_finished', finishQaRun);
-  runAction('cancel', 'run_cancelled', cancelQaRun);
+  // Cancelling also stops the run's session, so the agent stops driving the target.
+  runAction('cancel', 'run_cancelled', (runId) => {
+    const cancelled = cancelQaRun(runId);
+    if (cancelled.session_id) deps.handleCancel?.(cancelled.session_id);
+    return cancelled;
+  });
 
   router.post(
     `${BASE}/:planId/runs/:runId/results`,
@@ -749,7 +863,12 @@ export default function createQaRoutes(deps: RouteDeps): Router {
       const { caseId, ...input } = body;
       const result = recordQaResult(run.id, caseId, input);
       emit(plan.project_id, plan.id, { action: 'result_recorded', runId: run.id, caseId });
-      res.json({ result: serializeQaResult(result) });
+      const finished = completeQaRunIfCovered(run.id);
+      if (finished) emit(plan.project_id, plan.id, { action: 'run_finished', runId: run.id });
+      res.json({
+        result: serializeQaResult(result),
+        run: serializeQaRun(finished ?? getStmts().getQaRun.get(run.id)!),
+      });
     }),
   );
 

@@ -3913,6 +3913,20 @@ function initDb(dataDir: string): void {
   } catch (_e) {
     /* column already present */
   }
+  // The case ids a run covers, fixed when it is queued.
+  try {
+    db.exec(
+      'ALTER TABLE qa_runs ADD COLUMN case_ids TEXT CHECK (case_ids IS NULL OR json_valid(case_ids))',
+    );
+  } catch (_e) {
+    /* column already present */
+  }
+  // The session whose preview a run drives (target is a session preview).
+  try {
+    db.exec('ALTER TABLE qa_runs ADD COLUMN preview_session_id TEXT');
+  } catch (_e) {
+    /* column already present */
+  }
   try {
     db.exec('ALTER TABLE release_notification_outbox ADD COLUMN next_attempt_at TEXT');
   } catch (_e) {
@@ -4397,8 +4411,8 @@ function initDb(dataDir: string): void {
        WHERE id = ?`,
     ),
     insertQaRun: db.prepare(
-      `INSERT INTO qa_runs (id, plan_id, iteration, scope, approval_seq, started_by)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO qa_runs (id, plan_id, iteration, scope, approval_seq, started_by, case_ids)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ),
     getQaRun: db.prepare('SELECT * FROM qa_runs WHERE id = ?'),
     listQaRunsByPlan: db.prepare('SELECT * FROM qa_runs WHERE plan_id = ? ORDER BY iteration DESC'),
@@ -4418,6 +4432,13 @@ function initDb(dataDir: string): void {
        WHERE id = @id`,
     ),
     setQaRunSession: db.prepare('UPDATE qa_runs SET session_id = ? WHERE id = ?'),
+    setQaRunPreviewSession: db.prepare('UPDATE qa_runs SET preview_session_id = ? WHERE id = ?'),
+    // The preview a QA run session drives, for the chat path's preview tool.
+    getQaRunPreviewSessionBySession: db.prepare(
+      `SELECT preview_session_id FROM qa_runs
+        WHERE session_id = ? AND preview_session_id IS NOT NULL
+        ORDER BY iteration DESC LIMIT 1`,
+    ),
     upsertQaResult: db.prepare(
       // case_version is read from the case at write time. LEFT JOIN keeps a
       // missing case an FK error rather than a silent no-op; `WHERE true` is

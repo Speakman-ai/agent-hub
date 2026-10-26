@@ -5,12 +5,28 @@ import express, { type Express, type NextFunction, type Request, type Response }
 import request from 'supertest';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getDb, initDb } from '../db.js';
-import type { Project, RouteDeps } from '../types.js';
+import { startQaRun } from '../qa-status.js';
+import type { Agent, ChatMessage, Project, RouteDeps } from '../types.js';
 import createQaRoutes from './qa.js';
 
+vi.mock('../effective-model.js', () => ({
+  resolveAgentSpawnEngineAndModel: () => ({ engine: 'claude-code', model: 'sonnet' }),
+}));
+
 const broadcast = vi.fn();
+// Run kickoff seeds a QA session; the mock accepts the turn without a CLI.
+const handleChat = vi.fn(async (_ws: unknown, msg: ChatMessage) => {
+  msg._onUserMessagePersisted?.(true);
+});
+const handleCancel = vi.fn();
 const projects: Record<string, Project> = {
-  proj: { id: 'proj', name: 'Proj', cwd: '/tmp/proj', ahw: '/tmp/proj-ahw', agents: [] },
+  proj: {
+    id: 'proj',
+    name: 'Proj',
+    cwd: '/tmp/proj',
+    ahw: '/tmp/proj-ahw',
+    agents: [{ id: 'proj-qa', name: 'Proj QA', role: 'qa' } as Agent],
+  },
   other: { id: 'other', name: 'Other', cwd: '/tmp/other', ahw: '/tmp/other-ahw', agents: [] },
 };
 
@@ -27,6 +43,9 @@ beforeAll(() => {
   app.use(
     createQaRoutes({
       broadcast,
+      handleChat,
+      handleCancel,
+      config: {},
       findProject: (id: string) => projects[id] ?? null,
     } as unknown as RouteDeps),
   );
@@ -35,6 +54,7 @@ beforeAll(() => {
 beforeEach(() => {
   const db = getDb();
   db.exec('DELETE FROM qa_plans');
+  db.exec("DELETE FROM sessions WHERE agent_id = 'proj-qa'");
   db.exec("DELETE FROM kanban_epics WHERE id IN ('epic-1', 'epic-x')");
   db.exec("DELETE FROM kanban_boards WHERE id IN ('board-proj', 'board-other')");
   db.exec(
@@ -46,6 +66,8 @@ beforeEach(() => {
        ('epic-1', 'board-proj', 'Epic'), ('epic-x', 'board-other', 'Other epic')`,
   );
   broadcast.mockClear();
+  handleChat.mockClear();
+  handleCancel.mockClear();
 });
 
 const base = '/api/projects/proj/qa/plans';
@@ -148,25 +170,18 @@ describe('plans', () => {
 
     const first = await request(app).post(`${base}/${planId}/runs`).send({}).expect(201);
     const firstRun = first.body.run.id;
-    await request(app).post(`${base}/${planId}/runs/${firstRun}/begin`).expect(200);
     for (const caseId of caseIds) {
       await request(app)
         .post(`${base}/${planId}/runs/${firstRun}/results`)
         .send({ caseId, verdict: 'fail' })
         .expect(200);
     }
-    await request(app).post(`${base}/${planId}/runs/${firstRun}/finish`).expect(200);
 
     const second = await request(app).post(`${base}/${planId}/runs`).send({}).expect(201);
     const secondRun = second.body.run.id;
-    await request(app).post(`${base}/${planId}/runs/${secondRun}/begin`).expect(200);
     await request(app)
       .post(`${base}/${planId}/runs/${secondRun}/results`)
       .send({ caseId: caseIds[0], verdict: 'pass' })
-      .expect(200);
-    await request(app)
-      .post(`${base}/${planId}/runs/${secondRun}/results`)
-      .send({ caseId: caseIds[1], verdict: 'needs_change' })
       .expect(200);
 
     const res = await request(app).get(base).expect(200);
@@ -181,7 +196,7 @@ describe('plans', () => {
         status: 'running',
         scope: 'full',
         finishedAt: null,
-        verdicts: { pass: 1, fail: 0, needs_change: 1, blocked: 0 },
+        verdicts: { pass: 1, fail: 0, needs_change: 0, blocked: 0 },
       },
       epic: { id: 'epic-1', name: 'Epic' },
       card: null,
@@ -199,7 +214,6 @@ describe('plans', () => {
     const { planId, caseIds } = await approvedPlan();
     const started = await request(app).post(`${base}/${planId}/runs`).send({}).expect(201);
     const runId = started.body.run.id;
-    await request(app).post(`${base}/${planId}/runs/${runId}/begin`).expect(200);
     await request(app)
       .post(`${base}/${planId}/runs/${runId}/results`)
       .send({ caseId: caseIds[0], verdict: 'fail', screenshotArtifactIds: ['art-1'] })
@@ -216,20 +230,13 @@ describe('plans', () => {
     });
     expect(res.body.cases[1].latestVerdict).toBeNull();
     expect(res.body.runs).toHaveLength(1);
-    expect(res.body.runs[0].sessionAgentId).toBeNull();
+    expect(res.body.runs[0]).toMatchObject({
+      sessionId: started.body.sessionId,
+      sessionAgentId: 'proj-qa',
+      caseIds,
+    });
     expect(res.body.links).toEqual({ epic: null, card: null });
     expect(res.body.signOffBlocker).toMatch(/running/);
-
-    const db = getDb();
-    db.prepare(
-      `INSERT OR REPLACE INTO sessions (id, agent_id, name) VALUES ('qa-sess', 'qa-agent', 'QA')`,
-    ).run();
-    db.prepare('UPDATE qa_runs SET session_id = ? WHERE id = ?').run('qa-sess', runId);
-    const withSession = await request(app).get(`${base}/${planId}`).expect(200);
-    expect(withSession.body.runs[0]).toMatchObject({
-      sessionId: 'qa-sess',
-      sessionAgentId: 'qa-agent',
-    });
   });
 
   it('updates fields; changing the target revokes approval', async () => {
@@ -386,20 +393,28 @@ describe('approval and runs', () => {
     expect(started.body.plan.status).toBe('in_progress');
     const runId = started.body.run.id;
 
+    // The agent's `run begin` is a no-op: the server began the run when it seeded the session.
     await request(app).post(`${base}/${planId}/runs/${runId}/begin`).expect(200);
     broadcast.mockClear();
+    const statuses: string[] = [];
     for (const caseId of caseIds) {
       const r = await request(app)
         .post(`${base}/${planId}/runs/${runId}/results`)
         .send({ caseId, verdict: 'pass', actual: 'ok' })
         .expect(200);
       expect(r.body.result).toMatchObject({ caseId, verdict: 'pass', screenshotArtifactIds: [] });
+      statuses.push(r.body.run.status);
     }
-    expect(broadcast).toHaveBeenCalledTimes(2);
-    expect(lastBroadcast()).toMatchObject({ type: 'qa_update', planId, runId });
-
-    const finished = await request(app).post(`${base}/${planId}/runs/${runId}/finish`).expect(200);
-    expect(finished.body.run.status).toBe('passed');
+    // The last in-scope result finishes the run server-side.
+    expect(statuses).toEqual(['running', 'passed']);
+    expect(broadcast).toHaveBeenCalledTimes(3);
+    expect(lastBroadcast()).toMatchObject({
+      type: 'qa_update',
+      planId,
+      runId,
+      action: 'run_finished',
+    });
+    await request(app).post(`${base}/${planId}/runs/${runId}/finish`).expect(409);
 
     const run = await request(app).get(`${base}/${planId}/runs/${runId}`).expect(200);
     expect(run.body.results).toHaveLength(2);
@@ -412,7 +427,6 @@ describe('approval and runs', () => {
     const { planId, caseIds } = await approvedPlan();
     const runId = (await request(app).post(`${base}/${planId}/runs`).send({}).expect(201)).body.run
       .id;
-    await request(app).post(`${base}/${planId}/runs/${runId}/begin`).expect(200);
     await request(app)
       .post(`${base}/${planId}/runs/${runId}/results`)
       .send({ caseId: caseIds[0], verdict: 'fail' })
@@ -424,8 +438,8 @@ describe('approval and runs', () => {
 
   it('refuses results on a queued run and on a cancelled run', async () => {
     const { planId, caseIds } = await approvedPlan();
-    const runId = (await request(app).post(`${base}/${planId}/runs`).send({}).expect(201)).body.run
-      .id;
+    // A run queued outside the route has no session yet and stays queued.
+    const runId = startQaRun(planId).run.id;
     const queued = await request(app)
       .post(`${base}/${planId}/runs/${runId}/results`)
       .send({ caseId: caseIds[0], verdict: 'pass' })
@@ -447,7 +461,6 @@ describe('approval and runs', () => {
     await request(app).post(`${base}/${planId}/runs/nope/cancel`).expect(404);
     const runId = (await request(app).post(`${base}/${planId}/runs`).send({}).expect(201)).body.run
       .id;
-    await request(app).post(`${base}/${planId}/runs/${runId}/begin`).expect(200);
     await request(app)
       .post(`${base}/${planId}/runs/${runId}/results`)
       .send({ caseId: other.caseIds[0], verdict: 'pass' })

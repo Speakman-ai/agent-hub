@@ -175,6 +175,13 @@ export interface PreviewReActDeps {
    * ask the human.
    */
   startPreview?: (opts: { route?: string; reason?: string }) => Promise<PreviewStartResult>;
+  /**
+   * Session whose preview this chat session drives, when it is not its own
+   * (a QA run testing another session's preview). Only the preview lookups
+   * use it; the drive browser, screenshots, and activity stay on the chat
+   * session so its Agent browser pane shows the run.
+   */
+  previewOwnerSessionId?: string;
 }
 
 /**
@@ -397,6 +404,7 @@ async function runPreviewReActStepInner(
     );
   }
   const op = opRaw as PreviewReActOp;
+  const ownerSessionId = deps.previewOwnerSessionId ?? chatSessionId;
 
   if (!deps.runtime) {
     return outcome(
@@ -410,7 +418,7 @@ async function runPreviewReActStepInner(
 
   // Start before requiring an active row — that's the whole point of `start`.
   if (op === 'start') {
-    const existing = runtime.getActiveBySessionId(chatSessionId);
+    const existing = runtime.getActiveBySessionId(ownerSessionId);
     if (existing && (existing.status === 'ready' || existing.status === 'starting')) {
       runtime.touchPreview(existing.id);
       const state = {
@@ -490,7 +498,7 @@ async function runPreviewReActStepInner(
     );
   }
 
-  const row = runtime.getActiveBySessionId(chatSessionId);
+  const row = runtime.getActiveBySessionId(ownerSessionId);
   if (!row) {
     return outcome(NO_PREVIEW_MARKDOWN, 2, 'no_preview', 'No preview running');
   }
@@ -564,7 +572,7 @@ async function runPreviewReActStepInner(
     );
   }
 
-  const serverUrl = runtime.serverReachableUrlForPort(row.port, chatSessionId);
+  const serverUrl = runtime.serverReachableUrlForPort(row.port, ownerSessionId);
   let origin: string;
   try {
     origin = new URL(serverUrl).origin;

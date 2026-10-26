@@ -197,6 +197,7 @@ import { buildScopingModePreamble } from './scoping-mode-prompt.js';
 import { buildSkillBuilderModePreamble } from './skill-builder-mode-prompt.js';
 import { buildConsultModePreamble } from './consult-mode-prompt.js';
 import { buildQaModePreamble } from './qa-mode-prompt.js';
+import { qaBorrowedPreviewStartRefusal, qaRunPreviewOwnerSessionId } from './qa-run-kickoff.js';
 import {
   claudeSidebarForkArgs,
   isSidebarSession,
@@ -6805,6 +6806,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                   }),
                 );
                 const previewOpStartMs = Date.now();
+                // A QA run session drives the preview of the session hosting its target.
+                const previewOwner = qaRunPreviewOwnerSessionId(stmts, sessionId);
                 let p: Awaited<ReturnType<typeof runPreviewReActStep>>;
                 try {
                   p = await runPreviewReActStep(
@@ -6822,21 +6825,27 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                       condition: action.condition,
                     },
                     {
-                      runtime: resolvePreviewReactRuntime(sessionId, [getDevServerRuntime?.()]),
+                      runtime: resolvePreviewReactRuntime(previewOwner ?? sessionId, [
+                        getDevServerRuntime?.(),
+                      ]),
                       launchOpts: browserLaunchOpts,
+                      ...(previewOwner ? { previewOwnerSessionId: previewOwner } : {}),
                       startPreview: async ({ route, reason }) =>
-                        startSessionPreview({
-                          sessionId,
-                          body: { route, reason },
-                          broadcast,
-                          findAgent,
-                          getDevServerRuntime,
-                          getSession: (id) => stmts.getSession.get(id) as SessionRow | undefined,
-                          routing: {
-                            publicUrl: config.publicUrl,
-                            subdomainBase: config.previewSubdomainBase,
-                          },
-                        }),
+                        previewOwner
+                          ? qaBorrowedPreviewStartRefusal(previewOwner)
+                          : startSessionPreview({
+                              sessionId,
+                              body: { route, reason },
+                              broadcast,
+                              findAgent,
+                              getDevServerRuntime,
+                              getSession: (id) =>
+                                stmts.getSession.get(id) as SessionRow | undefined,
+                              routing: {
+                                publicUrl: config.publicUrl,
+                                subdomainBase: config.previewSubdomainBase,
+                              },
+                            }),
                     },
                   );
                 } catch (err: unknown) {

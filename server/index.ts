@@ -2323,6 +2323,7 @@ export const routeDeps: RouteDeps = {
   allAgents,
   saveProjects,
   handleChat: (ws: unknown, msg: ChatMessage) => handleChat!(ws, msg),
+  handleCancel,
   drainSessionQueue: (sessionId: string) => drainQueue(sessionId),
   lastDispatchedReviewId,
   scheduleAutonomousEpic,

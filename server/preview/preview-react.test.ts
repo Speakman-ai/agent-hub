@@ -365,6 +365,24 @@ describe('preview-react — drive ops', () => {
     expect(r.markdown).toContain(`${ORIGIN}/settings`);
   });
 
+  it("drives another session's preview when previewOwnerSessionId is set", async () => {
+    const page = makeMockPage();
+    registerPreviewBrowser(page);
+    const runtime = makeRuntime();
+    const r = await runPreviewReActStep(
+      SESSION_ID,
+      { op: 'navigate', route: '/login' },
+      { runtime, previewOwnerSessionId: 'target-session' },
+    );
+    expect(r.hostExit).toBe(0);
+    // Preview lookups resolve the target session's preview...
+    expect(runtime.getActiveBySessionId).toHaveBeenCalledWith('target-session');
+    expect(runtime.getActiveBySessionId).not.toHaveBeenCalledWith(SESSION_ID);
+    expect(runtime.serverReachableUrlForPort).toHaveBeenCalledWith(PORT, 'target-session');
+    // ...while the drive browser stays this chat session's (registered above).
+    expect(page.goto).toHaveBeenCalledWith(`${ORIGIN}/login`, expect.anything());
+  });
+
   it('navigate rejects full URLs / routes not starting with "/"', async () => {
     registerPreviewBrowser(makeMockPage());
     const runtime = makeRuntime();

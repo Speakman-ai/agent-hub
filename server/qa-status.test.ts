@@ -8,6 +8,7 @@ import {
   addQaCase,
   approveQaPlan,
   cancelQaRun,
+  completeQaRunIfCovered,
   editQaCase,
   finishQaRun,
   markQaRunRunning,
@@ -15,6 +16,8 @@ import {
   removeQaCase,
   nextQaPlanStatus,
   qaPlanSignOffBlocker,
+  qaRunCaseIds,
+  qaRunScopeCaseIds,
   QaStatusError,
   revokeQaPlanApproval,
   signOffQaPlan,
@@ -380,18 +383,112 @@ describe('case changes invalidate sign-off evidence', () => {
     expect(signOffQaPlan(planId, 'u1').status).toBe('done');
   });
 
-  it('a failed_only rerun that skips an edited case does not cover it', () => {
+  it('a failed_only rerun covers an edited case and keeps passing evidence for the rest', () => {
     const { planId, caseIds } = makePlan();
     approveQaPlan(planId, 'u1');
     passRun(planId, caseIds);
     editQaCase(caseIds[0], { title: 'renamed' });
     approveQaPlan(planId, 'u1');
-    passRun(planId, [caseIds[1]], 'failed_only');
-    expect(qaPlanSignOffBlocker(planId)).toMatch(/1 case\(s\) without a passing verdict/);
 
-    // Untouched cases keep their earlier passing evidence.
-    passRun(planId, [caseIds[0]], 'failed_only');
+    const rerun = begin(planId, 'failed_only');
+    expect(JSON.parse(rerun.case_ids!)).toEqual([caseIds[0]]);
+    expectQaError(() => record(rerun.id, caseIds[1], 'pass'), 'out_of_scope', 409);
+    record(rerun.id, caseIds[0], 'pass');
+    expect(finishQaRun(rerun.id).status).toBe('passed');
     expect(qaPlanSignOffBlocker(planId)).toBeNull();
+  });
+
+  describe('legacy runs without recorded scope', () => {
+    /** A failed_only rerun queued before case_ids existed: case 0 passed, 1 and 2 failed. */
+    function legacyRerun() {
+      const { planId, caseIds } = makePlan(3);
+      approveQaPlan(planId, 'u1');
+      const first = begin(planId);
+      record(first.id, caseIds[0], 'pass');
+      record(first.id, caseIds[1], 'fail');
+      record(first.id, caseIds[2], 'blocked');
+      finishQaRun(first.id);
+      const run = begin(planId, 'failed_only');
+      getDb().prepare('UPDATE qa_runs SET case_ids = NULL WHERE id = ?').run(run.id);
+      return { planId, caseIds, runId: run.id };
+    }
+
+    it('rebuilds the failed_only scope for a run with no results', () => {
+      const { caseIds, runId } = legacyRerun();
+      expect(qaRunCaseIds(getStmts().getQaRun.get(runId)!)).toEqual([caseIds[1], caseIds[2]]);
+      record(runId, caseIds[1], 'pass');
+      expectQaError(() => record(runId, caseIds[0], 'pass'), 'out_of_scope', 409);
+    });
+
+    it('does not complete early on a partial or replaced result', () => {
+      const { caseIds, runId } = legacyRerun();
+      record(runId, caseIds[1], 'fail');
+      expect(completeQaRunIfCovered(runId)).toBeNull();
+      // Replacing the only recorded result must not make the subset look covered.
+      record(runId, caseIds[1], 'pass');
+      expect(completeQaRunIfCovered(runId)).toBeNull();
+      record(runId, caseIds[2], 'pass');
+      expect(completeQaRunIfCovered(runId)?.status).toBe('passed');
+    });
+
+    it('falls back to every case when the rebuilt scope is empty', () => {
+      const { planId, caseIds } = makePlan(2);
+      approveQaPlan(planId, 'u1');
+      passRun(planId, caseIds);
+      const { run } = startQaRun(planId);
+      getDb()
+        .prepare("UPDATE qa_runs SET case_ids = NULL, scope = 'failed_only' WHERE id = ?")
+        .run(run.id);
+      expect(qaRunCaseIds(getStmts().getQaRun.get(run.id)!)).toEqual(caseIds);
+
+      // The fallback holds after the first result: the run waits for every case.
+      markQaRunRunning(run.id);
+      record(run.id, caseIds[0], 'pass');
+      expect(qaRunCaseIds(getStmts().getQaRun.get(run.id)!)).toEqual(caseIds);
+      expect(completeQaRunIfCovered(run.id)).toBeNull();
+      expect(getStmts().getQaRun.get(run.id)!.status).toBe('running');
+      record(run.id, caseIds[1], 'pass');
+      expect(completeQaRunIfCovered(run.id)?.status).toBe('passed');
+    });
+  });
+
+  it('refuses a failed_only run when every case already passed', () => {
+    const { planId, caseIds } = makePlan();
+    approveQaPlan(planId, 'u1');
+    passRun(planId, caseIds);
+    expectQaError(() => startQaRun(planId, { scope: 'failed_only' }), 'nothing_to_rerun', 409);
+  });
+
+  it('fixes the in-scope case ids when the run is queued', () => {
+    const { planId, caseIds } = makePlan(3);
+    approveQaPlan(planId, 'u1');
+    const first = begin(planId);
+    expect(JSON.parse(first.case_ids!)).toEqual(caseIds);
+    record(first.id, caseIds[0], 'pass');
+    record(first.id, caseIds[1], 'fail');
+    record(first.id, caseIds[2], 'blocked');
+    finishQaRun(first.id);
+    expect(qaRunScopeCaseIds(planId, 'failed_only')).toEqual([caseIds[1], caseIds[2]]);
+  });
+
+  it('completes a running run only once every in-scope case has a result', () => {
+    const { planId, caseIds } = makePlan();
+    approveQaPlan(planId, 'u1');
+    const run = begin(planId);
+    record(run.id, caseIds[0], 'pass');
+    expect(completeQaRunIfCovered(run.id)).toBeNull();
+    expect(getStmts().getQaRun.get(run.id)!.status).toBe('running');
+    record(run.id, caseIds[1], 'needs_change');
+    expect(completeQaRunIfCovered(run.id)?.status).toBe('failed');
+    expect(completeQaRunIfCovered(run.id)).toBeNull();
+
+    const { planId: p2, caseIds: c2 } = makePlan(1);
+    approveQaPlan(p2, 'u1');
+    const passing = begin(p2);
+    record(passing.id, c2[0], 'pass');
+    const done = completeQaRunIfCovered(passing.id);
+    expect(done).toMatchObject({ status: 'passed' });
+    expect(done!.finished_at).not.toBeNull();
   });
 
   it('adding or removing a case revokes approval', () => {
@@ -473,7 +570,8 @@ describe('lifecycle guards', () => {
     const { run } = startQaRun(planId);
     expectQaError(() => finishQaRun(run.id), 'run_not_running', 409);
     markQaRunRunning(run.id);
-    expectQaError(() => markQaRunRunning(run.id), 'illegal_transition', 409);
+    // The server begins runs it seeds, so a second begin from the agent is a no-op.
+    expect(markQaRunRunning(run.id).status).toBe('running');
     record(run.id, caseIds[0], 'pass');
     finishQaRun(run.id);
     expectQaError(() => finishQaRun(run.id), 'run_not_running', 409);

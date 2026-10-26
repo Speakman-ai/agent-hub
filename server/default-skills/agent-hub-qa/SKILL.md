@@ -53,8 +53,8 @@ qa.sh case delete <planId> <caseId>
 qa.sh case reorder <planId> <caseId> <caseId> ...   # every case id, new order
 
 qa.sh run get <planId> <runId>             # run + results so far
-qa.sh run begin <planId> <runId>           # queued -> running
-qa.sh run finish <planId> <runId>          # derives passed/failed from results
+qa.sh run begin <planId> <runId>           # queued -> running (no-op if already running)
+qa.sh run finish <planId> <runId>          # finish early; missing cases make it failed
 
 qa.sh result post <planId> <runId> --case <caseId> \
   --verdict pass|fail|needs_change|blocked \
@@ -88,25 +88,34 @@ qa.sh case add "$PLAN" --title "Login with valid credentials" \
 
 ## 2. Executing a run
 
-The run session gives you the plan id, run id, scope (`full` or
-`failed_only`), and the approved cases to execute.
+Starting a run opens a fresh QA session whose first message carries the plan
+id, run id, scope (`full` or `failed_only`), the in-scope cases, and which
+tool to drive the target with. The server has already marked the run
+`running`.
 
-1. `qa.sh run begin <planId> <runId>`.
-2. Pick the tool by target:
+1. Work only the cases listed in the seed. Posting a result for any other
+   case is refused (`409`, code `out_of_scope`).
+2. Pick the tool by target (the seed names it):
    - Public URL: the `browser` ReAct tool (`navigate`, `click`, `type`,
      `screenshot`, `read_page`).
    - This project's session preview, `localhost`, or a private host: the
      `preview` tool. The `browser` tool's egress policy refuses those targets.
+     In a run session the preview tool drives the preview of the session that
+     hosts the target (named in the seed). Navigate by route, and do not try
+     to start it: if it is down, the cases are `blocked`.
 3. Logins: use skill credentials from the environment, or an
    `agenthub:credential-request` card. Never put a secret in chat.
 4. Before any destructive action on the target (deleting data, sending a
    message, a purchase), request the `approval` tool and wait for the answer.
 5. For each case in scope, in order: follow the steps, take **at least one**
    screenshot, upload it, and post the result (below) before moving on.
-6. `qa.sh run finish <planId> <runId>` once every case in scope has a result.
+6. The server finishes the run, and derives `passed` / `failed`, as soon as
+   every in-scope case has a result. Call `qa.sh run finish` only to stop
+   early; any case still missing makes the run `failed`.
 
-With `failed_only` scope, run only the cases whose latest verdict was not
-`pass` (see `latestVerdict` in `plan get`).
+A `failed_only` run covers every case whose latest verdict is missing, not
+`pass`, or was recorded against an older version of the case. If a human
+cancels the run, your turn is stopped and later results are refused.
 
 ## 3. Screenshots
 

@@ -2132,6 +2132,10 @@ export interface QaRunRow {
   status: QaRunStatus;
   /** Plan approval_seq this run was started under. */
   approval_seq: number;
+  /** JSON array of the case ids in scope, fixed at queue time. NULL on older rows. */
+  case_ids: string | null;
+  /** Session whose preview this run drives, when the target is a session preview. */
+  preview_session_id: string | null;
   session_id: string | null;
   started_by: string | null;
   started_at: string | null;
@@ -2237,13 +2241,15 @@ export interface Stmts {
   deleteQaCase: Stmt<[string]>;
   setQaCasePosition: Stmt<[number, string]>;
   updateQaCase: Stmt<[string, string, string, string]>;
-  insertQaRun: Stmt<[string, string, number, QaRunScope, number, string | null]>;
+  insertQaRun: Stmt<[string, string, number, QaRunScope, number, string | null, string]>;
   getQaRun: Stmt<[string], QaRunRow>;
   listQaRunsByPlan: Stmt<[string], QaRunRow>;
   getLatestQaRun: Stmt<[string], QaRunRow>;
   getNextQaRunIteration: Stmt<[string], { next: number }>;
   setQaRunStatus: Stmt<[{ status: QaRunStatus; id: string }]>;
   setQaRunSession: Stmt<[string | null, string]>;
+  setQaRunPreviewSession: Stmt<[string | null, string]>;
+  getQaRunPreviewSessionBySession: Stmt<[string], { preview_session_id: string }>;
   upsertQaResult: Stmt<[string, string, string, QaVerdict, string, string, string, string | null]>;
   listQaResultsByRun: Stmt<[string], QaResultRow>;
   listLatestQaVerdictsByPlan: Stmt<[string], QaLatestVerdictRow>;
@@ -4932,6 +4938,8 @@ export interface RouteDeps {
   allAgents: () => EnrichedAgent[];
   saveProjects: () => void;
   handleChat: (ws: unknown, msg: ChatMessage) => Promise<void>;
+  /** Stop a session's in-flight turn and clear its queue (the chat Stop button). */
+  handleCancel?: (sessionId: string) => void;
   lastDispatchedReviewId: Map<string, number>;
   scheduleAutonomousEpic: (projectId: string, epic: KanbanEpicRow) => void;
   autonomousCrons: Map<string, unknown>;
@@ -4995,6 +5003,10 @@ export interface RouteDeps {
      * preview stop must NOT call this — the volumes are reused on restart.
      */
     purgeSessionComposeStack?: (sessionId: string) => Promise<unknown>;
+    /** Running / starting previews, for matching a QA target to the session serving it. */
+    listActive?: () => Array<{ session_id: string; status: string; port: number; url: string }>;
+    getActiveBySessionId?: (sessionId: string) => { id: string } | null;
+    getPorts?: (groupId: string) => Array<{ internalPort: number; primary: boolean }>;
   } | null;
   /**
    * Hub-owned background shells (long-running commands monitorable across

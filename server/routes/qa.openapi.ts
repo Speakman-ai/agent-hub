@@ -110,6 +110,12 @@ export const QaRunComponent = registerComponent(
     scope: RunScope,
     status: RunStatus,
     approvalSeq: z.number().int(),
+    caseIds: z.array(z.string()).openapi({
+      description: 'Case ids in scope, fixed when the run is queued.',
+    }),
+    previewSessionId: z.string().nullable().openapi({
+      description: 'Session whose preview the run drives, when the target is a session preview.',
+    }),
     sessionId: z.string().nullable(),
     startedBy: z.string().nullable(),
     startedAt: z.string().nullable(),
@@ -489,16 +495,25 @@ registerPath({
   method: 'post',
   path: `${BASE}/{planId}/runs`,
   tags: TAGS,
-  summary: 'Queue a run (409 when unapproved or a run is active)',
+  summary: 'Start a run in a new QA agent session',
+  description:
+    'Queues the run, opens a QA session seeded with the in-scope cases, target URL, and the tool to drive it with (`preview` for loopback, private, or session-preview targets, `browser` otherwise), and marks it running. 409 when unapproved, a run is active, the project has no QA agent (`no_qa_agent`), a preview-routed target is not served by a session preview in this project (`target_unreachable`), or a failed_only run has nothing to rerun (`nothing_to_rerun`). If the session cannot start, the run is cancelled and the route answers 502.',
   request: { params: planParams, body: { content: json(StartQaRunRequestSchema) } },
   responses: {
     201: ok(
-      'Queued run and the updated plan.',
-      z.object({ plan: QaPlanComponent, run: QaRunComponent }),
+      'Running run, the updated plan, and the session executing it.',
+      z.object({
+        plan: QaPlanComponent,
+        run: QaRunComponent,
+        sessionId: z.string(),
+        agentId: z.string(),
+      }),
     ),
     400: invalid,
     404: notFound,
     409: conflict,
+    502: err('The run session could not be started; the run was cancelled.'),
+    503: err('Chat is unavailable on this server.'),
   },
 });
 
@@ -518,7 +533,7 @@ registerPath({
   method: 'post',
   path: `${BASE}/{planId}/runs/{runId}/begin`,
   tags: TAGS,
-  summary: 'Mark a queued run as running',
+  summary: 'Mark a queued run as running (no-op when already running)',
   request: { params: runParams },
   responses: { 200: ok('Updated run.', RunEnvelope), 404: notFound, 409: conflict },
 });
@@ -536,7 +551,7 @@ registerPath({
   method: 'post',
   path: `${BASE}/{planId}/runs/{runId}/cancel`,
   tags: TAGS,
-  summary: 'Cancel a queued or running run',
+  summary: 'Cancel a queued or running run and stop its session',
   request: { params: runParams },
   responses: { 200: ok('Updated run.', RunEnvelope), 404: notFound, 409: conflict },
 });
@@ -546,9 +561,14 @@ registerPath({
   path: `${BASE}/{planId}/runs/{runId}/results`,
   tags: TAGS,
   summary: 'Record or replace the verdict for one case in a running run',
+  description:
+    'Once every in-scope case has a result the run finishes on its own, passed when all verdicts are `pass`. 409 `out_of_scope` for a case outside the run.',
   request: { params: runParams, body: { content: json(RecordQaResultRequestSchema) } },
   responses: {
-    200: ok('Stored result.', z.object({ result: QaResultComponent })),
+    200: ok(
+      'Stored result and the run, finished when this was the last in-scope case.',
+      z.object({ result: QaResultComponent, run: QaRunComponent }),
+    ),
     400: invalid,
     404: notFound,
     409: conflict,

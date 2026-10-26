@@ -12,6 +12,10 @@
  * cancelled. Terminal runs never change, and neither do their results.
  * passed / failed is derived from the recorded verdicts, not supplied.
  *
+ * Each run fixes its in-scope case ids when it is queued: every case for
+ * `full`, and for `failed_only` every case without a `pass` on its current
+ * version. A run finishes on its own once every in-scope case has a result.
+ *
  * A plan is frozen while it is done or has a queued/running run: no approval
  * change and no case add/edit/remove. Reopen a done plan by starting a run;
  * cancel an active run before editing.
@@ -24,6 +28,7 @@ import { randomUUID } from 'crypto';
 import { getDb, getStmts } from './db.js';
 import type {
   QaCaseRow,
+  QaLatestVerdictRow,
   QaPlanRow,
   QaPlanStatus,
   QaResultRow,
@@ -46,7 +51,9 @@ export type QaStatusErrorCode =
   | 'run_not_running'
   | 'not_all_pass'
   | 'invalid_order'
-  | 'edit_conflict';
+  | 'edit_conflict'
+  | 'nothing_to_rerun'
+  | 'out_of_scope';
 
 export class QaStatusError extends Error {
   readonly code: QaStatusErrorCode;
@@ -331,6 +338,14 @@ export function startQaRun(
         `QA run ${active.iteration} is already ${active.status}`,
       );
     }
+    const scope = opts.scope ?? 'full';
+    const caseIds = qaRunScopeCaseIds(planId, scope);
+    if (caseIds.length === 0) {
+      throw new QaStatusError(
+        'nothing_to_rerun',
+        'Every case already passed on its current version; start a full run instead',
+      );
+    }
     const next = nextQaPlanStatus(plan.status, 'run_started');
     const runId = randomUUID();
     const iteration = s.getNextQaRunIteration.get(planId)!.next;
@@ -338,9 +353,10 @@ export function startQaRun(
       runId,
       planId,
       iteration,
-      opts.scope ?? 'full',
+      scope,
       plan.approval_seq,
       opts.startedBy ?? null,
+      JSON.stringify(caseIds),
     );
     if (plan.status === 'done') s.clearQaPlanSignOff.run(planId);
     if (next !== plan.status) s.setQaPlanStatus.run(next, planId);
@@ -348,10 +364,82 @@ export function startQaRun(
   })();
 }
 
-/** queued -> running, when the executing session picks the run up. */
+/**
+ * Case ids a new run of `scope` would cover, in case order. `failed_only`
+ * picks every case whose latest verdict is missing, not `pass`, or recorded
+ * against an older version of the case.
+ */
+export function qaRunScopeCaseIds(
+  planId: string,
+  scope: QaRunScope,
+  beforeIteration?: number,
+): string[] {
+  const s = getStmts();
+  const cases = s.listQaCasesByPlan.all(planId);
+  if (scope === 'full') return cases.map((c) => c.id);
+  const verdicts =
+    beforeIteration === undefined
+      ? s.listLatestQaVerdictsByPlan.all(planId)
+      : (getDb()
+          .prepare(
+            `SELECT case_id, case_version, verdict FROM (
+               SELECT r.case_id, r.case_version, r.verdict,
+                      ROW_NUMBER() OVER (PARTITION BY r.case_id ORDER BY u.iteration DESC) AS rn
+                 FROM qa_results r
+                 JOIN qa_runs u ON u.id = r.run_id
+                WHERE u.plan_id = ? AND u.status <> 'cancelled' AND u.iteration < ?
+             ) WHERE rn = 1`,
+          )
+          .all(planId, beforeIteration) as Array<
+          Pick<QaLatestVerdictRow, 'case_id' | 'case_version' | 'verdict'>
+        >);
+  const latest = new Map(verdicts.map((v) => [v.case_id, v]));
+  return cases
+    .filter((c) => {
+      const v = latest.get(c.id);
+      return v?.verdict !== 'pass' || v.case_version !== c.version;
+    })
+    .map((c) => c.id);
+}
+
+/**
+ * The run's in-scope case ids. Rows from before scope was recorded have no
+ * `case_ids`, so their scope is rebuilt as it would have been at queue time:
+ * every case for `full`; for `failed_only`, the cases without a pass on their
+ * current version in earlier runs (the case list is frozen while a run is
+ * active, so current versions are the queue-time ones), plus any case the run
+ * already has a result for. An empty rebuild falls back to every case, so a
+ * legacy run never rejects all results.
+ */
+export function qaRunCaseIds(run: QaRunRow): string[] {
+  if (run.case_ids !== null) {
+    try {
+      const v: unknown = JSON.parse(run.case_ids);
+      if (Array.isArray(v)) return v.filter((x): x is string => typeof x === 'string');
+    } catch {
+      /* fall through to the derived scope */
+    }
+  }
+  const s = getStmts();
+  const cases = s.listQaCasesByPlan.all(run.plan_id);
+  if (run.scope === 'full') return cases.map((c) => c.id);
+  // Decide the empty-rebuild fallback before adding recorded results, so the
+  // scope cannot shrink to the recorded subset once the first result lands.
+  const rebuilt = qaRunScopeCaseIds(run.plan_id, 'failed_only', run.iteration);
+  if (rebuilt.length === 0) return cases.map((c) => c.id);
+  const scope = new Set(rebuilt);
+  for (const r of s.listQaResultsByRun.all(run.id)) scope.add(r.case_id);
+  return cases.filter((c) => scope.has(c.id)).map((c) => c.id);
+}
+
+/**
+ * queued -> running, when the executing session picks the run up. Already
+ * running is a no-op, since the server begins a run when it seeds the session.
+ */
 export function markQaRunRunning(runId: string): QaRunRow {
   return getDb().transaction(() => {
     const run = requireRun(runId);
+    if (run.status === 'running') return run;
     if (run.status !== 'queued') {
       throw new QaStatusError('illegal_transition', `Cannot start a ${run.status} QA run`);
     }
@@ -360,25 +448,46 @@ export function markQaRunRunning(runId: string): QaRunRow {
   })();
 }
 
+/** Whether every in-scope case has a result, and whether all of them pass. */
+function qaRunCoverage(run: QaRunRow): { covered: boolean; passed: boolean } {
+  const scope = qaRunCaseIds(run);
+  const verdicts = new Map(
+    getStmts()
+      .listQaResultsByRun.all(run.id)
+      .map((r) => [r.case_id, r.verdict]),
+  );
+  const covered = scope.length > 0 && scope.every((id) => verdicts.has(id));
+  return { covered, passed: covered && scope.every((id) => verdicts.get(id) === 'pass') };
+}
+
 /**
- * running -> passed | failed. Passed means every recorded verdict is `pass`
- * and, for a full run, every case has one; a failed_only run needs at least
- * one result.
+ * running -> passed | failed. Passed means every in-scope case has a result
+ * and every one of them is `pass`; finishing early with cases missing fails.
  */
 export function finishQaRun(runId: string): QaRunRow {
   return getDb().transaction(() => {
-    const s = getStmts();
     const run = requireRun(runId);
     if (run.status !== 'running') {
       throw new QaStatusError('run_not_running', `Cannot finish a ${run.status} QA run`);
     }
-    const results = s.listQaResultsByRun.all(runId);
-    const covered =
-      run.scope === 'full'
-        ? s.listQaCasesByPlan.all(run.plan_id).every((c) => results.some((r) => r.case_id === c.id))
-        : results.length > 0;
-    const passed = covered && results.every((r) => r.verdict === 'pass');
-    s.setQaRunStatus.run({ status: passed ? 'passed' : 'failed', id: runId });
+    const { passed } = qaRunCoverage(run);
+    getStmts().setQaRunStatus.run({ status: passed ? 'passed' : 'failed', id: runId });
+    return requireRun(runId);
+  })();
+}
+
+/**
+ * Finish a running run once every in-scope case has a result. Returns the
+ * finished run, or null while cases are still missing (or the run is no
+ * longer running).
+ */
+export function completeQaRunIfCovered(runId: string): QaRunRow | null {
+  return getDb().transaction(() => {
+    const run = requireRun(runId);
+    if (run.status !== 'running') return null;
+    const { covered, passed } = qaRunCoverage(run);
+    if (!covered) return null;
+    getStmts().setQaRunStatus.run({ status: passed ? 'passed' : 'failed', id: runId });
     return requireRun(runId);
   })();
 }
@@ -417,6 +526,9 @@ export function recordQaResult(runId: string, caseId: string, input: QaResultInp
     }
     if (run.status !== 'running') {
       throw new QaStatusError('run_not_running', `QA run ${run.iteration} is ${run.status}`);
+    }
+    if (!qaRunCaseIds(run).includes(caseId)) {
+      throw new QaStatusError('out_of_scope', `QA case ${caseId} is not in this run's scope`);
     }
     const plan = requirePlan(run.plan_id);
     if (!plan.approved_at || run.approval_seq !== plan.approval_seq) {
