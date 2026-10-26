@@ -31,8 +31,11 @@
  *     not throttle real deploys (`runner-profile`). We force `'unconstrained'`
  *     on the lease.
  *   - Secrets: PROJECT-level secrets are injected into the job env via
- *     `mergeProjectSecretsSpawnEnv` — the same store Finalize/previews use
- *     (`secrets`). No per-environment secret scoping in v1.
+ *     `mergeProjectSecretsSpawnEnv` (the same store Finalize/previews use),
+ *     then the deploy environment's own secrets
+ *     (`deployment-env-secrets-store.ts`) are layered on top and win on a key
+ *     clash. Environment secrets reach no other spawn, and their `secret`-kind
+ *     values are redacted from step output.
  *
  * Live progress: every state transition broadcasts a `deployment_update`
  * WebSocket event carrying the full deployment row + ordered steps so the UI
@@ -64,6 +67,8 @@ import {
 } from '../finalize/runner-images.js';
 import { getActiveOrgId } from '../orgs.js';
 import { mergeProjectSecretsSpawnEnv } from '../project-secrets-spawn.js';
+import { loadEnvironmentSecretsForDeploy } from './deployment-env-secrets-store.js';
+import { createSecretRedactor } from './secret-redaction.js';
 import { applyGithubSpawnCredentials } from '../spawn-github-credentials.js';
 import { hasAtLeastRole, parseRole } from '../roles.js';
 import {
@@ -835,6 +840,7 @@ function runStep(
   budgetMs: number,
   active?: ActiveDeploymentRun,
   onOutputLine?: (line: string) => void,
+  redact: (line: string) => string = (line) => line,
 ): Promise<StepRunOutcome> {
   return new Promise<StepRunOutcome>((resolve) => {
     let child: SpawnedStep;
@@ -855,7 +861,8 @@ function runStep(
       buffered += chunk.toString();
       const lines = buffered.split('\n');
       buffered = lines.pop() ?? '';
-      for (const line of lines) {
+      for (const rawLine of lines) {
+        const line = redact(rawLine);
         // Cap each retained line so a single giant (but newline-terminated) line
         // can't blow up memory either.
         onOutputLine?.(line);
@@ -888,8 +895,9 @@ function runStep(
       settled = true;
       clearTimeout(timer);
       if (buffered) {
-        onOutputLine?.(buffered);
-        tail.push(buffered);
+        const line = redact(buffered);
+        onOutputLine?.(line);
+        tail.push(line);
         if (tail.length > STEP_TAIL_LINES) tail.shift();
       }
       if (active) clearActiveChild(active, child);
@@ -1049,6 +1057,7 @@ export async function runDeployment(
   // decided the backend and built the spec.
   let backend: RunnerBackend | null = null;
   let runnerSpec: JobClaimSpec | null = null;
+  let redactOutput: (line: string) => string = (line) => line;
   /**
    * Acquire a runner for this deployment. Bounded auto-retry on TRANSIENT
    * acquire failures (agent lost before attach, no agent claimed in time, Spot
@@ -1110,6 +1119,15 @@ export async function runDeployment(
       sessionId: ctx.sessionId ?? null,
       overwriteExisting: true,
     });
+
+    // Environment-scoped secrets go on last so they override a project secret of
+    // the same name (a prod AWS key beats the project-wide dev one). A corrupt
+    // row, decrypt, or audit failure throws into the catch below and fails the
+    // deploy before a runner is acquired: falling back to the project-wide
+    // credential could deploy against the wrong account.
+    const envSecrets = loadEnvironmentSecretsForDeploy(projectId, environment, { deploymentId });
+    Object.assign(baseEnv, envSecrets.env);
+    redactOutput = createSecretRedactor(envSecrets.redactValues);
 
     if (deployUsesGithubWorkflow(envConfig) && !isValidGhRepoTarget(baseEnv.GH_REPO)) {
       return fail(
@@ -1284,6 +1302,7 @@ export async function runDeployment(
             const githubRun = parseGithubRunMarker([line]);
             if (githubRun) setDeploymentStepGithubRun(stepRow.id, githubRun);
           },
+          redactOutput,
         );
 
         if (currentDeploymentIsCancelled()) {

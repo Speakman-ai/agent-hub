@@ -5740,6 +5740,53 @@ components:
           type: string
       required:
         - error
+    DeployEnvironmentSecret:
+      type: object
+      properties:
+        id:
+          type: string
+        project_id:
+          type: string
+        environment_name:
+          type: string
+        key:
+          type: string
+        kind:
+          type: string
+          enum:
+            - plain
+            - secret
+        value:
+          type: string
+          description: Plaintext for `plain` rows; a fixed mask for `secret` rows.
+        created_at:
+          type: string
+        updated_at:
+          type: string
+      required:
+        - id
+        - project_id
+        - environment_name
+        - key
+        - kind
+        - value
+        - created_at
+        - updated_at
+    DeployEnvironmentSecretsResponse:
+      type: object
+      properties:
+        projectId:
+          type: string
+        environmentName:
+          type: string
+        secrets:
+          type: array
+          items:
+            $ref: "#/components/schemas/DeployEnvironmentSecret"
+      required:
+        - projectId
+        - environmentName
+        - secrets
     DesktopRuntimeStatus:
       type: object
       properties:
@@ -30725,6 +30772,158 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DashboardErrorResponse"
+  /api/projects/{projectId}/deploy/environments/{environmentName}/secrets:
+    get:
+      tags:
+        - Deployments
+      summary: List secrets scoped to a deploy environment
+      description: Admin+. Secrets injected only into deployments of this environment, layered over project secrets. They are never merged into chat sessions, Finalize CI, or previews. `secret`-kind values are masked; there is no reveal endpoint.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: environmentName
+          in: path
+      responses:
+        "200":
+          description: Environment secrets, ordered by key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeployEnvironmentSecretsResponse"
+        "400":
+          description: Invalid environment name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "403":
+          description: Admin role required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+    put:
+      tags:
+        - Deployments
+      summary: Replace the secrets scoped to a deploy environment
+      description: "Owner only. Replaces the full set: keys missing from the body are deleted. Send the mask value for an existing `secret` row to keep its stored value. `kind` defaults to `secret`. The environment must be declared in deploy.yaml, have a runtime config row, or already have secrets; otherwise 404."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: environmentName
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                secrets:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      key:
+                        type: string
+                      value:
+                        type: string
+                      kind:
+                        type: string
+                        enum:
+                          - plain
+                          - secret
+                    required:
+                      - key
+                      - value
+                  maxItems: 500
+              required:
+                - secrets
+      responses:
+        "200":
+          description: The stored secrets after the replace.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeployEnvironmentSecretsResponse"
+        "400":
+          description: Invalid key, value, kind, or deploy.yaml.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "403":
+          description: Owner role required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "404":
+          description: Project or environment not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+  /api/projects/{projectId}/deploy/environments/{environmentName}/secrets/{key}:
+    delete:
+      tags:
+        - Deployments
+      summary: Delete one deploy environment secret
+      description: Owner only. Removes a single key from the environment.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: environmentName
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: key
+          in: path
+      responses:
+        "204":
+          description: Deleted.
+        "400":
+          description: Invalid key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "403":
+          description: Owner role required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "404":
+          description: Project or secret not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
   /api/projects/{projectId}/deploy/setup-wizard:
     post:
       tags:

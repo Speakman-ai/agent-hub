@@ -1195,6 +1195,23 @@ export const api = {
     fetchJSON(`/projects/${projectId}/secrets/${encodeURIComponent(key)}`, {
       method: 'DELETE',
     }),
+  // Secrets injected only into deployments of one environment (same roles).
+  getDeployEnvironmentSecrets: (projectId: string, environmentName: string) =>
+    fetchJSON(
+      `/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}/secrets`,
+    ),
+  putDeployEnvironmentSecrets: (projectId: string, environmentName: string, secrets: any) =>
+    fetchJSON(
+      `/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}/secrets`,
+      { method: 'PUT', body: JSON.stringify({ secrets }) },
+    ),
+  deleteDeployEnvironmentSecret: (projectId: string, environmentName: string, key: string) =>
+    fetchJSON(
+      `/projects/${projectId}/deploy/environments/${encodeURIComponent(
+        environmentName,
+      )}/secrets/${encodeURIComponent(key)}`,
+      { method: 'DELETE' },
+    ),
   importProjectSecrets: (projectId: any, data: any) =>
     fetchJSON(`/projects/${projectId}/secrets/import`, {
       method: 'POST',

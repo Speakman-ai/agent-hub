@@ -2081,6 +2081,16 @@ export const api = {
     fetchJSON(`/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}`, {
       method: 'DELETE',
     }),
+  // Secrets injected only into deployments of one environment.
+  getDeployEnvironmentSecrets: (projectId: string, environmentName: string) =>
+    fetchJSON(
+      `/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}/secrets`,
+    ),
+  putDeployEnvironmentSecrets: (projectId: string, environmentName: string, secrets: any) =>
+    fetchJSON(
+      `/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}/secrets`,
+      { method: 'PUT', body: JSON.stringify({ secrets }) },
+    ),
   // Per-environment deploy triggers (deploy-triggers epic decision): git-event
   // rules that enqueue a deployment when a matching push/merge updates a branch.
   listDeployTriggers: (projectId: string, environmentName: string) =>

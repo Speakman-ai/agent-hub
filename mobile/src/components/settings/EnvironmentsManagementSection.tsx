@@ -4,6 +4,7 @@ import {
   CalendarClock,
   ChevronDown,
   ChevronRight,
+  KeyRound,
   Mail,
   Pause,
   Play,
@@ -16,6 +17,7 @@ import {
 import { colors } from '../../theme/colors';
 import { api } from '../../utils/api';
 import EnvironmentTriggersPanel from './EnvironmentTriggersPanel';
+import ProjectSecretsSection from './ProjectSecretsSection';
 import EnvironmentSchedulesPanel from './EnvironmentSchedulesPanel';
 import EnvironmentReleaseGatesPanel from './EnvironmentReleaseGatesPanel';
 import EnvironmentNotificationRoutingPanel from './EnvironmentNotificationRoutingPanel';
@@ -83,6 +85,11 @@ export default function EnvironmentsManagementSection({
 
   const toggleTriggers = useCallback((name: string) => {
     setExpandedTriggers((prev) => toggleName(prev, name));
+  }, []);
+
+  const [expandedSecrets, setExpandedSecrets] = useState<ReadonlySet<string>>(() => new Set());
+  const toggleSecrets = useCallback((name: string) => {
+    setExpandedSecrets((prev) => toggleName(prev, name));
   }, []);
 
   const toggleSchedules = useCallback((name: string) => {
@@ -277,6 +284,35 @@ export default function EnvironmentsManagementSection({
                   </Text>
                 </TouchableOpacity>
                 <TouchableOpacity
+                  onPress={() => toggleSecrets(env.name)}
+                  style={[
+                    styles.actionButton,
+                    expandedSecrets.has(env.name)
+                      ? styles.triggersButtonActive
+                      : styles.triggersButton,
+                  ]}
+                  accessibilityLabel={`Manage secrets for ${env.name}`}
+                  accessibilityState={{ expanded: !!expandedSecrets.has(env.name) }}
+                >
+                  {expandedSecrets.has(env.name) ? (
+                    <ChevronDown size={13} color={colors.amber400} />
+                  ) : (
+                    <ChevronRight size={13} color={colors.gray300} />
+                  )}
+                  <KeyRound
+                    size={13}
+                    color={expandedSecrets.has(env.name) ? colors.amber400 : colors.gray300}
+                  />
+                  <Text
+                    style={[
+                      styles.actionText,
+                      { color: expandedSecrets.has(env.name) ? colors.amber400 : colors.gray300 },
+                    ]}
+                  >
+                    Secrets
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
                   onPress={() => toggleSchedules(env.name)}
                   style={[
                     styles.actionButton,
@@ -417,6 +453,9 @@ export default function EnvironmentsManagementSection({
                   environmentName={env.name}
                   onNotify={onNotify}
                 />
+              ) : null}
+              {expandedSecrets.has(env.name) && projectId ? (
+                <ProjectSecretsSection projectId={projectId} environmentName={env.name} />
               ) : null}
               {expandedSchedules.has(env.name) && projectId ? (
                 <EnvironmentSchedulesPanel

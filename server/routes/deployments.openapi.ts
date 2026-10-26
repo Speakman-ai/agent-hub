@@ -111,6 +111,20 @@ const DeploySettingsResponseSchema = registerComponent(
 const DeployTriggerEventEnum = z.enum(['push', 'merge']);
 const DEPLOY_TRIGGER_BRANCH_PATTERN_MAX = 200;
 
+const EnvironmentSecretKindEnum = z.enum(['plain', 'secret']);
+
+export const EnvironmentSecretsReplaceRequestSchema = z.object({
+  secrets: z
+    .array(
+      z.object({
+        key: z.string(),
+        value: z.string(),
+        kind: EnvironmentSecretKindEnum.optional(),
+      }),
+    )
+    .max(500),
+});
+
 export const CreateDeployTriggerRequestSchema = z.object({
   event: DeployTriggerEventEnum,
   branchPattern: z.string().trim().min(1).max(DEPLOY_TRIGGER_BRANCH_PATTERN_MAX),
@@ -748,6 +762,91 @@ const errorResponse = (description: string) => ({
 
 const projectParams = z.object({ projectId: z.string() });
 const environmentParams = z.object({ projectId: z.string(), environmentName: z.string() });
+const environmentSecretParams = z.object({
+  projectId: z.string(),
+  environmentName: z.string(),
+  key: z.string(),
+});
+
+const EnvironmentSecretSchema = registerComponent(
+  'DeployEnvironmentSecret',
+  z.object({
+    id: z.string(),
+    project_id: z.string(),
+    environment_name: z.string(),
+    key: z.string(),
+    kind: EnvironmentSecretKindEnum,
+    value: z.string().describe('Plaintext for `plain` rows; a fixed mask for `secret` rows.'),
+    created_at: z.string(),
+    updated_at: z.string(),
+  }),
+);
+
+const EnvironmentSecretsResponseSchema = registerComponent(
+  'DeployEnvironmentSecretsResponse',
+  z.object({
+    projectId: z.string(),
+    environmentName: z.string(),
+    secrets: z.array(EnvironmentSecretSchema),
+  }),
+);
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/deploy/environments/{environmentName}/secrets',
+  tags: ['Deployments'],
+  summary: 'List secrets scoped to a deploy environment',
+  description:
+    'Admin+. Secrets injected only into deployments of this environment, layered over project secrets. They are never merged into chat sessions, Finalize CI, or previews. `secret`-kind values are masked; there is no reveal endpoint.',
+  request: { params: environmentParams },
+  responses: {
+    200: {
+      description: 'Environment secrets, ordered by key.',
+      content: jsonContent(EnvironmentSecretsResponseSchema),
+    },
+    400: errorResponse('Invalid environment name.'),
+    403: errorResponse('Admin role required.'),
+    404: errorResponse('Project not found.'),
+  },
+});
+
+registerPath({
+  method: 'put',
+  path: '/api/projects/{projectId}/deploy/environments/{environmentName}/secrets',
+  tags: ['Deployments'],
+  summary: 'Replace the secrets scoped to a deploy environment',
+  description:
+    'Owner only. Replaces the full set: keys missing from the body are deleted. Send the mask value for an existing `secret` row to keep its stored value. `kind` defaults to `secret`. The environment must be declared in deploy.yaml, have a runtime config row, or already have secrets; otherwise 404.',
+  request: {
+    params: environmentParams,
+    body: { content: jsonContent(EnvironmentSecretsReplaceRequestSchema) },
+  },
+  responses: {
+    200: {
+      description: 'The stored secrets after the replace.',
+      content: jsonContent(EnvironmentSecretsResponseSchema),
+    },
+    400: errorResponse('Invalid key, value, kind, or deploy.yaml.'),
+    403: errorResponse('Owner role required.'),
+    404: errorResponse('Project or environment not found.'),
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/projects/{projectId}/deploy/environments/{environmentName}/secrets/{key}',
+  tags: ['Deployments'],
+  summary: 'Delete one deploy environment secret',
+  description: 'Owner only. Removes a single key from the environment.',
+  request: { params: environmentSecretParams },
+  responses: {
+    204: { description: 'Deleted.' },
+    400: errorResponse('Invalid key.'),
+    403: errorResponse('Owner role required.'),
+    404: errorResponse('Project or secret not found.'),
+  },
+});
+
 const deployTriggerParams = z.object({
   projectId: z.string(),
   environmentName: z.string(),

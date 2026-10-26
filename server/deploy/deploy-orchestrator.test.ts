@@ -43,6 +43,8 @@ import type { JobClaimSpec, RunnerBackend, RunnerLease } from '../finalize/runne
 import { createSupportTicket, getSupportTicket } from '../support-tickets-store.js';
 import { addReleaseDigestRecipient } from '../release-notification-settings.js';
 import { listReleaseNotificationOutboxByDeployment } from '../release-notification-outbox.js';
+import { replaceEnvironmentSecrets } from './deployment-env-secrets-store.js';
+import { replacePreviewSecrets } from '../preview/preview-secrets-store.js';
 
 const PROJECT = 'proj-deploy-orch';
 const OTHER_PROJECT = 'proj-deploy-other';
@@ -64,6 +66,8 @@ beforeEach(() => {
     'deployment_steps',
     'deployments',
     'deployment_environments',
+    'deployment_env_secrets',
+    'worktree_preview_secrets',
     'finalize_runs',
     'release_digest_recipients',
     'release_notification_settings',
@@ -1650,6 +1654,115 @@ describe('runDeployment — GH_REPO injection (self-hosted-forge gh targeting)',
     );
 
     expect(fb.acquireCalls[0].env?.GH_REPO).toBe('Speakman-ai/agent-hub');
+  });
+});
+
+describe('triggerDeployment — environment-scoped secrets', () => {
+  it('injects only the deploying environment secrets, overriding project secrets', async () => {
+    replacePreviewSecrets(PROJECT, [
+      { key: 'AWS_ACCESS_KEY_ID', value: 'project-wide-key' },
+      { key: 'SHARED_FLAG', value: 'on', kind: 'plain' },
+    ]);
+    replaceEnvironmentSecrets(PROJECT, 'dev', [
+      { key: 'AWS_ACCESS_KEY_ID', value: 'dev-deploy-key' },
+      { key: 'DEV_ONLY', value: 'dev-value' },
+    ]);
+    replaceEnvironmentSecrets(PROJECT, 'prod', [{ key: 'PROD_ONLY', value: 'prod-value' }]);
+
+    const fb = makeFakeBackend([{ exitCode: 0 }, { exitCode: 0 }]);
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'dev',
+        ref: 'sha-env',
+        worktreePath: WORKTREE,
+        config: CONFIG,
+      },
+      makeDeps(fb.backend),
+    );
+
+    expect(dep.status).toBe('success');
+    const env = fb.spawnArgs[0].env!;
+    expect(env.AWS_ACCESS_KEY_ID).toBe('dev-deploy-key');
+    expect(env.DEV_ONLY).toBe('dev-value');
+    expect(env.SHARED_FLAG).toBe('on');
+    expect(env.PROD_ONLY).toBeUndefined();
+    expect(fb.acquireCalls[0].env?.DEV_ONLY).toBe('dev-value');
+  });
+
+  it('redacts secret-kind environment values from step output', async () => {
+    replaceEnvironmentSecrets(PROJECT, 'dev', [
+      { key: 'DEPLOY_TOKEN', value: 'tok-s3cr3t-value' },
+      { key: 'REGION', value: 'us-east-1', kind: 'plain' },
+    ]);
+    const fb = makeFakeBackend([
+      { exitCode: 2, stdout: 'using tok-s3cr3t-value in us-east-1\nfailed\n' },
+    ]);
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'dev',
+        ref: 'sha-red',
+        worktreePath: WORKTREE,
+        config: CONFIG,
+      },
+      makeDeps(fb.backend),
+    );
+
+    expect(dep.status).toBe('error');
+    const step = listDeploymentSteps(dep.id)[0];
+    expect(step.error).toContain('using *** in us-east-1');
+    expect(step.error).not.toContain('tok-s3cr3t-value');
+  });
+});
+
+describe('triggerDeployment — environment secret failures', () => {
+  it('fails before acquiring a runner when an environment secret is corrupt', async () => {
+    replacePreviewSecrets(PROJECT, [{ key: 'AWS_ACCESS_KEY_ID', value: 'project-wide-key' }]);
+    replaceEnvironmentSecrets(PROJECT, 'dev', [
+      { key: 'AWS_ACCESS_KEY_ID', value: 'dev-deploy-key' },
+    ]);
+    getDb()
+      .prepare(`UPDATE deployment_env_secrets SET value_ciphertext = 'x:y:z' WHERE project_id = ?`)
+      .run(PROJECT);
+
+    const fb = makeFakeBackend([{ exitCode: 0 }, { exitCode: 0 }]);
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'dev',
+        ref: 'sha-bad',
+        worktreePath: WORKTREE,
+        config: CONFIG,
+      },
+      makeDeps(fb.backend),
+    );
+
+    expect(dep.status).toBe('error');
+    expect(dep.error).toContain('AWS_ACCESS_KEY_ID');
+    expect(dep.error).not.toContain('project-wide-key');
+    expect(fb.acquireCalls).toHaveLength(0);
+    expect(fb.spawnArgs).toHaveLength(0);
+    expect(getDeploymentEnvironment(PROJECT, 'dev')!.active_deployment_id).toBeNull();
+  });
+
+  it('redacts the shortest accepted secret value from step output', async () => {
+    replaceEnvironmentSecrets(PROJECT, 'dev', [{ key: 'PIN', value: 'k9x2' }]);
+    const fb = makeFakeBackend([{ exitCode: 1, stdout: 'pin=k9x2\n' }]);
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'dev',
+        ref: 'sha-pin',
+        worktreePath: WORKTREE,
+        config: CONFIG,
+      },
+      makeDeps(fb.backend),
+    );
+
+    const step = listDeploymentSteps(dep.id)[0];
+    expect(step.error).toContain('pin=***');
+    expect(step.error).not.toContain('k9x2');
   });
 });
 

@@ -8,6 +8,9 @@ import { api } from '../utils/api';
     getDeployEnvironments: vi.fn(),
     setDeployEnvironmentEnabled: vi.fn(),
     deleteDeployEnvironmentConfig: vi.fn(),
+    getDeployEnvironmentSecrets: vi.fn(),
+    putDeployEnvironmentSecrets: vi.fn(),
+    getProjectSecrets: vi.fn(),
   },
 }));
 
@@ -109,6 +112,32 @@ describe('EnvironmentsManagementSection', () => {
     fireEvent.click(within(screen.getByTestId('manage-env-legacy')).getByText('Remove'));
 
     expect(api.deleteDeployEnvironmentConfig).not.toHaveBeenCalled();
+  });
+
+  it('edits secrets scoped to one environment, keeping masked values', async () => {
+    (api.getDeployEnvironments as any).mockResolvedValue({
+      environments: [env({ name: 'prod' })],
+    });
+    (api.getDeployEnvironmentSecrets as any).mockResolvedValue({
+      secrets: [{ key: 'AWS_SECRET_ACCESS_KEY', kind: 'secret', value: '••••••••' }],
+    });
+    (api.putDeployEnvironmentSecrets as any).mockResolvedValue({ secrets: [] });
+    render(<EnvironmentsManagementSection projectId="proj-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('manage-env-prod')).toBeTruthy());
+    fireEvent.click(within(screen.getByTestId('manage-env-prod')).getByText('Secrets'));
+
+    const panel = await screen.findByTestId('deploy-env-secrets-prod');
+    expect(api.getDeployEnvironmentSecrets).toHaveBeenCalledWith('proj-1', 'prod');
+    expect(api.getProjectSecrets).not.toHaveBeenCalled();
+    expect(within(panel).queryByText('Import .env (merge)')).toBeNull();
+
+    fireEvent.click(within(panel).getByText('Save secrets'));
+    await waitFor(() =>
+      expect(api.putDeployEnvironmentSecrets).toHaveBeenCalledWith('proj-1', 'prod', [
+        { key: 'AWS_SECRET_ACCESS_KEY', value: '••••••••', kind: 'secret' },
+      ]),
+    );
   });
 
   it('shows an error when the load fails', async () => {

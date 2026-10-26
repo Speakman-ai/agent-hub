@@ -25,7 +25,18 @@ const organizationStore = vi.hoisted(() => ({
   removeBusinessOrganizationProjectLinks: vi.fn(() => 0),
 }));
 
+const secretStores = vi.hoisted(() => ({
+  deleteAllPreviewSecretsForProject: vi.fn(),
+  deleteAllEnvironmentSecretsForProject: vi.fn(),
+}));
+
 vi.mock('./project-members-store.js', () => projectMembersStore);
+vi.mock('./preview/preview-secrets-store.js', () => ({
+  deleteAllPreviewSecretsForProject: secretStores.deleteAllPreviewSecretsForProject,
+}));
+vi.mock('./deploy/deployment-env-secrets-store.js', () => ({
+  deleteAllEnvironmentSecretsForProject: secretStores.deleteAllEnvironmentSecretsForProject,
+}));
 vi.mock('./business-organizations-store.js', () => organizationStore);
 vi.mock('./orgs.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./orgs.js')>()),
@@ -247,6 +258,37 @@ describe('cascadeDeleteUserPrivateProjects', () => {
       expect(consoleErr).toHaveBeenCalledWith(
         expect.stringContaining('Failed to delete private project "p1"'),
         'orgs.db unavailable',
+      );
+    } finally {
+      consoleErr.mockRestore();
+    }
+  });
+
+  it.each([
+    ['deploy environment secrets', secretStores.deleteAllEnvironmentSecretsForProject],
+    ['project secrets', secretStores.deleteAllPreviewSecretsForProject],
+  ])('does not remove a project when %s cleanup fails', (_label, cleanup) => {
+    const projects: Project[] = [
+      makeProject({ id: 'p1', visibility: 'private', ownerUserId: 'u1' }),
+    ];
+    cleanup.mockImplementationOnce(() => {
+      throw new Error('secrets cleanup failed');
+    });
+    const saveProjects = vi.fn();
+    const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = cascadeDeleteUserPrivateProjects(
+        { stmts: makeStmts(), getProjects: () => projects, saveProjects },
+        'u1',
+      );
+
+      expect(result.deletedProjectIds).toEqual([]);
+      expect(projects.map((p) => p.id)).toEqual(['p1']);
+      expect(saveProjects).not.toHaveBeenCalled();
+      expect(projectMembersStore.removeAllProjectMembers).not.toHaveBeenCalled();
+      expect(consoleErr).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to delete private project "p1"'),
+        'secrets cleanup failed',
       );
     } finally {
       consoleErr.mockRestore();

@@ -279,6 +279,8 @@ beforeEach(() => {
   // wipeTables refuses to run against a non-scratch (non-tmpdir) database —
   // see server/test/destructive-db.ts and the 2026-07-01 prod wipe incident.
   wipeTables(getDb(), [
+    'deployment_env_secrets',
+    'deployment_env_secret_audit',
     'deployment_release_items',
     'deployment_approvals',
     'deployment_steps',
@@ -2096,6 +2098,80 @@ environments:
     it('returns 404 for an unknown project', async () => {
       const { app } = makeApp();
       await request(app).delete('/api/projects/missing/deploy/environments/prod').expect(404);
+    });
+  });
+
+  describe('deploy environment secrets', () => {
+    const secretsUrl = (env: string) =>
+      `/api/projects/${PROJECT_ID}/deploy/environments/${env}/secrets`;
+
+    it('stores masked secrets for a declared environment and lists them', async () => {
+      const { app } = makeApp();
+      const put = await request(app)
+        .put(secretsUrl('prod'))
+        .send({
+          secrets: [
+            { key: 'AWS_SECRET_ACCESS_KEY', value: 'prod-secret' },
+            { key: 'AWS_REGION', value: 'us-east-1', kind: 'plain' },
+          ],
+        })
+        .expect(200);
+      expect(JSON.stringify(put.body)).not.toContain('prod-secret');
+
+      const res = await request(app).get(secretsUrl('prod')).expect(200);
+      expect(res.body).toMatchObject({ projectId: PROJECT_ID, environmentName: 'prod' });
+      expect(res.body.secrets.map((s: { key: string }) => s.key)).toEqual([
+        'AWS_REGION',
+        'AWS_SECRET_ACCESS_KEY',
+      ]);
+      expect(JSON.stringify(res.body)).not.toContain('prod-secret');
+      const other = await request(app).get(secretsUrl('dev')).expect(200);
+      expect(other.body.secrets).toEqual([]);
+    });
+
+    it('404s a PUT for an environment that does not exist', async () => {
+      const { app } = makeApp();
+      await request(app)
+        .put(secretsUrl('typo'))
+        .send({ secrets: [{ key: 'A', value: 'value-b' }] })
+        .expect(404);
+    });
+
+    it('400s a reserved key', async () => {
+      const { app } = makeApp();
+      const res = await request(app)
+        .put(secretsUrl('prod'))
+        .send({ secrets: [{ key: 'AGENT_HUB_API_KEY', value: 'x' }] })
+        .expect(400);
+      expect(res.body.error).toMatch(/reserved/);
+    });
+
+    it('requires Owner to write and Admin to read', async () => {
+      const admin = makeApp({ role: 'Admin' }).app;
+      await request(admin).get(secretsUrl('prod')).expect(200);
+      await request(admin)
+        .put(secretsUrl('prod'))
+        .send({ secrets: [{ key: 'A', value: 'value-b' }] })
+        .expect(403);
+      await request(admin)
+        .delete(`${secretsUrl('prod')}/A`)
+        .expect(403);
+      const user = makeApp({ role: 'User' }).app;
+      await request(user).get(secretsUrl('prod')).expect(403);
+    });
+
+    it('deletes one key', async () => {
+      const { app } = makeApp();
+      await request(app)
+        .put(secretsUrl('prod'))
+        .send({ secrets: [{ key: 'A', value: 'value-b' }] })
+        .expect(200);
+      await request(app)
+        .delete(`${secretsUrl('prod')}/A`)
+        .expect(204);
+      await request(app)
+        .delete(`${secretsUrl('prod')}/A`)
+        .expect(404);
     });
   });
 

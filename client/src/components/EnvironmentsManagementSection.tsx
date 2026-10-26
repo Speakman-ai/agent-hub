@@ -6,6 +6,7 @@ import {
   ChevronRight,
   Layers,
   Loader2,
+  KeyRound,
   Mail,
   Pause,
   Play,
@@ -20,6 +21,7 @@ import EnvironmentTriggersPanel from './EnvironmentTriggersPanel';
 import EnvironmentSchedulesPanel from './EnvironmentSchedulesPanel';
 import EnvironmentNotificationRoutingPanel from './EnvironmentNotificationRoutingPanel';
 import EnvironmentReleaseGatesPanel from './EnvironmentReleaseGatesPanel';
+import ProjectSecretsEditor from './ProjectSecretsEditor';
 import {
   environmentStatus,
   environmentStatusLabel,
@@ -80,6 +82,11 @@ export default function EnvironmentsManagementSection({
   const [expandedSchedules, setExpandedSchedules] = useState<ReadonlySet<string>>(() => new Set());
   const [expandedRouting, setExpandedRouting] = useState<ReadonlySet<string>>(() => new Set());
   const [expandedGates, setExpandedGates] = useState<ReadonlySet<string>>(() => new Set());
+  const [expandedSecrets, setExpandedSecrets] = useState<ReadonlySet<string>>(() => new Set());
+
+  const toggleSecrets = useCallback((name: string) => {
+    setExpandedSecrets((prev) => toggleName(prev, name));
+  }, []);
 
   const toggleGates = useCallback((name: string) => {
     setExpandedGates((prev) => toggleName(prev, name));
@@ -259,6 +266,25 @@ export default function EnvironmentsManagementSection({
                     </button>
                     <button
                       type="button"
+                      onClick={() => toggleSecrets(env.name)}
+                      aria-expanded={!!expandedSecrets.has(env.name)}
+                      className={`inline-flex min-h-[30px] items-center gap-1.5 rounded-md border px-2.5 text-xs hover:bg-gray-800 ${
+                        expandedSecrets.has(env.name)
+                          ? 'border-amber-500/40 bg-amber-500/10 text-amber-200'
+                          : 'border-gray-700 text-gray-300'
+                      }`}
+                      title="Manage secrets for this environment"
+                    >
+                      {expandedSecrets.has(env.name) ? (
+                        <ChevronDown size={12} />
+                      ) : (
+                        <ChevronRight size={12} />
+                      )}
+                      <KeyRound size={12} />
+                      Secrets
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => toggleSchedules(env.name)}
                       aria-expanded={!!expandedSchedules.has(env.name)}
                       className={`inline-flex min-h-[30px] items-center gap-1.5 rounded-md border px-2.5 text-xs hover:bg-gray-800 ${
@@ -359,6 +385,11 @@ export default function EnvironmentsManagementSection({
                     environmentName={env.name}
                     showToast={showToast}
                   />
+                ) : null}
+                {expandedSecrets.has(env.name) && projectId ? (
+                  <div className="mt-3 rounded-md border border-gray-800 bg-gray-950/40 p-3">
+                    <ProjectSecretsEditor projectId={projectId} environmentName={env.name} />
+                  </div>
                 ) : null}
                 {expandedSchedules.has(env.name) && projectId ? (
                   <EnvironmentSchedulesPanel

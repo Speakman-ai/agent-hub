@@ -62,3 +62,41 @@ export function describeSecretsPermissionError(err: any, action: any = 'read') {
   }
   return 'You need the Owner role on this project to change its secrets.';
 }
+
+export interface SecretsStoreApi {
+  getProjectSecrets: (projectId: string) => Promise<any>;
+  putProjectSecrets: (projectId: string, secrets: any) => Promise<any>;
+  deleteProjectSecret: (projectId: string, key: string) => Promise<any>;
+  getDeployEnvironmentSecrets: (projectId: string, environmentName: string) => Promise<any>;
+  putDeployEnvironmentSecrets: (
+    projectId: string,
+    environmentName: string,
+    secrets: any,
+  ) => Promise<any>;
+  deleteDeployEnvironmentSecret: (
+    projectId: string,
+    environmentName: string,
+    key: string,
+  ) => Promise<any>;
+}
+
+/**
+ * Pick the secrets endpoints for the editor: project secrets, or the secrets
+ * scoped to one deploy environment when `environmentName` is set.
+ */
+export function secretsStoreFor(api: SecretsStoreApi, environmentName?: string | null) {
+  if (typeof environmentName === 'string' && environmentName !== '') {
+    return {
+      load: (projectId: string) => api.getDeployEnvironmentSecrets(projectId, environmentName),
+      save: (projectId: string, secrets: any) =>
+        api.putDeployEnvironmentSecrets(projectId, environmentName, secrets),
+      remove: (projectId: string, key: string) =>
+        api.deleteDeployEnvironmentSecret(projectId, environmentName, key),
+    };
+  }
+  return {
+    load: (projectId: string) => api.getProjectSecrets(projectId),
+    save: (projectId: string, secrets: any) => api.putProjectSecrets(projectId, secrets),
+    remove: (projectId: string, key: string) => api.deleteProjectSecret(projectId, key),
+  };
+}

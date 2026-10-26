@@ -19,10 +19,12 @@ function emptyRow() {
 }
 
 /**
- * Per-project env secrets editor (Settings → Projects).
+ * Env secrets editor. Edits project secrets (Settings → Projects), or, with
+ * `environmentName`, the secrets scoped to one deploy environment.
  * Secret-kind values are masked on load; saving sends MASK for unchanged rows.
  */
-export default function ProjectSecretsEditor({ projectId, hint }: any) {
+export default function ProjectSecretsEditor({ projectId, hint, environmentName }: any) {
+  const scopedToEnvironment = typeof environmentName === 'string' && environmentName !== '';
   const [rows, setRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<any>(null);
@@ -40,7 +42,9 @@ export default function ProjectSecretsEditor({ projectId, hint }: any) {
     setError(null);
     setLoading(true);
     try {
-      const body = await api.getProjectSecrets(projectId);
+      const body = scopedToEnvironment
+        ? await api.getDeployEnvironmentSecrets(projectId, environmentName)
+        : await api.getProjectSecrets(projectId);
       const secrets = body?.secrets || [];
       setRows(
         secrets.map((s: any) => ({
@@ -58,7 +62,7 @@ export default function ProjectSecretsEditor({ projectId, hint }: any) {
     } finally {
       setLoading(false);
     }
-  }, [projectId]);
+  }, [projectId, environmentName, scopedToEnvironment]);
 
   useEffect(() => {
     load();
@@ -79,7 +83,11 @@ export default function ProjectSecretsEditor({ projectId, hint }: any) {
           }
           return { key, value: r.value, kind };
         });
-      await api.putProjectSecrets(projectId, payload);
+      if (scopedToEnvironment) {
+        await api.putDeployEnvironmentSecrets(projectId, environmentName, payload);
+      } else {
+        await api.putProjectSecrets(projectId, payload);
+      }
       await load();
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -111,21 +119,31 @@ export default function ProjectSecretsEditor({ projectId, hint }: any) {
     return (
       <div className="flex items-center gap-2 text-xs text-gray-400 py-2">
         <Loader2 size={12} className="animate-spin" />
-        Loading project secrets…
+        {scopedToEnvironment ? 'Loading deploy secrets…' : 'Loading project secrets…'}
       </div>
     );
   }
 
   return (
-    <div className="space-y-3" data-testid={`project-secrets-${projectId}`}>
+    <div
+      className="space-y-3"
+      data-testid={
+        scopedToEnvironment
+          ? `deploy-env-secrets-${environmentName}`
+          : `project-secrets-${projectId}`
+      }
+    >
       <div>
         <h5 className="text-xs font-medium text-gray-300 flex items-center gap-1.5 mb-1">
-          <Key size={12} /> Project secrets
+          <Key size={12} />{' '}
+          {scopedToEnvironment ? `Deploy secrets: ${environmentName}` : 'Project secrets'}
         </h5>
         <p className="text-xs text-gray-500">
-          {hint ??
-            'Encrypted key/value pairs merged into every session spawn for this project (chat, cron, preview). Values marked secret are never returned in clear — leave blank when editing to keep the stored value. Keys in the '}
-          {!hint && (
+          {scopedToEnvironment
+            ? `Injected only into ${environmentName} deployments, overriding project secrets with the same key. Never available to chat sessions, CI, or previews. Secret values are masked in deploy logs.`
+            : (hint ??
+              'Encrypted key/value pairs merged into every session spawn for this project (chat, cron, preview). Values marked secret are never returned in clear — leave blank when editing to keep the stored value. Keys in the ')}
+          {!hint && !scopedToEnvironment && (
             <>
               <code className="font-mono">AGENT_HUB_*</code> namespace are rejected.
             </>
@@ -142,7 +160,11 @@ export default function ProjectSecretsEditor({ projectId, hint }: any) {
 
       <div className="space-y-2">
         {rows.length === 0 && (
-          <p className="text-xs text-gray-600 italic">No secrets configured for this project.</p>
+          <p className="text-xs text-gray-600 italic">
+            {scopedToEnvironment
+              ? 'No secrets configured for this environment.'
+              : 'No secrets configured for this project.'}
+          </p>
         )}
         {rows.map((row: any, idx: any) => (
           <div key={`${row.key}-${idx}`} className="flex flex-wrap gap-2 items-end">
@@ -247,24 +269,26 @@ export default function ProjectSecretsEditor({ projectId, hint }: any) {
         )}
       </div>
 
-      <div className="border-t border-gray-800 pt-3 space-y-2">
-        <label className={labelClass}>Import .env (merge)</label>
-        <textarea
-          value={importBlob}
-          onChange={(e: any) => setImportBlob(e.target.value)}
-          rows={3}
-          className={inputClass + ' resize-y'}
-          placeholder={'API_KEY=sk-...\nFEATURE_X=on'}
-        />
-        <button
-          type="button"
-          onClick={handleImport}
-          disabled={importing || !importBlob.trim()}
-          className="text-xs bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white px-3 py-1 rounded-lg"
-        >
-          {importing ? 'Importing…' : 'Import merge'}
-        </button>
-      </div>
+      {!scopedToEnvironment && (
+        <div className="border-t border-gray-800 pt-3 space-y-2">
+          <label className={labelClass}>Import .env (merge)</label>
+          <textarea
+            value={importBlob}
+            onChange={(e: any) => setImportBlob(e.target.value)}
+            rows={3}
+            className={inputClass + ' resize-y'}
+            placeholder={'API_KEY=sk-...\nFEATURE_X=on'}
+          />
+          <button
+            type="button"
+            onClick={handleImport}
+            disabled={importing || !importBlob.trim()}
+            className="text-xs bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white px-3 py-1 rounded-lg"
+          >
+            {importing ? 'Importing…' : 'Import merge'}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

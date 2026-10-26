@@ -69,6 +69,13 @@ import {
   type ResolvedEnvironmentConfig,
 } from '../deploy/deployment-env-config-store.js';
 import {
+  countEnvironmentSecrets,
+  deleteEnvironmentSecret,
+  listEnvironmentSecrets,
+  replaceEnvironmentSecrets,
+} from '../deploy/deployment-env-secrets-store.js';
+import { PreviewSecretValidationError } from '../preview/preview-secrets-store.js';
+import {
   createTrigger,
   deleteTrigger,
   DeployTriggerError,
@@ -128,6 +135,7 @@ import {
   CreateDeployReleaseGateRequestSchema,
   CreateDeployScheduleRequestSchema,
   CreateDeployTriggerRequestSchema,
+  EnvironmentSecretsReplaceRequestSchema,
   DeploymentListQuerySchema,
   EnvironmentConfigUpdateRequestSchema,
   UpdateDeploySettingsRequestSchema,
@@ -1151,6 +1159,102 @@ export default function createDeploymentRoutes(
         if (err instanceof DeploymentCheckoutError) return mapTriggerError(err, res);
         const message = err instanceof Error ? err.message : String(err);
         return res.status(500).json({ error: message });
+      }
+    },
+  );
+
+  // ----- Per-environment deploy secrets -----
+  // Merged only into deployments of this environment (never chat, CI, or
+  // previews). Same role split as project secrets: Admin reads masked rows,
+  // Owner writes.
+
+  router.get(
+    '/api/projects/:projectId/deploy/environments/:environmentName/secrets',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      const environmentName = String(req.params.environmentName ?? '').trim();
+      if (!deps.findProject(projectId)) return res.status(404).json({ error: 'Project not found' });
+      try {
+        const secrets = listEnvironmentSecrets(projectId, environmentName);
+        return res.json({ projectId, environmentName, secrets });
+      } catch (err) {
+        if (err instanceof PreviewSecretValidationError) {
+          return res.status(400).json({ error: err.message });
+        }
+        throw err;
+      }
+    },
+  );
+
+  router.put(
+    '/api/projects/:projectId/deploy/environments/:environmentName/secrets',
+    requireRole('Owner'),
+    async (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      const environmentName = String(req.params.environmentName ?? '').trim();
+      const project = deps.findProject(projectId);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+
+      const parsed = EnvironmentSecretsReplaceRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid body' });
+      }
+
+      try {
+        const actorUserId = (req as AuthenticatedRequest).authUserId ?? null;
+        const secrets = await withDeployConfig(project, readDeployConfig, (config) => {
+          // Same typo guard as triggers, plus an env that already holds secrets
+          // so an operator can still edit (and clear) an orphaned one.
+          const known =
+            declaredEnvironmentNames(config).has(environmentName) ||
+            getEnvironmentConfig(projectId, environmentName) != null ||
+            (countEnvironmentSecrets(projectId)[environmentName] ?? 0) > 0;
+          if (!known) {
+            throw new DeployConfigError(
+              'unknown_environment',
+              `Unknown environment: ${environmentName}`,
+            );
+          }
+          return replaceEnvironmentSecrets(
+            projectId,
+            environmentName,
+            parsed.data.secrets,
+            actorUserId,
+          );
+        });
+        return res.json({ projectId, environmentName, secrets });
+      } catch (err) {
+        if (err instanceof PreviewSecretValidationError) {
+          return res.status(400).json({ error: err.message });
+        }
+        if (err instanceof DeployConfigError) return mapConfigError(err, res);
+        if (err instanceof DeploymentCheckoutError) return mapTriggerError(err, res);
+        const message = err instanceof Error ? err.message : String(err);
+        return res.status(500).json({ error: message });
+      }
+    },
+  );
+
+  router.delete(
+    '/api/projects/:projectId/deploy/environments/:environmentName/secrets/:key',
+    requireRole('Owner'),
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      const environmentName = String(req.params.environmentName ?? '').trim();
+      const key = String(req.params.key ?? '');
+      if (!deps.findProject(projectId)) return res.status(404).json({ error: 'Project not found' });
+      try {
+        const actorUserId = (req as AuthenticatedRequest).authUserId ?? null;
+        if (!deleteEnvironmentSecret(projectId, environmentName, key, actorUserId)) {
+          return res.status(404).json({ error: `secret "${key}" not found` });
+        }
+        return res.status(204).end();
+      } catch (err) {
+        if (err instanceof PreviewSecretValidationError) {
+          return res.status(400).json({ error: err.message });
+        }
+        throw err;
       }
     },
   );

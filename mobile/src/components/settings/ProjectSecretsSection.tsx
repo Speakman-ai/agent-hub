@@ -15,6 +15,7 @@ import {
   buildUpsertSecretsPayload,
   displaySecretValue,
   describeSecretsPermissionError,
+  secretsStoreFor,
 } from '../../utils/settingsSecrets';
 const EMPTY_FORM: Record<string, any> = { key: '', value: '', kind: 'secret' };
 /**
@@ -23,7 +24,12 @@ const EMPTY_FORM: Record<string, any> = { key: '', value: '', kind: 'secret' };
  *   the project picker. Without it (global Settings) it lists projects and
  *   shows the picker.
  */
-export default function ProjectSecretsSection({ projectId: lockedProjectId = null }: any = {}) {
+export default function ProjectSecretsSection({
+  projectId: lockedProjectId = null,
+  environmentName = null,
+}: any = {}) {
+  // With `environmentName`, edits the secrets scoped to that deploy environment.
+  const scopedToEnvironment = typeof environmentName === 'string' && environmentName !== '';
   const [projects, setProjects] = useState<any[]>([]);
   const [projectId, setProjectId] = useState(lockedProjectId);
   const [secrets, setSecrets] = useState<any[]>([]);
@@ -48,22 +54,25 @@ export default function ProjectSecretsSection({ projectId: lockedProjectId = nul
       .catch((err: any) => setLoadError(err?.message || 'Failed to load projects.'))
       .finally(() => setLoadingProjects(false));
   }, [lockedProjectId]);
-  const loadSecrets = useCallback(async (pid: any) => {
-    if (!pid) return;
-    setLoadingSecrets(true);
-    setLoadError(null);
-    setSecrets([]);
-    try {
-      const body = await api.getProjectSecrets(pid);
-      setSecrets(Array.isArray(body?.secrets) ? body.secrets : []);
-    } catch (err: any) {
-      setLoadError(
-        describeSecretsPermissionError(err, 'read') || err?.message || 'Failed to load secrets.',
-      );
-    } finally {
-      setLoadingSecrets(false);
-    }
-  }, []);
+  const loadSecrets = useCallback(
+    async (pid: any) => {
+      if (!pid) return;
+      setLoadingSecrets(true);
+      setLoadError(null);
+      setSecrets([]);
+      try {
+        const body = await secretsStoreFor(api, environmentName).load(pid);
+        setSecrets(Array.isArray(body?.secrets) ? body.secrets : []);
+      } catch (err: any) {
+        setLoadError(
+          describeSecretsPermissionError(err, 'read') || err?.message || 'Failed to load secrets.',
+        );
+      } finally {
+        setLoadingSecrets(false);
+      }
+    },
+    [environmentName],
+  );
   useEffect(() => {
     loadSecrets(projectId);
   }, [projectId, loadSecrets]);
@@ -84,7 +93,7 @@ export default function ProjectSecretsSection({ projectId: lockedProjectId = nul
         value: form.value,
         kind: form.kind,
       });
-      const body = await api.putProjectSecrets(projectId, payload);
+      const body = await secretsStoreFor(api, environmentName).save(projectId, payload);
       setSecrets(Array.isArray(body?.secrets) ? body.secrets : []);
       setForm(EMPTY_FORM);
     } catch (err: any) {
@@ -97,14 +106,15 @@ export default function ProjectSecretsSection({ projectId: lockedProjectId = nul
     }
   };
   const handleDelete = (row: any) => {
-    Alert.alert('Delete Secret', `Delete "${row.key}"? Sessions will stop receiving it.`, [
+    const consumer = scopedToEnvironment ? `${environmentName} deployments` : 'Sessions';
+    Alert.alert('Delete Secret', `Delete "${row.key}"? ${consumer} will stop receiving it.`, [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete',
         style: 'destructive',
         onPress: async () => {
           try {
-            await api.deleteProjectSecret(projectId, row.key);
+            await secretsStoreFor(api, environmentName).remove(projectId, row.key);
             setSecrets((prev: any) => prev.filter((s: any) => s.key !== row.key));
           } catch (err: any) {
             Alert.alert(
@@ -123,9 +133,13 @@ export default function ProjectSecretsSection({ projectId: lockedProjectId = nul
   }
   return (
     <View>
-      <Text style={styles.sectionTitle}>Project Secrets</Text>
+      <Text style={styles.sectionTitle}>
+        {scopedToEnvironment ? `Deploy Secrets: ${environmentName}` : 'Project Secrets'}
+      </Text>
       <Text style={styles.sectionDesc}>
-        Environment variables injected into sessions spawned for a project.
+        {scopedToEnvironment
+          ? `Injected only into ${environmentName} deployments, overriding project secrets with the same key. Never available to chat sessions, CI, or previews. Secret values are masked in deploy logs.`
+          : 'Environment variables injected into sessions spawned for a project.'}
       </Text>
 
       <View style={styles.warnBox}>
@@ -177,7 +191,11 @@ export default function ProjectSecretsSection({ projectId: lockedProjectId = nul
       {!loadingSecrets && !loadError && projectId && (
         <>
           {secrets.length === 0 ? (
-            <Text style={styles.emptyText}>No secrets for this project yet.</Text>
+            <Text style={styles.emptyText}>
+              {scopedToEnvironment
+                ? 'No secrets for this environment yet.'
+                : 'No secrets for this project yet.'}
+            </Text>
           ) : (
             secrets.map((row: any) => (
               <View key={row.key} style={styles.secretRow}>

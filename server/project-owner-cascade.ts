@@ -21,6 +21,7 @@
 import type { Project } from './types.js';
 import type { Stmts } from './types.js';
 import { deleteAllPreviewSecretsForProject } from './preview/preview-secrets-store.js';
+import { deleteAllEnvironmentSecretsForProject } from './deploy/deployment-env-secrets-store.js';
 import { deleteProjectSkillsDir } from './project-skill-paths.js';
 import { deleteProjectBrandingDir } from './project-branding.js';
 import { removeAllProjectMembers } from './project-members-store.js';
@@ -53,14 +54,12 @@ export function deleteProjectScopedRows(stmts: Stmts, project: Project): void {
   // destructive work and stop deletion if cleanup fails. The route and
   // owner-deletion sweep both operate on the active Server registry.
   removeBusinessOrganizationProjectLinks(getActiveOrgId(), project.id);
-  try {
-    deleteAllPreviewSecretsForProject(project.id);
-  } catch (err) {
-    console.error(
-      `[deleteProjectScopedRows] Failed to delete project secrets for "${project.id}":`,
-      (err as Error).message,
-    );
-  }
+  // Secrets must be gone before the project is: project ids can be reused, and
+  // a new project with the same id (and environment names) would otherwise
+  // inherit the old project's credentials, including production deploy keys.
+  // A failure propagates so the delete is refused and can be retried.
+  deleteAllPreviewSecretsForProject(project.id);
+  deleteAllEnvironmentSecretsForProject(project.id);
   // Critical: project_members lives in orgs.db with no FK to projects.json.
   // Project ids can be reused, so deletion must stop if ACL cleanup fails;
   // otherwise a future project with the same id could inherit stale members.

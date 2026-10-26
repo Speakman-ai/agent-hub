@@ -109,7 +109,7 @@ export class PreviewSecretValidationError extends Error {
 
 // Internal helpers
 
-function splitIvTag(blob: string): { iv: string; tag: string } {
+export function splitIvTag(blob: string): { iv: string; tag: string } {
   // encryptSecret returns `${iv}:${tag}:${ciphertext}` (all base64).
   // We split once here so the schema's iv/tag columns mirror the
   // canonical parts. Decryption is still done via decryptSecret(blob).
@@ -146,7 +146,7 @@ function rowToPublic(row: RawRow): PreviewSecretRow {
   };
 }
 
-function validateKeyOrThrow(key: string): void {
+export function validateKeyOrThrow(key: string): void {
   if (typeof key !== 'string' || key.length === 0) {
     throw new PreviewSecretValidationError('key is required');
   }
@@ -163,7 +163,7 @@ function validateKeyOrThrow(key: string): void {
   }
 }
 
-function validateValueOrThrow(value: string, key: string): void {
+export function validateValueOrThrow(value: string, key: string): void {
   if (typeof value !== 'string') {
     throw new PreviewSecretValidationError(`value for "${key}" must be a string`);
   }
@@ -172,7 +172,7 @@ function validateValueOrThrow(value: string, key: string): void {
   }
 }
 
-function validateKindOrThrow(kind: SecretKind | undefined, key: string): SecretKind {
+export function validateKindOrThrow(kind: SecretKind | undefined, key: string): SecretKind {
   if (kind === undefined) return 'secret';
   if (kind !== 'plain' && kind !== 'secret') {
     throw new PreviewSecretValidationError(`kind for "${key}" must be "plain" or "secret"`);

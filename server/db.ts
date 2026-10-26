@@ -37,6 +37,7 @@ import {
 import { DEPLOYMENT_SCHEMA } from './deploy/deployment-schema.js';
 import { QA_SCHEMA } from './qa-schema.js';
 import { DEPLOYMENT_ENV_RUNTIME_CONFIG_SCHEMA } from './deploy/deployment-env-config-schema.js';
+import { DEPLOYMENT_ENV_SECRETS_SCHEMA } from './deploy/deployment-env-secrets-schema.js';
 import { DEPLOYMENT_PROJECT_SETTINGS_SCHEMA } from './deploy/deploy-settings-schema.js';
 import { DEPLOYMENT_ENV_TRIGGER_SCHEMA } from './deploy/deployment-trigger-schema.js';
 import { DEPLOYMENT_ENV_SCHEDULE_SCHEMA } from './deploy/deployment-schedule-schema.js';
@@ -3932,6 +3933,8 @@ function initDb(dataDir: string): void {
   // routing in later phases). Co-located schema so its store test can migrate an
   // in-memory DB in isolation.
   db.exec(DEPLOYMENT_ENV_RUNTIME_CONFIG_SCHEMA);
+  // Secrets scoped to one deploy environment; only the deploy orchestrator reads them.
+  db.exec(DEPLOYMENT_ENV_SECRETS_SCHEMA);
   // Deploy environments edited from the Deployments settings UI.
   db.exec(DEPLOYMENT_PROJECT_SETTINGS_SCHEMA);
 
