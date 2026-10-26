@@ -11,6 +11,7 @@ const mutations = {
   deleteQaCase: vi.fn(),
   reorderQaCases: vi.fn(),
   openQaAuthoringSession: vi.fn(),
+  signOffQaPlan: vi.fn(),
 };
 vi.mock('../utils/api', () => ({
   api: {
@@ -22,6 +23,7 @@ vi.mock('../utils/api', () => ({
     deleteQaCase: (...a: unknown[]) => mutations.deleteQaCase(...a),
     reorderQaCases: (...a: unknown[]) => mutations.reorderQaCases(...a),
     openQaAuthoringSession: (...a: unknown[]) => mutations.openQaAuthoringSession(...a),
+    signOffQaPlan: (...a: unknown[]) => mutations.signOffQaPlan(...a),
   },
 }));
 
@@ -737,5 +739,83 @@ describe('QaPlanDetail authoring', () => {
     const onOpenSession = renderDetail(detail());
     fireEvent.click(await screen.findByTestId('qa-open-chat'));
     await waitFor(() => expect(onOpenSession).toHaveBeenCalledWith('proj-qa', 's9'));
+  });
+});
+
+describe('QaPlanDetail sign-off', () => {
+  const renderDetail = (d: QaPlanDetailWire) => {
+    getQaPlan.mockResolvedValue(d);
+    render(<QaPlanDetail projectId="proj" planId="p1" onBack={() => {}} />);
+  };
+  const passing = () => detail({ cases: [qaCase('c1')], runs: [run('r1')], signOffBlocker: null });
+
+  it('signs off an all-pass plan after confirmation', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderDetail(passing());
+    const button = await screen.findByTestId('qa-sign-off');
+    expect(button).toBeEnabled();
+    fireEvent.click(button);
+    await waitFor(() => expect(mutations.signOffQaPlan).toHaveBeenCalledWith('proj', 'p1'));
+    expect(getQaPlan).toHaveBeenCalledTimes(2);
+    confirm.mockRestore();
+  });
+
+  it('does not sign off when the user cancels the confirmation', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    renderDetail(passing());
+    fireEvent.click(await screen.findByTestId('qa-sign-off'));
+    expect(confirm).toHaveBeenCalled();
+    expect(mutations.signOffQaPlan).not.toHaveBeenCalled();
+    confirm.mockRestore();
+  });
+
+  it('disables sign-off and shows why while the latest run is not all-pass', async () => {
+    renderDetail(
+      detail({
+        cases: [qaCase('c1')],
+        runs: [run('r1', { status: 'failed' })],
+        signOffBlocker: 'Latest run is failed, not passed',
+      }),
+    );
+    const button = await screen.findByTestId('qa-sign-off');
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute('title', 'Latest run is failed, not passed');
+    expect(screen.getByTestId('qa-detail-sign-off-note')).toHaveTextContent(
+      'Latest run is failed, not passed',
+    );
+  });
+
+  it('shows the server refusal when the gate closed before the click landed', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    mutations.signOffQaPlan.mockRejectedValue(new Error('Latest run is running, not passed'));
+    renderDetail(passing());
+    fireEvent.click(await screen.findByTestId('qa-sign-off'));
+    expect(await screen.findByText('Latest run is running, not passed')).toBeInTheDocument();
+    confirm.mockRestore();
+  });
+
+  it('hides sign-off on new and done plans and shows when a done plan was signed off', async () => {
+    const done = passing();
+    done.plan = {
+      ...done.plan,
+      status: 'done',
+      signedOffAt: '2026-10-26 12:00:00',
+      signedOffBy: 'u2',
+    };
+    renderDetail(done);
+    expect(await screen.findByTestId('qa-detail-signed-off')).toHaveAttribute(
+      'title',
+      'Signed off by u2',
+    );
+    expect(screen.queryByTestId('qa-sign-off')).toBeNull();
+    expect(screen.getByTestId('qa-detail-locked')).toHaveTextContent('Start a run to reopen');
+  });
+
+  it('hides sign-off on a plan that was never run', async () => {
+    const fresh = detail({ cases: [qaCase('c1')] });
+    fresh.plan = { ...fresh.plan, status: 'new' };
+    renderDetail(fresh);
+    await screen.findByTestId('qa-detail-status');
+    expect(screen.queryByTestId('qa-sign-off')).toBeNull();
   });
 });

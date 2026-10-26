@@ -3,6 +3,7 @@ import {
   ArrowDown,
   ArrowLeft,
   ArrowUp,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
   ExternalLink,
@@ -735,11 +736,35 @@ export default function QaPlanDetail({
                 {plan.approved ? 'Approved' : 'Not approved'}
               </span>
               {plan.signedOffAt && (
-                <span className="rounded-full bg-gray-800 px-2 py-0.5 text-[11px] text-gray-300">
+                <span
+                  data-testid="qa-detail-signed-off"
+                  className="rounded-full bg-emerald-950 px-2 py-0.5 text-[11px] text-emerald-300"
+                  title={plan.signedOffBy ? `Signed off by ${plan.signedOffBy}` : undefined}
+                >
                   Signed off {formatDateTime(plan.signedOffAt)}
                 </span>
               )}
               <div className="ml-auto flex flex-wrap items-center gap-2">
+                {plan.status === 'in_progress' && (
+                  <button
+                    type="button"
+                    data-testid="qa-sign-off"
+                    disabled={busy || detail.signOffBlocker !== null}
+                    title={
+                      detail.signOffBlocker ??
+                      'Record your manual validation and move the plan to Done'
+                    }
+                    onClick={() => {
+                      if (window.confirm('Sign off this plan and move it to Done?')) {
+                        void act(() => api.signOffQaPlan(projectId, planId));
+                      }
+                    }}
+                    className="inline-flex items-center gap-1 rounded-md bg-emerald-700 px-2.5 py-1 text-xs text-white hover:bg-emerald-600 disabled:opacity-60"
+                  >
+                    <CheckCircle2 size={12} />
+                    Sign off
+                  </button>
+                )}
                 <button
                   type="button"
                   data-testid="qa-open-chat"
@@ -807,6 +832,13 @@ export default function QaPlanDetail({
             <div data-testid="qa-detail-approved-note" className="text-xs text-gray-500">
               Approved: the case list is locked for runs. Editing, adding, or deleting a case
               revokes approval, and an edited case gets a new version.
+            </div>
+          )}
+          {plan.status === 'in_progress' && (
+            <div data-testid="qa-detail-sign-off-note" className="text-xs text-gray-500">
+              {detail.signOffBlocker === null
+                ? 'The latest run passed every case. Validate the target by hand, then sign off to move the plan to Done.'
+                : `Sign-off opens once the latest run passes every case. ${detail.signOffBlocker}.`}
             </div>
           )}
           {lockReason && (

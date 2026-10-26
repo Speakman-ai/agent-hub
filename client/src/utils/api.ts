@@ -2728,6 +2728,11 @@ export const api = {
     fetchJSON<{ plan: QaPlanWire }>(`${qaPlanPath(projectId, planId)}/revoke-approval`, {
       method: 'POST',
     }),
+  /** Human sign-off. The server refuses (409 `not_all_pass`) unless the latest run is all-pass. */
+  signOffQaPlan: (projectId: string, planId: string) =>
+    fetchJSON<{ plan: QaPlanWire }>(`${qaPlanPath(projectId, planId)}/sign-off`, {
+      method: 'POST',
+    }),
   // Per-project Stats page — daily/weekly/monthly product metrics.
   getProjectStats: (projectId: any, { granularity = 'day', buckets }: any = {}) => {
     const qs = new URLSearchParams({ granularity });

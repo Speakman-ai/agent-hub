@@ -452,6 +452,36 @@ describe('approval and runs', () => {
     expect(signed.body.plan).toMatchObject({ status: 'done', signedOffBy: 'user-1' });
   });
 
+  it('reopens a signed-off plan when a new run starts, and refuses sign-off until it passes', async () => {
+    const { planId, caseIds } = await approvedPlan();
+    const passRun = async () => {
+      const started = await request(app).post(`${base}/${planId}/runs`).send({}).expect(201);
+      for (const caseId of caseIds) {
+        await request(app)
+          .post(`${base}/${planId}/runs/${started.body.run.id}/results`)
+          .send({ caseId, verdict: 'pass' })
+          .expect(200);
+      }
+      return started;
+    };
+    await passRun();
+    await request(app).post(`${base}/${planId}/sign-off`).expect(200);
+    const done = await request(app).get(`${base}/${planId}`).expect(200);
+    expect(done.body.plan).toMatchObject({ status: 'done', signedOffBy: 'user-1' });
+    expect(done.body.plan.signedOffAt).not.toBeNull();
+    const listed = await request(app).get(base).expect(200);
+    expect(JSON.stringify(listed.body)).toContain(planId);
+
+    const reopened = await request(app).post(`${base}/${planId}/runs`).send({}).expect(201);
+    expect(reopened.body.plan).toMatchObject({
+      status: 'in_progress',
+      signedOffAt: null,
+      signedOffBy: null,
+    });
+    const blocked = await request(app).post(`${base}/${planId}/sign-off`).expect(409);
+    expect(blocked.body.code).toBe('not_all_pass');
+  });
+
   it('refuses sign-off when the latest run did not pass', async () => {
     const { planId, caseIds } = await approvedPlan();
     const runId = (await request(app).post(`${base}/${planId}/runs`).send({}).expect(201)).body.run
