@@ -12,6 +12,7 @@ export const HUB_ICON_NAMES = [
   'Check',
   'Circle',
   'CircleCheck',
+  'ClipboardCheck',
   'FileSpreadsheet',
   'HardDrive',
   'ChevronDown',

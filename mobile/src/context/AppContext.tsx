@@ -117,6 +117,7 @@ import { shouldAutoPresentArtifact } from '@shared/utils/artifactView';
 import { appendImportEvent } from '@shared/utils/projectImportWizard';
 import { addKanbanRefreshProject, createRefreshScheduler } from '@shared/utils/kanbanRefresh';
 import { isSidebarWsEvent } from '@shared/utils/sessionSidebar';
+import { createQaUpdateHub } from '../utils/qa';
 
 // Mobile relies on the server's `sidebarParentId` tag and the lifecycle
 // events rather than tracking SideBar ids itself.
@@ -298,6 +299,11 @@ export function AppProvider({ children }: any) {
   // bump a timestamp so an effect keyed on it re-runs. Shape:
   //   { action: 'created'|'updated'|'deleted'|'reordered'|'promoted', bump }
   const [lastUserTodoEvent, setLastUserTodoEvent] = useState<any>(null);
+  // Every `qa_update` broadcast ({ projectId, planId }) goes to each listener.
+  // A single state slot would drop all but the last of a batch, leaving an
+  // open plan stale when another plan's update arrived in the same render.
+  const qaUpdateHub = useMemo(() => createQaUpdateHub(), []);
+  const subscribeQaUpdates = qaUpdateHub.subscribe;
   // `reminder_update` WS events (owner-only on the server) go to subscribers
   // one by one. A "last event" state would drop all but the last of several
   // events delivered in one render batch (e.g. two reminders firing at once).
@@ -1026,6 +1032,9 @@ export function AppProvider({ children }: any) {
           // any event we receive is ours. Surface it so TodosScreen can
           // silently refetch (create/update/delete/reorder/promote).
           setLastUserTodoEvent({ action: data.action ?? null, bump: Date.now() });
+          break;
+        case 'qa_update':
+          qaUpdateHub.emit(data);
           break;
         case 'reminder_update':
           for (const listener of reminderListenersRef.current) {
@@ -3030,6 +3039,7 @@ export function AppProvider({ children }: any) {
     lastInfraHealthEvent,
     // Cross-project personal todos (live refetch signal)
     lastUserTodoEvent,
+    subscribeQaUpdates,
     subscribeReminderUpdates,
     lastGoogleChatDraftEvent,
     lastOrganizationEvent,

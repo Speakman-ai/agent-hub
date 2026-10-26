@@ -21,6 +21,7 @@ import type { SessionContextUsage } from '@shared/utils/contextUsage';
 import type { InboxNotification } from '@shared/utils/notificationInbox';
 import type { BrowserDomainPolicy, BrowserProfileWire } from '@shared/utils/browserProfiles';
 import type { ApprovalDecision, ApprovalRuleWire, ApprovalWire } from '@shared/utils/approvals';
+import type { QaCaseDraft, QaPlan, QaPlanDetail, QaPlanListResponse, QaRunScope } from './qa';
 /** A machine error code (`no_pushable_commits`) rather than human copy. */
 const ERROR_CODE_RE = /^[a-z][a-z0-9]*(_[a-z0-9]+)*$/;
 /**
@@ -112,6 +113,8 @@ export function infraQuery(params: Record<string, any>): string {
   const qs = search.toString();
   return qs ? `?${qs}` : '';
 }
+const qaPlanPath = (projectId: string, planId: string) =>
+  `/projects/${encodeURIComponent(projectId)}/qa/plans/${encodeURIComponent(planId)}`;
 export const api = {
   organizations: createOrganizationApi(fetchJSON),
   organizationAgents: createOrganizationAgentApi(fetchJSON),
@@ -835,6 +838,77 @@ export const api = {
     }),
   revertDeploySettings: (projectId: string) =>
     fetchJSON(`/projects/${projectId}/deploy/settings`, { method: 'DELETE' }),
+  // QA Validation (mirrors client/src/utils/api.ts)
+  listQaPlans: (projectId: string): Promise<QaPlanListResponse> =>
+    fetchJSON(`/projects/${encodeURIComponent(projectId)}/qa/plans`),
+  getQaPlan: (projectId: string, planId: string): Promise<QaPlanDetail> =>
+    fetchJSON(qaPlanPath(projectId, planId)),
+  createQaPlan: (
+    projectId: string,
+    input: {
+      title: string;
+      targetUrl: string;
+      goal?: string;
+      epicId?: string | null;
+      cardId?: string | null;
+    },
+  ): Promise<{ plan: QaPlan }> =>
+    fetchJSON(`/projects/${encodeURIComponent(projectId)}/qa/plans`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  openQaAuthoringSession: (
+    projectId: string,
+    planId: string,
+  ): Promise<{ sessionId: string; agentId: string; created: boolean }> =>
+    fetchJSON(`${qaPlanPath(projectId, planId)}/authoring-session`, { method: 'POST' }),
+  addQaCase: (projectId: string, planId: string, input: QaCaseDraft) =>
+    fetchJSON(`${qaPlanPath(projectId, planId)}/cases`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  /** With `expectedBase`, the server refuses (code `edit_conflict`) if a listed field changed. */
+  updateQaCase: (
+    projectId: string,
+    planId: string,
+    caseId: string,
+    input: Partial<QaCaseDraft> & { expectedBase?: Partial<QaCaseDraft> },
+  ) =>
+    fetchJSON(`${qaPlanPath(projectId, planId)}/cases/${encodeURIComponent(caseId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+  deleteQaCase: (projectId: string, planId: string, caseId: string) =>
+    fetchJSON(`${qaPlanPath(projectId, planId)}/cases/${encodeURIComponent(caseId)}`, {
+      method: 'DELETE',
+    }),
+  reorderQaCases: (projectId: string, planId: string, orderedIds: string[]) =>
+    fetchJSON(`${qaPlanPath(projectId, planId)}/cases/reorder`, {
+      method: 'POST',
+      body: JSON.stringify({ orderedIds }),
+    }),
+  approveQaPlan: (projectId: string, planId: string) =>
+    fetchJSON(`${qaPlanPath(projectId, planId)}/approve`, { method: 'POST' }),
+  revokeQaPlanApproval: (projectId: string, planId: string) =>
+    fetchJSON(`${qaPlanPath(projectId, planId)}/revoke-approval`, { method: 'POST' }),
+  updateQaPlan: (
+    projectId: string,
+    planId: string,
+    patch: { deployEnvironment?: string | null; autoRerun?: boolean; maxIterations?: number },
+  ) => fetchJSON(qaPlanPath(projectId, planId), { method: 'PATCH', body: JSON.stringify(patch) }),
+  startQaRun: (
+    projectId: string,
+    planId: string,
+    scope: QaRunScope,
+  ): Promise<{ run: unknown; sessionId: string; agentId: string }> =>
+    fetchJSON(`${qaPlanPath(projectId, planId)}/runs`, {
+      method: 'POST',
+      body: JSON.stringify({ scope }),
+    }),
+  /** The server refuses (409 `not_all_pass`) unless the latest run is all-pass. */
+  signOffQaPlan: (projectId: string, planId: string) =>
+    fetchJSON(`${qaPlanPath(projectId, planId)}/sign-off`, { method: 'POST' }),
+  getBoardCards: (projectId: string) => fetchJSON(`/projects/${projectId}/board/cards`),
   getDeployEnvironments: (projectId: any) =>
     fetchJSON(`/projects/${projectId}/deploy/environments`),
   setDeployEnvironmentEnabled: (projectId: any, environmentName: any, enabled: boolean) =>

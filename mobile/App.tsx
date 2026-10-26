@@ -51,6 +51,7 @@ import RumSettingsScreen from './src/screens/RumSettingsScreen';
 import LogSourcesScreen from './src/screens/LogSourcesScreen';
 import LogsScreen from './src/screens/LogsScreen';
 import ReplaysScreen from './src/screens/ReplaysScreen';
+import QaScreen from './src/screens/QaScreen';
 import AwsProfilesScreen from './src/screens/AwsProfilesScreen';
 import InfrastructureScreen from './src/screens/InfrastructureScreen';
 import ReviewerScreen from './src/screens/ReviewerScreen';
@@ -277,6 +278,7 @@ function AppContent() {
             <Stack.Screen name="LogSources" component={LogSourcesScreen} />
             <Stack.Screen name="Logs" component={LogsScreen} />
             <Stack.Screen name="Replays" component={ReplaysScreen} />
+            <Stack.Screen name="Qa" component={QaScreen} />
             <Stack.Screen name="AwsProfiles" component={AwsProfilesScreen} />
             <Stack.Screen name="Infrastructure" component={InfrastructureScreen} />
             <Stack.Screen name="Reviewer" component={ReviewerScreen} />

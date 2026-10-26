@@ -20,6 +20,7 @@ export const HUB_NATIVE_ICONS: Record<string, any> = {
   Check: { family: 'feather', name: 'check' },
   Circle: { family: 'feather', name: 'circle' },
   CircleCheck: { family: 'feather', name: 'check-circle' },
+  ClipboardCheck: { family: 'material', name: 'assignment-turned-in' },
   FileSpreadsheet: { family: 'material', name: 'file-table' },
   HardDrive: { family: 'feather', name: 'hard-drive' },
   ChevronDown: { family: 'feather', name: 'chevron-down' },

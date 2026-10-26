@@ -3,7 +3,7 @@
  *
  * Mirrors the web sidebar (`client/src/components/Sidebar.tsx`):
  *   - Git       — Repository, Pulls, Deployments
- *   - Planning  — Board, Epics, Stats, Notes
+ *   - Planning  — Board, Epics, QA, Stats, Notes
  *   - Support   — Customer Issues, Logs, RUM, Replays, AWS, Infrastructure, Security
  *   - AI        — Reviewer, Agents, Background Agents, Skills, Wiki
  *   - Settings  — Project Configuration, Finalize CI, Previews, Cron Jobs
@@ -60,6 +60,7 @@ export function projectNavGroups(project: any, agents?: any[]) {
       entries: [
         { key: 'board', label: 'Board', icon: 'LayoutGrid', screen: 'Kanban' },
         { key: 'epics', label: 'Epics', icon: 'Target', screen: 'Epics' },
+        { key: 'qa', label: 'QA', icon: 'ClipboardCheck', screen: 'Qa' },
         !workflow && { key: 'stats', label: 'Stats', icon: 'BarChart3', screen: 'Stats' },
         { key: 'notes', label: 'Notes', icon: 'StickyNote', screen: 'Notes' },
       ],

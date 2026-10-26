@@ -23,6 +23,7 @@ describe('projectNavGroups', () => {
     expect(group({}, 'planning').entries.map((e) => e.key)).toEqual([
       'board',
       'epics',
+      'qa',
       'stats',
       'notes',
     ]);
