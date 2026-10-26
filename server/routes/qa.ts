@@ -28,6 +28,7 @@ import { abandonUnseededSession, kickoffSeededTurn } from '../seeded-session-kic
 import { broadcastSessionCreated } from '../session-checkpoint-rewind.js';
 import { resolveOwnerUserId, setSessionOwner } from '../session-ownership.js';
 import { QA_VERDICTS } from '../qa-schema.js';
+import { fileQaFindingCards } from '../qa-findings.js';
 import {
   parseQaArtifactIds,
   postQaRunSummary,
@@ -409,6 +410,23 @@ export default function createQaRoutes(deps: RouteDeps): Router {
       return false;
     }
     return true;
+  };
+
+  /**
+   * A run just finished: file finding cards, then post the run summary. Card
+   * rows and result links are written before the first await inside
+   * `fileQaFindingCards`, so the summary already links them; assignment (the
+   * fix-session spawn) completes in the background.
+   */
+  const afterRunFinished = (plan: QaPlanRow, runId: string): void => {
+    fileQaFindingCards(deps, runId)
+      .then((outcomes) => {
+        if (outcomes.length > 0) {
+          emit(plan.project_id, plan.id, { action: 'findings_filed', runId });
+        }
+      })
+      .catch((err) => console.error(`[qa] filing finding cards failed run=${runId}:`, err));
+    postQaRunSummary({ broadcast, project: findProject(plan.project_id)! }, runId);
   };
 
   const BASE = '/api/projects/:projectId/qa/plans';
@@ -858,9 +876,7 @@ export default function createQaRoutes(deps: RouteDeps): Router {
     );
 
   runAction('begin', 'run_running', markQaRunRunning);
-  runAction('finish', 'run_finished', finishQaRun, (plan, run) =>
-    postQaRunSummary({ broadcast, project: findProject(plan.project_id)! }, run.id),
-  );
+  runAction('finish', 'run_finished', finishQaRun, (plan, run) => afterRunFinished(plan, run.id));
   // Cancelling also stops the run's session, so the agent stops driving the target.
   runAction('cancel', 'run_cancelled', (runId) => {
     const cancelled = cancelQaRun(runId);
@@ -886,7 +902,7 @@ export default function createQaRoutes(deps: RouteDeps): Router {
       const finished = completeQaRunIfCovered(run.id);
       if (finished) {
         emit(plan.project_id, plan.id, { action: 'run_finished', runId: run.id });
-        postQaRunSummary({ broadcast, project: findProject(plan.project_id)! }, run.id);
+        afterRunFinished(plan, run.id);
       }
       res.json({
         result: serializeQaRunResults(finished ?? run).find((r) => r.id === result.id)!,

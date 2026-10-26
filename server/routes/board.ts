@@ -27,12 +27,9 @@ import {
   loadBlockersForCards,
   isSystemLockedColumnName,
   isColumnNotStarted,
-  isColumnDone,
 } from '../kanban-blockers.js';
 import {
   blocksPrematureDoneMove,
-  cardLinkedPrMerged,
-  CARD_ALREADY_DONE_ERROR,
   PREMATURE_DONE_ERROR,
   PREMATURE_DONE_MESSAGE,
 } from '../kanban-premature-done.js';
@@ -63,7 +60,6 @@ import { loadAssignableUsers, normalizeAssignedUserId } from '../kanban-assigned
 import { normalizeTemplatePriority, templateRowToClient } from '../kanban-card-templates.js';
 import { getDb } from '../db.js';
 import { readAll } from '../db-async/read-facade.js';
-import { loadCardReplayContext } from '../replays/replay-context-loader.js';
 import {
   scheduleAutonomousPhase,
   startAutonomousPhase,
@@ -74,7 +70,6 @@ import {
   validateKanbanAssignModelForEngine,
 } from '../kanban-assign-model.js';
 import { sanitizeOrchestrationBudgetsPartial } from '../orchestration-budgets.js';
-import { defaultSessionUseWorktreeFlag } from '../project-mode.js';
 import { maybeStartKanbanColumnWorkflowRuns } from '../workflow-triggers.js';
 import { setSessionOwner, resolveOwnerUserId, getSessionOwner } from '../session-ownership.js';
 import { enrichSessionForClient } from '../session-checkpoint-rewind.js';
@@ -87,8 +82,7 @@ import {
 } from '../epic-state.js';
 import { normalizeKanbanTitle } from '../kanban-title.js';
 import { disableAutonomousForEmptyEpic } from '../kanban-epic-autonomous-empty.js';
-import { markSessionAutoShipOnComplete, markSessionFinalizeAutomation } from '../session-ship.js';
-import { assignedFinalizeAutomationLevel } from '../finalize/automation.js';
+import { markSessionFinalizeAutomation } from '../session-ship.js';
 import {
   canReadReporterEmail,
   linkedSupportTicketMetadata,
@@ -99,26 +93,13 @@ import {
   countUnreadSupportTickets,
   markSupportTicketsFixedPendingReleaseForCard,
 } from '../support-tickets-store.js';
-import { buildAssignedCardSessionContext } from '../assign-card-context.js';
-import { assertEngineCredsOrThrow, EngineAuthRequiredError } from '../per-user-cli-spawn.js';
-import { restoreCardAfterFailedAssign } from '../kanban-assign-restore.js';
-import { loadCardSupportTicketCommentContext } from '../support-ticket-comment-context.js';
-import {
-  buildSpikeSessionContext,
-  buildSpikeSessionContextFallback,
-  completeSpikeCardForSpecItem,
-  ensureSpecItemForSpikeCard,
-  getSpecItemForSpikeCard,
-  isSpikeCard,
-  normalizeSpecItemStatus,
-} from '../epic-spec.js';
+import { assignKanbanCard } from '../kanban-assign.js';
+import { completeSpikeCardForSpecItem, normalizeSpecItemStatus } from '../epic-spec.js';
 import { buildDecideForMeSessionContext, pickDefaultDecideAgent } from '../spec-decide-for-me.js';
 import { buildNoteScopingKickoff } from '../note-scoping.js';
-import { resolveShouldAutoMerge } from '../auto-merge.js';
 import { parseSourceMeta, serializeSourceMeta } from '../source-provenance.js';
 import { releaseIssueFixClaimsForCard } from '../logs/log-issues-store.js';
 import type { AuthenticatedRequest } from '../auth.js';
-import { cardNeedsDevHubKey, getDevHubApiKey } from '../secrets.js';
 import {
   CreateCardRequestSchema,
   UpdateCardRequestSchema,
@@ -1700,277 +1681,24 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
 
       const parsedAssign = parseBody(AssignCardRequestSchema, req, res);
       if (!parsedAssign) return;
-      const {
-        agentId,
-        model: modelBody,
-        engine: engineBody,
-        autoMerge: autoMergeBody,
-        comment: commentBody,
-        reopen,
-      } = parsedAssign;
-
-      // A card that already shipped must not be pulled back to In Progress
-      // and handed a fresh session by a stray assign: the old session link is
-      // overwritten and, if the spawn then fails, the card is left stuck.
-      // Reopening shipped work is a deliberate act, so it needs `reopen`.
-      if (reopen !== true) {
-        const currentColumn = stmts.getKanbanColumn.get(card.column_id) as
-          | KanbanColumnRow
-          | undefined;
-        if (isColumnDone(currentColumn?.name)) {
-          return res.status(409).json({
-            error: CARD_ALREADY_DONE_ERROR,
-            message: `Card is in "${currentColumn?.name}". Pass "reopen": true to assign it again.`,
-          });
-        }
-        if (cardLinkedPrMerged(stmts, card)) {
-          return res.status(409).json({
-            error: CARD_ALREADY_DONE_ERROR,
-            message: `Card's linked PR (${card.pr_url}) is already merged. Pass "reopen": true to assign it again.`,
-          });
-        }
-      }
-
-      const found = findAgent(agentId);
-      if (!found) return res.status(404).json({ error: 'Agent not found' });
-      const { agent } = found;
-      const project = findProject(req.params.projectId as string);
-      if (!project) return res.status(404).json({ error: 'Project not found' });
-
-      const sessionId = crypto.randomUUID();
-      const trimmedOverride =
-        typeof modelBody === 'string' && modelBody.trim() ? modelBody.trim() : null;
-      // Validate the optional engine override against the configured
-      // engineValidModels keys before passing it to the resolver — an
-      // unknown engine id has to be a 400, not a silent fallback to the
-      // shared agent engine. NULL/missing = "no override".
-      const trimmedEngineOverride =
-        typeof engineBody === 'string' && engineBody.trim() ? engineBody.trim() : null;
-      if (trimmedEngineOverride) {
-        const allowedEngines = Object.keys(config.engineValidModels || {});
-        if (!allowedEngines.includes(trimmedEngineOverride)) {
-          return res.status(400).json({
-            error: `Invalid engine "${trimmedEngineOverride}". Allowed: ${allowedEngines.join(', ')}`,
-          });
-        }
-      }
-      const assignOwnerUid = resolveOwnerUserId(req as AuthenticatedRequest);
-      const { engine, model: resolvedModel } = resolveEffectiveEngineAndModel(config, {
-        agentId,
-        agentEngine: agent.engine || 'claude-code',
-        agentModel: agent.model ?? null,
-        ownerUserId: assignOwnerUid,
-        explicitEngine: trimmedEngineOverride,
-        explicitModel: trimmedOverride,
-      });
-      if (trimmedOverride) {
-        // Validate the model against the engine the spawn will actually use
-        // — which may be the explicit engine override, the per-user override
-        // engine, or the agent's shared engine. Going through the
-        // engine-keyed validator avoids the agent-name fallback in
-        // `validateKanbanAssignModel`, which would otherwise widen the
-        // allowlist to `cfg.allValidModels` (the global union across every
-        // engine) when the resolved engine doesn't match `agent.engine` —
-        // letting e.g. a claude-code model through even though the spawn
-        // will use codex-cli.
-        const v = validateKanbanAssignModelForEngine(trimmedOverride, engine, config);
-        if (!v.ok) return res.status(400).json({ error: v.error });
-      }
-      // The spawn runs on the session owner's own engine credentials and
-      // hard-fails without them. Check before creating the session or touching
-      // the card, so a failed assign leaves the board exactly as it was.
-      try {
-        assertEngineCredsOrThrow(engine, assignOwnerUid, config.dataDir);
-      } catch (err) {
-        if (err instanceof EngineAuthRequiredError) {
-          return res.status(409).json({ error: err.message, code: 'no_account_credentials' });
-        }
-        throw err;
-      }
-      // Resolve the auto-merge preference for this assignment. An explicit
-      // boolean in the request body wins; otherwise fall back to whatever the
-      // card already carries (e.g. carried over from a converted support
-      // ticket — 1/0), and finally to the project default via
-      // `resolveShouldAutoMerge`. `undefined` means "no override → use project
-      // default".
-      const autoMergeOverride: boolean | undefined =
-        typeof autoMergeBody === 'boolean'
-          ? autoMergeBody
-          : card.auto_merge === 1
-            ? true
-            : card.auto_merge === 0
-              ? false
-              : undefined;
-
-      const spikeAssign = isSpikeCard(card);
-      // Spikes get a worktree so they can try code; ship routes refuse them.
-      const wt = defaultSessionUseWorktreeFlag(project);
-      let linkedSpecItem = spikeAssign ? getSpecItemForSpikeCard(stmts, card.id) : null;
-      if (spikeAssign && card.epic_id) {
-        linkedSpecItem = ensureSpecItemForSpikeCard(stmts, card) ?? linkedSpecItem;
-      }
-      stmts.createSession.run(sessionId, agentId, card.title, engine, resolvedModel, wt, 0, 1);
-      if (spikeAssign) {
-        stmts.updateSessionMode.run('scoping', sessionId);
-        stmts.updateSessionSpikeCard.run(card.id, sessionId);
-        if (card.epic_id) stmts.updateSessionLinkedEpic.run(card.epic_id, sessionId);
-        if (linkedSpecItem) stmts.updateSessionLinkedSpecItem.run(linkedSpecItem.id, sessionId);
-        markSessionFinalizeAutomation(stmts, sessionId, 'manual');
-      } else {
-        markSessionAutoShipOnComplete(stmts, sessionId);
-        markSessionFinalizeAutomation(
-          stmts,
-          sessionId,
-          assignedFinalizeAutomationLevel(
-            resolveShouldAutoMerge(autoMergeOverride, project.githubWorkflow),
-          ),
-        );
-      }
-      // Reuse the owner uid resolved above; no need to walk req.user twice
-      // in the same handler.
-      setSessionOwner(sessionId, assignOwnerUid);
-
-      const board = stmts.getKanbanBoard.get(req.params.projectId) as KanbanBoardRow | undefined;
-      let inProgressColumnId = card.column_id;
-      if (board) {
-        const cols = stmts.getKanbanColumns.all(board.id) as KanbanColumnRow[];
-        const inProgress = cols.find((c) => c.name.toLowerCase() === 'in progress');
-        if (inProgress) inProgressColumnId = inProgress.id;
-      }
-
-      stmts.updateKanbanCard.run(
-        card.title,
-        card.description,
-        card.priority,
-        agent.name,
-        card.labels,
-        sessionId,
-        card.github_issue_url,
-        card.pr_url,
-        card.epic_id,
-        card.phase_id ?? null,
-        trimmedOverride,
-        trimmedEngineOverride,
-        card.pr_base_branch ?? null,
-        req.params.cardId,
-      );
-      stmts.moveKanbanCard.run(inProgressColumnId, 0, req.params.cardId);
-      // If the card has no lead user yet, the person dispatching the work
-      // becomes its lead so the now-in-progress card surfaces in their "My
-      // Work" home pane. Mirrors card-create defaulting the lead to the acting
-      // user (`normalizeAssignedUserForCreate`); an existing lead (e.g. an epic
-      // lead already propagated) is never overridden.
-      if (assignOwnerUid && !card.assigned_user_id) {
-        stmts.setKanbanCardAssignedUser.run(assignOwnerUid, req.params.cardId);
-      }
-      recomputeEpicState(stmts, card.epic_id);
-
-      // Persist an explicit auto-merge override on the card so it stays visible
-      // in the assign UI and survives reassignment. Only an explicit boolean
-      // mutates the stored value; a fallback to the card's existing preference
-      // (or project default) leaves it untouched.
-      if (typeof autoMergeBody === 'boolean') {
-        stmts.setKanbanCardAutoMerge.run(autoMergeBody ? 1 : 0, req.params.cardId);
-      }
-
-      // Record an optional assignment note as a card comment so it's part of
-      // the card's audit trail (it's also threaded into the agent's task
-      // context below).
-      const assignmentNote = typeof commentBody === 'string' ? commentBody.trim() : '';
-      if (assignmentNote) {
-        stmts.createKanbanCardComment.run(uuidv4(), req.params.cardId, agent.name, assignmentNote);
-      }
-
-      const contextLines: string[] = [];
-      if (spikeAssign) {
-        // The session was created in scoping mode with manual finalize, so its
-        // first message must be the spike instructions, never the
-        // implementation prompt. Mirror autonomous dispatch: use the
-        // spec-linked context when one exists, else the fallback (deriving the
-        // question from the card title). Emitting `# Task: …` here would tell
-        // the agent to build and ship the feature.
-        contextLines.push(
-          linkedSpecItem
-            ? buildSpikeSessionContext({
-                card,
-                specItem: linkedSpecItem,
-                projectId: req.params.projectId as string,
-              })
-            : buildSpikeSessionContextFallback({
-                card,
-                projectId: req.params.projectId as string,
-              }),
-        );
-      } else {
-        // Seed the session replay attached to this card (support tickets carry
-        // one; conversion moves the attribution to `session_replays.card_id`).
-        // Without this the agent inherits only the inert `/uploads/replay-*.json`
-        // string that survives inside the card description, and has no way to
-        // know what the customer actually did. Non-fatal by contract: a missing
-        // blob or a storage outage returns null and the assignment proceeds.
-        const replayContext = await loadCardReplayContext(
-          { stmts, config },
-          req.params.cardId as string,
-        );
-
-        contextLines.push(
-          buildAssignedCardSessionContext({
-            card,
-            projectId: req.params.projectId as string,
-            assignmentNote,
-            replayContext,
-          }),
-        );
-      }
-
-      const commentContext = loadCardSupportTicketCommentContext(
-        stmts,
-        card,
-        req.params.projectId as string,
-      );
-      if (commentContext) contextLines.push(`\n${commentContext}`);
-
-      const contextMessage = contextLines.join('\n');
-
-      const extraEnv: Record<string, string> = {};
-      if (cardNeedsDevHubKey(card.labels)) {
-        const devHubKey = await getDevHubApiKey();
-        if (devHubKey) extraEnv.DEV_HUB_API_KEY = devHubKey;
-      }
-
-      handleChat(null, {
-        type: 'chat',
-        agentId,
-        sessionId,
-        content: contextMessage,
-        hookSpecificOutput: { sessionTitle: card.title },
-        ...(Object.keys(extraEnv).length > 0 ? { extraEnv } : {}),
-      }).catch((err: Error) => {
-        console.error(`[Board Assign] handleChat failed for session ${sessionId}:`, err.message);
-        restoreCardAfterFailedAssign(stmts, broadcast, {
-          before: card,
-          sessionId,
-          assignedColumnId: inProgressColumnId,
+      const result = await assignKanbanCard(
+        { stmts, config, findAgent, findProject, handleChat, broadcast },
+        {
+          card,
           projectId: req.params.projectId as string,
-          reason: err.message,
-        });
-        broadcast({
-          type: 'error',
-          agentId,
-          sessionId,
-          message: `Failed to start agent session: ${err.message}`,
-        });
-      });
-
-      broadcast({ type: 'kanban_update', projectId: req.params.projectId });
-      broadcast({
-        type: 'session_created',
-        agentId,
-        session: enrichSessionForClient(stmts.getSession.get(sessionId) as SessionRow, stmts),
-      });
+          agentId: parsedAssign.agentId,
+          ownerUserId: resolveOwnerUserId(req as AuthenticatedRequest),
+          model: parsedAssign.model,
+          engine: parsedAssign.engine,
+          autoMerge: parsedAssign.autoMerge,
+          comment: parsedAssign.comment,
+          reopen: parsedAssign.reopen,
+        },
+      );
+      if (!result.ok) return res.status(result.status).json(result.body);
 
       res.json({
-        sessionId,
+        sessionId: result.sessionId,
         card: serializeCardForRequest(
           req,
           stmts,

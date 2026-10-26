@@ -495,6 +495,33 @@ describe('approval and runs', () => {
     expect(res.body.code).toBe('not_all_pass');
   });
 
+  it('files a finding card when the last result finishes a run with a failure', async () => {
+    const { planId, caseIds } = await approvedPlan();
+    getDb().exec(
+      `INSERT OR IGNORE INTO kanban_columns (id, board_id, name, position)
+         VALUES ('col-todo', 'board-proj', 'To Do', 0)`,
+    );
+    const runId = (await request(app).post(`${base}/${planId}/runs`).send({}).expect(201)).body.run
+      .id;
+    await request(app)
+      .post(`${base}/${planId}/runs/${runId}/results`)
+      .send({ caseId: caseIds[0], verdict: 'pass' })
+      .expect(200);
+    const last = await request(app)
+      .post(`${base}/${planId}/runs/${runId}/results`)
+      .send({ caseId: caseIds[1], verdict: 'fail', actual: 'Pay button does nothing' })
+      .expect(200);
+
+    expect(last.body.run.status).toBe('failed');
+    const cardId = last.body.result.findingCardId as string;
+    expect(cardId).toBeTruthy();
+    const card = getDb()
+      .prepare('SELECT title, labels, description FROM kanban_cards WHERE id = ?')
+      .get(cardId) as { title: string; labels: string; description: string };
+    expect(card).toMatchObject({ title: 'QA: Pay', labels: 'qa-finding' });
+    expect(card.description).toContain('Pay button does nothing');
+  });
+
   it('refuses results on a queued run and on a cancelled run', async () => {
     const { planId, caseIds } = await approvedPlan();
     // A run queued outside the route has no session yet and stays queued.

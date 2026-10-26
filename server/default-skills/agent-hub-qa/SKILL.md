@@ -3,8 +3,8 @@ name: agent-hub-qa
 description: >-
   Agent Hub QA validation: author QA plans (ordered test cases) with the
   user, execute approved plans against a target URL with the browser or
-  preview tools, post a verdict and screenshot per case, and file finding
-  cards for failures. Ships the qa.sh wrapper over
+  preview tools, post a verdict and screenshot per case; failures become
+  finding cards. Ships the qa.sh wrapper over
   /api/projects/<slug>/qa/plans. Force-loaded in QA sessions (session mode
   `qa`). TRIGGER on Agent Hub QA signals: "QA plan", "test case", "QA run",
   "verdict", "sign off", "qa.sh", or URLs under /api/projects/<slug>/qa/.
@@ -12,7 +12,7 @@ description: >-
   Playwright specs) or on third-party test managers (TestRail, Zephyr,
   Xray).
 category: platform
-version: 1.0.0
+version: 1.1.0
 keep-coding-instructions: true
 ---
 
@@ -148,29 +148,16 @@ qa.sh result post "$PLAN" "$RUN" --case "$CASE" --verdict fail \
 reach is `blocked`, never `pass`. Posting again for the same case in the same
 run replaces the earlier result.
 
-## 5. Filing finding cards
+## 5. Finding cards
 
-Every `fail` or `needs_change` result gets one finding card per case per
-iteration. If the posted result already carries a `findingCardId`, the server
-filed it: do nothing more.
+The server files finding cards when the run finishes. Each `fail` or
+`needs_change` result gets a `qa-finding` card on the plan's epic, assigned to
+the project's dev agent, which starts a fix session. A case that fails again
+while its earlier card is still open gets a comment on that card instead of a
+duplicate. The run summary links every card.
 
-Otherwise:
-
-1. Check the plan's earlier runs (`qa.sh run get`) for an open finding card on
-   the same case. If one exists, comment on it with this iteration's actual
-   result and screenshot instead of filing a duplicate
-   (`board.sh comment <cardId> '{"author":"QA","content":"…"}'`).
-2. Else create the card, linked to the plan's epic (if any):
-
-   ```bash
-   DESC=$'**Steps**\n1. …\n\n**Expected** …\n\n**Actual** …\n\n**Screenshots** artifact <id>\n\n**QA plan** <planId>, iteration <n>'
-   CARD=$(kanban-create-card.sh --title "QA: <case title>" --labels qa-finding \
-     --priority high --epic-id "$EPIC" --description "$DESC" | jq -r .id)
-   ```
-
-3. Record the link: post the result again with `--finding-card <cardId>`.
-
-Do not assign the card or start a dev session yourself. Do not fix the bug.
+Do not create, comment on, or assign finding cards yourself, and do not fix
+the bug. Make `--actual` and the screenshot specific: they become the card.
 
 ## See also
 
