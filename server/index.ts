@@ -215,6 +215,11 @@ import createOrganizationDispatchRoutes from './routes/organization-dispatch.js'
 import { ensureOrganizationDispatchQueue } from './organization-dispatch.js';
 import { initBackgroundAgentSessionHook } from './background-agent-session.js';
 import { initAgentChannels, observeBroadcastForAgentChannels } from './hub-chat-agent-channels.js';
+import {
+  initQaAutoRerun,
+  observeBroadcastForQaAutoRerun,
+  sweepAllQaAutoRerun,
+} from './qa-auto-rerun.js';
 import createBoardRoutes from './routes/board.js';
 import createConfigRoutes from './routes/config.js';
 import createSessionRoutes, { summarizeTranscript, buildTranscript } from './routes/sessions.js';
@@ -908,6 +913,12 @@ function broadcast(data: Record<string, unknown>): void {
     observeBroadcastForAgentChannels(data);
   } catch (err) {
     console.error('[hub-chat] agent channel relay failed:', (err as Error).message);
+  }
+  // QA plans rerun once their fixes are Done (and deployed, when linked).
+  try {
+    observeBroadcastForQaAutoRerun(data);
+  } catch (err) {
+    console.error('[qa] auto-rerun observer failed:', (err as Error).message);
   }
 }
 
@@ -3388,6 +3399,14 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
     if (process.env.NODE_ENV !== 'test' && interruptedFinalizeRuns.length > 0) {
       void retriggerInterruptedFinalizeRunsOnBoot(routeDeps, interruptedFinalizeRuns).catch((e) =>
         console.error('[finalize] retriggerInterruptedFinalizeRunsOnBoot', (e as Error).message),
+      );
+    }
+
+    initQaAutoRerun(routeDeps);
+    // Catch up on card / deployment events that landed while the server was down.
+    if (process.env.NODE_ENV !== 'test') {
+      void sweepAllQaAutoRerun(routeDeps).catch((e) =>
+        console.error('[qa] auto-rerun boot sweep', (e as Error).message),
       );
     }
 

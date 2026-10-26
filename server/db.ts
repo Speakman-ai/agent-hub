@@ -3927,6 +3927,12 @@ function initDb(dataDir: string): void {
   } catch (_e) {
     /* column already present */
   }
+  // What the auto-rerun trigger already did about this run.
+  try {
+    db.exec('ALTER TABLE qa_runs ADD COLUMN auto_rerun_state TEXT');
+  } catch (_e) {
+    /* column already present */
+  }
   try {
     db.exec('ALTER TABLE release_notification_outbox ADD COLUMN next_attempt_at TEXT');
   } catch (_e) {

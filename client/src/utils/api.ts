@@ -254,6 +254,14 @@ export interface QaPlanDetailWire {
   /** Newest iteration first. */
   runs: QaRunWire[];
   signOffBlocker: string | null;
+  /** Where the auto-rerun loop stands after a failed run; null when it has nothing pending. */
+  autoRerun?: { kind: string; message: string } | null;
+}
+
+export interface QaPlanPatch {
+  deployEnvironment?: string | null;
+  autoRerun?: boolean;
+  maxIterations?: number;
 }
 
 const qaPlanPath = (projectId: string, planId: string) =>
@@ -2728,6 +2736,18 @@ export const api = {
     fetchJSON<{ plan: QaPlanWire }>(`${qaPlanPath(projectId, planId)}/revoke-approval`, {
       method: 'POST',
     }),
+  /** Rerun settings and other plan fields. */
+  updateQaPlan: (projectId: string, planId: string, patch: QaPlanPatch) =>
+    fetchJSON<{ plan: QaPlanWire }>(qaPlanPath(projectId, planId), {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+  /** Start a run (full, or only the cases without a current pass). */
+  startQaRun: (projectId: string, planId: string, scope: 'full' | 'failed_only') =>
+    fetchJSON<{ run: QaRunWire; sessionId: string; agentId: string }>(
+      `${qaPlanPath(projectId, planId)}/runs`,
+      { method: 'POST', body: JSON.stringify({ scope }) },
+    ),
   /** Human sign-off. The server refuses (409 `not_all_pass`) unless the latest run is all-pass. */
   signOffQaPlan: (projectId: string, planId: string) =>
     fetchJSON<{ plan: QaPlanWire }>(`${qaPlanPath(projectId, planId)}/sign-off`, {

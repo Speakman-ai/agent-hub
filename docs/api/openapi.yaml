@@ -12949,6 +12949,7 @@ components:
             pr_merged: *a3
             card_assigned_to_you: *a3
             escalation: *a3
+            qa_attention: *a3
             support_ticket_created: *a3
             infra_alert: *a3
             deploy_outcome: *a3
@@ -13007,6 +13008,7 @@ components:
                     - pr_merged
                     - card_assigned_to_you
                     - escalation
+                    - qa_attention
                     - support_ticket_created
                     - infra_alert
                     - deploy_outcome
@@ -13039,6 +13041,7 @@ components:
                   - pr_merged
                   - card_assigned_to_you
                   - escalation
+                  - qa_attention
                   - support_ticket_created
                   - infra_alert
                   - deploy_outcome
@@ -58245,12 +58248,26 @@ paths:
                     type: string
                     nullable: true
                     description: Why the plan cannot be signed off, or null when it can.
+                  autoRerun:
+                    type: object
+                    nullable: true
+                    properties:
+                      kind:
+                        type: string
+                        description: wait_fixes, wait_deploy, notify_manual, cap_reached, rerun, or rerun_failed.
+                      message:
+                        type: string
+                    required:
+                      - kind
+                      - message
+                    description: Where the auto-rerun loop stands after a failed run, or null when auto-rerun is off or has nothing pending.
                 required:
                   - plan
                   - links
                   - cases
                   - runs
                   - signOffBlocker
+                  - autoRerun
         "404":
           description: Project, plan, case, or run not found.
           content:

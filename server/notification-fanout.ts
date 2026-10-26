@@ -32,6 +32,7 @@
  * inbox row and push. Other channel traffic (notify_level=all) never creates
  * an inbox row and keeps the device-level `chat_message` push check.
  */
+import { QA_ATTENTION_EVENT } from './qa-attention-event.js';
 import { SESSION_NEEDS_INPUT_EVENT } from './session-needs-input.js';
 import { v4 as uuidv4 } from 'uuid';
 import {
@@ -654,6 +655,34 @@ export function mapBroadcastToNotification(data: BroadcastData): NotificationInt
         // retries rebuild the same head and each sets a new readyAt; keying on
         // readyAt announced every one of those rebuilds as a fresh preview.
         sourceKey: `pr_env_ready:${envId}:${headSha ?? readyAt}`,
+        recipients: notify.length ? { kind: 'users', userIds: notify } : { kind: 'project' },
+      };
+    }
+
+    case QA_ATTENTION_EVENT: {
+      const projectId = str(data.projectId);
+      const planId = str(data.planId);
+      const runId = str(data.runId);
+      const reason = str(data.reason);
+      if (!projectId || !planId || !runId || !reason) return null;
+      const notify = Array.isArray(data.notifyUserIds)
+        ? data.notifyUserIds.filter((id): id is string => typeof id === 'string' && id.length > 0)
+        : [];
+      const planTitle = str(data.planTitle) ?? 'QA plan';
+      return {
+        category: 'qa_attention',
+        pushEvent: null,
+        deviceScope: 'recipients',
+        title:
+          reason === 'cap_reached'
+            ? `${planTitle}: auto-rerun stopped`
+            : reason === 'auto_rerun_failed'
+              ? `${planTitle}: auto-rerun failed`
+              : `${planTitle}: ready for a rerun`,
+        body: str(data.message) ?? '',
+        data: { projectId, planId, runId, reason, type: 'qa_attention' },
+        projectId,
+        sourceKey: `qa_attention:${runId}:${reason}`,
         recipients: notify.length ? { kind: 'users', userIds: notify } : { kind: 'project' },
       };
     }

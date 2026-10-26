@@ -363,6 +363,19 @@ registerPath({
         signOffBlocker: z.string().nullable().openapi({
           description: 'Why the plan cannot be signed off, or null when it can.',
         }),
+        autoRerun: z
+          .object({
+            kind: z.string().openapi({
+              description:
+                'wait_fixes, wait_deploy, notify_manual, cap_reached, rerun, or rerun_failed.',
+            }),
+            message: z.string(),
+          })
+          .nullable()
+          .openapi({
+            description:
+              'Where the auto-rerun loop stands after a failed run, or null when auto-rerun is off or has nothing pending.',
+          }),
       }),
     ),
     404: notFound,

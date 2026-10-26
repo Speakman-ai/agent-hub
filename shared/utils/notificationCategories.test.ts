@@ -41,7 +41,7 @@ describe('notification category catalog', () => {
         'pr_environment_ready',
         'pr_merged',
       ],
-      board: ['card_assigned_to_you', 'escalation'],
+      board: ['card_assigned_to_you', 'escalation', 'qa_attention'],
       support: ['support_ticket_created'],
       infra: ['infra_alert', 'deploy_outcome'],
       chat: ['dm', 'mention'],

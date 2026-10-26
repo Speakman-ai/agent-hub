@@ -2136,6 +2136,8 @@ export interface QaRunRow {
   case_ids: string | null;
   /** Session whose preview this run drives, when the target is a session preview. */
   preview_session_id: string | null;
+  /** What the auto-rerun trigger already did about this run; NULL = nothing yet. */
+  auto_rerun_state: string | null;
   session_id: string | null;
   started_by: string | null;
   started_at: string | null;

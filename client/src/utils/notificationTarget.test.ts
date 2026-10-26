@@ -86,6 +86,13 @@ describe('notificationTarget', () => {
     expect(notificationTarget(row({ category: 'dm', projectId: null, data: {} }))).toBeNull();
   });
 
+  it('opens the project QA page for qa_attention', () => {
+    expect(notificationTarget(row({ category: 'qa_attention', data: { planId: 'pl1' } }))).toEqual({
+      kind: 'route',
+      route: { view: 'qa:acme' },
+    });
+  });
+
   it('opens infra and deployments per project', () => {
     expect(notificationTarget(row({ category: 'infra_alert', data: {} }))).toEqual({
       kind: 'route',

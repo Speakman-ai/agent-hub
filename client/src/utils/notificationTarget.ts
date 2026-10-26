@@ -93,6 +93,8 @@ export function notificationTarget(n: InboxNotification): NotificationTarget | n
       return projectId ? { kind: 'route', route: { view: `infra:${projectId}` } } : null;
     case 'deploy_outcome':
       return projectId ? { kind: 'route', route: { view: 'deployments', projectId } } : null;
+    case 'qa_attention':
+      return projectId ? { kind: 'route', route: { view: `qa:${projectId}` } } : null;
     default:
       return sessionId ? { kind: 'session', sessionId, agentId: str(data.agentId) } : null;
   }

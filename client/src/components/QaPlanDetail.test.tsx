@@ -12,6 +12,9 @@ const mutations = {
   reorderQaCases: vi.fn(),
   openQaAuthoringSession: vi.fn(),
   signOffQaPlan: vi.fn(),
+  startQaRun: vi.fn(),
+  updateQaPlan: vi.fn(),
+  getDeployEnvironments: vi.fn(),
 };
 vi.mock('../utils/api', () => ({
   api: {
@@ -24,6 +27,9 @@ vi.mock('../utils/api', () => ({
     reorderQaCases: (...a: unknown[]) => mutations.reorderQaCases(...a),
     openQaAuthoringSession: (...a: unknown[]) => mutations.openQaAuthoringSession(...a),
     signOffQaPlan: (...a: unknown[]) => mutations.signOffQaPlan(...a),
+    startQaRun: (...a: unknown[]) => mutations.startQaRun(...a),
+    updateQaPlan: (...a: unknown[]) => mutations.updateQaPlan(...a),
+    getDeployEnvironments: (...a: unknown[]) => mutations.getDeployEnvironments(...a),
   },
 }));
 
@@ -37,6 +43,7 @@ import QaPlanDetail, {
   caseListLockReason,
   caseVerdictLabel,
   moveCaseIds,
+  rerunButtonStates,
   runDuration,
 } from './QaPlanDetail';
 
@@ -817,5 +824,134 @@ describe('QaPlanDetail sign-off', () => {
     renderDetail(fresh);
     await screen.findByTestId('qa-detail-status');
     expect(screen.queryByTestId('qa-sign-off')).toBeNull();
+  });
+});
+
+describe('rerunButtonStates', () => {
+  const pass = {
+    verdict: 'pass' as const,
+    caseVersion: 1,
+    current: true,
+    runId: 'r1',
+    iteration: 1,
+  };
+  const fail = { ...pass, verdict: 'fail' as const };
+
+  it('refuses both on unapproved plans and during an active run', () => {
+    const draft = rerunButtonStates(detail({ approved: false, cases: [qaCase('c1')] }));
+    expect(draft.full).toEqual({ enabled: false, title: 'Approve the plan before running it' });
+    expect(draft.failedOnly.enabled).toBe(false);
+    const running = rerunButtonStates(
+      detail({
+        cases: [qaCase('c1', fail)],
+        runs: [run('r2', { iteration: 2, status: 'running' })],
+      }),
+    );
+    expect(running.full).toEqual({ enabled: false, title: 'Run 2 is running' });
+    expect(running.failedOnly.enabled).toBe(false);
+  });
+
+  it('enables failed-only only while some case lacks a current pass', () => {
+    const mixed = rerunButtonStates(
+      detail({ cases: [qaCase('c1', pass), qaCase('c2', fail)], runs: [run('r1')] }),
+    );
+    expect(mixed.full.enabled).toBe(true);
+    expect(mixed.failedOnly).toEqual({
+      enabled: true,
+      title: 'Run the 1 case(s) without a current pass',
+    });
+    const stale = rerunButtonStates(
+      detail({ cases: [qaCase('c1', { ...pass, current: false })], runs: [run('r1')] }),
+    );
+    expect(stale.failedOnly.enabled).toBe(true);
+    const allPass = rerunButtonStates(detail({ cases: [qaCase('c1', pass)], runs: [run('r1')] }));
+    expect(allPass.failedOnly).toEqual({
+      enabled: false,
+      title: 'Every case passed on its current version',
+    });
+  });
+});
+
+describe('QaPlanDetail reruns', () => {
+  const fail = {
+    verdict: 'fail' as const,
+    caseVersion: 1,
+    current: true,
+    runId: 'r1',
+    iteration: 1,
+  };
+  const renderDetail = (d: QaPlanDetailWire) => {
+    getQaPlan.mockResolvedValue(d);
+    render(<QaPlanDetail projectId="proj" planId="p1" onBack={() => {}} />);
+  };
+
+  it('shows Start run before the first run and starts a full run', async () => {
+    renderDetail(detail({ cases: [qaCase('c1')] }));
+    fireEvent.click(await screen.findByTestId('qa-start-run'));
+    await waitFor(() => expect(mutations.startQaRun).toHaveBeenCalledWith('proj', 'p1', 'full'));
+    expect(screen.queryByTestId('qa-rerun-failed')).toBeNull();
+  });
+
+  it('reruns failed cases or the full plan', async () => {
+    renderDetail(detail({ cases: [qaCase('c1', fail)], runs: [run('r1', { status: 'failed' })] }));
+    fireEvent.click(await screen.findByTestId('qa-rerun-failed'));
+    await waitFor(() =>
+      expect(mutations.startQaRun).toHaveBeenCalledWith('proj', 'p1', 'failed_only'),
+    );
+    await waitFor(() => expect(screen.getByTestId('qa-rerun-full')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('qa-rerun-full'));
+    await waitFor(() => expect(mutations.startQaRun).toHaveBeenCalledWith('proj', 'p1', 'full'));
+  });
+
+  it('asks before a rerun reopens a signed-off plan', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const done = detail({ cases: [qaCase('c1')], runs: [run('r1')], signOffBlocker: null });
+    done.plan = { ...done.plan, status: 'done', signedOffAt: '2026-10-26 12:00:00' };
+    renderDetail(done);
+    fireEvent.click(await screen.findByTestId('qa-rerun-full'));
+    expect(confirm).toHaveBeenCalled();
+    expect(mutations.startQaRun).not.toHaveBeenCalled();
+    confirm.mockRestore();
+  });
+
+  it('saves the auto-rerun toggle, environment, and max runs', async () => {
+    mutations.getDeployEnvironments.mockResolvedValue({
+      environments: [{ name: 'staging' }, { name: 'production' }],
+    });
+    renderDetail(detail({ cases: [qaCase('c1')] }));
+    fireEvent.click(await screen.findByTestId('qa-auto-rerun-toggle'));
+    await waitFor(() =>
+      expect(mutations.updateQaPlan).toHaveBeenCalledWith('proj', 'p1', { autoRerun: false }),
+    );
+    await screen.findByRole('option', { name: 'staging' });
+    await waitFor(() => expect(screen.getByTestId('qa-deploy-environment')).toBeEnabled());
+    fireEvent.change(screen.getByTestId('qa-deploy-environment'), {
+      target: { value: 'staging' },
+    });
+    await waitFor(() =>
+      expect(mutations.updateQaPlan).toHaveBeenCalledWith('proj', 'p1', {
+        deployEnvironment: 'staging',
+      }),
+    );
+    await waitFor(() => expect(screen.getByTestId('qa-max-iterations')).toBeEnabled());
+    const max = screen.getByTestId('qa-max-iterations');
+    fireEvent.change(max, { target: { value: '8' } });
+    fireEvent.blur(max);
+    await waitFor(() =>
+      expect(mutations.updateQaPlan).toHaveBeenCalledWith('proj', 'p1', { maxIterations: 8 }),
+    );
+  });
+
+  it('shows where the auto-rerun loop stands', async () => {
+    renderDetail(
+      detail({
+        cases: [qaCase('c1', fail)],
+        runs: [run('r1', { status: 'failed' })],
+        autoRerun: { kind: 'wait_deploy', message: 'Auto-rerun waits for staging.' },
+      }),
+    );
+    expect(await screen.findByTestId('qa-auto-rerun-status')).toHaveTextContent(
+      'Auto-rerun waits for staging.',
+    );
   });
 });

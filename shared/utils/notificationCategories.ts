@@ -141,6 +141,13 @@ export const NOTIFICATION_SECTIONS = [
         description: 'A card or session was escalated for human attention',
         defaults: QUIET,
       },
+      {
+        id: 'qa_attention',
+        label: 'QA plan needs you',
+        description:
+          'Fixes for a QA plan landed and it needs a manual rerun, or its auto-rerun stopped',
+        defaults: QUIET,
+      },
     ],
   },
   {

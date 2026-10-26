@@ -9,7 +9,9 @@ import {
   ExternalLink,
   MessageSquare,
   Pencil,
+  Play,
   Plus,
+  RotateCcw,
   Trash2,
 } from 'lucide-react';
 import {
@@ -17,6 +19,7 @@ import {
   type QaCaseInput,
   type QaCaseWire,
   type QaPlanDetailWire,
+  type QaPlanPatch,
   type QaRunWire,
 } from '../utils/api';
 import {
@@ -98,6 +101,43 @@ export function caseListLockReason(detail: Pick<QaPlanDetailWire, 'plan' | 'runs
     return `Run ${latest.iteration} is ${latest.status}. Cancel it to edit cases.`;
   }
   return null;
+}
+
+export interface RerunButtonState {
+  enabled: boolean;
+  /** Tooltip: why the button is disabled, or what it does. */
+  title: string;
+}
+
+/**
+ * Whether a full run and a failed-only run can start, mirroring the server's
+ * refusals: unapproved plans, an active run, and (failed-only) a plan where
+ * every case already passed on its current version.
+ */
+export function rerunButtonStates(detail: Pick<QaPlanDetailWire, 'plan' | 'runs' | 'cases'>): {
+  full: RerunButtonState;
+  failedOnly: RerunButtonState;
+} {
+  const latest = detail.runs[0];
+  let blocked: string | null = null;
+  if (!detail.plan.approved) blocked = 'Approve the plan before running it';
+  else if (detail.cases.length === 0) blocked = 'Add at least one case first';
+  else if (latest && (latest.status === 'queued' || latest.status === 'running')) {
+    blocked = `Run ${latest.iteration} is ${latest.status}`;
+  }
+  const failing = detail.cases.filter(
+    (c) => !(c.latestVerdict?.verdict === 'pass' && c.latestVerdict.current),
+  ).length;
+  return {
+    full: blocked
+      ? { enabled: false, title: blocked }
+      : { enabled: true, title: `Run all ${detail.cases.length} case(s) again` },
+    failedOnly: blocked
+      ? { enabled: false, title: blocked }
+      : failing === 0
+        ? { enabled: false, title: 'Every case passed on its current version' }
+        : { enabled: true, title: `Run the ${failing} case(s) without a current pass` },
+  };
 }
 
 /** `ids` with the item at `index` moved by `delta`, or null when it cannot move. */
@@ -499,6 +539,176 @@ function CaseTable({
       </div>
       {addButton}
       {addForm}
+    </div>
+  );
+}
+
+function RunButtons({
+  detail,
+  busy,
+  onStart,
+}: {
+  detail: QaPlanDetailWire;
+  busy: boolean;
+  onStart: (scope: 'full' | 'failed_only') => void;
+}) {
+  const states = rerunButtonStates(detail);
+  const button =
+    'inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs disabled:opacity-60';
+  if (detail.runs.length === 0) {
+    return (
+      <button
+        type="button"
+        data-testid="qa-start-run"
+        disabled={busy || !states.full.enabled}
+        title={states.full.title}
+        onClick={() => onStart('full')}
+        className={`${button} bg-blue-600 text-white hover:bg-blue-500`}
+      >
+        <Play size={12} />
+        Start run
+      </button>
+    );
+  }
+  return (
+    <div className="flex items-center gap-2">
+      <button
+        type="button"
+        data-testid="qa-rerun-failed"
+        disabled={busy || !states.failedOnly.enabled}
+        title={states.failedOnly.title}
+        onClick={() => onStart('failed_only')}
+        className={`${button} bg-blue-600 text-white hover:bg-blue-500`}
+      >
+        <RotateCcw size={12} />
+        Rerun failed
+      </button>
+      <button
+        type="button"
+        data-testid="qa-rerun-full"
+        disabled={busy || !states.full.enabled}
+        title={states.full.title}
+        onClick={() => onStart('full')}
+        className={`${button} border border-gray-700 text-gray-300 hover:bg-gray-800`}
+      >
+        <RotateCcw size={12} />
+        Rerun full
+      </button>
+    </div>
+  );
+}
+
+function RerunSettings({
+  projectId,
+  detail,
+  busy,
+  onSave,
+}: {
+  projectId: string;
+  detail: QaPlanDetailWire;
+  busy: boolean;
+  onSave: (patch: QaPlanPatch) => void;
+}) {
+  const { plan } = detail;
+  const [environments, setEnvironments] = useState<string[]>([]);
+  const [maxDraft, setMaxDraft] = useState(String(plan.maxIterations));
+  useEffect(() => setMaxDraft(String(plan.maxIterations)), [plan.maxIterations]);
+  useEffect(() => {
+    let live = true;
+    // Environment names are only the picker's options; a failed load leaves
+    // the current value selectable.
+    Promise.resolve()
+      .then(() => api.getDeployEnvironments(projectId))
+      .then((res: { environments?: Array<{ name?: unknown }> } | null) => {
+        if (!live) return;
+        const names = (res?.environments ?? [])
+          .map((e) => e.name)
+          .filter((n): n is string => typeof n === 'string' && n.length > 0);
+        setEnvironments(names);
+      })
+      .catch(() => {
+        if (live) setEnvironments([]);
+      });
+    return () => {
+      live = false;
+    };
+  }, [projectId]);
+  const envOptions =
+    plan.deployEnvironment && !environments.includes(plan.deployEnvironment)
+      ? [plan.deployEnvironment, ...environments]
+      : environments;
+  const saveMax = () => {
+    const n = Number.parseInt(maxDraft, 10);
+    if (!Number.isInteger(n) || n < 1 || n > 100) {
+      setMaxDraft(String(plan.maxIterations));
+      return;
+    }
+    if (n !== plan.maxIterations) onSave({ maxIterations: n });
+  };
+  return (
+    <div className="flex flex-col gap-2" data-testid="qa-rerun-settings">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-gray-400">
+        <label className="inline-flex items-center gap-1.5">
+          <input
+            type="checkbox"
+            data-testid="qa-auto-rerun-toggle"
+            checked={plan.autoRerun}
+            disabled={busy}
+            onChange={(e) => onSave({ autoRerun: e.target.checked })}
+          />
+          Auto-rerun when fixes land
+        </label>
+        <label className="inline-flex items-center gap-1.5">
+          Deploy environment
+          <select
+            data-testid="qa-deploy-environment"
+            value={plan.deployEnvironment ?? ''}
+            disabled={busy}
+            onChange={(e) => onSave({ deployEnvironment: e.target.value || null })}
+            className="rounded-md border border-gray-700 bg-gray-950 px-1.5 py-0.5 text-xs text-gray-100"
+          >
+            <option value="">None (rerun by hand)</option>
+            {envOptions.map((name) => (
+              <option key={name} value={name}>
+                {name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="inline-flex items-center gap-1.5">
+          Max runs
+          <input
+            type="number"
+            min={1}
+            max={100}
+            data-testid="qa-max-iterations"
+            value={maxDraft}
+            disabled={busy}
+            onChange={(e) => setMaxDraft(e.target.value)}
+            onBlur={saveMax}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') saveMax();
+            }}
+            className="w-14 rounded-md border border-gray-700 bg-gray-950 px-1.5 py-0.5 text-xs text-gray-100"
+          />
+        </label>
+      </div>
+      <div className="text-xs text-gray-500">
+        {plan.autoRerun
+          ? plan.deployEnvironment
+            ? `After a failed run, the failed cases rerun once every finding card is Done and a deployment to ${plan.deployEnvironment} succeeds after the last one.`
+            : 'With no deploy environment linked, you get an inbox notice when every finding card is Done, and rerun by hand.'
+          : 'Auto-rerun is off. Rerun by hand.'}
+      </div>
+      {detail.autoRerun && (
+        <div
+          data-testid="qa-auto-rerun-status"
+          data-kind={detail.autoRerun.kind}
+          className="rounded-md border border-gray-800 bg-gray-900 px-3 py-2 text-xs text-gray-300"
+        >
+          {detail.autoRerun.message}
+        </div>
+      )}
     </div>
   );
 }
@@ -918,7 +1128,30 @@ export default function QaPlanDetail({
           </section>
 
           <section className="flex flex-col gap-2">
-            <h2 className="text-sm font-medium text-gray-300">Run history</h2>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-sm font-medium text-gray-300">Run history</h2>
+              <div className="ml-auto">
+                <RunButtons
+                  detail={detail}
+                  busy={busy}
+                  onStart={(scope) => {
+                    if (
+                      plan.status === 'done' &&
+                      !window.confirm('Starting a run reopens this signed-off plan. Continue?')
+                    ) {
+                      return;
+                    }
+                    void act(() => api.startQaRun(projectId, planId, scope));
+                  }}
+                />
+              </div>
+            </div>
+            <RerunSettings
+              projectId={projectId}
+              detail={detail}
+              busy={busy}
+              onSave={(patch) => void act(() => api.updateQaPlan(projectId, planId, patch))}
+            />
             <RunHistory
               runs={detail.runs}
               cases={detail.cases}
