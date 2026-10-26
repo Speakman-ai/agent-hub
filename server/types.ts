@@ -2081,6 +2081,87 @@ export interface FinalizeMetricRow {
   observed_at: number;
 }
 
+// QA Validation (qa-schema.ts). Status columns are written only by qa-status.ts.
+
+export type QaPlanStatus = 'new' | 'in_progress' | 'done';
+export type QaRunScope = 'full' | 'failed_only';
+export type QaRunStatus = 'queued' | 'running' | 'passed' | 'failed' | 'cancelled';
+export type QaVerdict = 'pass' | 'fail' | 'needs_change' | 'blocked';
+
+export interface QaPlanRow {
+  id: string;
+  project_id: string;
+  title: string;
+  goal: string;
+  target_url: string;
+  epic_id: string | null;
+  card_id: string | null;
+  deploy_environment: string | null;
+  status: QaPlanStatus;
+  approved_at: string | null;
+  approved_by: string | null;
+  approval_seq: number;
+  signed_off_at: string | null;
+  signed_off_by: string | null;
+  auto_rerun: 0 | 1;
+  max_iterations: number;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface QaCaseRow {
+  id: string;
+  plan_id: string;
+  position: number;
+  title: string;
+  steps: string;
+  expected: string;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface QaRunRow {
+  id: string;
+  plan_id: string;
+  iteration: number;
+  scope: QaRunScope;
+  status: QaRunStatus;
+  /** Plan approval_seq this run was started under. */
+  approval_seq: number;
+  session_id: string | null;
+  started_by: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+}
+
+export interface QaResultRow {
+  id: string;
+  run_id: string;
+  case_id: string;
+  /** Case version the verdict was recorded against. */
+  case_version: number;
+  verdict: QaVerdict;
+  actual: string;
+  notes: string;
+  /** JSON array of artifact ids. */
+  screenshot_artifact_ids: string;
+  finding_card_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Latest recorded verdict for a case across a plan's runs. */
+export interface QaLatestVerdictRow {
+  case_id: string;
+  case_version: number;
+  verdict: QaVerdict;
+  run_id: string;
+  iteration: number;
+}
+
 // Prepared Statements
 
 type Stmt<TParams extends unknown[] = unknown[], TRow = unknown> = Database.Statement<
@@ -2102,6 +2183,51 @@ export interface Stmts {
   countArtifactsBySession: Stmt;
   getArtifact: Stmt;
   deleteArtifact: Stmt;
+  // QA Validation
+  insertQaPlan: Stmt<
+    [
+      string,
+      string,
+      string,
+      string,
+      string,
+      string | null,
+      string | null,
+      string | null,
+      number,
+      number,
+      string | null,
+    ]
+  >;
+  getQaPlan: Stmt<[string], QaPlanRow>;
+  listQaPlansByProject: Stmt<[string], QaPlanRow>;
+  listQaPlansByProjectStatus: Stmt<[string, QaPlanStatus], QaPlanRow>;
+  listQaPlansByEpic: Stmt<[string], QaPlanRow>;
+  listQaPlansByCard: Stmt<[string], QaPlanRow>;
+  deleteQaPlan: Stmt<[string]>;
+  deleteQaPlansByProject: Stmt<[string]>;
+  setQaPlanStatus: Stmt<[QaPlanStatus, string]>;
+  setQaPlanApproval: Stmt<[string | null, string]>;
+  clearQaPlanApproval: Stmt<[string]>;
+  setQaPlanSignOff: Stmt<[string | null, string]>;
+  clearQaPlanSignOff: Stmt<[string]>;
+  insertQaCase: Stmt<[string, string, number, string, string, string]>;
+  getQaCase: Stmt<[string], QaCaseRow>;
+  listQaCasesByPlan: Stmt<[string], QaCaseRow>;
+  countQaCasesByPlan: Stmt<[string], { n: number }>;
+  getNextQaCasePosition: Stmt<[string], { next: number }>;
+  deleteQaCase: Stmt<[string]>;
+  updateQaCase: Stmt<[string, string, string, string]>;
+  insertQaRun: Stmt<[string, string, number, QaRunScope, number, string | null]>;
+  getQaRun: Stmt<[string], QaRunRow>;
+  listQaRunsByPlan: Stmt<[string], QaRunRow>;
+  getLatestQaRun: Stmt<[string], QaRunRow>;
+  getNextQaRunIteration: Stmt<[string], { next: number }>;
+  setQaRunStatus: Stmt<[{ status: QaRunStatus; id: string }]>;
+  setQaRunSession: Stmt<[string | null, string]>;
+  upsertQaResult: Stmt<[string, string, string, QaVerdict, string, string, string, string | null]>;
+  listQaResultsByRun: Stmt<[string], QaResultRow>;
+  listLatestQaVerdictsByPlan: Stmt<[string], QaLatestVerdictRow>;
   // Session replays (record-on-error rrweb captures)
   insertSessionReplay: Stmt;
   getSessionReplay: Stmt;

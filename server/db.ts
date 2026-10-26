@@ -35,6 +35,7 @@ import {
   FINALIZE_TERMINAL_STATUSES_SQL,
 } from './finalize/terminal-statuses.js';
 import { DEPLOYMENT_SCHEMA } from './deploy/deployment-schema.js';
+import { QA_SCHEMA } from './qa-schema.js';
 import { DEPLOYMENT_ENV_RUNTIME_CONFIG_SCHEMA } from './deploy/deployment-env-config-schema.js';
 import { DEPLOYMENT_ENV_TRIGGER_SCHEMA } from './deploy/deployment-trigger-schema.js';
 import { DEPLOYMENT_ENV_SCHEDULE_SCHEMA } from './deploy/deployment-schedule-schema.js';
@@ -3898,6 +3899,10 @@ function initDb(dataDir: string): void {
   // is co-located with the deploy store so deployment-schema.test.ts can spin
   // up an in-memory DB without the full bootstrap path.
   db.exec(DEPLOYMENT_SCHEMA);
+
+  // QA Validation: plans, cases, runs, results. Plan status transitions live in
+  // qa-status.ts; the DDL is shared with its tests via qa-schema.ts.
+  db.exec(QA_SCHEMA);
   try {
     db.exec('ALTER TABLE release_notification_outbox ADD COLUMN next_attempt_at TEXT');
   } catch (_e) {
@@ -4309,6 +4314,119 @@ function initDb(dataDir: string): void {
     countArtifactsBySession: db.prepare('SELECT COUNT(*) AS n FROM artifacts WHERE session_id = ?'),
     getArtifact: db.prepare('SELECT * FROM artifacts WHERE id = ?'),
     deleteArtifact: db.prepare('DELETE FROM artifacts WHERE id = ?'),
+    // QA Validation. Status / approval / sign-off writers are called only by
+    // qa-status.ts so plan transitions stay in one place.
+    insertQaPlan: db.prepare(
+      `INSERT INTO qa_plans
+         (id, project_id, title, goal, target_url, epic_id, card_id, deploy_environment,
+          auto_rerun, max_iterations, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    getQaPlan: db.prepare('SELECT * FROM qa_plans WHERE id = ?'),
+    listQaPlansByProject: db.prepare(
+      'SELECT * FROM qa_plans WHERE project_id = ? ORDER BY created_at DESC, id DESC',
+    ),
+    listQaPlansByProjectStatus: db.prepare(
+      'SELECT * FROM qa_plans WHERE project_id = ? AND status = ? ORDER BY created_at DESC, id DESC',
+    ),
+    listQaPlansByEpic: db.prepare(
+      'SELECT * FROM qa_plans WHERE epic_id = ? ORDER BY created_at DESC, id DESC',
+    ),
+    listQaPlansByCard: db.prepare(
+      'SELECT * FROM qa_plans WHERE card_id = ? ORDER BY created_at DESC, id DESC',
+    ),
+    deleteQaPlan: db.prepare('DELETE FROM qa_plans WHERE id = ?'),
+    deleteQaPlansByProject: db.prepare('DELETE FROM qa_plans WHERE project_id = ?'),
+    setQaPlanStatus: db.prepare(
+      "UPDATE qa_plans SET status = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    setQaPlanApproval: db.prepare(
+      `UPDATE qa_plans SET approved_at = datetime('now'), approved_by = ?,
+         approval_seq = approval_seq + 1, updated_at = datetime('now')
+       WHERE id = ?`,
+    ),
+    clearQaPlanApproval: db.prepare(
+      "UPDATE qa_plans SET approved_at = NULL, approved_by = NULL, updated_at = datetime('now') WHERE id = ?",
+    ),
+    setQaPlanSignOff: db.prepare(
+      "UPDATE qa_plans SET signed_off_at = datetime('now'), signed_off_by = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    clearQaPlanSignOff: db.prepare(
+      "UPDATE qa_plans SET signed_off_at = NULL, signed_off_by = NULL, updated_at = datetime('now') WHERE id = ?",
+    ),
+    insertQaCase: db.prepare(
+      `INSERT INTO qa_cases (id, plan_id, position, title, steps, expected)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ),
+    getQaCase: db.prepare('SELECT * FROM qa_cases WHERE id = ?'),
+    listQaCasesByPlan: db.prepare(
+      'SELECT * FROM qa_cases WHERE plan_id = ? ORDER BY position ASC, id ASC',
+    ),
+    countQaCasesByPlan: db.prepare('SELECT COUNT(*) AS n FROM qa_cases WHERE plan_id = ?'),
+    getNextQaCasePosition: db.prepare(
+      'SELECT COALESCE(MAX(position), -1) + 1 AS next FROM qa_cases WHERE plan_id = ?',
+    ),
+    deleteQaCase: db.prepare('DELETE FROM qa_cases WHERE id = ?'),
+    updateQaCase: db.prepare(
+      `UPDATE qa_cases SET title = ?, steps = ?, expected = ?, version = version + 1,
+         updated_at = datetime('now')
+       WHERE id = ?`,
+    ),
+    insertQaRun: db.prepare(
+      `INSERT INTO qa_runs (id, plan_id, iteration, scope, approval_seq, started_by)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ),
+    getQaRun: db.prepare('SELECT * FROM qa_runs WHERE id = ?'),
+    listQaRunsByPlan: db.prepare('SELECT * FROM qa_runs WHERE plan_id = ? ORDER BY iteration DESC'),
+    getLatestQaRun: db.prepare(
+      'SELECT * FROM qa_runs WHERE plan_id = ? ORDER BY iteration DESC LIMIT 1',
+    ),
+    getNextQaRunIteration: db.prepare(
+      'SELECT COALESCE(MAX(iteration), 0) + 1 AS next FROM qa_runs WHERE plan_id = ?',
+    ),
+    // started_at is stamped on the first move to running; finished_at on any
+    // terminal status.
+    setQaRunStatus: db.prepare(
+      `UPDATE qa_runs SET
+         status = @status,
+         started_at = CASE WHEN @status = 'running' AND started_at IS NULL THEN datetime('now') ELSE started_at END,
+         finished_at = CASE WHEN @status IN ('passed', 'failed', 'cancelled') THEN datetime('now') ELSE finished_at END
+       WHERE id = @id`,
+    ),
+    setQaRunSession: db.prepare('UPDATE qa_runs SET session_id = ? WHERE id = ?'),
+    upsertQaResult: db.prepare(
+      // case_version is read from the case at write time. LEFT JOIN keeps a
+      // missing case an FK error rather than a silent no-op; `WHERE true` is
+      // required by SQLite's upsert-from-SELECT grammar.
+      `INSERT INTO qa_results
+         (id, run_id, case_id, verdict, actual, notes, screenshot_artifact_ids, finding_card_id,
+          case_version)
+       SELECT v.*, c.version FROM (SELECT ?, ?, ? AS case_id, ?, ?, ?, ?, ?) v
+         LEFT JOIN qa_cases c ON c.id = v.case_id
+        WHERE true
+       ON CONFLICT (run_id, case_id) DO UPDATE SET
+         verdict = excluded.verdict,
+         case_version = excluded.case_version,
+         actual = excluded.actual,
+         notes = excluded.notes,
+         screenshot_artifact_ids = excluded.screenshot_artifact_ids,
+         finding_card_id = COALESCE(excluded.finding_card_id, qa_results.finding_card_id),
+         updated_at = datetime('now')`,
+    ),
+    listQaResultsByRun: db.prepare(
+      'SELECT * FROM qa_results WHERE run_id = ? ORDER BY created_at, id',
+    ),
+    // Most recent verdict per case: a failed_only rerun only covers some cases,
+    // so the plan-wide picture comes from each case's newest result.
+    listLatestQaVerdictsByPlan: db.prepare(
+      `SELECT case_id, case_version, verdict, run_id, iteration FROM (
+         SELECT r.case_id, r.case_version, r.verdict, r.run_id, u.iteration,
+                ROW_NUMBER() OVER (PARTITION BY r.case_id ORDER BY u.iteration DESC) AS rn
+           FROM qa_results r
+           JOIN qa_runs u ON u.id = r.run_id
+          WHERE u.plan_id = ? AND u.status <> 'cancelled'
+       ) WHERE rn = 1`,
+    ),
     // Session replays (record-on-error rrweb captures; blob via artifact store)
     insertSessionReplay: db.prepare(
       `INSERT INTO session_replays
