@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ClipboardCheck, List, SquareKanban, Target, SquareCheckBig } from 'lucide-react';
+import { ClipboardCheck, List, SquareKanban } from 'lucide-react';
 import { api, type QaPlanListItemWire, type QaPlanStatus, type QaVerdict } from '../utils/api';
+import { QA_STATUSES, VERDICT_CLASS, VERDICT_LABELS } from '../utils/qaLabels';
+import { LinkChips, type LinkProps } from './QaLinkChips';
+import QaPlanDetail from './QaPlanDetail';
 
-export const QA_STATUSES: { key: QaPlanStatus; label: string }[] = [
-  { key: 'new', label: 'New' },
-  { key: 'in_progress', label: 'In progress' },
-  { key: 'done', label: 'Done' },
-];
+export { QA_STATUSES };
 
 type ViewMode = 'list' | 'board';
 
@@ -28,20 +27,6 @@ export function targetHost(url: string): string {
     return url;
   }
 }
-
-const VERDICT_LABELS: Record<QaVerdict, string> = {
-  pass: 'pass',
-  fail: 'fail',
-  needs_change: 'needs change',
-  blocked: 'blocked',
-};
-
-const VERDICT_CLASS: Record<QaVerdict, string> = {
-  pass: 'text-emerald-400',
-  fail: 'text-red-400',
-  needs_change: 'text-amber-400',
-  blocked: 'text-gray-400',
-};
 
 /** Short text for the latest run: "Run 2 running · 1 pass, 1 fail", or "Not run". */
 export function latestRunLabel(plan: QaPlanListItemWire): string {
@@ -80,54 +65,23 @@ function VerdictSummary({ plan }: { plan: QaPlanListItemWire }) {
   );
 }
 
-interface LinkProps {
-  onOpenEpic?: (epicId: string) => void;
-  onOpenCard?: (cardId: string) => void;
-}
+type PlanItemProps = { plan: QaPlanListItemWire; onOpenPlan: (planId: string) => void } & LinkProps;
 
-function LinkChips({ plan, onOpenEpic, onOpenCard }: { plan: QaPlanListItemWire } & LinkProps) {
-  const { epic, card } = plan.summary;
-  if (!epic && !card) return null;
-  const chip =
-    'inline-flex max-w-[14rem] items-center gap-1 rounded-full border border-gray-700 bg-gray-800 px-2 py-0.5 text-[11px] text-gray-300 hover:border-gray-500';
-  return (
-    <span className="inline-flex flex-wrap gap-1">
-      {epic && (
-        <button
-          type="button"
-          className={chip}
-          title={`Epic: ${epic.name}`}
-          onClick={() => onOpenEpic?.(epic.id)}
-          disabled={!onOpenEpic}
-        >
-          <Target size={11} className="flex-shrink-0" />
-          <span className="truncate">{epic.name}</span>
-        </button>
-      )}
-      {card && (
-        <button
-          type="button"
-          className={chip}
-          title={`Card: ${card.title}`}
-          onClick={() => onOpenCard?.(card.id)}
-          disabled={!onOpenCard}
-        >
-          <SquareCheckBig size={11} className="flex-shrink-0" />
-          <span className="truncate">{card.title}</span>
-        </button>
-      )}
-    </span>
-  );
-}
-
-function PlanRow({ plan, ...links }: { plan: QaPlanListItemWire } & LinkProps) {
+function PlanRow({ plan, onOpenPlan, ...links }: PlanItemProps) {
   return (
     <li
       data-testid={`qa-plan-row-${plan.id}`}
       className="flex flex-col gap-1 border-b border-gray-800 px-3 py-2 last:border-b-0 md:flex-row md:items-center md:gap-4"
     >
       <div className="min-w-0 flex-1">
-        <div className="truncate text-sm text-gray-100">{plan.title}</div>
+        <button
+          type="button"
+          data-testid={`qa-plan-open-${plan.id}`}
+          onClick={() => onOpenPlan(plan.id)}
+          className="block max-w-full truncate text-left text-sm text-gray-100 hover:text-blue-300"
+        >
+          {plan.title}
+        </button>
         <div className="truncate text-xs text-gray-500" title={plan.targetUrl}>
           {targetHost(plan.targetUrl)}
         </div>
@@ -135,25 +89,32 @@ function PlanRow({ plan, ...links }: { plan: QaPlanListItemWire } & LinkProps) {
       <div className="text-xs">
         <VerdictSummary plan={plan} />
       </div>
-      <LinkChips plan={plan} {...links} />
+      <LinkChips epic={plan.summary.epic} card={plan.summary.card} {...links} />
     </li>
   );
 }
 
-function PlanCard({ plan, ...links }: { plan: QaPlanListItemWire } & LinkProps) {
+function PlanCard({ plan, onOpenPlan, ...links }: PlanItemProps) {
   return (
     <div
       data-testid={`qa-plan-card-${plan.id}`}
       className="flex flex-col gap-1.5 rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2"
     >
-      <div className="text-sm text-gray-100">{plan.title}</div>
+      <button
+        type="button"
+        data-testid={`qa-plan-open-${plan.id}`}
+        onClick={() => onOpenPlan(plan.id)}
+        className="block max-w-full text-left text-sm text-gray-100 hover:text-blue-300"
+      >
+        {plan.title}
+      </button>
       <div className="truncate text-xs text-gray-500" title={plan.targetUrl}>
         {targetHost(plan.targetUrl)}
       </div>
       <div className="text-xs">
         <VerdictSummary plan={plan} />
       </div>
-      <LinkChips plan={plan} {...links} />
+      <LinkChips epic={plan.summary.epic} card={plan.summary.card} {...links} />
     </div>
   );
 }
@@ -161,9 +122,17 @@ function PlanCard({ plan, ...links }: { plan: QaPlanListItemWire } & LinkProps) 
 export interface QaPageProps extends LinkProps {
   projectId: string;
   projectName?: string;
+  onOpenSession?: (agentId: string | null, sessionId: string) => void;
 }
 
-export default function QaPage({ projectId, projectName, onOpenEpic, onOpenCard }: QaPageProps) {
+export default function QaPage({
+  projectId,
+  projectName,
+  onOpenEpic,
+  onOpenCard,
+  onOpenSession,
+}: QaPageProps) {
+  const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
   const [plans, setPlans] = useState<QaPlanListItemWire[]>([]);
   const [counts, setCounts] = useState<Record<QaPlanStatus, number>>({
     new: 0,
@@ -206,6 +175,7 @@ export default function QaPage({ projectId, projectName, onOpenEpic, onOpenCard 
   }, [projectId]);
 
   useEffect(() => {
+    setSelectedPlanId(null);
     setPlans([]);
     setCounts({ new: 0, in_progress: 0, done: 0 });
     setError(null);
@@ -227,6 +197,20 @@ export default function QaPage({ projectId, projectName, onOpenEpic, onOpenCard 
   }, [load, projectId]);
 
   const grouped = useMemo(() => groupPlansByStatus(plans), [plans]);
+
+  if (selectedPlanId) {
+    return (
+      <QaPlanDetail
+        key={selectedPlanId}
+        projectId={projectId}
+        planId={selectedPlanId}
+        onBack={() => setSelectedPlanId(null)}
+        onOpenEpic={onOpenEpic}
+        onOpenCard={onOpenCard}
+        onOpenSession={onOpenSession}
+      />
+    );
+  }
 
   return (
     <div className="flex h-full flex-col gap-4" data-testid="qa-page">
@@ -308,7 +292,13 @@ export default function QaPage({ projectId, projectName, onOpenEpic, onOpenCard 
           ) : (
             <ul className="rounded-lg border border-gray-800" data-testid="qa-plan-list">
               {grouped[tab].map((p) => (
-                <PlanRow key={p.id} plan={p} onOpenEpic={onOpenEpic} onOpenCard={onOpenCard} />
+                <PlanRow
+                  key={p.id}
+                  plan={p}
+                  onOpenPlan={setSelectedPlanId}
+                  onOpenEpic={onOpenEpic}
+                  onOpenCard={onOpenCard}
+                />
               ))}
             </ul>
           )}
@@ -329,7 +319,13 @@ export default function QaPage({ projectId, projectName, onOpenEpic, onOpenCard 
               </header>
               <div className="flex flex-col gap-2 overflow-y-auto p-2">
                 {grouped[key].map((p) => (
-                  <PlanCard key={p.id} plan={p} onOpenEpic={onOpenEpic} onOpenCard={onOpenCard} />
+                  <PlanCard
+                    key={p.id}
+                    plan={p}
+                    onOpenPlan={setSelectedPlanId}
+                    onOpenEpic={onOpenEpic}
+                    onOpenCard={onOpenCard}
+                  />
                 ))}
               </div>
             </section>

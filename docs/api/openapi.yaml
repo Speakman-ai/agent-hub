@@ -57919,6 +57919,35 @@ paths:
                 properties:
                   plan:
                     $ref: "#/components/schemas/QaPlan"
+                  links:
+                    type: object
+                    properties:
+                      epic:
+                        type: object
+                        nullable: true
+                        properties:
+                          id:
+                            type: string
+                          name:
+                            type: string
+                        required:
+                          - id
+                          - name
+                      card:
+                        type: object
+                        nullable: true
+                        properties:
+                          id:
+                            type: string
+                          title:
+                            type: string
+                        required:
+                          - id
+                          - title
+                    required:
+                      - epic
+                      - card
+                    description: Linked epic / card names, null when unlinked or gone.
                   cases:
                     type: array
                     items:
@@ -57926,7 +57955,16 @@ paths:
                   runs:
                     type: array
                     items:
-                      $ref: "#/components/schemas/QaRun"
+                      allOf:
+                        - $ref: "#/components/schemas/QaRun"
+                        - type: object
+                          properties:
+                            sessionAgentId:
+                              type: string
+                              nullable: true
+                              description: Agent that owns the run session, null before a session exists.
+                          required:
+                            - sessionAgentId
                     description: Newest iteration first.
                   signOffBlocker:
                     type: string
@@ -57934,6 +57972,7 @@ paths:
                     description: Why the plan cannot be signed off, or null when it can.
                 required:
                   - plan
+                  - links
                   - cases
                   - runs
                   - signOffBlocker

@@ -140,6 +140,76 @@ export interface QaPlanListItemWire {
   };
 }
 
+export interface QaPlanWire {
+  id: string;
+  projectId: string;
+  title: string;
+  goal: string;
+  targetUrl: string;
+  epicId: string | null;
+  cardId: string | null;
+  deployEnvironment: string | null;
+  status: QaPlanStatus;
+  approved: boolean;
+  approvedAt: string | null;
+  approvedBy: string | null;
+  approvalSeq: number;
+  signedOffAt: string | null;
+  signedOffBy: string | null;
+  autoRerun: boolean;
+  maxIterations: number;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface QaCaseWire {
+  id: string;
+  planId: string;
+  position: number;
+  title: string;
+  steps: string;
+  expected: string;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  latestVerdict?: {
+    verdict: QaVerdict;
+    caseVersion: number;
+    /** False when the case was edited after this verdict was recorded. */
+    current: boolean;
+    runId: string;
+    iteration: number;
+  } | null;
+}
+
+export interface QaRunWire {
+  id: string;
+  planId: string;
+  iteration: number;
+  scope: 'full' | 'failed_only';
+  status: QaRunStatus;
+  approvalSeq: number;
+  sessionId: string | null;
+  sessionAgentId: string | null;
+  startedBy: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  createdAt: string;
+}
+
+export interface QaPlanDetailWire {
+  plan: QaPlanWire;
+  links: {
+    epic: { id: string; name: string } | null;
+    card: { id: string; title: string } | null;
+  };
+  cases: QaCaseWire[];
+  /** Newest iteration first. */
+  runs: QaRunWire[];
+  signOffBlocker: string | null;
+}
+
 export interface QaPlanListWire {
   plans: QaPlanListItemWire[];
   counts: Record<QaPlanStatus, number>;
@@ -2548,6 +2618,10 @@ export const api = {
     fetchJSON(`/projects/${encodeURIComponent(projectId)}/finalize/default-branch-health`),
   listQaPlans: (projectId: string) =>
     fetchJSON<QaPlanListWire>(`/projects/${encodeURIComponent(projectId)}/qa/plans`),
+  getQaPlan: (projectId: string, planId: string) =>
+    fetchJSON<QaPlanDetailWire>(
+      `/projects/${encodeURIComponent(projectId)}/qa/plans/${encodeURIComponent(planId)}`,
+    ),
   // Per-project Stats page — daily/weekly/monthly product metrics.
   getProjectStats: (projectId: any, { granularity = 'day', buckets }: any = {}) => {
     const qs = new URLSearchParams({ granularity });

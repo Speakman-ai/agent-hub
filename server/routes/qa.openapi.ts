@@ -280,8 +280,22 @@ registerPath({
       'Plan detail.',
       z.object({
         plan: QaPlanComponent,
+        links: z
+          .object({
+            epic: z.object({ id: z.string(), name: z.string() }).nullable(),
+            card: z.object({ id: z.string(), title: z.string() }).nullable(),
+          })
+          .openapi({ description: 'Linked epic / card names, null when unlinked or gone.' }),
         cases: z.array(QaCaseComponent),
-        runs: z.array(QaRunComponent).openapi({ description: 'Newest iteration first.' }),
+        runs: z
+          .array(
+            QaRunComponent.extend({
+              sessionAgentId: z.string().nullable().openapi({
+                description: 'Agent that owns the run session, null before a session exists.',
+              }),
+            }),
+          )
+          .openapi({ description: 'Newest iteration first.' }),
         signOffBlocker: z.string().nullable().openapi({
           description: 'Why the plan cannot be signed off, or null when it can.',
         }),

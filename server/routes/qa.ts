@@ -262,6 +262,34 @@ export function listPlanSummaries(projectId: string): Map<string, QaPlanSummary>
   return out;
 }
 
+/** Linked epic / card names for the plan detail header chips. */
+export function planLinks(plan: QaPlanRow): Pick<QaPlanSummary, 'epic' | 'card'> {
+  const db = getDb();
+  const epic = plan.epic_id
+    ? (db.prepare('SELECT id, name FROM kanban_epics WHERE id = ?').get(plan.epic_id) as
+        | { id: string; name: string }
+        | undefined)
+    : undefined;
+  const card = plan.card_id
+    ? (db.prepare('SELECT id, title FROM kanban_cards WHERE id = ?').get(plan.card_id) as
+        | { id: string; title: string }
+        | undefined)
+    : undefined;
+  return { epic: epic ?? null, card: card ?? null };
+}
+
+/** Agent that owns each run session, so the UI can open the session in its agent. */
+function runSessionAgents(planId: string): Map<string, string> {
+  const rows = getDb()
+    .prepare(
+      `SELECT r.id AS run_id, s.agent_id FROM qa_runs r
+         JOIN sessions s ON s.id = r.session_id
+        WHERE r.plan_id = ?`,
+    )
+    .all(planId) as Array<{ run_id: string; agent_id: string }>;
+  return new Map(rows.map((r) => [r.run_id, r.agent_id]));
+}
+
 const notFound = (res: Response, what: string) =>
   res.status(404).json({ error: `${what} not found` });
 
@@ -416,12 +444,17 @@ export default function createQaRoutes(deps: RouteDeps): Router {
       if (!plan) return;
       const s = getStmts();
       const latest = new Map(s.listLatestQaVerdictsByPlan.all(plan.id).map((v) => [v.case_id, v]));
+      const agents = runSessionAgents(plan.id);
       res.json({
         plan: serializeQaPlan(plan),
+        links: planLinks(plan),
         cases: s.listQaCasesByPlan
           .all(plan.id)
           .map((c) => serializeQaCase(c, latest.get(c.id) ?? null)),
-        runs: s.listQaRunsByPlan.all(plan.id).map(serializeQaRun),
+        runs: s.listQaRunsByPlan.all(plan.id).map((r) => ({
+          ...serializeQaRun(r),
+          sessionAgentId: agents.get(r.id) ?? null,
+        })),
         signOffBlocker: qaPlanSignOffBlocker(plan.id),
       });
     }),

@@ -3,7 +3,13 @@ import { render, screen, waitFor, fireEvent, within, act } from '@testing-librar
 import type { QaPlanListItemWire, QaPlanListWire } from '../utils/api';
 
 const listQaPlans = vi.fn<(projectId: string) => Promise<QaPlanListWire>>();
-vi.mock('../utils/api', () => ({ api: { listQaPlans: (id: string) => listQaPlans(id) } }));
+const getQaPlan = vi.fn();
+vi.mock('../utils/api', () => ({
+  api: {
+    listQaPlans: (id: string) => listQaPlans(id),
+    getQaPlan: (projectId: string, planId: string) => getQaPlan(projectId, planId),
+  },
+}));
 
 import QaPage, { groupPlansByStatus, latestRunLabel, targetHost } from './QaPage';
 
@@ -54,6 +60,7 @@ function respond(plans = PLANS) {
 
 beforeEach(() => {
   listQaPlans.mockReset();
+  getQaPlan.mockReset();
   localStorage.clear();
   respond();
 });
@@ -127,6 +134,42 @@ describe('QaPage', () => {
     fireEvent.click(screen.getByTestId('qa-tab-in_progress'));
     fireEvent.click(screen.getByTitle('Card: Fix login'));
     expect(onOpenCard).toHaveBeenCalledWith('c1');
+  });
+
+  it('opens a plan from its row or board card and returns to the list', async () => {
+    getQaPlan.mockImplementation((_p: string, planId: string) => {
+      const p = PLANS.find((x) => x.id === planId)!;
+      return Promise.resolve({
+        plan: {
+          ...p,
+          deployEnvironment: null,
+          approvedAt: null,
+          approvedBy: null,
+          approvalSeq: 1,
+          signedOffBy: null,
+          autoRerun: true,
+          maxIterations: 5,
+          createdBy: null,
+        },
+        links: { epic: p.summary.epic, card: p.summary.card },
+        cases: [],
+        runs: [],
+        signOffBlocker: null,
+      });
+    });
+    render(<QaPage projectId="proj" />);
+    fireEvent.click(await screen.findByTestId('qa-plan-open-a'));
+    await screen.findByTestId('qa-plan-detail');
+    expect(getQaPlan).toHaveBeenLastCalledWith('proj', 'a');
+    expect(await screen.findByText('Plan a')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('qa-detail-back'));
+    expect(await screen.findByTestId('qa-plan-row-a')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('qa-view-board'));
+    fireEvent.click(screen.getByTestId('qa-plan-open-d'));
+    await screen.findByTestId('qa-plan-detail');
+    expect(getQaPlan).toHaveBeenLastCalledWith('proj', 'd');
   });
 
   it('refetches on qa_update for this project only', async () => {

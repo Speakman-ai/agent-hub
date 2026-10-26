@@ -132,6 +132,8 @@ describe('plans', () => {
   it('summarizes the latest run verdicts, case count, and linked epic per plan', async () => {
     const { planId, caseIds } = await approvedPlan();
     await request(app).patch(`${base}/${planId}`).send({ epicId: 'epic-1' }).expect(200);
+    const detail = await request(app).get(`${base}/${planId}`).expect(200);
+    expect(detail.body.links).toEqual({ epic: { id: 'epic-1', name: 'Epic' }, card: null });
     const draft = await createPlan();
 
     const first = await request(app).post(`${base}/${planId}/runs`).send({}).expect(201);
@@ -204,7 +206,20 @@ describe('plans', () => {
     });
     expect(res.body.cases[1].latestVerdict).toBeNull();
     expect(res.body.runs).toHaveLength(1);
+    expect(res.body.runs[0].sessionAgentId).toBeNull();
+    expect(res.body.links).toEqual({ epic: null, card: null });
     expect(res.body.signOffBlocker).toMatch(/running/);
+
+    const db = getDb();
+    db.prepare(
+      `INSERT OR REPLACE INTO sessions (id, agent_id, name) VALUES ('qa-sess', 'qa-agent', 'QA')`,
+    ).run();
+    db.prepare('UPDATE qa_runs SET session_id = ? WHERE id = ?').run('qa-sess', runId);
+    const withSession = await request(app).get(`${base}/${planId}`).expect(200);
+    expect(withSession.body.runs[0]).toMatchObject({
+      sessionId: 'qa-sess',
+      sessionAgentId: 'qa-agent',
+    });
   });
 
   it('updates fields; changing the target revokes approval', async () => {

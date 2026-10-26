@@ -7360,6 +7360,9 @@ export default function App({ initialView }: any = {}) {
                             setCurrentView(`kanban:${qaProjectId}`);
                             setSidebarOpen(false);
                           }}
+                          onOpenSession={(agentId: string | null, sessionId: string) =>
+                            focusAgentSession(agentId, sessionId)
+                          }
                         />
                       </div>
                     </div>
