@@ -52,7 +52,8 @@ function resolveSessionModeFromRow(session: any) {
     m === 'skill-builder' ||
     m === 'consult' ||
     m === 'isolated' ||
-    m === 'autopilot'
+    m === 'autopilot' ||
+    m === 'qa'
   )
     return m;
   return 'chat';

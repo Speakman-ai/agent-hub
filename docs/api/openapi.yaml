@@ -2655,6 +2655,7 @@ components:
             - skill-builder
             - consult
             - hub
+            - qa
             - null
           description: "Session mode picker dimension: `chat` (default), `isolated` (opt-in Firecracker VM; same ship surface as chat), `autopilot` (named-branch implement/push/preview-verify loop; never auto-merges), `design`, `scoping`, `skill-builder`, or `consult`. NULL/absent on legacy rows → treated as `chat`. Set via `PATCH /api/sessions/{sessionId}` or `PUT .../mode`."
         finalize_pushed_count:
@@ -26043,6 +26044,7 @@ paths:
                     - skill-builder
                     - consult
                     - hub
+                    - qa
                 seedMessage:
                   type: string
                   maxLength: 50000
@@ -26333,6 +26335,7 @@ paths:
                     - skill-builder
                     - consult
                     - hub
+                    - qa
                 ask_mode:
                   type: boolean
       responses:
@@ -27496,6 +27499,7 @@ paths:
                     - skill-builder
                     - consult
                     - hub
+                    - qa
               required:
                 - mode
       responses:

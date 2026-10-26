@@ -14,9 +14,10 @@ import type { Agent } from './types.js';
  * is not a code-shipping recipient, so its Dev toggle is locked OFF like
  * docs/reviewer (otherwise it falls through to the default-eligible branch
  * and shows as Dev-on). `hub-assistant` is the org/user Hub operating agent
- * — never a ticket recipient.
+ * — never a ticket recipient. `qa` validates the running app in read-only QA
+ * sessions and never ships code.
  */
-const OUT_OF_BAND_ROLES = new Set(['docs', 'reviewer', 'skill-builder', 'hub-assistant']);
+const OUT_OF_BAND_ROLES = new Set(['docs', 'reviewer', 'skill-builder', 'hub-assistant', 'qa']);
 
 /**
  * The project's "default Dev" roles. These always accept autonomous tickets

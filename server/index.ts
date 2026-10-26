@@ -86,11 +86,13 @@ import {
   reloadProjects,
   retireIntakeAgents,
   ensureSkillBuilderAgents,
+  ensureQaAgents,
   ensureReviewerAgents,
   ensureContextFiles,
   migrateProjectSkillDirectories,
 } from './project-model.js';
 import { backfillSkillBuilderAgents } from './migrations/backfill-skill-builder-agents.js';
+import { backfillQaAgents } from './migrations/backfill-qa-agents.js';
 import {
   scheduleAll,
   rescheduleCron,
@@ -704,6 +706,18 @@ try {
   // Best-effort migration — never let a seeding/marker hiccup crash boot.
   console.warn(
     '[Skill Builder] startup backfill skipped:',
+    err instanceof Error ? err.message : String(err),
+  );
+}
+
+// One-time (per-org) backfill of the per-project QA agent into projects that
+// predate it. Marker-guarded so a QA agent a user deletes stays deleted; the
+// org-switch path covers the other orgs. See migrations/backfill-qa-agents.ts.
+try {
+  backfillQaAgents({ dataDir: _activeDataDir, ensureQaAgents: () => ensureQaAgents() });
+} catch (err) {
+  console.warn(
+    '[QA Agent] startup backfill skipped:',
     err instanceof Error ? err.message : String(err),
   );
 }
@@ -2325,6 +2339,7 @@ export const routeDeps: RouteDeps = {
   getProjectDataDir,
   retireIntakeAgents,
   ensureSkillBuilderAgents,
+  ensureQaAgents,
   ensureReviewerAgents,
   ensureContextFiles,
   getClaudeBin: () => CLAUDE_BIN,

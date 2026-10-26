@@ -27,6 +27,14 @@ import {
   buildReviewerIdentityMarkdown,
   reviewerSystemPromptIsStale,
 } from './reviewer-agent-prompt.js';
+import {
+  QA_AGENT_COLOR,
+  QA_AGENT_ROLE,
+  buildQaAgentSystemPrompt,
+  buildQaIdentityMarkdown,
+  qaAgentId,
+} from './qa-agent-prompt.js';
+import { isInternalSystemProject } from '../shared/utils/hub.js';
 export { deleteProjectSkillsDir, resolveProjectSkillsDir } from './project-skill-paths.js';
 
 // Mutable state
@@ -577,6 +585,52 @@ function ensureSkillBuilderAgents(_projectId?: string): void {
   // Intentionally empty — do not seed `{projectId}-skill-builder` agents.
 }
 
+/**
+ * Seeds the per-project QA agent (role `qa`). With a `projectId` only that
+ * project is considered (project creation); with no argument every project is
+ * (the one-shot per-org backfill in migrations/backfill-qa-agents.ts).
+ *
+ * Idempotent per project: a project that already has a `qa` agent, or whose
+ * `<projectId>-qa` id is taken, is skipped. Hub / organization system
+ * workspaces and projects with no agents yet are skipped too. This cannot tell
+ * "never had one" from "user deleted it", which is why callers outside project
+ * creation go through the marker-guarded backfill instead of running it on boot.
+ */
+function ensureQaAgents(projectId?: string): boolean {
+  let changed = false;
+  for (const project of projects) {
+    if (projectId && project.id !== projectId) continue;
+    if (isInternalSystemProject(project)) continue;
+    if (!project.agents || project.agents.length === 0) continue;
+    if (project.agents.some((a) => a.role === QA_AGENT_ROLE)) continue;
+
+    const id = qaAgentId(project.id);
+    if (findAgent(id)) continue;
+
+    const agentDir = path.join(getProjectDataDir(project.id), 'agents', id);
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(
+      path.join(agentDir, 'IDENTITY.md'),
+      buildQaIdentityMarkdown(project.name),
+      'utf-8',
+    );
+
+    project.agents.push({
+      id,
+      name: `${project.name} QA`,
+      engine: 'claude-code',
+      role: QA_AGENT_ROLE,
+      isDev: false,
+      color: QA_AGENT_COLOR,
+      systemPrompt: buildQaAgentSystemPrompt(project.name),
+    });
+    changed = true;
+    console.log(`[QA Agent] Created "${id}" for project "${project.id}"`);
+  }
+  if (changed) saveProjects();
+  return changed;
+}
+
 function writeReviewerIdentityFile(
   projectId: string,
   reviewerId: string,
@@ -715,6 +769,7 @@ export {
   // Auto-create helpers
   retireIntakeAgents,
   ensureSkillBuilderAgents,
+  ensureQaAgents,
   ensureReviewerAgents,
   ensureContextFiles,
 };

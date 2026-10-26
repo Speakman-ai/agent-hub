@@ -22,6 +22,7 @@ describe('agentAutonomy (client)', () => {
     expect(agentAcceptsAutonomousTickets({ role: 'dev', isDev: false })).toBe(true);
     expect(agentAcceptsAutonomousTickets({ role: 'reviewer', isDev: true })).toBe(false);
     expect(agentAcceptsAutonomousTickets({ role: 'skill-builder' })).toBe(false); // coach, not Dev
+    expect(agentAcceptsAutonomousTickets({ role: 'qa', isDev: true })).toBe(false);
     expect(agentAcceptsAutonomousTickets({ role: 'sub', isDev: true })).toBe(true);
     expect(agentAcceptsAutonomousTickets({ role: 'sub', isDev: false })).toBe(false);
     expect(agentAcceptsAutonomousTickets({ role: 'sub' })).toBe(true); // undefined → eligible

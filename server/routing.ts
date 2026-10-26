@@ -141,7 +141,12 @@ export function pickMainDevAgent(project: Project): Agent | null {
     agents.find((a) => active(a) && a.role === 'lead') ??
     agents.find((a) => active(a) && a.role === 'dev') ??
     agents.find(
-      (a) => active(a) && a.role !== 'docs' && a.role !== 'reviewer' && a.role !== 'skill-builder',
+      (a) =>
+        active(a) &&
+        a.role !== 'docs' &&
+        a.role !== 'reviewer' &&
+        a.role !== 'skill-builder' &&
+        a.role !== 'qa',
     ) ??
     null
   );

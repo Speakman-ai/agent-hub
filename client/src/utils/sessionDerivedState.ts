@@ -9,9 +9,10 @@ import { isResolvePrSessionTitle } from '@shared/utils/sessionTitlePr';
  * from the in-memory list (agent switch races, optimistic navigation, etc.).
  */
 
-/** True when the session is in Consult or Hub (no code ship / Finalize). */
+/** True when the session is in Consult, Hub, or QA (no code ship / Finalize). */
 export function isSessionConsultModeEnabled(session: any) {
-  if (session?.session_mode === 'consult' || session?.session_mode === 'hub') return true;
+  const mode = session?.session_mode;
+  if (mode === 'consult' || mode === 'hub' || mode === 'qa') return true;
   return Number(session?.ask_mode ?? 0) !== 0;
 }
 

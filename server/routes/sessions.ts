@@ -37,6 +37,8 @@ import {
 import {
   normalizeSessionMode,
   isSkillBuilderEligibleAgent,
+  isQaAgent,
+  validateQaSessionMode,
   defaultSessionModeForProject,
   isShippingCompatibleSessionMode,
   isAutopilotModeActive,
@@ -730,13 +732,18 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       explicitModel: parsed.model,
       projectMode: getProjectMode(found?.project),
     });
+    const qaAgent = isQaAgent(found?.agent);
     const requestedMode =
       parsed.session_mode !== undefined
         ? normalizeSessionMode(parsed.session_mode)
-        : parsed.ask_mode === true
-          ? 'consult'
-          : undefined;
+        : qaAgent
+          ? 'qa'
+          : parsed.ask_mode === true
+            ? 'consult'
+            : undefined;
     if (requestedMode !== undefined) {
+      const qaGuard = validateQaSessionMode(found?.agent, requestedMode);
+      if (qaGuard) return res.status(400).json(qaGuard);
       const modeGuard = validateSessionModeForProject(found?.project, requestedMode);
       if (modeGuard) return res.status(400).json(modeGuard);
       if (requestedMode === 'design') {
@@ -764,7 +771,8 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       }
     }
 
-    const useWorktree = defaultSessionUseWorktreeFlag(found?.project);
+    // QA sessions are read-only on code: no worktree means no commit path.
+    const useWorktree = qaAgent ? 0 : defaultSessionUseWorktreeFlag(found?.project);
     stmts.createSession.run(id, req.params.agentId, name, engine, model, useWorktree, 0, 1);
     setSessionOwner(id, ownerUid);
     if (autoTitle) stmts.updateSessionNameWithTitleSource.run(name, 'auto', id);
@@ -1809,6 +1817,8 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       // legacy skill-builder helper session into it would apply the wrong
       // prompt + role. Enforce eligibility on EVERY generic mode update, not
       // just the dedicated entry points.
+      const qaGuard = validateQaSessionMode(findAgent(existing.agent_id)?.agent, nextMode);
+      if (qaGuard) return res.status(400).json(qaGuard);
       if (
         nextMode === 'skill-builder' &&
         !isSkillBuilderEligibleAgent(findAgent(existing.agent_id)?.agent)
@@ -2643,6 +2653,8 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
           'be produced.',
       });
     }
+    const qaGuard = validateQaSessionMode(findAgent(session.agent_id)?.agent, mode);
+    if (qaGuard) return res.status(400).json(qaGuard);
     // Skill Builder mode only runs on a dev agent (see the PATCH guard above and
     // chat.ts's prompt/skill wiring); refuse to persist it on a helper session.
     if (

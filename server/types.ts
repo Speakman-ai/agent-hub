@@ -4945,6 +4945,7 @@ export interface RouteDeps {
   getProjectDataDir: (projectId: string) => string;
   retireIntakeAgents: () => void;
   ensureSkillBuilderAgents: (projectId?: string) => void;
+  ensureQaAgents: (projectId?: string) => boolean;
   ensureReviewerAgents: () => boolean;
   ensureContextFiles: () => void;
   getClaudeBin: () => string;

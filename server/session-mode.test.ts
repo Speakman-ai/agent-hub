@@ -28,6 +28,7 @@ describe('session-mode helpers', () => {
       'skill-builder',
       'consult',
       'hub',
+      'qa',
     ]);
     expect(DEFAULT_SESSION_MODE).toBe('chat');
     expect(SESSION_MODES).toContain(DEFAULT_SESSION_MODE);

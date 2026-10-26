@@ -16,6 +16,7 @@ import type { AuthenticatedRequest } from '../auth.js';
 import { getAuthRecord } from '../auth-store.js';
 import config from '../config.js';
 import { backfillSkillBuilderAgents } from '../migrations/backfill-skill-builder-agents.js';
+import { backfillQaAgents } from '../migrations/backfill-qa-agents.js';
 import type { OrgRow, RouteDeps } from '../types.js';
 import { toServerConnection } from '../server-connections.js';
 import {
@@ -86,6 +87,7 @@ export default function createOrgRoutes(deps: RouteDeps): Router {
     // consumed by performOrgSwitch below; the production object is wired in
     // server/index.ts `routeDeps`. test/orgs-switch.test.ts pins the wiring.
     ensureSkillBuilderAgents,
+    ensureQaAgents,
   } = deps;
   const router = Router();
 
@@ -122,6 +124,15 @@ export default function createOrgRoutes(deps: RouteDeps): Router {
     } catch (err) {
       console.warn(
         `[Skill Builder] backfill skipped for org switch (${orgId}):`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+    // Same once-per-org guard for the per-project QA agent.
+    try {
+      backfillQaAgents({ dataDir, ensureQaAgents: () => ensureQaAgents() });
+    } catch (err) {
+      console.warn(
+        `[QA Agent] backfill skipped for org switch (${orgId}):`,
         err instanceof Error ? err.message : String(err),
       );
     }

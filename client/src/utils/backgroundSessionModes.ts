@@ -22,7 +22,7 @@ const WORKFLOW_MODES = new Set(['consult', 'scoping', 'skill-builder']);
 export const DEFAULT_BACKGROUND_SESSION_MODE = 'manual';
 export const DEFAULT_WORKFLOW_BACKGROUND_SESSION_MODE = 'consult';
 
-const INELIGIBLE_ROLES = new Set(['reviewer', 'docs', 'hub-assistant', 'skill-builder']);
+const INELIGIBLE_ROLES = new Set(['reviewer', 'docs', 'hub-assistant', 'skill-builder', 'qa']);
 
 export function backgroundSessionModeOptions(project: { mode?: string } | null | undefined) {
   const allowed =

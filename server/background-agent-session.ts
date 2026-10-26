@@ -57,7 +57,13 @@ const WORKFLOW_BACKGROUND_SESSION_MODES = new Set<BackgroundSessionMode>([
 ]);
 
 /** Roles that never host an ad-hoc background session. */
-const INELIGIBLE_SESSION_ROLES = new Set(['reviewer', 'docs', 'hub-assistant', 'skill-builder']);
+const INELIGIBLE_SESSION_ROLES = new Set([
+  'reviewer',
+  'docs',
+  'hub-assistant',
+  'skill-builder',
+  'qa',
+]);
 
 export const MAX_BACKGROUND_SESSION_SKILLS = 20;
 

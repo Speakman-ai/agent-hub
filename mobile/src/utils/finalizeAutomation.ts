@@ -154,6 +154,7 @@ export function sessionControlValue({ sessionMode, askMode, automation }: any = 
   if (sessionMode === 'skill-builder') return 'skill-builder';
   if (sessionMode === 'consult') return 'consult';
   if (sessionMode === 'hub') return 'consult';
+  if (sessionMode === 'qa') return 'consult';
   if (sessionMode === 'isolated') return 'isolated';
   if (sessionMode === 'autopilot') return 'autopilot';
   if (askMode) return 'consult';

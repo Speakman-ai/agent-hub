@@ -34,6 +34,7 @@ export const SESSION_MODES = [
   'skill-builder',
   'consult',
   'hub',
+  'qa',
 ] as const;
 
 export type SessionMode = (typeof SESSION_MODES)[number];
@@ -145,6 +146,49 @@ export function isHubModeActive(
   return normalizeSessionMode(session?.session_mode) === 'hub';
 }
 
+/**
+ * Whether QA mode is active. QA sessions belong to the project's QA agent: they
+ * author and execute QA plans with the browser / preview tools and never ship
+ * code (no worktree, no Finalize, native Edit/Write blocked).
+ */
+export function isQaModeActive(
+  session: { session_mode?: string | null } | null | undefined,
+): boolean {
+  return normalizeSessionMode(session?.session_mode) === 'qa';
+}
+
+/** Agent role that owns `qa` sessions. Mirrors QA_AGENT_ROLE in qa-agent-prompt.ts. */
+const QA_ROLE = 'qa';
+
+export function isQaAgent(agent: { role?: string | null } | null | undefined): boolean {
+  return (agent?.role ?? '').trim().toLowerCase() === QA_ROLE;
+}
+
+/**
+ * QA mode and the QA agent are bound to each other: `qa` mode runs only on a
+ * QA agent, and a QA agent runs only in `qa` mode. Otherwise a QA session could
+ * be flipped into a shipping mode, or a dev session handed the QA preamble.
+ */
+export function validateQaSessionMode(
+  agent: { role?: string | null } | null | undefined,
+  mode: string,
+): { error: string; message: string } | null {
+  const qaAgent = isQaAgent(agent);
+  if (mode === 'qa' && !qaAgent) {
+    return {
+      error: 'qa_mode_requires_qa_agent',
+      message: "QA mode is only available on the project's QA agent.",
+    };
+  }
+  if (qaAgent && mode !== 'qa') {
+    return {
+      error: 'qa_agent_requires_qa_mode',
+      message: 'QA agent sessions always run in QA mode and cannot ship code.',
+    };
+  }
+  return null;
+}
+
 /** Consult behavior: explicit consult mode, or legacy ask_mode rows (Ask retired). */
 export function isConsultBehaviorActive(
   session: { session_mode?: string | null; ask_mode?: number | null } | null | undefined,
@@ -160,7 +204,7 @@ export function isConsultBehaviorActive(
 export function isNonShippingSessionBehavior(
   session: { session_mode?: string | null; ask_mode?: number | null } | null | undefined,
 ): boolean {
-  return isHubModeActive(session) || isConsultBehaviorActive(session);
+  return isHubModeActive(session) || isQaModeActive(session) || isConsultBehaviorActive(session);
 }
 
 /** Default session_mode for newly created user-facing sessions. */
@@ -181,6 +225,7 @@ export const SKILL_BUILDER_INELIGIBLE_ROLES: readonly string[] = [
   'reviewer',
   'docs',
   'hub-assistant',
+  'qa',
 ];
 
 /**
@@ -222,7 +267,7 @@ export function sessionHasUsableWorktree(
  * epic, phases and tickets is the whole job of the mode.
  *
  * `blockCodeMutationTools` disables Claude's native Edit/Write tools while
- * keeping Bash for Hub wrappers: Hub-only sessions always, and scoping sessions
+ * keeping Bash for Hub wrappers: Hub-only sessions (consult, hub, qa) always, and scoping sessions
  * that run in the shared project checkout instead of their own worktree.
  */
 export function resolveCliWorkspaceAccess(args: {
@@ -231,7 +276,11 @@ export function resolveCliWorkspaceAccess(args: {
   hasWorktree: boolean;
 }): { readOnly: boolean; blockCodeMutationTools: boolean } {
   const { session, workflowProject, hasWorktree } = args;
-  const hubOnly = workflowProject || isConsultModeActive(session) || isHubModeActive(session);
+  const hubOnly =
+    workflowProject ||
+    isConsultModeActive(session) ||
+    isHubModeActive(session) ||
+    isQaModeActive(session);
   const scoping = isScopingModeActive(session);
   const legacyAsk = Number(session.ask_mode ?? 0) !== 0;
   return {

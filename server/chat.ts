@@ -164,6 +164,7 @@ import type { DevServerRuntime } from './preview/dev-server-runtime.js';
 import {
   detectSkillBlock as detectSkillInvokeBlock,
   handleSkillInvoke,
+  loadSkillBody,
   loadSkillByName,
   parseSkillBlock,
 } from './skill-invoke.js';
@@ -195,6 +196,7 @@ import type { BrowserSessionOptions } from './browser.js';
 import { buildScopingModePreamble } from './scoping-mode-prompt.js';
 import { buildSkillBuilderModePreamble } from './skill-builder-mode-prompt.js';
 import { buildConsultModePreamble } from './consult-mode-prompt.js';
+import { buildQaModePreamble } from './qa-mode-prompt.js';
 import {
   claudeSidebarForkArgs,
   isSidebarSession,
@@ -207,6 +209,7 @@ import { buildAutopilotModePreamble, parseAutopilotSessionConfig } from './sessi
 import {
   isSkillBuilderModeActive,
   isConsultBehaviorActive,
+  isQaModeActive,
   resolveCliWorkspaceAccess,
 } from './session-mode.js';
 import {
@@ -3568,7 +3571,31 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         if (autopilotPreamble) enrichedPrompt = `${autopilotPreamble}\n\n${enrichedPrompt}`;
       }
 
-      if (isHubModeActive(session!)) {
+      if (isQaModeActive(session!)) {
+        if (!isAutoContinuation) {
+          for (const requiredId of requiredSkillIdsForSession(session!)) {
+            if (loadedRoutedSkillIds.has(requiredId)) continue;
+            // Skip a required skill that is not installed rather than injecting
+            // a "Skill Load Error" block into every QA turn.
+            if (!loadSkillBody(requiredId, skillPaths)) continue;
+            const injection = loadSkillByName({
+              name: requiredId,
+              reason: 'session_mode=qa (required)',
+              paths: skillPaths,
+              sessionId,
+              stmts: stmts as Stmts,
+              broadcast,
+            });
+            enrichedPrompt += `\n\n${injection}`;
+            loadedRoutedSkillIds.add(requiredId);
+          }
+        }
+        const qaPreamble = buildQaModePreamble({
+          project: project as Project,
+          browserToolsEnabled: effectiveBrowserToolsEnabled(agent, project),
+        });
+        enrichedPrompt = `${qaPreamble}\n\n${enrichedPrompt}`;
+      } else if (isHubModeActive(session!)) {
         const hubTurn = augmentChatTurnForHubMode({
           session: session!,
           paths,

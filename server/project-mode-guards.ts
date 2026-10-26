@@ -19,6 +19,7 @@ const WORKFLOW_SESSION_MODES = new Set<SessionMode>([
   'skill-builder',
   'design',
   'hub',
+  'qa',
 ]);
 
 export function isWorkflowProject(project: Project | null | undefined): boolean {
@@ -64,7 +65,7 @@ export function validateSessionModeForProject(
     return {
       error: 'session_mode_not_allowed_on_workflow_project',
       message:
-        'Workflow projects only support Consult, Scoping, Skill Builder, Design, and Hub session modes. Use a dev project for build/chat/VM sessions.',
+        'Workflow projects only support Consult, Scoping, Skill Builder, Design, Hub, and QA session modes. Use a dev project for build/chat/VM sessions.',
     };
   }
   return null;

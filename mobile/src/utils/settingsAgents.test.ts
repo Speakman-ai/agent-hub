@@ -270,6 +270,7 @@ describe('agent autonomy flag (mobile)', () => {
     expect(isAutonomyLockedOff({ role: 'reviewer' })).toBe(true);
     expect(isAutonomyLockedOff({ role: 'docs' })).toBe(true);
     expect(isAutonomyLockedOff({ role: 'skill-builder' })).toBe(true); // coach, not Dev
+    expect(isAutonomyLockedOff({ role: 'qa' })).toBe(true);
     expect(isAutonomyLocked({ role: 'sub' })).toBe(false);
     expect(isAutonomyLocked({ role: 'frontend' })).toBe(false);
   });

@@ -43,6 +43,10 @@ describe('sessionDerivedState', () => {
       expect(isSessionConsultModeEnabled({ id: 'x', session_mode: 'hub' })).toBe(true);
     });
 
+    it('returns true for qa session_mode (no Finalize in QA sessions)', () => {
+      expect(isSessionConsultModeEnabled({ id: 'x', session_mode: 'qa' })).toBe(true);
+    });
+
     it('returns true for legacy ask_mode rows', () => {
       expect(isSessionConsultModeEnabled({ id: 'x', ask_mode: 1 })).toBe(true);
     });
