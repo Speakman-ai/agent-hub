@@ -6,6 +6,7 @@
 import type { Project } from '../types.js';
 import { parseDeployConfig } from '../deploy/deploy-config.js';
 import { readDeployYamlAtCommit } from '../deploy/deployment-checkout.js';
+import { loadStoredDeployConfig } from '../deploy/deploy-settings-lazy.js';
 import { resolvePreviewSecretEnv } from '../deploy/deploy-preview-secrets.js';
 import type { PreviewConfig } from '../deploy/deploy-preview-config.js';
 import { resolveBundleStore, resolveRunnerBackendKind } from '../finalize/runner-backend.js';
@@ -25,11 +26,16 @@ export function prEnvironmentsDisabled(env: NodeJS.ProcessEnv = process.env): bo
   return /^(0|off|false|no)$/i.test(env.AGENT_HUB_PR_ENVIRONMENTS?.trim() ?? '');
 }
 
-/** The `preview:` block at exactly `headSha`, or null when it has none. */
+/**
+ * The `preview:` block for a PR: from saved Deployments settings when the
+ * project has them, else at exactly `headSha`. Null when there is none.
+ */
 export async function readPreviewConfigAtSha(
   project: Project,
   headSha: string,
 ): Promise<PreviewConfig | null> {
+  const stored = await loadStoredDeployConfig(project.id);
+  if (stored) return stored.preview;
   const at = await readDeployYamlAtCommit({ project, sha: headSha });
   return at.kind === 'present' ? parseDeployConfig(at.raw).preview : null;
 }

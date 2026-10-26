@@ -1,14 +1,16 @@
 /**
  * Does a PR's head commit declare a PR environment?
  *
- * The answer always comes from the exact head commit, never from another
- * revision: a PR can add or remove the `preview:` block relative to the
- * default branch. A commit that cannot be read is `unresolved`. Invalid YAML
- * at the head counts as `absent`.
+ * When the project has saved Deployments settings, those decide (they replace
+ * deploy.yaml for every commit). Otherwise the answer comes from the exact
+ * head commit, never from another revision: a PR can add or remove the
+ * `preview:` block relative to the default branch. A commit that cannot be
+ * read is `unresolved`. Invalid YAML at the head counts as `absent`.
  */
 import type { Project } from '../types.js';
 import { parseDeployConfig } from '../deploy/deploy-config.js';
 import { readDeployYamlAtCommit } from '../deploy/deployment-checkout.js';
+import { loadStoredDeployConfig } from '../deploy/deploy-settings-lazy.js';
 
 export type PreviewConfigProbe = 'present' | 'absent' | 'unresolved';
 
@@ -16,6 +18,13 @@ export async function probePreviewConfigAtSha(
   project: Project,
   headSha: string,
 ): Promise<PreviewConfigProbe> {
+  let stored;
+  try {
+    stored = await loadStoredDeployConfig(project.id);
+  } catch {
+    return 'absent';
+  }
+  if (stored) return stored.preview !== null ? 'present' : 'absent';
   let raw: string | null;
   try {
     const at = await readDeployYamlAtCommit({ project, sha: headSha });

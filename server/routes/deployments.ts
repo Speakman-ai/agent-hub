@@ -32,6 +32,14 @@ import {
   type DeployEnvironmentConfig,
 } from '../deploy/deploy-config.js';
 import {
+  deleteDeploySettings,
+  environmentsToDocument,
+  getDeploySettings,
+  previewToDocument,
+  loadEffectiveDeployConfig,
+  saveDeploySettings,
+} from '../deploy/deploy-settings-store.js';
+import {
   approveDeployment,
   cancelDeployment,
   DeploymentApprovalError,
@@ -122,6 +130,7 @@ import {
   CreateDeployTriggerRequestSchema,
   DeploymentListQuerySchema,
   EnvironmentConfigUpdateRequestSchema,
+  UpdateDeploySettingsRequestSchema,
   NotificationRoutingUpdateRequestSchema,
   RollbackDeploymentRequestSchema,
   TriggerDeploymentRequestSchema,
@@ -795,12 +804,12 @@ export default function createDeploymentRoutes(
 ): Router {
   const router = Router();
   const prepareCheckout = opts.prepareCheckout ?? prepareDeploymentCheckout;
-  const loadConfig = opts.loadConfig ?? loadDeployConfig;
+  const loadRepoConfig = opts.loadConfig ?? loadDeployConfig;
   // Read-only config path: read `deploy.yaml` at HEAD without a working
   // checkout. Hosted-git projects (bare repo, no worktree) read the blob
   // directly; working-dir projects read the file off disk as before. The full
   // clone stays only on the actual deploy trigger, which needs a worktree.
-  const readDeployConfig =
+  const readRepoDeployConfig =
     opts.readDeployConfig ??
     (async (project: Project): Promise<DeployConfig> => {
       if (projectUsesHostedGit(project)) {
@@ -810,8 +819,14 @@ export default function createDeploymentRoutes(
         }
         return parseDeployConfig(raw);
       }
-      return loadConfig(projectDeployYamlPath(project));
+      return loadRepoConfig(projectDeployYamlPath(project));
     });
+  // Environments saved in the Deployments settings win over deploy.yaml for
+  // every read and deploy path; deploy.yaml still supplies the preview block.
+  const readDeployConfig = (project: Project): Promise<DeployConfig> =>
+    loadEffectiveDeployConfig(project.id, () => readRepoDeployConfig(project));
+  const loadConfig = (projectId: string, deployYamlPath: string): Promise<DeployConfig> =>
+    loadEffectiveDeployConfig(projectId, () => loadRepoConfig(deployYamlPath));
   // Shared with the push/merge trigger hook so the manual-deploy and
   // trigger-driven paths never drift on GitHub-token / repo / recovery-checkout
   // / release-digest wiring.
@@ -946,6 +961,108 @@ export default function createDeploymentRoutes(
       return res.status(500).json({ error: message });
     }
   });
+
+  // Editable deploy environments. Once saved they replace deploy.yaml's
+  // environments everywhere, so changing a step, gate, or timeout needs no commit.
+  const deploySettingsDto = async (project: Project): Promise<Record<string, unknown>> => {
+    const stored = getDeploySettings(project.id);
+    if (stored) {
+      return {
+        projectId: project.id,
+        source: 'settings',
+        environments: stored.document,
+        preview: stored.previewDocument,
+        updatedAt: stored.updatedAt,
+        updatedBy: stored.updatedBy,
+        repoError: null,
+      };
+    }
+    const base = { projectId: project.id, updatedAt: null, updatedBy: null };
+    try {
+      const repo = await readRepoDeployConfig(project);
+      return {
+        ...base,
+        source: repo.environments.size > 0 || repo.preview ? 'repo' : 'none',
+        environments: environmentsToDocument(repo.environments),
+        preview: repo.preview ? previewToDocument(repo.preview) : null,
+        repoError: null,
+      };
+    } catch (err) {
+      if (!(err instanceof DeployConfigError)) throw err;
+      return {
+        ...base,
+        source: err.reason === 'not_found' ? 'none' : 'repo',
+        environments: {},
+        preview: null,
+        repoError: err.reason === 'not_found' ? null : err.message,
+      };
+    }
+  };
+
+  const respondSettingsError = (err: unknown, res: Response): Response => {
+    if (err instanceof DeployConfigError) return res.status(400).json({ error: err.message });
+    if (err instanceof DeploymentCheckoutError) return mapTriggerError(err, res);
+    const message = err instanceof Error ? err.message : String(err);
+    return res.status(500).json({ error: message });
+  };
+
+  router.get('/api/projects/:projectId/deploy/settings', async (req: Request, res: Response) => {
+    const project = deps.findProject(req.params.projectId as string);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    try {
+      return res.json(await deploySettingsDto(project));
+    } catch (err) {
+      return respondSettingsError(err, res);
+    }
+  });
+
+  router.put(
+    '/api/projects/:projectId/deploy/settings',
+    requireRole('Admin'),
+    async (req: Request, res: Response) => {
+      const project = deps.findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+      const parsed = UpdateDeploySettingsRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid body' });
+      }
+      try {
+        // Save the raw body, not Zod's output: the deploy parsers reject unknown
+        // keys, and Zod would strip them silently.
+        const body = req.body as { environments: unknown; preview?: unknown };
+        // An omitted `preview` keeps the current block (saved, else deploy.yaml's)
+        // so a client that only edits environments never drops PR environments.
+        const preview =
+          'preview' in body ? body.preview : ((await deploySettingsDto(project)).preview ?? null);
+        saveDeploySettings(
+          project.id,
+          body.environments,
+          preview,
+          actorUserId(req as AuthenticatedRequest),
+        );
+        deps.broadcast({ type: 'deploy_settings_updated', projectId: project.id });
+        return res.json(await deploySettingsDto(project));
+      } catch (err) {
+        return respondSettingsError(err, res);
+      }
+    },
+  );
+
+  router.delete(
+    '/api/projects/:projectId/deploy/settings',
+    requireRole('Admin'),
+    async (req: Request, res: Response) => {
+      const project = deps.findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+      try {
+        deleteDeploySettings(project.id);
+        deps.broadcast({ type: 'deploy_settings_updated', projectId: project.id });
+        return res.json(await deploySettingsDto(project));
+      } catch (err) {
+        return respondSettingsError(err, res);
+      }
+    },
+  );
 
   router.get(
     '/api/projects/:projectId/deploy/environments',
@@ -1460,6 +1577,7 @@ export default function createDeploymentRoutes(
     try {
       checkout = await prepareCheckout({ project, ref: parsed.data.ref });
       const config = await loadConfig(
+        projectId,
         path.join(checkout.worktreePath, '.agent-hub', 'deploy.yaml'),
       );
       const deployment = await triggerDeployment(
@@ -1719,6 +1837,7 @@ export default function createDeploymentRoutes(
       try {
         checkout = await prepareCheckout({ project, ref: source.ref });
         const config = await loadConfig(
+          projectId,
           path.join(checkout.worktreePath, '.agent-hub', 'deploy.yaml'),
         );
         const deployment = await triggerDeployment(

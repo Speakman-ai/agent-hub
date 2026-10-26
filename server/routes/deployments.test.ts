@@ -286,6 +286,7 @@ beforeEach(() => {
     'deployments',
     'deployment_environments',
     'deployment_env_runtime_config',
+    'deployment_project_settings',
     'deployment_env_trigger',
     'deployment_env_schedule',
     'deployment_env_release_gate',
@@ -1655,6 +1656,202 @@ preview:
       .post(`/api/projects/${PROJECT_ID}/deployments/${source.id}/rollback`)
       .send({})
       .expect(400);
+  });
+
+  describe('deploy settings', () => {
+    const STAGING = {
+      staging: {
+        approval: true,
+        'runs-on': 'host',
+        timeout_minutes: 15,
+        steps: [
+          { name: 'ship', run: './ship-staging.sh' },
+          { name: 'notify', run: './notify.sh' },
+        ],
+      },
+    };
+
+    it('reads environments from deploy.yaml until settings are saved', async () => {
+      const { app } = makeApp({ readDeployConfig: async () => CONFIG });
+      const res = await request(app).get(`/api/projects/${PROJECT_ID}/deploy/settings`).expect(200);
+      expect(res.body).toMatchObject({ source: 'repo', updatedAt: null, repoError: null });
+      expect(Object.keys(res.body.environments)).toEqual(['dev', 'prod']);
+      expect(res.body.environments.prod).toEqual({
+        approval: true,
+        'runs-on': 'ubuntu-24.04',
+        timeout_minutes: 60,
+        steps: [{ name: 'deploy', run: './deploy-prod.sh' }],
+      });
+    });
+
+    it('reports "none" when there is no deploy.yaml', async () => {
+      const { app } = makeApp({
+        readDeployConfig: async () => {
+          throw new DeployConfigError('not_found', 'missing');
+        },
+      });
+      const res = await request(app).get(`/api/projects/${PROJECT_ID}/deploy/settings`).expect(200);
+      expect(res.body).toMatchObject({ source: 'none', environments: {} });
+    });
+
+    it('saved settings replace deploy.yaml environments for reads and deploys', async () => {
+      const checkout = makeCheckoutDir('deploy-route-settings-');
+      const { app, backend, deps } = makeApp({
+        readDeployConfig: async () => CONFIG,
+        prepareCheckout: async ({ ref }) => ({ worktreePath: checkout, resolvedRef: `${ref}-sha` }),
+      });
+
+      const saved = await request(app)
+        .put(`/api/projects/${PROJECT_ID}/deploy/settings`)
+        .send({ environments: STAGING })
+        .expect(200);
+      expect(saved.body).toMatchObject({ source: 'settings', updatedBy: 'user-1' });
+      expect(saved.body.environments).toEqual(STAGING);
+      expect(deps.broadcast).toHaveBeenCalledWith({
+        type: 'deploy_settings_updated',
+        projectId: PROJECT_ID,
+      });
+
+      const envs = await request(app)
+        .get(`/api/projects/${PROJECT_ID}/deploy/environments`)
+        .expect(200);
+      expect(envs.body.environments.map((e: { name: string }) => e.name)).toEqual(['staging']);
+      expect(envs.body.environments[0]).toMatchObject({ approval: true, timeoutMinutes: 15 });
+
+      // deploy.yaml (CONFIG) only has dev/prod: the deploy must use the saved env.
+      await request(app)
+        .post(`/api/projects/${PROJECT_ID}/deployments`)
+        .send({ environment: 'dev', ref: 'main' })
+        .expect(404);
+      const res = await request(app)
+        .post(`/api/projects/${PROJECT_ID}/deployments`)
+        .send({ environment: 'staging', ref: 'main' })
+        .expect(202);
+      expect(res.body.deployment.status).toBe('awaiting_approval');
+      expect(res.body.steps.map((s: { name: string }) => s.name)).toEqual(['ship', 'notify']);
+      expect(backend.acquireCalls).toHaveLength(0);
+    });
+
+    it('carries the preview block through settings and the /deploy/preview route', async () => {
+      const withPreview = parseDeployConfig(`
+version: 1
+environments:
+  dev:
+    steps:
+      - run: ./deploy-dev.sh
+preview:
+  compose: docker-compose.yml
+  service: web
+  port: 3000
+`);
+      const { app } = makeApp({ readDeployConfig: async () => withPreview });
+      const read = await request(app)
+        .get(`/api/projects/${PROJECT_ID}/deploy/settings`)
+        .expect(200);
+      expect(read.body.preview).toMatchObject({ compose: 'docker-compose.yml', port: 3000 });
+
+      // Omitting preview keeps deploy.yaml's block on first save.
+      const kept = await request(app)
+        .put(`/api/projects/${PROJECT_ID}/deploy/settings`)
+        .send({ environments: STAGING })
+        .expect(200);
+      expect(kept.body.preview).toMatchObject({ compose: 'docker-compose.yml', service: 'web' });
+
+      await request(app)
+        .put(`/api/projects/${PROJECT_ID}/deploy/settings`)
+        .send({
+          environments: STAGING,
+          preview: { compose: 'compose.preview.yml', service: 'app', port: 8080 },
+        })
+        .expect(200);
+      const preview = await request(app)
+        .get(`/api/projects/${PROJECT_ID}/deploy/preview`)
+        .expect(200);
+      expect(preview.body.preview).toMatchObject({ compose: 'compose.preview.yml', port: 8080 });
+
+      const cleared = await request(app)
+        .put(`/api/projects/${PROJECT_ID}/deploy/settings`)
+        .send({ environments: STAGING, preview: null })
+        .expect(200);
+      expect(cleared.body.preview).toBeNull();
+      await request(app).get(`/api/projects/${PROJECT_ID}/deploy/preview`).expect(404);
+
+      await request(app)
+        .put(`/api/projects/${PROJECT_ID}/deploy/settings`)
+        .send({ environments: STAGING, preview: { compose: 'x.yml', service: 'app', port: 0 } })
+        .expect(400);
+    });
+
+    it('rejects invalid environments with the deploy.yaml rules and saves nothing', async () => {
+      const { app } = makeApp({ readDeployConfig: async () => CONFIG });
+      const bad = await request(app)
+        .put(`/api/projects/${PROJECT_ID}/deploy/settings`)
+        .send({ environments: { dev: { steps: [{ name: 'x', run: './a', shell: 'zsh' }] } } })
+        .expect(400);
+      expect(bad.body.error).toMatch(/unknown key "shell"/);
+      await request(app)
+        .put(`/api/projects/${PROJECT_ID}/deploy/settings`)
+        .send({ environments: { dev: { timeout_minutes: 9999, steps: [{ run: './a' }] } } })
+        .expect(400);
+      const res = await request(app).get(`/api/projects/${PROJECT_ID}/deploy/settings`).expect(200);
+      expect(res.body.source).toBe('repo');
+    });
+
+    it('round-trips environments named after Object.prototype members over HTTP', async () => {
+      const { app } = makeApp({
+        readDeployConfig: async () =>
+          parseDeployConfig(`
+version: 1
+environments:
+  __proto__:
+    steps:
+      - run: ./a.sh
+  constructor:
+    steps:
+      - run: ./b.sh
+`),
+      });
+      const read = await request(app)
+        .get(`/api/projects/${PROJECT_ID}/deploy/settings`)
+        .expect(200);
+      expect(Object.keys(read.body.environments)).toEqual(['__proto__', 'constructor']);
+      // supertest serializes with JSON.stringify, which keeps the own __proto__ key.
+      const saved = await request(app)
+        .put(`/api/projects/${PROJECT_ID}/deploy/settings`)
+        .set('content-type', 'application/json')
+        .send(JSON.stringify({ environments: read.body.environments }))
+        .expect(200);
+      expect(Object.keys(saved.body.environments)).toEqual(['__proto__', 'constructor']);
+      const envs = await request(app)
+        .get(`/api/projects/${PROJECT_ID}/deploy/environments`)
+        .expect(200);
+      expect(envs.body.environments.map((e: { name: string }) => e.name).sort()).toEqual([
+        '__proto__',
+        'constructor',
+      ]);
+    });
+
+    it('requires Admin to save or revert', async () => {
+      const { app } = makeApp({ role: 'User', readDeployConfig: async () => CONFIG });
+      await request(app)
+        .put(`/api/projects/${PROJECT_ID}/deploy/settings`)
+        .send({ environments: STAGING })
+        .expect(403);
+      await request(app).delete(`/api/projects/${PROJECT_ID}/deploy/settings`).expect(403);
+    });
+
+    it('revert drops back to deploy.yaml', async () => {
+      const { app } = makeApp({ readDeployConfig: async () => CONFIG });
+      await request(app)
+        .put(`/api/projects/${PROJECT_ID}/deploy/settings`)
+        .send({ environments: STAGING })
+        .expect(200);
+      const res = await request(app)
+        .delete(`/api/projects/${PROJECT_ID}/deploy/settings`)
+        .expect(200);
+      expect(res.body.source).toBe('repo');
+      expect(Object.keys(res.body.environments)).toEqual(['dev', 'prod']);
+    });
   });
 
   describe('GET /deploy/environments', () => {

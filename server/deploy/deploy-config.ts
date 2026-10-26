@@ -392,18 +392,34 @@ export function parseDeployConfig(rawYaml: string): DeployConfig {
     );
   }
 
+  return { version: 1, environments: parseDeployEnvironments(envsRaw), preview };
+}
+
+/**
+ * Parse an `environments:` map (deploy.yaml wire shape: `runs-on`,
+ * `timeout_minutes`, `github_workflow`, …) with the same rules as the file
+ * parser. Shared by deploy.yaml and the environments saved from the
+ * Deployments settings UI, so both sources validate identically. An empty map
+ * is valid here; the file parser enforces non-emptiness itself.
+ */
+export function parseDeployEnvironments(raw: unknown): Map<string, DeployEnvironmentConfig> {
+  if (!isPlainObject(raw)) {
+    throw new DeployConfigError('missing_environments', '"environments" must be a mapping.');
+  }
   const environments = new Map<string, DeployEnvironmentConfig>();
-  for (const [envName, envRaw] of Object.entries(envsRaw)) {
+  for (const [envName, envRaw] of Object.entries(raw)) {
     if (envName.trim() === '') {
+      throw new DeployConfigError('invalid_environment', 'environment names must be non-empty.');
+    }
+    if (envName !== envName.trim()) {
       throw new DeployConfigError(
         'invalid_environment',
-        'deploy.yaml: environment names must be non-empty.',
+        `environment "${envName}": names must not have leading or trailing spaces.`,
       );
     }
     environments.set(envName, parseEnvironment(envName, envRaw));
   }
-
-  return { version: 1, environments, preview };
+  return environments;
 }
 
 /**

@@ -368,7 +368,8 @@ function parseGithubWorkflowSnapshot(value: unknown): GithubWorkflowStepSpec | u
   let parsedInputs: Record<string, string> | undefined;
   if (inputs !== undefined) {
     if (!isRecord(inputs)) return undefined;
-    parsedInputs = {};
+    // Null prototype: input names are user-supplied and `__proto__` is valid.
+    parsedInputs = Object.create(null) as Record<string, string>;
     for (const [key, inputValue] of Object.entries(inputs)) {
       if (typeof inputValue !== 'string') return undefined;
       parsedInputs[key] = inputValue;

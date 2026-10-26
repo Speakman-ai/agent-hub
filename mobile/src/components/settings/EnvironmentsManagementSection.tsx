@@ -49,6 +49,18 @@ const STATUS_STYLE: Record<
   },
 };
 
+/**
+ * Expanded-panel state is a Set, not an object keyed by name: environment names
+ * are user-supplied, and names like `constructor` must not read inherited
+ * properties (which would start that panel expanded).
+ */
+function toggleName(prev: ReadonlySet<string>, name: string): ReadonlySet<string> {
+  const next = new Set(prev);
+  if (next.has(name)) next.delete(name);
+  else next.add(name);
+  return next;
+}
+
 export default function EnvironmentsManagementSection({
   projectId,
   onNotify,
@@ -60,25 +72,25 @@ export default function EnvironmentsManagementSection({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionKey, setActionKey] = useState<string | null>(null);
-  const [expandedTriggers, setExpandedTriggers] = useState<Record<string, boolean>>({});
-  const [expandedSchedules, setExpandedSchedules] = useState<Record<string, boolean>>({});
-  const [expandedRouting, setExpandedRouting] = useState<Record<string, boolean>>({});
-  const [expandedGates, setExpandedGates] = useState<Record<string, boolean>>({});
+  const [expandedTriggers, setExpandedTriggers] = useState<ReadonlySet<string>>(() => new Set());
+  const [expandedSchedules, setExpandedSchedules] = useState<ReadonlySet<string>>(() => new Set());
+  const [expandedRouting, setExpandedRouting] = useState<ReadonlySet<string>>(() => new Set());
+  const [expandedGates, setExpandedGates] = useState<ReadonlySet<string>>(() => new Set());
 
   const toggleGates = useCallback((name: string) => {
-    setExpandedGates((prev) => ({ ...prev, [name]: !prev[name] }));
+    setExpandedGates((prev) => toggleName(prev, name));
   }, []);
 
   const toggleTriggers = useCallback((name: string) => {
-    setExpandedTriggers((prev) => ({ ...prev, [name]: !prev[name] }));
+    setExpandedTriggers((prev) => toggleName(prev, name));
   }, []);
 
   const toggleSchedules = useCallback((name: string) => {
-    setExpandedSchedules((prev) => ({ ...prev, [name]: !prev[name] }));
+    setExpandedSchedules((prev) => toggleName(prev, name));
   }, []);
 
   const toggleRouting = useCallback((name: string) => {
-    setExpandedRouting((prev) => ({ ...prev, [name]: !prev[name] }));
+    setExpandedRouting((prev) => toggleName(prev, name));
   }, []);
 
   const notify = useCallback(
@@ -188,9 +200,9 @@ export default function EnvironmentsManagementSection({
       </View>
 
       <Text style={styles.help}>
-        Pause or resume an environment without editing .agent-hub/deploy.yaml. A paused environment
-        cannot be deployed. Environments no longer declared in deploy.yaml show as orphaned so their
-        stale config can be removed.
+        Pause or resume an environment. A paused environment cannot be deployed. Edit steps,
+        approval, and timeouts under Settings. Environments that are no longer configured show as
+        orphaned so their stale config can be removed.
       </Text>
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -231,7 +243,7 @@ export default function EnvironmentsManagementSection({
               <Text style={styles.meta}>
                 live {shortDeploymentRef(env.currentRef)}
                 {env.runsOn ? ` · ${env.runsOn}` : ''}
-                {!env.active ? ' · not in deploy.yaml' : ''}
+                {!env.active ? ' · no longer configured' : ''}
               </Text>
 
               <View style={styles.actions}>
@@ -239,26 +251,26 @@ export default function EnvironmentsManagementSection({
                   onPress={() => toggleTriggers(env.name)}
                   style={[
                     styles.actionButton,
-                    expandedTriggers[env.name]
+                    expandedTriggers.has(env.name)
                       ? styles.triggersButtonActive
                       : styles.triggersButton,
                   ]}
                   accessibilityLabel={`Manage triggers for ${env.name}`}
-                  accessibilityState={{ expanded: !!expandedTriggers[env.name] }}
+                  accessibilityState={{ expanded: !!expandedTriggers.has(env.name) }}
                 >
-                  {expandedTriggers[env.name] ? (
+                  {expandedTriggers.has(env.name) ? (
                     <ChevronDown size={13} color={colors.amber400} />
                   ) : (
                     <ChevronRight size={13} color={colors.gray300} />
                   )}
                   <Zap
                     size={13}
-                    color={expandedTriggers[env.name] ? colors.amber400 : colors.gray300}
+                    color={expandedTriggers.has(env.name) ? colors.amber400 : colors.gray300}
                   />
                   <Text
                     style={[
                       styles.actionText,
-                      { color: expandedTriggers[env.name] ? colors.amber400 : colors.gray300 },
+                      { color: expandedTriggers.has(env.name) ? colors.amber400 : colors.gray300 },
                     ]}
                   >
                     Triggers
@@ -268,26 +280,26 @@ export default function EnvironmentsManagementSection({
                   onPress={() => toggleSchedules(env.name)}
                   style={[
                     styles.actionButton,
-                    expandedSchedules[env.name]
+                    expandedSchedules.has(env.name)
                       ? styles.schedulesButtonActive
                       : styles.schedulesButton,
                   ]}
                   accessibilityLabel={`Manage schedules for ${env.name}`}
-                  accessibilityState={{ expanded: !!expandedSchedules[env.name] }}
+                  accessibilityState={{ expanded: !!expandedSchedules.has(env.name) }}
                 >
-                  {expandedSchedules[env.name] ? (
+                  {expandedSchedules.has(env.name) ? (
                     <ChevronDown size={13} color={colors.blue300} />
                   ) : (
                     <ChevronRight size={13} color={colors.gray300} />
                   )}
                   <CalendarClock
                     size={13}
-                    color={expandedSchedules[env.name] ? colors.blue300 : colors.gray300}
+                    color={expandedSchedules.has(env.name) ? colors.blue300 : colors.gray300}
                   />
                   <Text
                     style={[
                       styles.actionText,
-                      { color: expandedSchedules[env.name] ? colors.blue300 : colors.gray300 },
+                      { color: expandedSchedules.has(env.name) ? colors.blue300 : colors.gray300 },
                     ]}
                   >
                     Schedules
@@ -297,24 +309,24 @@ export default function EnvironmentsManagementSection({
                   onPress={() => toggleGates(env.name)}
                   style={[
                     styles.actionButton,
-                    expandedGates[env.name] ? styles.gatesButtonActive : styles.gatesButton,
+                    expandedGates.has(env.name) ? styles.gatesButtonActive : styles.gatesButton,
                   ]}
                   accessibilityLabel={`Manage release gates for ${env.name}`}
-                  accessibilityState={{ expanded: !!expandedGates[env.name] }}
+                  accessibilityState={{ expanded: !!expandedGates.has(env.name) }}
                 >
-                  {expandedGates[env.name] ? (
+                  {expandedGates.has(env.name) ? (
                     <ChevronDown size={13} color={colors.purple400} />
                   ) : (
                     <ChevronRight size={13} color={colors.gray300} />
                   )}
                   <Rocket
                     size={13}
-                    color={expandedGates[env.name] ? colors.purple400 : colors.gray300}
+                    color={expandedGates.has(env.name) ? colors.purple400 : colors.gray300}
                   />
                   <Text
                     style={[
                       styles.actionText,
-                      { color: expandedGates[env.name] ? colors.purple400 : colors.gray300 },
+                      { color: expandedGates.has(env.name) ? colors.purple400 : colors.gray300 },
                     ]}
                   >
                     Release gates
@@ -324,24 +336,26 @@ export default function EnvironmentsManagementSection({
                   onPress={() => toggleRouting(env.name)}
                   style={[
                     styles.actionButton,
-                    expandedRouting[env.name] ? styles.routingButtonActive : styles.routingButton,
+                    expandedRouting.has(env.name)
+                      ? styles.routingButtonActive
+                      : styles.routingButton,
                   ]}
                   accessibilityLabel={`Manage notification routing for ${env.name}`}
-                  accessibilityState={{ expanded: !!expandedRouting[env.name] }}
+                  accessibilityState={{ expanded: !!expandedRouting.has(env.name) }}
                 >
-                  {expandedRouting[env.name] ? (
+                  {expandedRouting.has(env.name) ? (
                     <ChevronDown size={13} color={colors.purple400} />
                   ) : (
                     <ChevronRight size={13} color={colors.gray300} />
                   )}
                   <Mail
                     size={13}
-                    color={expandedRouting[env.name] ? colors.purple400 : colors.gray300}
+                    color={expandedRouting.has(env.name) ? colors.purple400 : colors.gray300}
                   />
                   <Text
                     style={[
                       styles.actionText,
-                      { color: expandedRouting[env.name] ? colors.purple400 : colors.gray300 },
+                      { color: expandedRouting.has(env.name) ? colors.purple400 : colors.gray300 },
                     ]}
                   >
                     Notifications
@@ -397,28 +411,28 @@ export default function EnvironmentsManagementSection({
                   </TouchableOpacity>
                 ) : null}
               </View>
-              {expandedTriggers[env.name] && projectId ? (
+              {expandedTriggers.has(env.name) && projectId ? (
                 <EnvironmentTriggersPanel
                   projectId={projectId}
                   environmentName={env.name}
                   onNotify={onNotify}
                 />
               ) : null}
-              {expandedSchedules[env.name] && projectId ? (
+              {expandedSchedules.has(env.name) && projectId ? (
                 <EnvironmentSchedulesPanel
                   projectId={projectId}
                   environmentName={env.name}
                   onNotify={onNotify}
                 />
               ) : null}
-              {expandedGates[env.name] && projectId ? (
+              {expandedGates.has(env.name) && projectId ? (
                 <EnvironmentReleaseGatesPanel
                   projectId={projectId}
                   environmentName={env.name}
                   onNotify={onNotify}
                 />
               ) : null}
-              {expandedRouting[env.name] && projectId ? (
+              {expandedRouting.has(env.name) && projectId ? (
                 <EnvironmentNotificationRoutingPanel
                   projectId={projectId}
                   environmentName={env.name}

@@ -33,6 +33,7 @@ import {
 import { parseAutopilotSessionConfig } from '../shared/utils/sessionAutopilot.js';
 import { type MainlineSlot, mainlineLandingKey } from '../shared/utils/autopilotMainlineSlot.js';
 import { parseDeployConfig, type DeployConfig } from './deploy/deploy-config.js';
+import { loadStoredDeployConfig } from './deploy/deploy-settings-lazy.js';
 import {
   LOCK_RACE_CANCEL_ERROR,
   type TriggerDeploymentInput,
@@ -215,32 +216,46 @@ export function createMainlineDeployWatcher(deps: MainlineDeployWatcherDeps) {
   ): Promise<StartOutcome> {
     const sha = slot.sha as string;
 
-    let yaml: DeployYamlAtCommit;
-    try {
-      yaml = await deps.readDeployYamlAtCommit(project, sha);
-    } catch (err) {
-      return {
-        kind: 'retry',
-        detail: `could not read deploy.yaml at ${shortSha(sha)}: ${errMessage(err)}`,
-      };
-    }
-    if (yaml.kind === 'absent') {
-      return { kind: 'final', detail: `No .agent-hub/deploy.yaml at ${shortSha(sha)}.` };
-    }
+    // Settings saved in the Deployments UI replace deploy.yaml; the file is
+    // only read when the project has none.
     let config: DeployConfig;
+    let stored: DeployConfig | null;
     try {
-      config = parseDeployConfig(yaml.raw);
+      stored = await loadStoredDeployConfig(project.id);
     } catch (err) {
-      return {
-        kind: 'final',
-        detail: `.agent-hub/deploy.yaml at ${shortSha(sha)} is invalid: ${errMessage(err)}`,
-      };
+      return { kind: 'final', detail: errMessage(err) };
+    }
+    if (stored) {
+      config = stored;
+    } else {
+      let yaml: DeployYamlAtCommit;
+      try {
+        yaml = await deps.readDeployYamlAtCommit(project, sha);
+      } catch (err) {
+        return {
+          kind: 'retry',
+          detail: `could not read deploy.yaml at ${shortSha(sha)}: ${errMessage(err)}`,
+        };
+      }
+      if (yaml.kind === 'absent') {
+        return { kind: 'final', detail: `No .agent-hub/deploy.yaml at ${shortSha(sha)}.` };
+      }
+      try {
+        config = parseDeployConfig(yaml.raw);
+      } catch (err) {
+        return {
+          kind: 'final',
+          detail: `.agent-hub/deploy.yaml at ${shortSha(sha)} is invalid: ${errMessage(err)}`,
+        };
+      }
     }
     const declared = [...config.environments.keys()];
     if (!config.environments.has(environment)) {
       return {
         kind: 'final',
-        detail: `deploy.yaml at ${shortSha(sha)} does not declare environment "${environment}".`,
+        detail: stored
+          ? `Deployment settings do not declare environment "${environment}".`
+          : `deploy.yaml at ${shortSha(sha)} does not declare environment "${environment}".`,
       };
     }
     let deployable: boolean;

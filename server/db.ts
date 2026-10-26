@@ -37,6 +37,7 @@ import {
 import { DEPLOYMENT_SCHEMA } from './deploy/deployment-schema.js';
 import { QA_SCHEMA } from './qa-schema.js';
 import { DEPLOYMENT_ENV_RUNTIME_CONFIG_SCHEMA } from './deploy/deployment-env-config-schema.js';
+import { DEPLOYMENT_PROJECT_SETTINGS_SCHEMA } from './deploy/deploy-settings-schema.js';
 import { DEPLOYMENT_ENV_TRIGGER_SCHEMA } from './deploy/deployment-trigger-schema.js';
 import { DEPLOYMENT_ENV_SCHEDULE_SCHEMA } from './deploy/deployment-schedule-schema.js';
 import { DEPLOYMENT_ENV_NOTIFICATION_ROUTING_SCHEMA } from './deploy/deployment-notification-routing-schema.js';
@@ -3923,6 +3924,8 @@ function initDb(dataDir: string): void {
   // routing in later phases). Co-located schema so its store test can migrate an
   // in-memory DB in isolation.
   db.exec(DEPLOYMENT_ENV_RUNTIME_CONFIG_SCHEMA);
+  // Deploy environments edited from the Deployments settings UI.
+  db.exec(DEPLOYMENT_PROJECT_SETTINGS_SCHEMA);
 
   // Multi-environment management (triggers phase): operator-editable per-env
   // git-event deploy triggers. Co-located schema so its store test can migrate

@@ -53,6 +53,18 @@ function StatusBadge({ status }: { status: EnvironmentStatus }) {
   );
 }
 
+/**
+ * Expanded-panel state is a Set, not an object keyed by name: environment names
+ * are user-supplied, and names like `constructor` must not read inherited
+ * properties (which would start that panel expanded).
+ */
+function toggleName(prev: ReadonlySet<string>, name: string): ReadonlySet<string> {
+  const next = new Set(prev);
+  if (next.has(name)) next.delete(name);
+  else next.add(name);
+  return next;
+}
+
 export default function EnvironmentsManagementSection({
   projectId,
   showToast,
@@ -64,25 +76,25 @@ export default function EnvironmentsManagementSection({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionKey, setActionKey] = useState<string | null>(null);
-  const [expandedTriggers, setExpandedTriggers] = useState<Record<string, boolean>>({});
-  const [expandedSchedules, setExpandedSchedules] = useState<Record<string, boolean>>({});
-  const [expandedRouting, setExpandedRouting] = useState<Record<string, boolean>>({});
-  const [expandedGates, setExpandedGates] = useState<Record<string, boolean>>({});
+  const [expandedTriggers, setExpandedTriggers] = useState<ReadonlySet<string>>(() => new Set());
+  const [expandedSchedules, setExpandedSchedules] = useState<ReadonlySet<string>>(() => new Set());
+  const [expandedRouting, setExpandedRouting] = useState<ReadonlySet<string>>(() => new Set());
+  const [expandedGates, setExpandedGates] = useState<ReadonlySet<string>>(() => new Set());
 
   const toggleGates = useCallback((name: string) => {
-    setExpandedGates((prev) => ({ ...prev, [name]: !prev[name] }));
+    setExpandedGates((prev) => toggleName(prev, name));
   }, []);
 
   const toggleTriggers = useCallback((name: string) => {
-    setExpandedTriggers((prev) => ({ ...prev, [name]: !prev[name] }));
+    setExpandedTriggers((prev) => toggleName(prev, name));
   }, []);
 
   const toggleSchedules = useCallback((name: string) => {
-    setExpandedSchedules((prev) => ({ ...prev, [name]: !prev[name] }));
+    setExpandedSchedules((prev) => toggleName(prev, name));
   }, []);
 
   const toggleRouting = useCallback((name: string) => {
-    setExpandedRouting((prev) => ({ ...prev, [name]: !prev[name] }));
+    setExpandedRouting((prev) => toggleName(prev, name));
   }, []);
 
   const notify = useCallback(
@@ -175,10 +187,9 @@ export default function EnvironmentsManagementSection({
       </div>
 
       <p className="mb-3 text-xs text-gray-500">
-        Pause or resume an environment without editing{' '}
-        <span className="font-mono">.agent-hub/deploy.yaml</span>. A paused environment cannot be
-        deployed. Environments no longer declared in deploy.yaml are shown as{' '}
-        <span className="text-gray-300">orphaned</span> so their stale config can be removed.
+        Pause or resume an environment. A paused environment cannot be deployed. Edit steps,
+        approval, and timeouts under Settings. Environments that are no longer configured are shown
+        as <span className="text-gray-300">orphaned</span> so their stale config can be removed.
       </p>
 
       {error ? (
@@ -222,7 +233,7 @@ export default function EnvironmentsManagementSection({
                       {env.runsOn ? <span>{env.runsOn}</span> : null}
                       {env.steps ? <span>{env.steps.length} steps</span> : null}
                       {!env.active ? (
-                        <span className="text-gray-400">not in deploy.yaml</span>
+                        <span className="text-gray-400">no longer configured</span>
                       ) : null}
                     </div>
                   </div>
@@ -230,15 +241,15 @@ export default function EnvironmentsManagementSection({
                     <button
                       type="button"
                       onClick={() => toggleTriggers(env.name)}
-                      aria-expanded={!!expandedTriggers[env.name]}
+                      aria-expanded={!!expandedTriggers.has(env.name)}
                       className={`inline-flex min-h-[30px] items-center gap-1.5 rounded-md border px-2.5 text-xs hover:bg-gray-800 ${
-                        expandedTriggers[env.name]
+                        expandedTriggers.has(env.name)
                           ? 'border-amber-500/40 bg-amber-500/10 text-amber-200'
                           : 'border-gray-700 text-gray-300'
                       }`}
                       title="Manage deploy triggers"
                     >
-                      {expandedTriggers[env.name] ? (
+                      {expandedTriggers.has(env.name) ? (
                         <ChevronDown size={12} />
                       ) : (
                         <ChevronRight size={12} />
@@ -249,15 +260,15 @@ export default function EnvironmentsManagementSection({
                     <button
                       type="button"
                       onClick={() => toggleSchedules(env.name)}
-                      aria-expanded={!!expandedSchedules[env.name]}
+                      aria-expanded={!!expandedSchedules.has(env.name)}
                       className={`inline-flex min-h-[30px] items-center gap-1.5 rounded-md border px-2.5 text-xs hover:bg-gray-800 ${
-                        expandedSchedules[env.name]
+                        expandedSchedules.has(env.name)
                           ? 'border-sky-500/40 bg-sky-500/10 text-sky-200'
                           : 'border-gray-700 text-gray-300'
                       }`}
                       title="Manage deploy schedules"
                     >
-                      {expandedSchedules[env.name] ? (
+                      {expandedSchedules.has(env.name) ? (
                         <ChevronDown size={12} />
                       ) : (
                         <ChevronRight size={12} />
@@ -268,15 +279,15 @@ export default function EnvironmentsManagementSection({
                     <button
                       type="button"
                       onClick={() => toggleGates(env.name)}
-                      aria-expanded={!!expandedGates[env.name]}
+                      aria-expanded={!!expandedGates.has(env.name)}
                       className={`inline-flex min-h-[30px] items-center gap-1.5 rounded-md border px-2.5 text-xs hover:bg-gray-800 ${
-                        expandedGates[env.name]
+                        expandedGates.has(env.name)
                           ? 'border-fuchsia-500/40 bg-fuchsia-500/10 text-fuchsia-200'
                           : 'border-gray-700 text-gray-300'
                       }`}
                       title="Manage release gates"
                     >
-                      {expandedGates[env.name] ? (
+                      {expandedGates.has(env.name) ? (
                         <ChevronDown size={12} />
                       ) : (
                         <ChevronRight size={12} />
@@ -287,15 +298,15 @@ export default function EnvironmentsManagementSection({
                     <button
                       type="button"
                       onClick={() => toggleRouting(env.name)}
-                      aria-expanded={!!expandedRouting[env.name]}
+                      aria-expanded={!!expandedRouting.has(env.name)}
                       className={`inline-flex min-h-[30px] items-center gap-1.5 rounded-md border px-2.5 text-xs hover:bg-gray-800 ${
-                        expandedRouting[env.name]
+                        expandedRouting.has(env.name)
                           ? 'border-violet-500/40 bg-violet-500/10 text-violet-200'
                           : 'border-gray-700 text-gray-300'
                       }`}
                       title="Manage notification routing"
                     >
-                      {expandedRouting[env.name] ? (
+                      {expandedRouting.has(env.name) ? (
                         <ChevronDown size={12} />
                       ) : (
                         <ChevronRight size={12} />
@@ -342,28 +353,28 @@ export default function EnvironmentsManagementSection({
                     ) : null}
                   </div>
                 </div>
-                {expandedTriggers[env.name] && projectId ? (
+                {expandedTriggers.has(env.name) && projectId ? (
                   <EnvironmentTriggersPanel
                     projectId={projectId}
                     environmentName={env.name}
                     showToast={showToast}
                   />
                 ) : null}
-                {expandedSchedules[env.name] && projectId ? (
+                {expandedSchedules.has(env.name) && projectId ? (
                   <EnvironmentSchedulesPanel
                     projectId={projectId}
                     environmentName={env.name}
                     showToast={showToast}
                   />
                 ) : null}
-                {expandedGates[env.name] && projectId ? (
+                {expandedGates.has(env.name) && projectId ? (
                   <EnvironmentReleaseGatesPanel
                     projectId={projectId}
                     environmentName={env.name}
                     showToast={showToast}
                   />
                 ) : null}
-                {expandedRouting[env.name] && projectId ? (
+                {expandedRouting.has(env.name) && projectId ? (
                   <EnvironmentNotificationRoutingPanel
                     projectId={projectId}
                     environmentName={env.name}

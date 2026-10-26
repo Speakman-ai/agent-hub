@@ -12,6 +12,7 @@ import { hostedRepoDefaultBranch } from './git-host/repo-store.js';
 import { resolveDefaultBranch } from './git-default-branch.js';
 import { readDeployYamlAtRef } from './deploy/deployment-checkout.js';
 import { parseDeployConfig } from './deploy/deploy-config.js';
+import { getDeploySettings } from './deploy/deploy-settings-store.js';
 import { isEnvironmentDeployable } from './deploy/deployment-env-config-store.js';
 
 export { autopilotMainlineStartEnabled } from './autopilot-mainline-availability.js';
@@ -74,48 +75,65 @@ export async function checkMainlineAutopilotTarget(
     };
   }
 
-  const readYaml =
-    deps.readDeployYaml ?? ((p: Project, ref: string) => readDeployYamlAtRef({ project: p, ref }));
-  let raw: string | null;
-  try {
-    raw = await readYaml(project, defaultBranch);
-  } catch (err) {
-    return {
-      ok: false,
-      error: 'autopilot_deploy_config_invalid',
-      message: `Could not read .agent-hub/deploy.yaml on '${defaultBranch}': ${err instanceof Error ? err.message : String(err)}`,
-      declaredEnvironments: [],
-    };
-  }
-  if (raw == null) {
-    return {
-      ok: false,
-      error: 'autopilot_deploy_config_missing',
-      message: `No .agent-hub/deploy.yaml on '${defaultBranch}'. Declare a deploy environment there before shipping to the default branch.`,
-      declaredEnvironments: [],
-    };
-  }
-
   let declared: string[];
+  let settings: ReturnType<typeof getDeploySettings>;
   try {
-    const parseNames =
-      deps.parseEnvironmentNames ??
-      ((text: string) => [...parseDeployConfig(text).environments.keys()]);
-    declared = parseNames(raw);
+    settings = getDeploySettings(project.id);
   } catch (err) {
     return {
       ok: false,
       error: 'autopilot_deploy_config_invalid',
-      message: `.agent-hub/deploy.yaml on '${defaultBranch}' is invalid: ${err instanceof Error ? err.message : String(err)}`,
+      message: err instanceof Error ? err.message : String(err),
       declaredEnvironments: [],
     };
+  }
+  if (settings) {
+    // Environments saved in the Deployments settings win over deploy.yaml.
+    declared = [...settings.environments.keys()];
+  } else {
+    const readYaml =
+      deps.readDeployYaml ??
+      ((p: Project, ref: string) => readDeployYamlAtRef({ project: p, ref }));
+    let raw: string | null;
+    try {
+      raw = await readYaml(project, defaultBranch);
+    } catch (err) {
+      return {
+        ok: false,
+        error: 'autopilot_deploy_config_invalid',
+        message: `Could not read .agent-hub/deploy.yaml on '${defaultBranch}': ${err instanceof Error ? err.message : String(err)}`,
+        declaredEnvironments: [],
+      };
+    }
+    if (raw == null) {
+      return {
+        ok: false,
+        error: 'autopilot_deploy_config_missing',
+        message: `No .agent-hub/deploy.yaml on '${defaultBranch}'. Declare a deploy environment there before shipping to the default branch.`,
+        declaredEnvironments: [],
+      };
+    }
+
+    try {
+      const parseNames =
+        deps.parseEnvironmentNames ??
+        ((text: string) => [...parseDeployConfig(text).environments.keys()]);
+      declared = parseNames(raw);
+    } catch (err) {
+      return {
+        ok: false,
+        error: 'autopilot_deploy_config_invalid',
+        message: `.agent-hub/deploy.yaml on '${defaultBranch}' is invalid: ${err instanceof Error ? err.message : String(err)}`,
+        declaredEnvironments: [],
+      };
+    }
   }
 
   if (!declared.includes(env)) {
     return {
       ok: false,
       error: 'autopilot_deploy_env_unknown',
-      message: `deploy.yaml on '${defaultBranch}' does not declare environment "${env}". Declared: ${formatDeclared(declared)}.`,
+      message: `${settings ? 'Deployment settings do' : `deploy.yaml on '${defaultBranch}' does`} not declare environment "${env}". Declared: ${formatDeclared(declared)}.`,
       declaredEnvironments: declared,
     };
   }

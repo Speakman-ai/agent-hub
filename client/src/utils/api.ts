@@ -1957,6 +1957,20 @@ export const api = {
     }),
   // Deployment Module - deploy.yaml environments + run actions.
   getDeployConfig: (projectId: any) => fetchJSON(`/projects/${projectId}/deploy/config`),
+  // Editable deploy environments (steps, approval, runner, timeout, origin).
+  // Once saved they replace deploy.yaml's environments for every deploy path.
+  getDeploySettings: (projectId: string) => fetchJSON(`/projects/${projectId}/deploy/settings`),
+  saveDeploySettings: (
+    projectId: string,
+    environments: Record<string, unknown>,
+    preview: Record<string, unknown> | null,
+  ) =>
+    fetchJSON(`/projects/${projectId}/deploy/settings`, {
+      method: 'PUT',
+      body: JSON.stringify({ environments, preview }),
+    }),
+  revertDeploySettings: (projectId: string) =>
+    fetchJSON(`/projects/${projectId}/deploy/settings`, { method: 'DELETE' }),
   // Resolved environment view (deploy.yaml declarations + operator runtime config,
   // including orphaned rows) used by the environments management surface.
   getDeployEnvironments: (projectId: any) =>

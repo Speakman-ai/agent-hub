@@ -44,6 +44,7 @@ import {
   type DeployOrchestratorDeps,
 } from './deploy-orchestrator.js';
 import { DeployConfigError, loadDeployConfig, type DeployConfig } from './deploy-config.js';
+import { loadEffectiveDeployConfig } from './deploy-settings-store.js';
 import { prepareDeploymentCheckout } from './deployment-checkout.js';
 import { isEnvironmentDeployable as defaultIsEnvironmentDeployable } from './deployment-env-config-store.js';
 import {
@@ -119,7 +120,10 @@ export async function runScheduledDeployment(
   deps: DeployScheduleTickerDeps,
 ): Promise<void> {
   const prepareCheckout = deps.prepareCheckout ?? prepareDeploymentCheckout;
-  const loadConfig = deps.loadConfig ?? loadDeployConfig;
+  const loadRepoConfig = deps.loadConfig ?? loadDeployConfig;
+  // Environments saved in the Deployments settings win over deploy.yaml.
+  const loadConfig = (deployYamlPath: string): Promise<DeployConfig> =>
+    loadEffectiveDeployConfig(schedule.project_id, () => loadRepoConfig(deployYamlPath));
   const trigger = deps.triggerDeployment ?? defaultTriggerDeployment;
   const isDeployable = deps.isEnvironmentDeployable ?? defaultIsEnvironmentDeployable;
   const getSchedule = deps.getSchedule ?? defaultGetSchedule;

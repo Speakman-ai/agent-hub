@@ -49,6 +49,65 @@ export const EnvironmentConfigUpdateRequestSchema = z.object({
   enabled: z.boolean(),
 });
 
+const DeploySettingsGithubWorkflowSchema = z.object({
+  workflow: z.string(),
+  ref: z.string(),
+  inputs: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
+  poll_interval_seconds: z.number().int().optional(),
+});
+
+const DeploySettingsStepSchema = registerComponent(
+  'DeploySettingsStep',
+  z.object({
+    name: z.string().optional(),
+    run: z.string().optional(),
+    github_workflow: DeploySettingsGithubWorkflowSchema.optional(),
+  }),
+);
+
+const DeploySettingsEnvironmentSchema = registerComponent(
+  'DeploySettingsEnvironment',
+  z.object({
+    approval: z.boolean().optional(),
+    'runs-on': z.string().optional(),
+    timeout_minutes: z.number().int().optional(),
+    origin: z.string().nullable().optional(),
+    readiness: z.string().nullable().optional(),
+    steps: z.array(DeploySettingsStepSchema),
+  }),
+);
+
+const DeploySettingsPreviewSchema = registerComponent(
+  'DeploySettingsPreview',
+  z.object({
+    compose: z.string(),
+    service: z.string(),
+    port: z.number().int(),
+    health: z.string().optional(),
+    health_timeout_minutes: z.number().int().optional(),
+    steps: z.array(z.object({ name: z.string().optional(), run: z.string() })).optional(),
+    secrets: z.array(z.string()).optional(),
+  }),
+);
+
+export const UpdateDeploySettingsRequestSchema = z.object({
+  environments: z.record(z.string(), DeploySettingsEnvironmentSchema),
+  preview: DeploySettingsPreviewSchema.nullable().optional(),
+});
+
+const DeploySettingsResponseSchema = registerComponent(
+  'DeploySettingsResponse',
+  z.object({
+    projectId: z.string(),
+    source: z.enum(['settings', 'repo', 'none']),
+    environments: z.record(z.string(), DeploySettingsEnvironmentSchema),
+    preview: DeploySettingsPreviewSchema.nullable(),
+    updatedAt: z.string().nullable(),
+    updatedBy: z.string().nullable(),
+    repoError: z.string().nullable(),
+  }),
+);
+
 const DeployTriggerEventEnum = z.enum(['push', 'merge']);
 const DEPLOY_TRIGGER_BRANCH_PATTERN_MAX = 200;
 
@@ -775,6 +834,58 @@ registerPath({
     },
     400: errorResponse('Invalid deploy.yaml or unknown preview secret names.'),
     404: errorResponse('Project, deploy.yaml, or preview block not found.'),
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/deploy/settings',
+  tags: ['Deployments'],
+  summary: 'Read the editable deploy environment settings',
+  description:
+    'Returns the environments (steps, approval gate, runner, timeout, origin, readiness) and the PR environment preview block in the deploy.yaml wire shape. source is "settings" once they have been saved from the UI (they then replace deploy.yaml for every deploy path and PR environment), "repo" when they are still read from .agent-hub/deploy.yaml, or "none" when neither exists.',
+  request: { params: projectParams },
+  responses: {
+    200: { description: 'Deploy settings.', content: jsonContent(DeploySettingsResponseSchema) },
+    400: errorResponse('Saved settings are invalid.'),
+    404: errorResponse('Project not found.'),
+  },
+});
+
+registerPath({
+  method: 'put',
+  path: '/api/projects/{projectId}/deploy/settings',
+  tags: ['Deployments'],
+  summary: 'Save deploy environment settings',
+  description:
+    "Admin+. Validates the environments and preview block with the same rules as deploy.yaml and saves them. From then on deploy.yaml is not read: these settings decide which environments exist, how each deploys, and how PR environments boot. preview null means no PR environments; omitting it keeps the current block (saved, else deploy.yaml's). An empty environments map is allowed.",
+  request: {
+    params: projectParams,
+    body: { content: jsonContent(UpdateDeploySettingsRequestSchema) },
+  },
+  responses: {
+    200: { description: 'Saved settings.', content: jsonContent(DeploySettingsResponseSchema) },
+    400: errorResponse('Invalid environments.'),
+    403: errorResponse('Admin role required.'),
+    404: errorResponse('Project not found.'),
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/projects/{projectId}/deploy/settings',
+  tags: ['Deployments'],
+  summary: 'Discard saved deploy settings',
+  description:
+    'Admin+. Removes the saved settings so the project reads environments and the preview block from .agent-hub/deploy.yaml again. Returns the resulting settings view.',
+  request: { params: projectParams },
+  responses: {
+    200: {
+      description: 'Settings after revert.',
+      content: jsonContent(DeploySettingsResponseSchema),
+    },
+    403: errorResponse('Admin role required.'),
+    404: errorResponse('Project not found.'),
   },
 });
 

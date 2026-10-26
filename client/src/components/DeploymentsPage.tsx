@@ -27,6 +27,7 @@ import {
 } from '../utils/deployRecipients';
 import { buildNavigationHash } from '../utils/navigation';
 import EnvironmentsManagementSection from './EnvironmentsManagementSection';
+import DeploySettingsEditor from './DeploySettingsEditor';
 import ReleaseNotificationSettingsSection from './ReleaseNotificationSettingsSection';
 import ProjectEmailLogoSection from './ProjectEmailLogoSection';
 import { deploymentReleaseLabel } from '@shared/utils/deploymentReleaseLabel';
@@ -205,7 +206,7 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
   const [branchData, setBranchData] = useState<any>(null);
   const [releaseDeployments, setReleaseDeployments] = useState<any[]>([]);
   const [selected, setSelected] = useState<any>(null);
-  const [refByEnv, setRefByEnv] = useState<Record<string, string>>({});
+  const [refByEnv, setRefByEnv] = useState<ReadonlyMap<string, string>>(() => new Map());
   const [events, setEvents] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -273,9 +274,11 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
         setReleaseDeployments(releaseHistory);
         setMissingConfig(false);
         setRefByEnv((prev) => {
-          const next = { ...prev };
+          // Map, not an object: environment names are user-supplied, and
+          // names like `__proto__` or `constructor` must not hit Object.prototype.
+          const next = new Map(prev);
           for (const env of res.environments || []) {
-            if (!next[env.name]) next[env.name] = defaultDeployRef(env, branches);
+            if (!next.get(env.name)) next.set(env.name, defaultDeployRef(env, branches));
           }
           return next;
         });
@@ -325,7 +328,7 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
   useEffect(() => {
     selectedIdRef.current = null;
     setSelected(null);
-    setRefByEnv({});
+    setRefByEnv(new Map());
     setBranchData(null);
     setEvents([]);
     load();
@@ -544,7 +547,7 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
                   ? 'border-sky-500/40 bg-sky-500/15 text-sky-100'
                   : 'border-gray-700 text-gray-300 hover:bg-gray-800'
               }`}
-              title="Release digest settings"
+              title="Deployment settings"
               aria-pressed={showSettings}
               aria-expanded={showSettings}
             >
@@ -572,6 +575,13 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
 
         {showSettings && (
           <div className="mb-4 space-y-4" data-testid="deployments-settings-panel">
+            <DeploySettingsEditor
+              key={projectId ?? 'none'}
+              projectId={projectId}
+              canEdit={isAdmin}
+              showToast={onNotify}
+              onSaved={() => load({ silent: true })}
+            />
             <ReleaseNotificationSettingsSection projectId={projectId} showToast={onNotify} />
             <ProjectEmailLogoSection projectId={projectId} showToast={onNotify} />
           </div>
@@ -593,11 +603,17 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
                   Set up deployment environments
                 </h2>
                 <p className="mt-1 max-w-2xl text-sm text-gray-400">
-                  This project does not have{' '}
-                  <span className="font-mono">.agent-hub/deploy.yaml</span> yet. Start an AI setup
-                  session to inspect the repo, choose environments, and author the config on a
-                  reviewable branch.
+                  No deployment environments are configured yet. Add them in Settings, or start an
+                  AI setup session to inspect the repo and suggest environments.
                 </p>
+                <button
+                  type="button"
+                  onClick={() => setShowSettings(true)}
+                  className="mt-4 mr-2 inline-flex min-h-[34px] items-center justify-center gap-1.5 rounded-md border border-gray-700 px-3 text-sm text-gray-200 hover:bg-gray-800"
+                >
+                  <Settings size={14} />
+                  Configure environments
+                </button>
                 <button
                   type="button"
                   onClick={startSetup}
@@ -626,7 +642,7 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
                 const last = env.lastDeployment;
                 const busy = Boolean(active && !isTerminalStatus(active.status));
                 const awaitingApproval = active?.status === 'awaiting_approval';
-                const refValue = refByEnv[env.name] ?? defaultDeployRef(env, branchData);
+                const refValue = refByEnv.get(env.name) ?? defaultDeployRef(env, branchData);
                 const branches = branchNames(branchData);
                 const hasBranches = branches.length > 0;
                 const selectedBranchValue = branches.includes(refValue)
@@ -672,7 +688,7 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
                             value={selectedBranchValue}
                             onChange={(e) => {
                               if (e.target.value === CUSTOM_REF_VALUE) return;
-                              setRefByEnv((prev) => ({ ...prev, [env.name]: e.target.value }));
+                              setRefByEnv((prev) => new Map(prev).set(env.name, e.target.value));
                             }}
                             className="min-h-[34px] rounded-md border border-gray-700 bg-gray-950 px-2 text-sm text-gray-200 outline-none focus:border-sky-500"
                             disabled={busy}
@@ -694,7 +710,7 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
                           }
                           value={refValue}
                           onChange={(e) =>
-                            setRefByEnv((prev) => ({ ...prev, [env.name]: e.target.value }))
+                            setRefByEnv((prev) => new Map(prev).set(env.name, e.target.value))
                           }
                           placeholder="Branch, tag, or SHA"
                           className="min-h-[34px] rounded-md border border-gray-700 bg-gray-950 px-2 text-sm text-gray-200 outline-none focus:border-sky-500"

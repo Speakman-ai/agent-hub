@@ -4469,6 +4469,121 @@ components:
         - openPRs
         - recentActivity
       description: Org-wide dashboard payload. `:id` may be an explicit org id or the alias `active`.
+    DeploySettingsStep:
+      type: object
+      properties:
+        name:
+          type: string
+        run:
+          type: string
+        github_workflow:
+          type: object
+          properties:
+            workflow:
+              type: string
+            ref:
+              type: string
+            inputs:
+              type: object
+              additionalProperties:
+                anyOf:
+                  - type: string
+                  - type: number
+                  - type: boolean
+            poll_interval_seconds:
+              type: integer
+          required:
+            - workflow
+            - ref
+    DeploySettingsEnvironment:
+      type: object
+      properties:
+        approval:
+          type: boolean
+        runs-on:
+          type: string
+        timeout_minutes:
+          type: integer
+        origin:
+          type: string
+          nullable: true
+        readiness:
+          type: string
+          nullable: true
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/DeploySettingsStep"
+      required:
+        - steps
+    DeploySettingsPreview:
+      type: object
+      properties:
+        compose:
+          type: string
+        service:
+          type: string
+        port:
+          type: integer
+        health:
+          type: string
+        health_timeout_minutes:
+          type: integer
+        steps:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              run:
+                type: string
+            required:
+              - run
+        secrets:
+          type: array
+          items:
+            type: string
+      required:
+        - compose
+        - service
+        - port
+    DeploySettingsResponse:
+      type: object
+      properties:
+        projectId:
+          type: string
+        source:
+          type: string
+          enum:
+            - settings
+            - repo
+            - none
+        environments:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/DeploySettingsEnvironment"
+        preview:
+          allOf:
+            - $ref: "#/components/schemas/DeploySettingsPreview"
+            - nullable: true
+        updatedAt:
+          type: string
+          nullable: true
+        updatedBy:
+          type: string
+          nullable: true
+        repoError:
+          type: string
+          nullable: true
+      required:
+        - projectId
+        - source
+        - environments
+        - preview
+        - updatedAt
+        - updatedBy
+        - repoError
     ReleaseNotificationHistoryItem:
       type: object
       properties:
@@ -30737,6 +30852,119 @@ paths:
                 $ref: "#/components/schemas/DeploymentErrorResponse"
         "404":
           description: Project, deploy.yaml, or preview block not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+  /api/projects/{projectId}/deploy/settings:
+    get:
+      tags:
+        - Deployments
+      summary: Read the editable deploy environment settings
+      description: Returns the environments (steps, approval gate, runner, timeout, origin, readiness) and the PR environment preview block in the deploy.yaml wire shape. source is "settings" once they have been saved from the UI (they then replace deploy.yaml for every deploy path and PR environment), "repo" when they are still read from .agent-hub/deploy.yaml, or "none" when neither exists.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Deploy settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploySettingsResponse"
+        "400":
+          description: Saved settings are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+    put:
+      tags:
+        - Deployments
+      summary: Save deploy environment settings
+      description: "Admin+. Validates the environments and preview block with the same rules as deploy.yaml and saves them. From then on deploy.yaml is not read: these settings decide which environments exist, how each deploys, and how PR environments boot. preview null means no PR environments; omitting it keeps the current block (saved, else deploy.yaml's). An empty environments map is allowed."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                environments:
+                  type: object
+                  additionalProperties:
+                    $ref: "#/components/schemas/DeploySettingsEnvironment"
+                preview:
+                  allOf:
+                    - $ref: "#/components/schemas/DeploySettingsPreview"
+                    - nullable: true
+              required:
+                - environments
+      responses:
+        "200":
+          description: Saved settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploySettingsResponse"
+        "400":
+          description: Invalid environments.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "403":
+          description: Admin role required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+    delete:
+      tags:
+        - Deployments
+      summary: Discard saved deploy settings
+      description: Admin+. Removes the saved settings so the project reads environments and the preview block from .agent-hub/deploy.yaml again. Returns the resulting settings view.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Settings after revert.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploySettingsResponse"
+        "403":
+          description: Admin role required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "404":
+          description: Project not found.
           content:
             application/json:
               schema:

@@ -156,7 +156,8 @@ export function parseGithubWorkflowStepConfig(raw: unknown, where: string): Gith
         `${where} github_workflow: "inputs" must be a mapping of string keys to scalar values.`,
       );
     }
-    parsedInputs = {};
+    // Null prototype: input names are user-supplied and `__proto__` is a valid one.
+    parsedInputs = Object.create(null) as Record<string, string>;
     for (const [key, value] of Object.entries(inputs)) {
       if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(key)) {
         throw new DeployConfigError(

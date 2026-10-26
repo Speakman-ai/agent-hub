@@ -29,6 +29,7 @@ import {
 import ProjectScreenHeader from '../components/ProjectScreenHeader';
 import EnvironmentsManagementSection from '../components/settings/EnvironmentsManagementSection';
 import ReleaseNotificationSettingsSection from '../components/settings/ReleaseNotificationSettingsSection';
+import DeploySettingsEditor from '../components/settings/DeploySettingsEditor';
 import { useApp } from '../context/AppContext';
 import { colors } from '../theme/colors';
 import { api } from '../utils/api';
@@ -146,7 +147,7 @@ export default function DeploymentsScreen({ route, navigation }: any) {
   const [branchData, setBranchData] = useState<any>(null);
   const [releaseDeployments, setReleaseDeployments] = useState<any[]>([]);
   const [selected, setSelected] = useState<any>(null);
-  const [refByEnv, setRefByEnv] = useState<Record<string, string>>({});
+  const [refByEnv, setRefByEnv] = useState<ReadonlyMap<string, string>>(() => new Map());
   const [events, setEvents] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -203,9 +204,11 @@ export default function DeploymentsScreen({ route, navigation }: any) {
         setReleaseDeployments(releaseHistory);
         setMissingConfig(false);
         setRefByEnv((prev) => {
-          const next = { ...prev };
+          // Map, not an object: environment names are user-supplied, and
+          // names like `__proto__` or `constructor` must not hit Object.prototype.
+          const next = new Map(prev);
           for (const env of res.environments || []) {
-            if (!next[env.name]) next[env.name] = defaultDeployRef(env, branches);
+            if (!next.get(env.name)) next.set(env.name, defaultDeployRef(env, branches));
           }
           return next;
         });
@@ -252,7 +255,7 @@ export default function DeploymentsScreen({ route, navigation }: any) {
   useEffect(() => {
     selectedIdRef.current = null;
     setSelected(null);
-    setRefByEnv({});
+    setRefByEnv(new Map());
     setBranchData(null);
     setEvents([]);
     load();
@@ -398,7 +401,7 @@ export default function DeploymentsScreen({ route, navigation }: any) {
         <View style={styles.headerRow}>
           <View>
             <Text style={styles.title}>Deployments</Text>
-            <Text style={styles.subtitle}>deploy.yaml environments and live run status</Text>
+            <Text style={styles.subtitle}>Environments and live run status</Text>
           </View>
           <View style={styles.headerActions}>
             <TouchableOpacity
@@ -445,6 +448,12 @@ export default function DeploymentsScreen({ route, navigation }: any) {
 
         {showSettings ? (
           <View style={styles.settingsPanel} testID="deployments-settings-panel">
+            <DeploySettingsEditor
+              key={projectId ?? 'none'}
+              projectId={projectId}
+              canEdit={isAdmin}
+              onSaved={() => load({ silent: true })}
+            />
             <ReleaseNotificationSettingsSection projectId={projectId} />
           </View>
         ) : null}
@@ -460,9 +469,16 @@ export default function DeploymentsScreen({ route, navigation }: any) {
             <View style={styles.setupBody}>
               <Text style={styles.setupTitle}>Set up deployment environments</Text>
               <Text style={styles.setupText}>
-                This project does not have .agent-hub/deploy.yaml yet. Start an AI setup session to
-                inspect the repo, choose environments, and author the config on a reviewable branch.
+                No deployment environments are configured yet. Add them in Settings, or start an AI
+                setup session to inspect the repo and suggest environments.
               </Text>
+              <TouchableOpacity
+                onPress={() => setShowSettings(true)}
+                style={[styles.primaryButton, styles.setupButton]}
+              >
+                <Settings size={14} color={colors.white} />
+                <Text style={styles.primaryButtonText}>Configure environments</Text>
+              </TouchableOpacity>
               <TouchableOpacity
                 onPress={startSetup}
                 disabled={setupStarting}
@@ -490,7 +506,7 @@ export default function DeploymentsScreen({ route, navigation }: any) {
           const last = env.lastDeployment;
           const busy = Boolean(active && !isTerminalDeploymentStatus(active.status));
           const awaitingApproval = active?.status === 'awaiting_approval';
-          const refValue = refByEnv[env.name] ?? defaultDeployRef(env, branchData);
+          const refValue = refByEnv.get(env.name) ?? defaultDeployRef(env, branchData);
           const branches = branchNames(branchData);
           const rollbackTargetId = env.rollbackTarget?.id;
           const deployKey = `deploy:${env.name}`;
@@ -533,7 +549,7 @@ export default function DeploymentsScreen({ route, navigation }: any) {
                       <TouchableOpacity
                         key={branch}
                         style={[styles.branchChip, activeBranch && styles.branchChipActive]}
-                        onPress={() => setRefByEnv((prev) => ({ ...prev, [env.name]: branch }))}
+                        onPress={() => setRefByEnv((prev) => new Map(prev).set(env.name, branch))}
                         disabled={busy}
                         accessibilityRole="button"
                         accessibilityLabel={`Deploy ${env.name} from ${branch}`}
@@ -560,7 +576,9 @@ export default function DeploymentsScreen({ route, navigation }: any) {
                 <TextInput
                   accessibilityLabel={`Ref for ${env.name}`}
                   value={refValue}
-                  onChangeText={(value) => setRefByEnv((prev) => ({ ...prev, [env.name]: value }))}
+                  onChangeText={(value) =>
+                    setRefByEnv((prev) => new Map(prev).set(env.name, value))
+                  }
                   editable={!busy}
                   autoCapitalize="none"
                   autoCorrect={false}

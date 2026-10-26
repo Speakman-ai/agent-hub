@@ -116,4 +116,23 @@ describe('EnvironmentsManagementSection', () => {
     render(<EnvironmentsManagementSection projectId="proj-1" />);
     await waitFor(() => expect(screen.getByText('boom')).toBeTruthy());
   });
+
+  it('starts environments named after Object.prototype members collapsed', async () => {
+    (api.getDeployEnvironments as any).mockResolvedValue({
+      environments: [env({ name: 'constructor' }), env({ name: 'toString' })],
+    });
+    render(<EnvironmentsManagementSection projectId="proj-1" />);
+    await waitFor(() => expect(screen.getByTestId('manage-env-constructor')).toBeTruthy());
+    for (const name of ['constructor', 'toString']) {
+      const row = within(screen.getByTestId(`manage-env-${name}`));
+      for (const title of [
+        'Manage deploy triggers',
+        'Manage deploy schedules',
+        'Manage release gates',
+        'Manage notification routing',
+      ]) {
+        expect(row.getByTitle(title).getAttribute('aria-expanded')).toBe('false');
+      }
+    }
+  });
 });
