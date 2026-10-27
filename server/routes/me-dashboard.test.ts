@@ -102,6 +102,7 @@ const disconnectedGoogle: DashboardGoogle = {
     messages: [],
     error: null,
   },
+  accounts: [],
 };
 
 function makeDeps(): RouteDeps {
@@ -254,6 +255,8 @@ describe('GET /api/me/dashboard', () => {
         timeZone: 'UTC',
         events: [
           {
+            accountId: 'acc-a',
+            accountEmail: 'a@example.com',
             id: 'e1',
             summary: 'Standup',
             location: null,
@@ -273,6 +276,8 @@ describe('GET /api/me/dashboard', () => {
         important: 2,
         messages: [
           {
+            accountId: 'acc-a',
+            accountEmail: 'a@example.com',
             id: 'm1',
             threadId: 'th1',
             from: 'Jane Doe <jane@example.com>',
@@ -285,6 +290,7 @@ describe('GET /api/me/dashboard', () => {
         ],
         error: null,
       },
+      accounts: [],
     };
     const reader = vi.fn<GoogleReader>().mockResolvedValue(connected);
     const res = await request(mount(userA, reader)).get('/api/me/dashboard').expect(200);

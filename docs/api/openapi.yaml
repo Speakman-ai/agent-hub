@@ -8017,6 +8017,10 @@ components:
         messageIdHeader:
           type: string
           nullable: true
+        replyTo:
+          type: string
+          nullable: true
+          description: "The `Reply-To` header: where replies to this message should go."
         bodyText:
           type: string
           nullable: true
@@ -8038,6 +8042,7 @@ components:
         - subject
         - date
         - messageIdHeader
+        - replyTo
         - bodyText
         - bodyHtml
     GoogleGmailThread:
@@ -12678,6 +12683,11 @@ components:
               items:
                 type: object
                 properties:
+                  accountId:
+                    type: string
+                    description: Linked Google account this row came from.
+                  accountEmail:
+                    type: string
                   id:
                     type: string
                     nullable: true
@@ -12702,6 +12712,8 @@ components:
                     type: string
                     nullable: true
                 required:
+                  - accountId
+                  - accountEmail
                   - id
                   - summary
                   - location
@@ -12738,6 +12750,11 @@ components:
               items:
                 type: object
                 properties:
+                  accountId:
+                    type: string
+                    description: Linked Google account this row came from.
+                  accountEmail:
+                    type: string
                   id:
                     type: string
                     nullable: true
@@ -12762,6 +12779,8 @@ components:
                   unread:
                     type: boolean
                 required:
+                  - accountId
+                  - accountEmail
                   - id
                   - threadId
                   - from
@@ -12780,6 +12799,51 @@ components:
             - important
             - messages
             - error
+        accounts:
+          type: array
+          items:
+            type: object
+            properties:
+              accountId:
+                type: string
+              email:
+                type: string
+              isDefault:
+                type: boolean
+              reconnectRequired:
+                type: boolean
+              calendarScopeGranted:
+                type: boolean
+              mailScopeGranted:
+                type: boolean
+              calendarError:
+                type: string
+                nullable: true
+              mailError:
+                type: string
+                nullable: true
+              unread:
+                type: number
+                nullable: true
+              starred:
+                type: number
+                nullable: true
+              important:
+                type: number
+                nullable: true
+            required:
+              - accountId
+              - email
+              - isDefault
+              - reconnectRequired
+              - calendarScopeGranted
+              - mailScopeGranted
+              - calendarError
+              - mailError
+              - unread
+              - starred
+              - important
+            description: One linked Google account and what the dashboard could read from it.
       required:
         - configured
         - connected
@@ -12787,7 +12851,8 @@ components:
         - reconnectRequired
         - calendar
         - mail
-      description: "The caller's Google slice (today's calendar + flagged-mail counts). Soft-degrades: unconfigured / unlinked / missing-scope all render as false blocks."
+        - accounts
+      description: "The caller's Google slice (today's calendar + flagged-mail counts), merged across every linked account. `calendar` / `mail` combine all usable accounts (events by start, counts summed); `accounts` carries per-account scopes, reconnect state, and errors. `email` is the default account. Soft-degrades: unconfigured / unlinked / missing-scope all render as false blocks."
     MeDashboardResponse:
       type: object
       properties:

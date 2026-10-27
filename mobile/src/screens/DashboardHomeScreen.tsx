@@ -16,7 +16,16 @@ import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import HubIcon from '../components/HubIcon';
 import { dueLabel, dueState, todoDoDate } from '../utils/todos';
-import { calendarPaneState, mailPaneState, type GooglePaneState } from '../utils/dashboardPanes';
+import {
+  calendarPaneState,
+  mailPaneState,
+  paneAccountNotices,
+  paneAccountNoticeText,
+  type DashboardGoogleLike,
+  type GoogleDashboardSurface,
+  type GooglePaneState,
+} from '../utils/dashboardPanes';
+import { googleAccountColor } from '@shared/utils/googleAccounts';
 import { mailSenderName, formatMailDate, type DashboardMailMessage } from '../utils/mail';
 
 /**
@@ -195,10 +204,45 @@ export function TodoRow({ todo }: { todo: any }) {
   );
 }
 
-export function CalendarRow({ ev }: { ev: any }) {
+/** Account marker shown on rows once more than one Google account is linked. */
+export type RowAccount = { color: string; email: string } | null;
+
+function AccountDot({ account }: { account: RowAccount }) {
+  if (!account) return null;
+  return (
+    <View
+      style={[styles.accountDot, { backgroundColor: account.color }]}
+      accessibilityLabel={account.email}
+    />
+  );
+}
+
+/** Linked accounts a live pane is leaving out (reconnect, missing scope, error). */
+export function AccountNotices({
+  google,
+  surface,
+}: {
+  google: DashboardGoogleLike | null | undefined;
+  surface: GoogleDashboardSurface;
+}) {
+  const notices = paneAccountNotices(google, surface);
+  if (!notices.length) return null;
+  return (
+    <View style={styles.accountNotices}>
+      {notices.map((n) => (
+        <Text key={n.accountId} style={styles.accountNotice} numberOfLines={1}>
+          {paneAccountNoticeText(n, surface)}
+        </Text>
+      ))}
+    </View>
+  );
+}
+
+export function CalendarRow({ ev, account = null }: { ev: any; account?: RowAccount }) {
   const time = formatEventTime(ev);
   return (
     <View style={styles.calRow}>
+      <AccountDot account={account} />
       <Text style={styles.calTime}>{time}</Text>
       <Text style={styles.calSummary} numberOfLines={1}>
         {ev.summary || '(no title)'}
@@ -212,12 +256,21 @@ export function CalendarRow({ ev }: { ev: any }) {
   );
 }
 
-export function MailRow({ msg, onOpen }: { msg: DashboardMailMessage; onOpen: () => void }) {
+export function MailRow({
+  msg,
+  onOpen,
+  account = null,
+}: {
+  msg: DashboardMailMessage;
+  onOpen: () => void;
+  account?: RowAccount;
+}) {
   const sender = mailSenderName(msg.from);
   const when = formatMailDate(msg.internalDate, msg.date);
   return (
     <TouchableOpacity style={styles.mailRow} onPress={onOpen}>
       <View style={styles.mailRowTop}>
+        <AccountDot account={account} />
         {msg.unread ? <View style={styles.mailUnreadDot} /> : null}
         <Text
           style={[styles.mailSender, msg.unread ? styles.mailSenderUnread : null]}
@@ -292,6 +345,11 @@ export default function DashboardHomeScreen({ navigation, embedded = false }: an
   const calState = calendarPaneState(google);
   const mailState = mailPaneState(google);
   const openCards = (work?.cards ?? []).filter((c: any) => !c.isDone);
+  const accounts: any[] = google?.accounts ?? [];
+  const accountMarker = (accountId?: string, email?: string): RowAccount =>
+    accounts.length > 1 && accountId
+      ? { color: googleAccountColor(accounts, accountId), email: email ?? '' }
+      : null;
 
   return (
     <SafeAreaView style={styles.container} edges={embedded ? [] : ['top', 'bottom']}>
@@ -399,14 +457,23 @@ export default function DashboardHomeScreen({ navigation, embedded = false }: an
                 onConnect={onConnectGoogle}
                 onOpenSurface={() => navigation.navigate('Calendar')}
               />
-            ) : google?.calendar?.error ? (
-              <EmptyState text={`Calendar unavailable: ${google.calendar.error}`} />
-            ) : (google?.calendar?.events?.length ?? 0) === 0 ? (
-              <EmptyState text="Nothing on your calendar today." />
             ) : (
-              google.calendar.events.map((ev: any, i: number) => (
-                <CalendarRow key={ev.id ?? i} ev={ev} />
-              ))
+              <>
+                {google?.calendar?.error ? (
+                  <EmptyState text={`Calendar unavailable: ${google.calendar.error}`} />
+                ) : (google?.calendar?.events?.length ?? 0) === 0 ? (
+                  <EmptyState text="Nothing on your calendar today." />
+                ) : (
+                  google.calendar.events.map((ev: any, i: number) => (
+                    <CalendarRow
+                      key={`${ev.accountId ?? ''}:${ev.id ?? i}`}
+                      ev={ev}
+                      account={accountMarker(ev.accountId, ev.accountEmail)}
+                    />
+                  ))
+                )}
+                <AccountNotices google={google} surface="calendar" />
+              </>
             )}
           </Pane>
 
@@ -425,14 +492,24 @@ export default function DashboardHomeScreen({ navigation, embedded = false }: an
                 onConnect={onConnectGoogle}
                 onOpenSurface={() => navigation.navigate('Gmail')}
               />
-            ) : google?.mail?.error ? (
-              <EmptyState text={`Gmail unavailable: ${google.mail.error}`} />
-            ) : (google?.mail?.messages?.length ?? 0) === 0 ? (
-              <EmptyState text="No recent mail." />
             ) : (
-              google.mail.messages.map((msg: DashboardMailMessage, i: number) => (
-                <MailRow key={msg.id ?? i} msg={msg} onOpen={() => navigation.navigate('Gmail')} />
-              ))
+              <>
+                {google?.mail?.error ? (
+                  <EmptyState text={`Gmail unavailable: ${google.mail.error}`} />
+                ) : (google?.mail?.messages?.length ?? 0) === 0 ? (
+                  <EmptyState text="No recent mail." />
+                ) : (
+                  google.mail.messages.map((msg: DashboardMailMessage, i: number) => (
+                    <MailRow
+                      key={`${msg.accountId ?? ''}:${msg.id ?? i}`}
+                      msg={msg}
+                      account={accountMarker(msg.accountId, msg.accountEmail)}
+                      onOpen={() => navigation.navigate('Gmail')}
+                    />
+                  ))
+                )}
+                <AccountNotices google={google} surface="mail" />
+              </>
             )}
           </Pane>
         </ScrollView>
@@ -687,6 +764,9 @@ const styles = StyleSheet.create({
     color: colors.blue400,
     fontSize: 12,
   },
+  accountDot: { width: 8, height: 8, borderRadius: 4, marginRight: 6 },
+  accountNotices: { marginTop: 6, gap: 2 },
+  accountNotice: { color: colors.amber400, fontSize: 11 },
   mailRow: {
     borderWidth: 1,
     borderColor: colors.gray800,

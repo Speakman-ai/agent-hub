@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   Check,
@@ -27,16 +27,32 @@ import {
   hasGmailSendScope,
   type GoogleStatusLike,
 } from '../utils/googleSurface';
+import {
+  ALL_INBOXES,
+  buildGmailReplyBody,
+  defaultGoogleAccount,
+  fetchAcrossGoogleAccounts,
+  googleAccountColor,
+  googleAccountParam,
+  inboxAccounts,
+  linkedGoogleAccounts,
+  resolveInboxSelection,
+  type AccountTagged,
+  type GoogleStatusWithAccounts,
+  type LinkedGoogleAccount,
+} from '@shared/utils/googleAccounts';
 
 export { GMAIL_SURFACE_SCOPES };
 
-type GoogleStatus = NonNullable<GoogleStatusLike>;
+type GoogleStatus = NonNullable<GoogleStatusLike> & GoogleStatusWithAccounts;
 
-type GmailThreadSummary = {
+type GmailThreadSummary = AccountTagged<{
   id: string | null;
   snippet: string | null;
   historyId: string | null;
-};
+}>;
+
+type OpenThread = { id: string; subject: string; accountId: string; accountEmail: string };
 
 type GmailMessage = {
   id: string | null;
@@ -48,6 +64,8 @@ type GmailMessage = {
   cc: string | null;
   subject: string | null;
   date: string | null;
+  messageIdHeader?: string | null;
+  replyTo?: string | null;
   bodyText: string | null;
   bodyHtml: string | null;
 };
@@ -91,17 +109,23 @@ export function buildSendBody(form: ComposeFormState) {
 }
 
 function ComposeModal({
+  accounts,
+  initialAccountId,
   saving,
   error,
   onCancel,
   onSubmit,
 }: {
+  /** Accounts that can send; a picker appears when there are several. */
+  accounts: LinkedGoogleAccount[];
+  initialAccountId: string;
   saving: boolean;
   error: string | null;
   onCancel: () => void;
-  onSubmit: (form: ComposeFormState) => void;
+  onSubmit: (form: ComposeFormState, accountId: string) => void;
 }) {
   const [form, setForm] = useState<ComposeFormState>({ to: '', cc: '', subject: '', body: '' });
+  const [accountId, setAccountId] = useState(initialAccountId);
   const setField = (field: keyof ComposeFormState, value: string) =>
     setForm((current) => ({ ...current, [field]: value }));
   const valid = parseRecipients(form.to).length > 0 && form.body.trim().length > 0;
@@ -124,9 +148,26 @@ function ComposeModal({
           className="space-y-4 p-4"
           onSubmit={(e) => {
             e.preventDefault();
-            if (valid) onSubmit(form);
+            if (valid) onSubmit(form, accountId);
           }}
         >
+          {accounts.length > 1 && (
+            <label className="block">
+              <span className="text-xs text-gray-400">From</span>
+              <select
+                value={accountId}
+                onChange={(e) => setAccountId(e.target.value)}
+                aria-label="From"
+                className="mt-1 w-full rounded border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
+              >
+                {accounts.map((a) => (
+                  <option key={a.accountId} value={a.accountId}>
+                    {a.email}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <label className="block">
             <span className="text-xs text-gray-400">To</span>
             <input
@@ -201,6 +242,11 @@ function ThreadModal({
   onTicket,
   onStartSession,
   onClose,
+  accountEmail,
+  canReply,
+  replying,
+  replyError,
+  onReply,
 }: {
   loading: boolean;
   error: string | null;
@@ -212,7 +258,14 @@ function ThreadModal({
   onTicket: () => void;
   onStartSession: () => void;
   onClose: () => void;
+  /** The account that owns the thread; replies go out from it. */
+  accountEmail?: string;
+  canReply?: boolean;
+  replying?: boolean;
+  replyError?: string | null;
+  onReply?: (text: string) => Promise<boolean>;
 }) {
+  const [reply, setReply] = useState('');
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
       <div
@@ -305,6 +358,36 @@ function ThreadModal({
             </div>
           )}
         </div>
+        {canReply && onReply && !loading && !error && messages.length > 0 && (
+          <form
+            className="border-t border-gray-800 p-4"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              if (!reply.trim()) return;
+              if (await onReply(reply)) setReply('');
+            }}
+          >
+            <textarea
+              value={reply}
+              onChange={(e) => setReply(e.target.value)}
+              rows={3}
+              aria-label="Reply"
+              placeholder={accountEmail ? `Reply as ${accountEmail}` : 'Reply'}
+              className="w-full resize-none rounded border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
+            />
+            {replyError && <div className="mt-2 text-xs text-red-300">{replyError}</div>}
+            <div className="mt-2 flex justify-end">
+              <button
+                type="submit"
+                disabled={!reply.trim() || replying}
+                className="inline-flex items-center gap-2 rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {replying ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+                Send reply
+              </button>
+            </div>
+          </form>
+        )}
       </div>
     </div>
   );
@@ -326,12 +409,33 @@ export default function GmailPage({
   const [composeOpen, setComposeOpen] = useState(false);
   const [composeError, setComposeError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
-  const [openThread, setOpenThread] = useState<{ id: string; subject: string } | null>(null);
+  const [openThread, setOpenThread] = useState<OpenThread | null>(null);
+  const [inbox, setInbox] = useState<string | null>(null);
+  const [replying, setReplying] = useState(false);
+  const [replyError, setReplyError] = useState<string | null>(null);
   const [threadMessages, setThreadMessages] = useState<GmailMessage[]>([]);
   const [threadLoading, setThreadLoading] = useState(false);
   const [threadError, setThreadError] = useState<string | null>(null);
   const [capturing, setCapturing] = useState(false);
   const [captured, setCaptured] = useState(false);
+  // Async work for the thread modal (detail loads, replies, captures) must
+  // only touch state while the conversation it started for is still open.
+  // `conversationRef` changes when a different thread opens or the modal
+  // closes; `detailRef` changes on every detail load, so only the newest load
+  // of the open thread commits.
+  const conversationRef = useRef(0);
+  const detailRef = useRef(0);
+  // The inbox in view right now, for async completions that reload it.
+  const inboxRef = useRef<string | null>(null);
+  // Changes whenever the compose window opens or closes, so a send that
+  // finishes later can't close or show errors in a newer compose window.
+  const composeRef = useRef(0);
+  const setCompose = (open: boolean) => {
+    composeRef.current += 1;
+    setComposeError(null);
+    setSending(false);
+    setComposeOpen(open);
+  };
   // Direct-to-ticket capture: seeds the project/column picker (spec
   // CAPTURE-PROVENANCE); null when the picker is closed.
   const [ticketDraft, setTicketDraft] = useState<CaptureCardDraft | null>(null);
@@ -341,37 +445,86 @@ export default function GmailPage({
   // Threads the importance scan pinned above the list; hidden from the list below.
   const [pinned, setPinned] = useState<GmailImportantThread[]>([]);
 
-  const load = useCallback(async () => {
+  // Each load takes a ticket; only the latest may commit state, so a slow
+  // response for an inbox the user already left can't overwrite the new one.
+  const loadSeq = useRef(0);
+  const load = useCallback(async (requested: string | null) => {
+    const seq = ++loadSeq.current;
+    const current = () => seq === loadSeq.current;
     setError(null);
     setThreadsLoading(true);
     try {
-      const nextStatus = await api.getGoogleStatus();
+      const nextStatus: GoogleStatus = await api.getGoogleStatus();
+      if (!current()) return;
       setStatus(nextStatus);
-      if (nextStatus.connected && hasGmailReadScope(nextStatus)) {
-        const body = await api.listGoogleGmailThreads({ maxResults: 25 });
-        setThreads(body.threads || []);
+      const accounts = linkedGoogleAccounts(nextStatus);
+      const selection = resolveInboxSelection(requested, accounts, hasGmailReadScope);
+      setInbox(selection);
+      inboxRef.current = selection;
+      const reading = inboxAccounts(selection, accounts, hasGmailReadScope).filter((a) =>
+        hasGmailReadScope(a),
+      );
+      if (nextStatus.connected && reading.length) {
+        const { items, failures } = await fetchAcrossGoogleAccounts<
+          Omit<GmailThreadSummary, 'accountId' | 'accountEmail'>
+        >(reading, async (account) => {
+          const body = await api.listGoogleGmailThreads({
+            maxResults: 25,
+            account: googleAccountParam(account),
+          });
+          return body?.threads || [];
+        });
+        if (!current()) return;
+        // Gmail's thread list carries no timestamp, so All inboxes groups by
+        // account (each already newest first) rather than guessing an order.
+        setThreads(items);
+        if (failures.length) {
+          setError(failures.map((f) => `${f.account.email}: ${f.error}`).join('; '));
+        }
       } else {
         setThreads([]);
       }
     } catch (err: any) {
+      if (!current()) return;
       setError(err.message || 'Failed to load Gmail');
       setThreads([]);
     } finally {
-      setLoading(false);
-      setThreadsLoading(false);
+      if (current()) {
+        setLoading(false);
+        setThreadsLoading(false);
+      }
     }
   }, []);
 
   useEffect(() => {
-    load();
+    load(null);
   }, [load]);
 
-  const startOAuth = async () => {
+  const accounts = useMemo(() => linkedGoogleAccounts(status), [status]);
+  const readableAccounts = accounts.filter((a) => hasGmailReadScope(a));
+  const sendAccounts = accounts.filter((a) => hasGmailSendScope(a));
+  const defaultAccount = defaultGoogleAccount(accounts);
+  const multiAccount = accounts.length > 1;
+  const allInboxes = inbox === ALL_INBOXES;
+
+  const selectInbox = (next: string) => {
+    if (next === inbox) return;
+    setInbox(next);
+    inboxRef.current = next;
+    setThreads([]);
+    load(next);
+  };
+
+  const startOAuth = async (accountId?: string) => {
     setOauthBusy(true);
     setError(null);
     try {
       const returnTo = window.location.pathname + window.location.search + window.location.hash;
-      const body = await api.startGoogleOAuth({ returnTo, scopes: GMAIL_SURFACE_SCOPES });
+      const body = await api.startGoogleOAuth({
+        returnTo,
+        scopes: GMAIL_SURFACE_SCOPES,
+        ...(accountId ? { accountId } : {}),
+      });
       window.location.href = body.authorizeUrl;
     } catch (err: any) {
       setError(err.message || 'Failed to start Google consent');
@@ -379,23 +532,58 @@ export default function GmailPage({
     }
   };
 
-  const openThreadDetail = async (thread: GmailThreadSummary) => {
+  const closeThread = () => {
+    conversationRef.current += 1;
+    setOpenThread(null);
+  };
+
+  /**
+   * Open a thread, or (`refresh`) reload the one already open. Opening starts
+   * a new conversation, which retires any reply, capture, or detail load still
+   * in flight for the previous one.
+   */
+  const openThreadDetail = async (
+    thread: { id: string | null; accountId?: string; accountEmail?: string },
+    { refresh = false }: { refresh?: boolean } = {},
+  ) => {
     if (!thread.id) return;
-    setOpenThread({ id: thread.id, subject: '' });
-    setThreadMessages([]);
+    if (!refresh) {
+      conversationRef.current += 1;
+      setReplying(false);
+      setCapturing(false);
+      setCaptured(false);
+      setReplyError(null);
+    }
+    // A detail response commits only if it is the newest request AND its
+    // conversation is still open: closing the modal or opening another thread
+    // retires it, as does a later reload of the same thread.
+    const request = ++detailRef.current;
+    const conversation = conversationRef.current;
+    const current = () => request === detailRef.current && conversation === conversationRef.current;
+    const owner = {
+      accountId: thread.accountId ?? '',
+      accountEmail: thread.accountEmail ?? '',
+    };
+    if (!refresh) {
+      setOpenThread({ id: thread.id, subject: '', ...owner });
+      setThreadMessages([]);
+    }
     setThreadError(null);
-    setCaptured(false);
     setThreadLoading(true);
     try {
-      const body = await api.getGoogleGmailThread(thread.id, { format: 'full' });
+      const body = await api.getGoogleGmailThread(thread.id, {
+        format: 'full',
+        account: owner.accountId || undefined,
+      });
+      if (!current()) return;
       const messages: GmailMessage[] = body.messages || [];
       const subject = messages.find((m) => m.subject)?.subject || '';
       setThreadMessages(messages);
-      setOpenThread({ id: thread.id, subject });
+      setOpenThread({ id: thread.id, subject, ...owner });
     } catch (err: any) {
-      setThreadError(err.message || 'Failed to load thread');
+      if (current()) setThreadError(err.message || 'Failed to load thread');
     } finally {
-      setThreadLoading(false);
+      if (current()) setThreadLoading(false);
     }
   };
 
@@ -404,6 +592,8 @@ export default function GmailPage({
     // Capture the selected thread: prefer the first message's headers (richer),
     // falling back to the thread id / modal subject.
     const first = threadMessages.find((m) => m.subject || m.from || m.snippet) || threadMessages[0];
+    const conversation = conversationRef.current;
+    const current = () => conversation === conversationRef.current;
     setCapturing(true);
     setError(null);
     try {
@@ -416,11 +606,11 @@ export default function GmailPage({
           snippet: first?.snippet ?? null,
         }),
       );
-      setCaptured(true);
+      if (current()) setCaptured(true);
     } catch (err: any) {
       setError(err.message || 'Failed to add to todos');
     } finally {
-      setCapturing(false);
+      if (current()) setCapturing(false);
     }
   };
 
@@ -457,25 +647,79 @@ export default function GmailPage({
     });
   };
 
-  const sendMessage = async (form: ComposeFormState) => {
+  const sendMessage = async (form: ComposeFormState, accountId: string) => {
+    const session = composeRef.current;
+    const current = () => session === composeRef.current;
     setSending(true);
     setComposeError(null);
     try {
-      await api.sendGoogleGmailMessage(buildSendBody(form));
-      setComposeOpen(false);
-      await load();
+      await api.sendGoogleGmailMessage(buildSendBody(form), { account: accountId || undefined });
+      // Sent either way; only close the compose window this send came from.
+      if (current()) setCompose(false);
+      await load(inboxRef.current);
     } catch (err: any) {
-      setComposeError(err.message || 'Failed to send message');
+      if (current()) setComposeError(err.message || 'Failed to send message');
     } finally {
-      setSending(false);
+      if (current()) setSending(false);
+    }
+  };
+
+  // A reply always leaves from the account that owns the thread.
+  const threadOwner = openThread
+    ? (accounts.find((a) => a.accountId === openThread.accountId) ?? null)
+    : null;
+  const canReply = !!threadOwner && hasGmailSendScope(threadOwner);
+
+  const sendReply = async (text: string): Promise<boolean> => {
+    if (!openThread || !threadOwner) return false;
+    const body = buildGmailReplyBody({
+      threadId: openThread.id,
+      messages: threadMessages,
+      accountEmail: threadOwner.email,
+      text,
+    });
+    if (!body) {
+      setReplyError('Could not find who to reply to in this thread.');
+      return false;
+    }
+    const thread = openThread;
+    const conversation = conversationRef.current;
+    const current = () => conversation === conversationRef.current;
+    setReplying(true);
+    setReplyError(null);
+    try {
+      await api.sendGoogleGmailMessage(body, { account: googleAccountParam(threadOwner) });
+      // The reply went out either way; only refresh the thread if it is still
+      // the one on screen, so a finished send can't pull a closed thread back.
+      if (!current()) return false;
+      setReplying(false);
+      await openThreadDetail(thread, { refresh: true });
+      return current();
+    } catch (err: any) {
+      if (current()) setReplyError(err.message || 'Failed to send reply');
+      return false;
+    } finally {
+      if (current()) setReplying(false);
     }
   };
 
   const connected = !!status?.connected;
   const configured = status?.serverConfigured !== false;
-  const gmailEnabled = hasGmailReadScope(status);
-  const canSend = hasGmailSendScope(status);
-  const listThreads = withoutImportantThreads(threads, pinned);
+  const gmailEnabled = readableAccounts.length > 0;
+  const canSend = sendAccounts.length > 0;
+  // The importance scan reads the default account, so its pinned threads only
+  // belong in views that include that inbox.
+  const showImportant =
+    !!defaultAccount &&
+    hasGmailReadScope(defaultAccount) &&
+    (allInboxes || inbox === defaultAccount.accountId);
+  const listThreads = withoutImportantThreads(threads, showImportant ? pinned : []);
+  const composeAccountId =
+    sendAccounts.find((a) => a.accountId === inbox)?.accountId ??
+    (defaultAccount && hasGmailSendScope(defaultAccount)
+      ? defaultAccount.accountId
+      : (sendAccounts[0]?.accountId ?? ''));
+  const accountsMissingGmail = accounts.filter((a) => !hasGmailReadScope(a));
 
   let emptyState: {
     title: string;
@@ -495,21 +739,21 @@ export default function GmailPage({
       title: 'Connect Google to use Gmail',
       body: 'Mail stays server-side through the Google proxy. Connect your account to continue.',
       action: 'Connect Google',
-      onAction: startOAuth,
+      onAction: () => startOAuth(),
     };
   } else if (!gmailEnabled) {
     emptyState = {
       title: 'Enable Gmail access',
       body: `Connected as ${status?.email || 'Google account'}, but Gmail access has not been granted yet.`,
       action: 'Enable Gmail',
-      onAction: startOAuth,
+      onAction: () => startOAuth(defaultAccount?.accountId || undefined),
     };
   } else if (!threads.length && !threadsLoading) {
     emptyState = {
       title: 'No messages',
       body: 'Your recent threads will appear here. Compose a message or refresh after new mail arrives.',
       action: canSend ? 'Compose' : null,
-      onAction: () => setComposeOpen(true),
+      onAction: () => setCompose(true),
     };
   }
 
@@ -523,12 +767,16 @@ export default function GmailPage({
               Gmail
             </div>
             <h2 className="mt-1 text-2xl font-semibold text-white">Mail</h2>
-            <p className="mt-1 text-sm text-gray-400">Recent threads from your Google account.</p>
+            <p className="mt-1 text-sm text-gray-400">
+              {allInboxes
+                ? 'Recent threads from every linked Google account.'
+                : 'Recent threads from your Google account.'}
+            </p>
           </div>
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              onClick={load}
+              onClick={() => load(inbox)}
               disabled={threadsLoading}
               className="inline-flex items-center gap-2 rounded border border-gray-700 px-3 py-2 text-sm text-gray-300 hover:bg-gray-800 disabled:opacity-50"
             >
@@ -538,7 +786,7 @@ export default function GmailPage({
             {connected && canSend && (
               <button
                 type="button"
-                onClick={() => setComposeOpen(true)}
+                onClick={() => setCompose(true)}
                 className="inline-flex items-center gap-2 rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-500"
               >
                 <Send size={14} />
@@ -555,9 +803,49 @@ export default function GmailPage({
           </div>
         )}
 
-        {!loading && connected && gmailEnabled && (
+        {!loading && connected && multiAccount && (
+          <div className="mb-4 flex flex-wrap items-center gap-2">
+            {readableAccounts.length > 0 && (
+              <label className="inline-flex items-center gap-2 text-sm text-gray-400">
+                Inbox
+                <select
+                  value={inbox ?? ''}
+                  onChange={(e) => selectInbox(e.target.value)}
+                  aria-label="Inbox"
+                  className="rounded border border-gray-700 bg-gray-900 px-2 py-1.5 text-sm text-white outline-none focus:border-blue-500"
+                >
+                  {readableAccounts.length > 1 && <option value={ALL_INBOXES}>All inboxes</option>}
+                  {readableAccounts.map((a) => (
+                    <option key={a.accountId} value={a.accountId}>
+                      {a.email}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {accountsMissingGmail.map((a) => (
+              <button
+                key={a.accountId}
+                type="button"
+                onClick={() => startOAuth(a.accountId)}
+                disabled={oauthBusy}
+                className="rounded-full border border-gray-700 px-3 py-1 text-xs text-blue-300 hover:bg-gray-800 disabled:opacity-50"
+              >
+                Enable Gmail for {a.email}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {!loading && connected && showImportant && (
           <GmailImportantSection
-            onOpenThread={(id) => openThreadDetail({ id, snippet: null, historyId: null })}
+            onOpenThread={(id) =>
+              openThreadDetail({
+                id,
+                accountId: defaultAccount?.accountId ?? '',
+                accountEmail: defaultAccount?.email ?? '',
+              })
+            }
             onPinnedChange={setPinned}
           />
         )}
@@ -591,15 +879,26 @@ export default function GmailPage({
           <div className="overflow-hidden rounded-lg border border-gray-800 bg-gray-900">
             {listThreads.map((thread) => (
               <button
-                key={thread.id || thread.snippet}
+                key={`${thread.accountId}:${thread.id || thread.snippet}`}
                 type="button"
                 onClick={() => openThreadDetail(thread)}
                 className="flex w-full items-start gap-3 border-b border-gray-800 p-4 text-left last:border-b-0 hover:bg-gray-800/50"
               >
-                <Mail size={16} className="mt-0.5 flex-shrink-0 text-gray-500" />
+                <Mail
+                  size={16}
+                  className="mt-0.5 flex-shrink-0 text-gray-500"
+                  style={
+                    allInboxes
+                      ? { color: googleAccountColor(accounts, thread.accountId) }
+                      : undefined
+                  }
+                />
                 <p className="min-w-0 flex-1 truncate text-sm text-gray-200">
                   {thread.snippet || '(no preview)'}
                 </p>
+                {allInboxes && (
+                  <span className="flex-shrink-0 text-xs text-gray-500">{thread.accountEmail}</span>
+                )}
               </button>
             ))}
           </div>
@@ -607,14 +906,19 @@ export default function GmailPage({
       </div>
       {composeOpen && (
         <ComposeModal
+          accounts={sendAccounts}
+          initialAccountId={composeAccountId}
           saving={sending}
           error={composeError}
-          onCancel={() => setComposeOpen(false)}
+          onCancel={() => setCompose(false)}
           onSubmit={sendMessage}
         />
       )}
       {openThread && (
         <ThreadModal
+          // One instance per conversation, so a reply draft never carries
+          // over to another thread.
+          key={`${openThread.accountId}:${openThread.id}`}
           loading={threadLoading}
           error={threadError}
           subject={openThread.subject}
@@ -624,7 +928,12 @@ export default function GmailPage({
           onCapture={captureThread}
           onTicket={captureThreadToTicket}
           onStartSession={startSessionFromThread}
-          onClose={() => setOpenThread(null)}
+          onClose={closeThread}
+          accountEmail={threadOwner?.email}
+          canReply={canReply}
+          replying={replying}
+          replyError={replyError}
+          onReply={sendReply}
         />
       )}
       {ticketDraft && (

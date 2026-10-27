@@ -118,6 +118,8 @@ describe('PersonalDashboard', () => {
             timeZone: 'UTC',
             events: [
               {
+                accountId: 'acc-1',
+                accountEmail: 'me@example.com',
                 id: 'e1',
                 summary: 'Standup',
                 location: null,
@@ -137,6 +139,8 @@ describe('PersonalDashboard', () => {
             important: 3,
             messages: [
               {
+                accountId: 'acc-1',
+                accountEmail: 'me@example.com',
                 id: 'm1',
                 threadId: 'th1',
                 from: 'Jane Doe <jane@example.com>',
@@ -147,6 +151,8 @@ describe('PersonalDashboard', () => {
                 unread: true,
               },
               {
+                accountId: 'acc-1',
+                accountEmail: 'me@example.com',
                 id: 'm2',
                 threadId: 'th2',
                 from: 'billing@stripe.com',
@@ -226,5 +232,82 @@ describe('PersonalDashboard', () => {
     expect(await screen.findByRole('heading', { name: 'Dashboard' })).toBeInTheDocument();
     // Todos pane still renders its empty state rather than crashing.
     expect(screen.getByText('Todos')).toBeInTheDocument();
+  });
+
+  it('merges events and mail from every linked account and flags the ones left out', async () => {
+    const account = (accountId: string, email: string, over = {}) => ({
+      accountId,
+      email,
+      isDefault: accountId === 'work',
+      reconnectRequired: false,
+      calendarScopeGranted: true,
+      mailScopeGranted: true,
+      calendarError: null,
+      mailError: null,
+      unread: null,
+      starred: null,
+      important: null,
+      ...over,
+    });
+    const event = (accountId: string, accountEmail: string, id: string, summary: string) => ({
+      accountId,
+      accountEmail,
+      id,
+      summary,
+      location: null,
+      allDay: false,
+      start: '2026-07-07T09:00:00.000Z',
+      end: null,
+      htmlLink: null,
+      hangoutLink: null,
+    });
+    vi.mocked(api.getMeDashboard).mockResolvedValue(
+      payload({
+        google: {
+          configured: true,
+          connected: true,
+          email: 'me@work.com',
+          reconnectRequired: false,
+          calendar: {
+            scopeGranted: true,
+            date: '2026-07-07',
+            timeZone: 'UTC',
+            events: [
+              event('work', 'me@work.com', 'e1', 'Work standup'),
+              event('home', 'me@home.com', 'e1', 'Dentist'),
+            ],
+            error: null,
+          },
+          mail: {
+            scopeGranted: true,
+            unread: 1,
+            starred: 0,
+            important: 0,
+            messages: [],
+            error: null,
+          },
+          accounts: [
+            account('work', 'me@work.com'),
+            account('home', 'me@home.com', { mailScopeGranted: false }),
+            account('old', 'old@x.com', { reconnectRequired: true }),
+          ],
+        },
+      }),
+    );
+
+    render(
+      <PersonalDashboard onNavigate={noop} onOpenAccountSettings={noop} onOpenKanban={noop} />,
+    );
+
+    await waitFor(() => expect(screen.getByText('Work standup')).toBeInTheDocument());
+    // Same event id in two accounts still renders twice, each marked by account.
+    expect(screen.getByText('Dentist')).toBeInTheDocument();
+    expect(screen.getByLabelText('me@home.com')).toBeInTheDocument();
+    expect(screen.getByTestId('dashboard-calendar-account-notices')).toHaveTextContent(
+      'old@x.com: reconnect to include it',
+    );
+    expect(screen.getByTestId('dashboard-mail-account-notices')).toHaveTextContent(
+      'me@home.com: Gmail access not granted',
+    );
   });
 });

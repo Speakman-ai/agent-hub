@@ -81,4 +81,20 @@ describe('api Gmail helpers', () => {
       code: 'google_chat_send_scope_required',
     });
   });
+
+  it('targets a linked Google account on every Gmail and Calendar call when one is named', async () => {
+    await api.listGoogleGmailThreads({ maxResults: 5, account: 'acc home' });
+    await api.getGoogleGmailThread('t1', { format: 'full', account: 'acc-home' });
+    await api.sendGoogleGmailMessage({ to: ['a@x.com'], text: 'hi' }, { account: 'acc-home' });
+    await api.listGoogleCalendarEvents({ timeMin: 'a', timeMax: 'b', account: 'acc-home' });
+    await api.createGoogleCalendarEvent({ event: {} }, { account: 'acc-home' });
+    await api.updateGoogleCalendarEvent('e1', { event: {} }, { account: 'acc-home' });
+    const urls = fetchSpy.mock.calls.map(([url]: any[]) => String(url));
+    expect(urls[0]).toContain('account=acc+home');
+    for (const url of urls.slice(1)) expect(url).toContain('account=acc-home');
+
+    // Omitted means the default account: no parameter at all.
+    await api.sendGoogleGmailMessage({ to: ['a@x.com'], text: 'hi' });
+    expect(String(fetchSpy.mock.calls.at(-1)[0])).not.toContain('account=');
+  });
 });

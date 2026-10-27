@@ -37,6 +37,7 @@ import {
   MailRow,
   GoogleGate,
   EmptyState,
+  AccountNotices,
 } from './DashboardHomeScreen';
 
 const noop = () => {};
@@ -161,5 +162,53 @@ describe('DashboardHomeScreen — Google pane gating (mobile parity)', () => {
   it('EmptyState renders its message', () => {
     const html = renderToStaticMarkup(<EmptyState text="No open cards assigned to you." />);
     expect(html).toContain('No open cards assigned to you.');
+  });
+});
+
+describe('DashboardHomeScreen — multiple Google accounts (mobile parity)', () => {
+  it('marks a calendar row and a mail row with their account', () => {
+    const account = { color: '#10b981', email: 'me@home.com' };
+    const cal = renderToStaticMarkup(
+      <CalendarRow ev={{ id: 'e1', summary: 'Dentist', allDay: true }} account={account} />,
+    );
+    expect(cal).toContain('me@home.com');
+    expect(cal).toContain('Dentist');
+    const mail = renderToStaticMarkup(
+      <MailRow
+        msg={{
+          id: 'm1',
+          threadId: 't1',
+          from: 'a@x.com',
+          subject: 'Hi',
+          snippet: null,
+          internalDate: null,
+          date: null,
+          unread: false,
+        }}
+        account={account}
+        onOpen={noop}
+      />,
+    );
+    expect(mail).toContain('me@home.com');
+  });
+
+  it('lists accounts the pane is leaving out', () => {
+    const html = renderToStaticMarkup(
+      <AccountNotices
+        surface="calendar"
+        google={{
+          configured: true,
+          connected: true,
+          accounts: [
+            { accountId: 'a', email: 'a@x.com', calendarScopeGranted: true },
+            { accountId: 'b', email: 'b@x.com', reconnectRequired: true },
+            { accountId: 'c', email: 'c@x.com', calendarScopeGranted: false },
+          ],
+        }}
+      />,
+    );
+    expect(html).toContain('b@x.com: reconnect to include it');
+    expect(html).toContain('c@x.com: Calendar access not granted');
+    expect(html).not.toContain('a@x.com');
   });
 });

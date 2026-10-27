@@ -82,6 +82,10 @@ const GmailMessageSchema = registerComponent(
     subject: z.string().nullable(),
     date: z.string().nullable(),
     messageIdHeader: z.string().nullable(),
+    replyTo: z
+      .string()
+      .nullable()
+      .openapi({ description: 'The `Reply-To` header: where replies to this message should go.' }),
     bodyText: z.string().nullable(),
     bodyHtml: z.string().nullable(),
   }),
@@ -403,6 +407,7 @@ function shapeMessage(message: gmail_v1.Schema$Message): z.infer<typeof GmailMes
     subject: headerValue(headers, 'Subject'),
     date: headerValue(headers, 'Date'),
     messageIdHeader: headerValue(headers, 'Message-ID') ?? headerValue(headers, 'Message-Id'),
+    replyTo: headerValue(headers, 'Reply-To'),
     bodyText: text,
     bodyHtml: html,
   };

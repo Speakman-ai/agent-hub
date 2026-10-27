@@ -188,11 +188,14 @@ describe('GmailPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Send$/i }));
 
     await waitFor(() => {
-      expect(mockApi.sendGoogleGmailMessage).toHaveBeenCalledWith({
-        to: ['alice@example.com'],
-        subject: 'Hello',
-        text: 'Hi there',
-      });
+      expect(mockApi.sendGoogleGmailMessage).toHaveBeenCalledWith(
+        {
+          to: ['alice@example.com'],
+          subject: 'Hello',
+          text: 'Hi there',
+        },
+        { account: undefined },
+      );
     });
   });
 
@@ -217,5 +220,297 @@ describe('GmailPage', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Canceled event' });
     expect(dialog.className).toContain('w-full');
     expect(dialog.className).not.toMatch(/\bmax-w-/);
+  });
+
+  describe('multiple Google accounts', () => {
+    const MULTI = {
+      connected: true,
+      email: 'me@work.com',
+      grantedScopes: [GMAIL_MODIFY, GMAIL_SEND],
+      serverConfigured: true,
+      defaultAccountId: 'work',
+      accounts: [
+        {
+          accountId: 'work',
+          email: 'me@work.com',
+          isDefault: true,
+          grantedScopes: [GMAIL_MODIFY, GMAIL_SEND],
+        },
+        {
+          accountId: 'home',
+          email: 'me@home.com',
+          isDefault: false,
+          grantedScopes: [GMAIL_MODIFY, GMAIL_SEND],
+        },
+      ],
+    };
+    const threadsByAccount: Record<string, any[]> = {
+      work: [{ id: 'tw', snippet: 'Quarterly numbers', historyId: '1' }],
+      home: [{ id: 'th', snippet: 'Dinner on Friday?', historyId: '1' }],
+    };
+
+    beforeEach(() => {
+      mockApi.getGoogleStatus.mockResolvedValue(MULTI);
+      mockApi.getGmailImportance.mockResolvedValue({
+        running: false,
+        settings: { enabled: false, windowDays: 7, autoScan: 'off' },
+        threads: [],
+      });
+      mockApi.listGoogleGmailThreads.mockImplementation(async (p: any) => ({
+        threads: threadsByAccount[p.account] ?? [],
+      }));
+    });
+
+    it('starts on the default inbox and switches accounts', async () => {
+      render(<GmailPage />);
+
+      expect(await screen.findByText('Quarterly numbers')).toBeInTheDocument();
+      expect(screen.queryByText('Dinner on Friday?')).not.toBeInTheDocument();
+
+      fireEvent.change(screen.getByLabelText('Inbox'), { target: { value: 'home' } });
+
+      expect(await screen.findByText('Dinner on Friday?')).toBeInTheDocument();
+      expect(screen.queryByText('Quarterly numbers')).not.toBeInTheDocument();
+      expect(mockApi.listGoogleGmailThreads).toHaveBeenLastCalledWith(
+        expect.objectContaining({ account: 'home' }),
+      );
+    });
+
+    it('shows every inbox in the All inboxes view, labelled by account', async () => {
+      render(<GmailPage />);
+      expect(await screen.findByText('Quarterly numbers')).toBeInTheDocument();
+
+      fireEvent.change(screen.getByLabelText('Inbox'), { target: { value: '__all_inboxes__' } });
+
+      expect(await screen.findByText('Dinner on Friday?')).toBeInTheDocument();
+      expect(screen.getByText('Quarterly numbers')).toBeInTheDocument();
+      expect(screen.getByText('me@home.com', { selector: 'span' })).toBeInTheDocument();
+    });
+
+    it('reads and replies to a thread through the account that owns it', async () => {
+      mockApi.getGoogleGmailThread.mockResolvedValue({
+        messages: [
+          {
+            id: 'm1',
+            threadId: 'th',
+            labelIds: [],
+            snippet: 'Dinner on Friday?',
+            from: 'Jane <jane@example.com>',
+            to: 'me@home.com',
+            cc: null,
+            subject: 'Dinner',
+            date: null,
+            messageIdHeader: '<m1@mail>',
+            bodyText: 'Dinner on Friday?',
+            bodyHtml: null,
+          },
+        ],
+      });
+      mockApi.sendGoogleGmailMessage.mockResolvedValue({});
+      render(<GmailPage />);
+      expect(await screen.findByText('Quarterly numbers')).toBeInTheDocument();
+      fireEvent.change(screen.getByLabelText('Inbox'), { target: { value: '__all_inboxes__' } });
+      fireEvent.click(await screen.findByText('Dinner on Friday?'));
+
+      await waitFor(() =>
+        expect(mockApi.getGoogleGmailThread).toHaveBeenCalledWith('th', {
+          format: 'full',
+          account: 'home',
+        }),
+      );
+      fireEvent.change(await screen.findByLabelText('Reply'), { target: { value: 'Yes!' } });
+      fireEvent.click(screen.getByRole('button', { name: /Send reply/i }));
+
+      await waitFor(() =>
+        expect(mockApi.sendGoogleGmailMessage).toHaveBeenCalledWith(
+          {
+            to: ['jane@example.com'],
+            subject: 'Re: Dinner',
+            text: 'Yes!',
+            threadId: 'th',
+            inReplyTo: '<m1@mail>',
+            references: '<m1@mail>',
+          },
+          { account: 'home' },
+        ),
+      );
+    });
+
+    it('ignores a slower response for an inbox the user already left', async () => {
+      const pending: Record<string, Array<(v: any) => void>> = {};
+      mockApi.listGoogleGmailThreads.mockImplementation(
+        (p: any) => new Promise((resolve) => (pending[p.account] ??= []).push(resolve)),
+      );
+      render(<GmailPage />);
+      await waitFor(() => expect(pending.work).toHaveLength(1));
+      pending.work.shift()!({ threads: [{ id: 'w0', snippet: 'Work 0' }] });
+      expect(await screen.findByText('Work 0')).toBeInTheDocument();
+
+      // Pick home (left pending), then go back to work, which answers first.
+      fireEvent.change(screen.getByLabelText('Inbox'), { target: { value: 'home' } });
+      await waitFor(() => expect(pending.home).toHaveLength(1));
+      fireEvent.change(screen.getByLabelText('Inbox'), { target: { value: 'work' } });
+      await waitFor(() => expect(pending.work).toHaveLength(1));
+      pending.work.shift()!({ threads: [{ id: 'w', snippet: 'Work thread' }] });
+      expect(await screen.findByText('Work thread')).toBeInTheDocument();
+      pending.home.shift()!({ threads: [{ id: 'h', snippet: 'Home thread' }] });
+
+      await new Promise((r) => setTimeout(r, 20));
+      expect(screen.queryByText('Home thread')).not.toBeInTheDocument();
+      expect(screen.getByText('Work thread')).toBeInTheDocument();
+      expect((screen.getByLabelText('Inbox') as HTMLSelectElement).value).toBe('work');
+    });
+
+    const threadBody = (id: string, subject: string, from: string) => ({
+      messages: [
+        {
+          id: `m-${id}`,
+          threadId: id,
+          labelIds: [],
+          snippet: subject,
+          from,
+          to: 'me',
+          cc: null,
+          subject,
+          date: null,
+          messageIdHeader: `<${id}@mail>`,
+          bodyText: `${subject} body`,
+          bodyHtml: null,
+        },
+      ],
+    });
+
+    it('does not pull a closed thread back when its reply finishes sending', async () => {
+      mockApi.getGoogleGmailThread.mockImplementation(async (id: string) =>
+        id === 'th'
+          ? threadBody('th', 'Dinner', 'Jane <jane@example.com>')
+          : threadBody('tw', 'Numbers', 'Boss <boss@work.com>'),
+      );
+      let finishSend: (v: unknown) => void = () => {};
+      mockApi.sendGoogleGmailMessage.mockImplementationOnce(
+        () => new Promise((resolve) => (finishSend = resolve)),
+      );
+      render(<GmailPage />);
+      expect(await screen.findByText('Quarterly numbers')).toBeInTheDocument();
+      fireEvent.change(screen.getByLabelText('Inbox'), { target: { value: '__all_inboxes__' } });
+
+      // Reply in thread A (home), then close it while the send is in flight.
+      fireEvent.click(await screen.findByText('Dinner on Friday?'));
+      fireEvent.change(await screen.findByLabelText('Reply'), { target: { value: 'Yes!' } });
+      fireEvent.click(screen.getByRole('button', { name: /Send reply/i }));
+      await waitFor(() => expect(mockApi.sendGoogleGmailMessage).toHaveBeenCalledTimes(1));
+      fireEvent.click(screen.getByRole('button', { name: /Close thread/i }));
+
+      // Open thread B (work) and start a draft there.
+      fireEvent.click(screen.getByText('Quarterly numbers'));
+      expect(await screen.findByText('Numbers body')).toBeInTheDocument();
+      const draft = screen.getByLabelText('Reply') as HTMLTextAreaElement;
+      expect(draft.value).toBe('');
+      fireEvent.change(draft, { target: { value: 'for B' } });
+      const detailCalls = mockApi.getGoogleGmailThread.mock.calls.length;
+
+      finishSend({});
+      await new Promise((r) => setTimeout(r, 20));
+
+      // B stays open with its draft; A is not reloaded.
+      expect(screen.getByText('Numbers body')).toBeInTheDocument();
+      expect(screen.queryByText('Dinner body')).not.toBeInTheDocument();
+      expect((screen.getByLabelText('Reply') as HTMLTextAreaElement).value).toBe('for B');
+      expect(mockApi.getGoogleGmailThread.mock.calls.length).toBe(detailCalls);
+    });
+
+    it('ignores a slow detail load for a thread that was replaced', async () => {
+      let finishA: (v: unknown) => void = () => {};
+      mockApi.getGoogleGmailThread.mockImplementation((id: string) =>
+        id === 'th'
+          ? new Promise((resolve) => (finishA = resolve))
+          : Promise.resolve(threadBody('tw', 'Numbers', 'Boss <boss@work.com>')),
+      );
+      render(<GmailPage />);
+      expect(await screen.findByText('Quarterly numbers')).toBeInTheDocument();
+      fireEvent.change(screen.getByLabelText('Inbox'), { target: { value: '__all_inboxes__' } });
+
+      fireEvent.click(await screen.findByText('Dinner on Friday?'));
+      fireEvent.click(screen.getByRole('button', { name: /Close thread/i }));
+      fireEvent.click(screen.getByText('Quarterly numbers'));
+      expect(await screen.findByText('Numbers body')).toBeInTheDocument();
+
+      finishA(threadBody('th', 'Dinner', 'Jane <jane@example.com>'));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(screen.getByText('Numbers body')).toBeInTheDocument();
+      expect(screen.queryByText('Dinner body')).not.toBeInTheDocument();
+    });
+
+    it('stays closed when the modal is dismissed during the detail load', async () => {
+      let finishA: (v: unknown) => void = () => {};
+      mockApi.getGoogleGmailThread.mockImplementation(
+        () => new Promise((resolve) => (finishA = resolve)),
+      );
+      render(<GmailPage />);
+      fireEvent.click(await screen.findByText('Quarterly numbers'));
+      expect(await screen.findByRole('dialog')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: /Close thread/i }));
+
+      finishA(threadBody('tw', 'Numbers', 'Boss <boss@work.com>'));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+
+    it('stays closed when the modal is dismissed during the refresh after a reply', async () => {
+      const waiting: Array<(v: unknown) => void> = [];
+      mockApi.getGoogleGmailThread
+        .mockImplementationOnce(async () => threadBody('tw', 'Numbers', 'Boss <boss@work.com>'))
+        .mockImplementation(() => new Promise((resolve) => waiting.push(resolve)));
+      mockApi.sendGoogleGmailMessage.mockResolvedValue({});
+      render(<GmailPage />);
+      fireEvent.click(await screen.findByText('Quarterly numbers'));
+      fireEvent.change(await screen.findByLabelText('Reply'), { target: { value: 'Ok' } });
+      fireEvent.click(screen.getByRole('button', { name: /Send reply/i }));
+      await waitFor(() => expect(waiting).toHaveLength(1));
+      fireEvent.click(screen.getByRole('button', { name: /Close thread/i }));
+
+      waiting[0](threadBody('tw', 'Numbers', 'Boss <boss@work.com>'));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+
+    it('leaves a reopened compose window alone when an earlier send finishes', async () => {
+      let finishSend: (v: unknown) => void = () => {};
+      mockApi.sendGoogleGmailMessage.mockImplementationOnce(
+        () => new Promise((resolve) => (finishSend = resolve)),
+      );
+      render(<GmailPage />);
+      expect(await screen.findByText('Quarterly numbers')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: /Compose/i }));
+      fireEvent.change(screen.getByPlaceholderText(/alice@example.com/), {
+        target: { value: 'a@x.com' },
+      });
+      fireEvent.change(screen.getByRole('textbox', { name: /Message/i }), {
+        target: { value: 'first' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /^Send$/ }));
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      fireEvent.click(screen.getByRole('button', { name: /Compose/i }));
+      fireEvent.change(screen.getByRole('textbox', { name: /Message/i }), {
+        target: { value: 'second draft' },
+      });
+
+      finishSend({});
+      await new Promise((r) => setTimeout(r, 20));
+      expect((screen.getByRole('textbox', { name: /Message/i }) as HTMLTextAreaElement).value).toBe(
+        'second draft',
+      );
+    });
+
+    it('composes from the inbox being viewed', async () => {
+      mockApi.sendGoogleGmailMessage.mockResolvedValue({});
+      render(<GmailPage />);
+      expect(await screen.findByText('Quarterly numbers')).toBeInTheDocument();
+      fireEvent.change(screen.getByLabelText('Inbox'), { target: { value: 'home' } });
+      expect(await screen.findByText('Dinner on Friday?')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: /Compose/i }));
+      expect((screen.getByLabelText('From') as HTMLSelectElement).value).toBe('home');
+    });
   });
 });

@@ -28,8 +28,10 @@ vi.mock('../utils/api', () => ({ api: {} }));
 
 import {
   buildSendBody,
+  ComposeModal,
   gmailReturnTo,
   GmailContent,
+  loadInboxThreads,
   GMAIL_SURFACE_SCOPES,
   openGmailOAuth,
   parseRecipients,
@@ -167,5 +169,90 @@ describe('GmailScreen mobile parity', () => {
       scopes: GMAIL_SURFACE_SCOPES,
     });
     expect(gmailReturnTo()).toBe('/#/gmail');
+  });
+
+  describe('multiple Google accounts', () => {
+    const work = {
+      accountId: 'work',
+      email: 'me@work.com',
+      isDefault: true,
+      grantedScopes: [GMAIL_MODIFY, GMAIL_SEND],
+    };
+    const home = {
+      accountId: 'home',
+      email: 'me@home.com',
+      isDefault: false,
+      grantedScopes: [GMAIL_MODIFY, GMAIL_SEND],
+    };
+    const side = { accountId: 'side', email: 'side@x.com', isDefault: false, grantedScopes: [] };
+    const MULTI = {
+      connected: true,
+      email: 'me@work.com',
+      grantedScopes: [GMAIL_MODIFY, GMAIL_SEND],
+      serverConfigured: true,
+      defaultAccountId: 'work',
+      accounts: [work, home, side],
+    };
+
+    it('reads one inbox, or every readable inbox for All inboxes', async () => {
+      const listGoogleGmailThreads = vi.fn(async (p: any) => ({
+        threads: [{ id: `t-${p.account}`, snippet: p.account }],
+      }));
+      const one = await loadInboxThreads({ listGoogleGmailThreads }, 'home', [work, home, side]);
+      expect(one.threads.map((t) => [t.id, t.accountEmail])).toEqual([['t-home', 'me@home.com']]);
+
+      const all = await loadInboxThreads({ listGoogleGmailThreads }, '__all_inboxes__', [
+        work,
+        home,
+        side,
+      ]);
+      expect(all.threads.map((t) => t.accountId)).toEqual(['work', 'home']);
+    });
+
+    it('shows the inbox switcher with All inboxes and labels threads by account', () => {
+      const html = renderToStaticMarkup(
+        <GmailContent
+          loading={false}
+          threadsLoading={false}
+          error={null}
+          status={MULTI}
+          inbox="__all_inboxes__"
+          threads={[
+            {
+              id: 't1',
+              snippet: 'Quarterly numbers',
+              accountId: 'work',
+              accountEmail: 'me@work.com',
+            },
+            { id: 't2', snippet: 'Dinner?', accountId: 'home', accountEmail: 'me@home.com' },
+          ]}
+          onRefresh={() => undefined}
+          onConnect={() => undefined}
+          onOpenSettings={() => undefined}
+          onCompose={() => undefined}
+          onOpenThread={() => undefined}
+        />,
+      );
+      expect(html).toContain('Inbox All inboxes');
+      expect(html).toContain('Inbox me@home.com');
+      expect(html).toContain('Enable Gmail for side@x.com');
+      expect(html).toContain('Dinner?');
+      expect(html).toContain('me@home.com');
+    });
+
+    it('offers a From picker when several accounts can send', () => {
+      const html = renderToStaticMarkup(
+        <ComposeModal
+          accounts={[work, home]}
+          initialAccountId="home"
+          saving={false}
+          error={null}
+          onClose={() => undefined}
+          onSend={() => undefined}
+        />,
+      );
+      expect(html).toContain('Send from me@work.com');
+      expect(html).toContain('Send from me@home.com');
+    });
   });
 });

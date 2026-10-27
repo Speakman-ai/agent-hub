@@ -21,6 +21,7 @@ export default function CalendarMonthView({
   onNext,
   onToday,
   onSelectEvent,
+  eventColor,
 }: {
   month: Date;
   events: CalendarEventLike[];
@@ -31,6 +32,8 @@ export default function CalendarMonthView({
   onNext: () => void;
   onToday: () => void;
   onSelectEvent: (event: CalendarEventLike) => void;
+  /** Per-event accent (e.g. the owning Google account's color). */
+  eventColor?: (event: CalendarEventLike) => string | undefined;
 }) {
   const days = useMemo(() => buildMonthGrid(month, events), [month, events]);
   const weeks = useMemo(() => {
@@ -111,7 +114,13 @@ export default function CalendarMonthView({
                     <TouchableOpacity
                       key={`${event.id || event.summary || 'event'}-${i}`}
                       onPress={() => onSelectEvent(event)}
-                      style={[styles.chip, event.start?.date ? styles.chipAllDay : null]}
+                      style={[
+                        styles.chip,
+                        event.start?.date ? styles.chipAllDay : null,
+                        eventColor?.(event)
+                          ? { borderLeftWidth: 2, borderLeftColor: eventColor(event) }
+                          : null,
+                      ]}
                       accessibilityLabel={event.summary || '(no title)'}
                     >
                       <Text numberOfLines={1} style={styles.chipText}>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   CalendarDays,
@@ -25,13 +25,29 @@ import {
 import {
   addMonths,
   defaultCalendarRange,
-  eventStartMillis,
   monthGridRange,
   startOfMonth,
   eventTimeLabel,
   localTimeZone,
   type CalendarEventLike,
 } from '@shared/utils/calendarEvents';
+import {
+  CALENDAR_HIDDEN_ACCOUNTS_KEY,
+  defaultGoogleAccount,
+  effectiveHiddenAccounts,
+  fetchAcrossGoogleAccounts,
+  googleAccountColor,
+  googleAccountParam,
+  linkedGoogleAccounts,
+  mergeAccountEvents,
+  parseHiddenAccounts,
+  toggleHiddenAccount,
+  withoutHiddenAccounts,
+  type AccountTagged,
+  type GoogleAccountFetchFailure,
+  type GoogleStatusWithAccounts,
+  type LinkedGoogleAccount,
+} from '@shared/utils/googleAccounts';
 
 export { CALENDAR_EVENTS_SCOPE, defaultCalendarRange };
 
@@ -39,9 +55,47 @@ const AGENDA_MAX_RESULTS = 100;
 // A busy six-week grid can exceed the agenda's cap; Google allows up to 2500.
 export const MONTH_MAX_RESULTS = 500;
 
-type GoogleStatus = NonNullable<GoogleStatusLike>;
+type GoogleStatus = NonNullable<GoogleStatusLike> & GoogleStatusWithAccounts;
 
-type CalendarEvent = CalendarEventLike & { id: string | null };
+type CalendarEvent = AccountTagged<CalendarEventLike & { id: string | null }>;
+
+function readHiddenAccounts(): string[] {
+  try {
+    return parseHiddenAccounts(window.localStorage.getItem(CALENDAR_HIDDEN_ACCOUNTS_KEY));
+  } catch {
+    return [];
+  }
+}
+
+function writeHiddenAccounts(ids: string[]) {
+  try {
+    window.localStorage.setItem(CALENDAR_HIDDEN_ACCOUNTS_KEY, JSON.stringify(ids));
+  } catch {
+    // Storage unavailable (private mode): the toggle still applies for this visit.
+  }
+}
+
+/** Read one account's events and tag them with that account. */
+async function listEventsAcrossAccounts(
+  accounts: LinkedGoogleAccount[],
+  query: { timeMin: string; timeMax: string; maxResults: number },
+) {
+  return fetchAcrossGoogleAccounts<CalendarEventLike & { id: string | null }>(
+    accounts,
+    async (account) => {
+      const body = await api.listGoogleCalendarEvents({
+        ...query,
+        timeZone: localTimeZone(),
+        account: googleAccountParam(account),
+      });
+      return body?.events || [];
+    },
+  );
+}
+
+function failureText(failures: GoogleAccountFetchFailure[]) {
+  return failures.map((f) => `${f.account.email || 'Google account'}: ${f.error}`).join('; ');
+}
 
 type EventFormState = {
   summary: string;
@@ -139,22 +193,30 @@ export function buildCalendarEventInput(form: EventFormState) {
   };
 }
 
-function CalendarEventModal({
+export function CalendarEventModal({
   event,
+  accounts,
   saving,
   error,
   onCancel,
   onSubmit,
 }: {
   event: CalendarEvent | null;
+  /** Accounts that can hold the event; a new event asks which one when there are several. */
+  accounts: LinkedGoogleAccount[];
   saving: boolean;
   error: string | null;
   onCancel: () => void;
-  onSubmit: (form: EventFormState) => void;
+  onSubmit: (form: EventFormState, accountId: string) => void;
 }) {
   const [form, setForm] = useState<EventFormState>(() =>
     event ? formFromEvent(event) : defaultFormState(),
   );
+  const [accountId, setAccountId] = useState<string>(
+    () => event?.accountId ?? defaultGoogleAccount(accounts)?.accountId ?? '',
+  );
+  const accountEmail =
+    accounts.find((a) => a.accountId === accountId)?.email || event?.accountEmail || '';
 
   const setField = (field: keyof EventFormState, value: string | boolean) => {
     setForm((current) => ({ ...current, [field]: value }));
@@ -172,7 +234,9 @@ function CalendarEventModal({
             <h3 className="text-sm font-semibold text-white">
               {event ? 'Edit event' : 'Create event'}
             </h3>
-            <p className="text-xs text-gray-500">Primary calendar</p>
+            <p className="text-xs text-gray-500">
+              Primary calendar{accountEmail ? ` · ${accountEmail}` : ''}
+            </p>
           </div>
           <button
             type="button"
@@ -187,9 +251,27 @@ function CalendarEventModal({
           className="space-y-4 p-4"
           onSubmit={(e) => {
             e.preventDefault();
-            if (valid) onSubmit(form);
+            if (valid) onSubmit(form, accountId);
           }}
         >
+          {!event && accounts.length > 1 && (
+            <label className="block">
+              <span className="text-xs text-gray-400">Account</span>
+              <select
+                value={accountId}
+                onChange={(e) => setAccountId(e.target.value)}
+                aria-label="Account"
+                className="mt-1 w-full rounded border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
+              >
+                {accounts.map((a) => (
+                  <option key={a.accountId} value={a.accountId}>
+                    {a.email}
+                    {a.isDefault ? ' (default)' : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <label className="block">
             <span className="text-xs text-gray-400">Title</span>
             <input
@@ -334,31 +416,59 @@ export default function CalendarAgendaPage({
   const [monthLoading, setMonthLoading] = useState(false);
   const [monthError, setMonthError] = useState<string | null>(null);
   const [monthReload, setMonthReload] = useState(0);
+  // Accounts whose events failed to load; the others still render.
+  const [accountFailures, setAccountFailures] = useState<GoogleAccountFetchFailure[]>([]);
+  const [hiddenAccounts, setHiddenAccounts] = useState<string[]>(readHiddenAccounts);
+
+  const accounts = useMemo(() => linkedGoogleAccounts(status), [status]);
+  const calendarAccounts = useMemo(() => accounts.filter((a) => hasCalendarScope(a)), [accounts]);
+  // Stable dependency for the month fetch: re-read only when the set changes.
+  const calendarAccountKey = calendarAccounts.map((a) => a.accountId).join(',');
+
+  // Only the newest agenda load and the modal session a save started in may
+  // commit state; an overlapping refresh or a reopened modal must not be
+  // overwritten by a slower, older completion.
+  const loadSeq = useRef(0);
+  const modalSession = useRef(0);
+  const showModal = (event: CalendarEvent | null | undefined) => {
+    modalSession.current += 1;
+    setModalError(null);
+    setSaving(false);
+    setModalEvent(event);
+  };
 
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
+    const current = () => seq === loadSeq.current;
     setError(null);
     setEventsLoading(true);
     try {
-      const nextStatus = await api.getGoogleStatus();
+      const nextStatus: GoogleStatus = await api.getGoogleStatus();
+      if (!current()) return;
       setStatus(nextStatus);
-      if (nextStatus.connected && hasCalendarScope(nextStatus)) {
-        const body = await api.listGoogleCalendarEvents({
+      const readable = linkedGoogleAccounts(nextStatus).filter((a) => hasCalendarScope(a));
+      if (nextStatus.connected && readable.length) {
+        const { items, failures } = await listEventsAcrossAccounts(readable, {
           ...range,
-          timeZone: localTimeZone(),
           maxResults: AGENDA_MAX_RESULTS,
         });
-        setEvents(
-          [...(body.events || [])].sort((a, b) => eventStartMillis(a) - eventStartMillis(b)),
-        );
+        if (!current()) return;
+        setEvents(mergeAccountEvents(items));
+        setAccountFailures(failures);
+        if (failures.length === readable.length) setError(failureText(failures));
       } else {
         setEvents([]);
+        setAccountFailures([]);
       }
     } catch (err: any) {
+      if (!current()) return;
       setError(err.message || 'Failed to load Calendar');
       setEvents([]);
     } finally {
-      setLoading(false);
-      setEventsLoading(false);
+      if (current()) {
+        setLoading(false);
+        setEventsLoading(false);
+      }
     }
   }, [range]);
 
@@ -366,7 +476,7 @@ export default function CalendarAgendaPage({
     load();
   }, [load]);
 
-  const calendarReady = !!status?.connected && hasCalendarScope(status);
+  const calendarReady = !!status?.connected && calendarAccounts.length > 0;
 
   useEffect(() => {
     if (!calendarReady) {
@@ -377,21 +487,16 @@ export default function CalendarAgendaPage({
     let cancelled = false;
     setMonthLoading(true);
     setMonthError(null);
-    api
-      .listGoogleCalendarEvents({
-        ...monthGridRange(month),
-        timeZone: localTimeZone(),
-        maxResults: MONTH_MAX_RESULTS,
-      })
-      .then((body) => {
-        if (!cancelled) setMonthEvents(body?.events || []);
-      })
-      .catch((err) => {
+    listEventsAcrossAccounts(calendarAccounts, {
+      ...monthGridRange(month),
+      maxResults: MONTH_MAX_RESULTS,
+    })
+      .then(({ items, failures }) => {
+        if (cancelled) return;
+        setMonthEvents(mergeAccountEvents(items));
         // Keep the error on the grid itself: month navigation only fires this
         // request, so the agenda banner above never sees the failure.
-        if (cancelled) return;
-        setMonthEvents([]);
-        setMonthError(err?.message || 'Failed to load this month');
+        setMonthError(failures.length ? failureText(failures) : null);
       })
       .finally(() => {
         if (!cancelled) setMonthLoading(false);
@@ -399,19 +504,39 @@ export default function CalendarAgendaPage({
     return () => {
       cancelled = true;
     };
-  }, [calendarReady, month, monthReload]);
+    // calendarAccountKey tracks calendarAccounts by value.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [calendarReady, calendarAccountKey, month, monthReload]);
+
+  const toggleAccount = (accountId: string) => {
+    setHiddenAccounts((current) => {
+      const next = toggleHiddenAccount(current, accountId);
+      writeHiddenAccounts(next);
+      return next;
+    });
+  };
+  const multiAccount = accounts.length > 1;
+  // With one account left the toggles are gone, so a stored hide must not apply.
+  const hidden = effectiveHiddenAccounts(hiddenAccounts, accounts);
+  const visibleEvents = withoutHiddenAccounts(events, hidden);
+  const visibleMonthEvents = withoutHiddenAccounts(monthEvents, hidden);
+  const colorFor = (accountId: string) => googleAccountColor(accounts, accountId);
 
   const refresh = () => {
     setMonthReload((n) => n + 1);
     return load();
   };
 
-  const startOAuth = async () => {
+  const startOAuth = async (accountId?: string) => {
     setOauthBusy(true);
     setError(null);
     try {
       const returnTo = window.location.pathname + window.location.search + window.location.hash;
-      const body = await api.startGoogleOAuth({ returnTo, scopes: [CALENDAR_EVENTS_SCOPE] });
+      const body = await api.startGoogleOAuth({
+        returnTo,
+        scopes: [CALENDAR_EVENTS_SCOPE],
+        ...(accountId ? { accountId } : {}),
+      });
       window.location.href = body.authorizeUrl;
     } catch (err: any) {
       setError(err.message || 'Failed to start Google consent');
@@ -419,22 +544,32 @@ export default function CalendarAgendaPage({
     }
   };
 
-  const saveEvent = async (form: EventFormState) => {
+  const saveEvent = async (form: EventFormState, accountId: string) => {
+    const session = modalSession.current;
+    const current = () => session === modalSession.current;
     setSaving(true);
     setModalError(null);
     try {
       const event = buildCalendarEventInput(form);
+      // An edit stays on the account that owns the event; a new one goes to
+      // the account picked in the modal.
+      const account = (modalEvent?.id ? modalEvent.accountId : accountId) || undefined;
       if (modalEvent?.id) {
-        await api.updateGoogleCalendarEvent(modalEvent.id, { calendarId: 'primary', event });
+        await api.updateGoogleCalendarEvent(
+          modalEvent.id,
+          { calendarId: 'primary', event },
+          { account },
+        );
       } else {
-        await api.createGoogleCalendarEvent({ calendarId: 'primary', event });
+        await api.createGoogleCalendarEvent({ calendarId: 'primary', event }, { account });
       }
-      setModalEvent(undefined);
+      // The event is saved either way; only close the modal it was saved from.
+      if (current()) showModal(undefined);
       await refresh();
     } catch (err: any) {
-      setModalError(err.message || 'Failed to save event');
+      if (current()) setModalError(err.message || 'Failed to save event');
     } finally {
-      setSaving(false);
+      if (current()) setSaving(false);
     }
   };
 
@@ -457,7 +592,7 @@ export default function CalendarAgendaPage({
 
   const connected = !!status?.connected;
   const configured = status?.serverConfigured !== false;
-  const calendarEnabled = hasCalendarScope(status);
+  const calendarEnabled = calendarAccounts.length > 0;
 
   let emptyState = null;
   if (!configured && !connected) {
@@ -472,21 +607,28 @@ export default function CalendarAgendaPage({
       title: 'Connect Google to use Calendar',
       body: 'Calendar events stay server-side through the Google proxy. Connect your account to continue.',
       action: 'Connect Google',
-      onAction: startOAuth,
+      onAction: () => startOAuth(),
     };
   } else if (!calendarEnabled) {
     emptyState = {
       title: 'Enable Calendar access',
       body: `Connected as ${status?.email || 'Google account'}, but Calendar access has not been granted yet.`,
       action: 'Enable Calendar',
-      onAction: startOAuth,
+      onAction: () => startOAuth(defaultGoogleAccount(accounts)?.accountId || undefined),
+    };
+  } else if (events.length && !visibleEvents.length && !eventsLoading) {
+    emptyState = {
+      title: 'All accounts hidden',
+      body: 'Turn an account back on above to see its events.',
+      action: null,
+      onAction: undefined,
     };
   } else if (!events.length && !eventsLoading) {
     emptyState = {
       title: 'No events this week',
       body: 'Create an event or refresh after adding one in Google Calendar.',
       action: 'Create event',
-      onAction: () => setModalEvent(null),
+      onAction: () => showModal(null),
     };
   }
 
@@ -501,7 +643,9 @@ export default function CalendarAgendaPage({
             </div>
             <h2 className="mt-1 text-2xl font-semibold text-white">Agenda</h2>
             <p className="mt-1 text-sm text-gray-400">
-              Upcoming events from your primary Google Calendar.
+              {multiAccount
+                ? 'Upcoming events from the primary calendar of each linked Google account.'
+                : 'Upcoming events from your primary Google Calendar.'}
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -517,7 +661,7 @@ export default function CalendarAgendaPage({
             {connected && calendarEnabled && (
               <button
                 type="button"
-                onClick={() => setModalEvent(null)}
+                onClick={() => showModal(null)}
                 className="inline-flex items-center gap-2 rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-500"
               >
                 <Plus size={14} />
@@ -531,6 +675,53 @@ export default function CalendarAgendaPage({
           <div className="mb-4 flex items-start gap-2 rounded border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">
             <AlertCircle size={16} className="mt-0.5 flex-shrink-0" />
             {error}
+          </div>
+        )}
+
+        {!loading && connected && multiAccount && (
+          <div className="mb-4 flex flex-wrap gap-2" aria-label="Calendar accounts">
+            {accounts.map((account) => {
+              const enabled = hasCalendarScope(account);
+              const visible = enabled && !hidden.includes(account.accountId);
+              const failed = accountFailures.find((f) => f.account.accountId === account.accountId);
+              return (
+                <div
+                  key={account.accountId}
+                  className="inline-flex items-center gap-2 rounded-full border border-gray-700 bg-gray-900 px-3 py-1 text-xs text-gray-300"
+                  title={failed ? failed.error : account.email}
+                >
+                  <span
+                    className="h-2.5 w-2.5 rounded-full"
+                    style={{ backgroundColor: colorFor(account.accountId) }}
+                  />
+                  {enabled ? (
+                    <label className="inline-flex cursor-pointer items-center gap-1.5">
+                      <input
+                        type="checkbox"
+                        checked={visible}
+                        onChange={() => toggleAccount(account.accountId)}
+                        aria-label={`Show ${account.email}`}
+                        className="h-3 w-3"
+                      />
+                      {account.email}
+                    </label>
+                  ) : (
+                    <>
+                      <span className="text-gray-500">{account.email}</span>
+                      <button
+                        type="button"
+                        onClick={() => startOAuth(account.accountId)}
+                        disabled={oauthBusy}
+                        className="text-blue-300 hover:text-blue-200 disabled:opacity-50"
+                      >
+                        Enable
+                      </button>
+                    </>
+                  )}
+                  {failed && <AlertCircle size={12} className="text-red-400" />}
+                </div>
+              );
+            })}
           </div>
         )}
 
@@ -561,13 +752,21 @@ export default function CalendarAgendaPage({
           </div>
         ) : (
           <div className="overflow-hidden rounded-lg border border-gray-800 bg-gray-900">
-            {events.map((event) => (
+            {visibleEvents.map((event) => (
               <div
-                key={event.id || `${event.summary}-${eventTimeLabel(event)}`}
+                key={`${event.accountId}:${event.id || `${event.summary}-${eventTimeLabel(event)}`}`}
                 className="flex gap-4 border-b border-gray-800 p-4 last:border-b-0"
+                style={
+                  multiAccount
+                    ? { boxShadow: `inset 3px 0 0 ${colorFor(event.accountId)}` }
+                    : undefined
+                }
               >
                 <div className="w-36 flex-shrink-0 text-sm text-gray-400">
                   {eventTimeLabel(event)}
+                  {multiAccount && (
+                    <div className="mt-1 truncate text-xs text-gray-500">{event.accountEmail}</div>
+                  )}
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-start justify-between gap-3">
@@ -613,7 +812,7 @@ export default function CalendarAgendaPage({
                       </button>
                       <button
                         type="button"
-                        onClick={() => setModalEvent(event)}
+                        onClick={() => showModal(event)}
                         className="inline-flex items-center gap-1 rounded border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:bg-gray-800"
                       >
                         <Pencil size={12} />
@@ -634,23 +833,25 @@ export default function CalendarAgendaPage({
         {!loading && calendarReady && (
           <CalendarMonthView
             month={month}
-            events={monthEvents}
+            events={visibleMonthEvents}
+            eventColor={multiAccount ? (event) => colorFor(event.accountId) : undefined}
             loading={monthLoading}
             error={monthError}
             onRetry={() => setMonthReload((n) => n + 1)}
             onPrev={() => setMonth((m) => addMonths(m, -1))}
             onNext={() => setMonth((m) => addMonths(m, 1))}
             onToday={() => setMonth(startOfMonth(new Date()))}
-            onSelectEvent={(event) => setModalEvent(event)}
+            onSelectEvent={(event) => showModal(event)}
           />
         )}
       </div>
       {modalEvent !== undefined && (
         <CalendarEventModal
           event={modalEvent}
+          accounts={calendarAccounts}
           saving={saving}
           error={modalError}
-          onCancel={() => setModalEvent(undefined)}
+          onCancel={() => showModal(undefined)}
           onSubmit={saveEvent}
         />
       )}

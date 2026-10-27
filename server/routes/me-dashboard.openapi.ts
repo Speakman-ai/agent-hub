@@ -62,12 +62,18 @@ const DashboardWork = registerComponent(
     }),
 );
 
+const accountTag = {
+  accountId: z.string().openapi({ description: 'Linked Google account this row came from.' }),
+  accountEmail: z.string(),
+};
+
 const DashboardCalendar = z.object({
   scopeGranted: z.boolean(),
   date: z.string().nullable(),
   timeZone: z.string().nullable(),
   events: z.array(
     z.object({
+      ...accountTag,
       id: z.string().nullable(),
       summary: z.string().nullable(),
       location: z.string().nullable(),
@@ -88,6 +94,7 @@ const DashboardMail = z.object({
   important: z.number().nullable(),
   messages: z.array(
     z.object({
+      ...accountTag,
       id: z.string().nullable(),
       threadId: z.string().nullable(),
       from: z.string().nullable(),
@@ -101,6 +108,22 @@ const DashboardMail = z.object({
   error: z.string().nullable(),
 });
 
+const DashboardGoogleAccount = z
+  .object({
+    accountId: z.string(),
+    email: z.string(),
+    isDefault: z.boolean(),
+    reconnectRequired: z.boolean(),
+    calendarScopeGranted: z.boolean(),
+    mailScopeGranted: z.boolean(),
+    calendarError: z.string().nullable(),
+    mailError: z.string().nullable(),
+    unread: z.number().nullable(),
+    starred: z.number().nullable(),
+    important: z.number().nullable(),
+  })
+  .openapi({ description: 'One linked Google account and what the dashboard could read from it.' });
+
 const DashboardGoogle = registerComponent(
   'DashboardGoogle',
   z
@@ -111,10 +134,11 @@ const DashboardGoogle = registerComponent(
       reconnectRequired: z.boolean(),
       calendar: DashboardCalendar,
       mail: DashboardMail,
+      accounts: z.array(DashboardGoogleAccount),
     })
     .openapi({
       description:
-        "The caller's Google slice (today's calendar + flagged-mail counts). Soft-degrades: unconfigured / unlinked / missing-scope all render as false blocks.",
+        "The caller's Google slice (today's calendar + flagged-mail counts), merged across every linked account. `calendar` / `mail` combine all usable accounts (events by start, counts summed); `accounts` carries per-account scopes, reconnect state, and errors. `email` is the default account. Soft-degrades: unconfigured / unlinked / missing-scope all render as false blocks.",
     }),
 );
 

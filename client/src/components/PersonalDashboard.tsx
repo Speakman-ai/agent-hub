@@ -18,7 +18,15 @@ import {
   type DashboardCardPriority,
   type UserTodoWire,
 } from '../utils/api';
-import { calendarPaneState, mailPaneState, type GooglePaneState } from '../utils/dashboardPanes';
+import {
+  calendarPaneState,
+  mailPaneState,
+  paneAccountNotices,
+  paneAccountNoticeText,
+  type GoogleDashboardSurface,
+  type GooglePaneState,
+} from '../utils/dashboardPanes';
+import { googleAccountColor } from '@shared/utils/googleAccounts';
 import { dueLabel, dueState, todoDoDate } from '../utils/todos';
 import { mailSenderName, formatMailDate } from '../utils/mail';
 
@@ -103,6 +111,38 @@ function Pane({
 
 function EmptyState({ text }: { text: string }) {
   return <p className="text-sm text-gray-500 px-1 py-4 text-center">{text}</p>;
+}
+
+/** Small account marker shown on rows once more than one account is linked. */
+function AccountDot({ color, email }: { color: string; email: string }) {
+  return (
+    <span
+      className="h-2 w-2 flex-shrink-0 rounded-full"
+      style={{ backgroundColor: color }}
+      title={email}
+      aria-label={email}
+    />
+  );
+}
+
+function AccountNotices({
+  google,
+  surface,
+}: {
+  google: MeDashboardWire['google'] | undefined;
+  surface: GoogleDashboardSurface;
+}) {
+  const notices = paneAccountNotices(google, surface);
+  if (!notices.length) return null;
+  return (
+    <ul className="mt-2 space-y-0.5" data-testid={`dashboard-${surface}-account-notices`}>
+      {notices.map((n) => (
+        <li key={n.accountId} className="px-1 text-xs text-amber-300/80 truncate">
+          {paneAccountNoticeText(n, surface)}
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 function GoogleGate({
@@ -221,6 +261,10 @@ export default function PersonalDashboard({
   const calState = calendarPaneState(google);
   const mailState = mailPaneState(google);
   const openCards = (work?.cards ?? []).filter((c) => !c.isDone);
+  const accounts = google?.accounts ?? [];
+  const multiAccount = accounts.length > 1;
+  const accountMarker = (accountId: string, email: string) =>
+    multiAccount ? { color: googleAccountColor(accounts, accountId), email } : null;
 
   return (
     <div className="h-full overflow-y-auto p-4 md:p-6 bg-gray-950">
@@ -304,16 +348,25 @@ export default function PersonalDashboard({
                 onConnect={onOpenAccountSettings}
                 onOpenSurface={() => onNavigate('calendar')}
               />
-            ) : google?.calendar.error ? (
-              <EmptyState text={`Calendar unavailable: ${google.calendar.error}`} />
-            ) : (google?.calendar.events.length ?? 0) === 0 ? (
-              <EmptyState text="Nothing on your calendar today." />
             ) : (
-              <ul className="space-y-1.5">
-                {google!.calendar.events.map((ev, i) => (
-                  <CalendarRow key={ev.id ?? i} ev={ev} />
-                ))}
-              </ul>
+              <>
+                {google?.calendar.error ? (
+                  <EmptyState text={`Calendar unavailable: ${google.calendar.error}`} />
+                ) : (google?.calendar.events.length ?? 0) === 0 ? (
+                  <EmptyState text="Nothing on your calendar today." />
+                ) : (
+                  <ul className="space-y-1.5">
+                    {google!.calendar.events.map((ev, i) => (
+                      <CalendarRow
+                        key={`${ev.accountId ?? ''}:${ev.id ?? i}`}
+                        ev={ev}
+                        account={accountMarker(ev.accountId, ev.accountEmail)}
+                      />
+                    ))}
+                  </ul>
+                )}
+                <AccountNotices google={google} surface="calendar" />
+              </>
             )}
           </Pane>
 
@@ -339,16 +392,26 @@ export default function PersonalDashboard({
                 onConnect={onOpenAccountSettings}
                 onOpenSurface={() => onNavigate('gmail')}
               />
-            ) : google?.mail.error ? (
-              <EmptyState text={`Gmail unavailable: ${google.mail.error}`} />
-            ) : (google?.mail.messages.length ?? 0) === 0 ? (
-              <EmptyState text="No recent mail." />
             ) : (
-              <ul className="space-y-1.5">
-                {google!.mail.messages.map((msg, i) => (
-                  <MailRow key={msg.id ?? i} msg={msg} onOpen={() => onNavigate('gmail')} />
-                ))}
-              </ul>
+              <>
+                {google?.mail.error ? (
+                  <EmptyState text={`Gmail unavailable: ${google.mail.error}`} />
+                ) : (google?.mail.messages.length ?? 0) === 0 ? (
+                  <EmptyState text="No recent mail." />
+                ) : (
+                  <ul className="space-y-1.5">
+                    {google!.mail.messages.map((msg, i) => (
+                      <MailRow
+                        key={`${msg.accountId ?? ''}:${msg.id ?? i}`}
+                        msg={msg}
+                        account={accountMarker(msg.accountId, msg.accountEmail)}
+                        onOpen={() => onNavigate('gmail')}
+                      />
+                    ))}
+                  </ul>
+                )}
+                <AccountNotices google={google} surface="mail" />
+              </>
             )}
           </Pane>
         </div>
@@ -402,10 +465,13 @@ function TodoRow({ todo }: { todo: UserTodoWire }) {
   );
 }
 
-function CalendarRow({ ev }: { ev: DashboardCalendarEventWire }) {
+type RowAccount = { color: string; email: string } | null;
+
+function CalendarRow({ ev, account }: { ev: DashboardCalendarEventWire; account: RowAccount }) {
   const time = formatEventTime(ev);
   return (
     <li className="flex items-center gap-3 rounded-lg border border-gray-800 bg-gray-900/60 px-3 py-2">
+      {account && <AccountDot color={account.color} email={account.email} />}
       <span className="text-xs text-gray-400 w-16 flex-shrink-0 tabular-nums">{time}</span>
       <span className="text-sm text-gray-200 flex-1 truncate">{ev.summary || '(no title)'}</span>
       {ev.hangoutLink && (
@@ -423,7 +489,15 @@ function CalendarRow({ ev }: { ev: DashboardCalendarEventWire }) {
   );
 }
 
-function MailRow({ msg, onOpen }: { msg: DashboardMailMessageWire; onOpen: () => void }) {
+function MailRow({
+  msg,
+  account,
+  onOpen,
+}: {
+  msg: DashboardMailMessageWire;
+  account: RowAccount;
+  onOpen: () => void;
+}) {
   const sender = mailSenderName(msg.from);
   const when = formatMailDate(msg.internalDate, msg.date);
   return (
@@ -434,6 +508,7 @@ function MailRow({ msg, onOpen }: { msg: DashboardMailMessageWire; onOpen: () =>
         className="w-full text-left rounded-lg border border-gray-800 bg-gray-900/60 hover:bg-gray-800/70 px-3 py-2 transition-colors"
       >
         <div className="flex items-center gap-2">
+          {account && <AccountDot color={account.color} email={account.email} />}
           {msg.unread && (
             <span
               className="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-blue-400"

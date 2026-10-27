@@ -151,6 +151,7 @@ describe('Google Gmail proxy routes', () => {
                 { name: 'Subject', value: 'Greetings' },
                 { name: 'Date', value: 'Mon, 30 Jun 2026 09:00:00 -0700' },
                 { name: 'Message-ID', value: '<abc@mail.example.com>' },
+                { name: 'Reply-To', value: 'Person <person@example.com>' },
               ],
               parts: [
                 {
@@ -182,6 +183,7 @@ describe('Google Gmail proxy routes', () => {
       to: 'user@example.com',
       subject: 'Greetings',
       messageIdHeader: '<abc@mail.example.com>',
+      replyTo: 'Person <person@example.com>',
       sizeEstimate: 2048,
       bodyText: 'plain body',
       bodyHtml: '<p>html body</p>',

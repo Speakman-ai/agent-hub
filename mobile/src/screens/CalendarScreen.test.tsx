@@ -27,6 +27,8 @@ import {
   buildCalendarEventInput,
   calendarReturnTo,
   CalendarAgendaContent,
+  EventModal,
+  loadCalendarEventsAcrossAccounts,
   CALENDAR_EVENTS_SCOPE,
   openCalendarOAuth,
 } from './CalendarScreen';
@@ -177,5 +179,137 @@ describe('CalendarScreen mobile parity', () => {
     });
     expect(openURL).toHaveBeenCalledWith('https://accounts.google.com/o/oauth2/v2/auth?state=abc');
     expect(calendarReturnTo()).toBe('/#/calendar');
+  });
+
+  describe('multiple Google accounts', () => {
+    const MULTI = {
+      connected: true,
+      email: 'me@work.com',
+      grantedScopes: [CALENDAR_EVENTS_SCOPE],
+      serverConfigured: true,
+      defaultAccountId: 'work',
+      accounts: [
+        {
+          accountId: 'work',
+          email: 'me@work.com',
+          isDefault: true,
+          grantedScopes: [CALENDAR_EVENTS_SCOPE],
+        },
+        {
+          accountId: 'home',
+          email: 'me@home.com',
+          isDefault: false,
+          grantedScopes: [CALENDAR_EVENTS_SCOPE],
+        },
+        { accountId: 'side', email: 'side@x.com', isDefault: false, grantedScopes: [] },
+      ],
+    };
+
+    it('reads every account and merges events by start', async () => {
+      const listGoogleCalendarEvents = vi.fn(async (p: any) => ({
+        events:
+          p.account === 'work'
+            ? [{ id: 'w1', summary: 'Standup', start: { dateTime: '2026-07-01T15:00:00Z' } }]
+            : [{ id: 'h1', summary: 'Dentist', start: { dateTime: '2026-07-01T09:00:00Z' } }],
+      }));
+      const { events, failures } = await loadCalendarEventsAcrossAccounts(
+        { listGoogleCalendarEvents },
+        [MULTI.accounts[0], MULTI.accounts[1]],
+        { timeMin: 'a', timeMax: 'b', maxResults: 10 },
+      );
+      expect(events.map((e) => [e.summary, e.accountEmail])).toEqual([
+        ['Dentist', 'me@home.com'],
+        ['Standup', 'me@work.com'],
+      ]);
+      expect(failures).toEqual([]);
+    });
+
+    const events = [
+      {
+        id: 'h1',
+        summary: 'Dentist',
+        accountId: 'home',
+        accountEmail: 'me@home.com',
+        start: { dateTime: '2026-07-01T09:00:00Z' },
+      },
+      {
+        id: 'w1',
+        summary: 'Standup',
+        accountId: 'work',
+        accountEmail: 'me@work.com',
+        start: { dateTime: '2026-07-01T15:00:00Z' },
+      },
+    ];
+    const render = (hiddenAccounts: string[] = []) =>
+      renderToStaticMarkup(
+        <CalendarAgendaContent
+          loading={false}
+          eventsLoading={false}
+          error={null}
+          status={MULTI}
+          events={events}
+          hiddenAccounts={hiddenAccounts}
+          onRefresh={() => undefined}
+          onConnect={() => undefined}
+          onOpenSettings={() => undefined}
+          onCreate={() => undefined}
+          onEdit={() => undefined}
+          onCapture={() => undefined}
+          onTicket={() => undefined}
+        />,
+      );
+
+    it('labels each event with its account and shows per-account toggles', () => {
+      const html = render();
+      expect(html).toContain('Dentist');
+      expect(html).toContain('Standup');
+      expect(html).toContain('Show me@home.com');
+      // An account without Calendar access offers Enable instead of a toggle.
+      expect(html).toContain('Enable Calendar for side@x.com');
+    });
+
+    it('ignores a stored hidden account once only one is linked', () => {
+      const html = renderToStaticMarkup(
+        <CalendarAgendaContent
+          loading={false}
+          eventsLoading={false}
+          error={null}
+          status={{ ...MULTI, accounts: [MULTI.accounts[1]] }}
+          events={[events[0]]}
+          hiddenAccounts={['home']}
+          onRefresh={() => undefined}
+          onConnect={() => undefined}
+          onOpenSettings={() => undefined}
+          onCreate={() => undefined}
+          onEdit={() => undefined}
+          onCapture={() => undefined}
+          onTicket={() => undefined}
+        />,
+      );
+      expect(html).toContain('Dentist');
+      expect(html).not.toContain('All accounts hidden');
+    });
+
+    it('drops events from a hidden account', () => {
+      const html = render(['home']);
+      expect(html).not.toContain('Dentist');
+      expect(html).toContain('Standup');
+      expect(render(['home', 'work'])).toContain('All accounts hidden');
+    });
+
+    it('asks which account a new event goes to, marking the default', () => {
+      const html = renderToStaticMarkup(
+        <EventModal
+          event={null}
+          accounts={[{ ...MULTI.accounts[0] }, { ...MULTI.accounts[1] }]}
+          saving={false}
+          error={null}
+          onClose={() => undefined}
+          onSave={() => undefined}
+        />,
+      );
+      expect(html).toContain('Create in me@work.com');
+      expect(html).toContain('me@work.com (default)');
+    });
   });
 });

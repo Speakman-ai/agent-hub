@@ -4,6 +4,8 @@ import {
   calendarPaneState,
   mailPaneState,
   isGooglePaneReady,
+  paneAccountNotices,
+  paneAccountNoticeText,
   type DashboardGoogleLike,
 } from './dashboardPanes';
 
@@ -82,6 +84,54 @@ describe('dashboardPanes gating', () => {
       for (const s of ['not-configured', 'connect', 'reconnect', 'scope-required'] as const) {
         expect(isGooglePaneReady(s)).toBe(false);
       }
+    });
+  });
+
+  describe('multi-account gating', () => {
+    const google: DashboardGoogleLike = {
+      configured: true,
+      connected: true,
+      reconnectRequired: false,
+      calendar: { scopeGranted: false },
+      mail: { scopeGranted: false },
+      accounts: [
+        { accountId: 'a', email: 'a@x.com', reconnectRequired: true, calendarScopeGranted: true },
+        {
+          accountId: 'b',
+          email: 'b@x.com',
+          calendarScopeGranted: true,
+          mailScopeGranted: false,
+          calendarError: null,
+        },
+        {
+          accountId: 'c',
+          email: 'c@x.com',
+          calendarScopeGranted: true,
+          mailScopeGranted: true,
+          calendarError: 'quota',
+        },
+      ],
+    };
+
+    it('is ready when any usable account holds the surface scope', () => {
+      expect(calendarPaneState(google)).toBe('ready');
+      expect(mailPaneState(google)).toBe('ready');
+      expect(
+        mailPaneState({ ...google, accounts: google.accounts!.filter((a) => a.accountId !== 'c') }),
+      ).toBe('scope-required');
+    });
+
+    it('lists the accounts a live pane is leaving out', () => {
+      const notices = paneAccountNotices(google, 'calendar');
+      expect(notices.map((n) => [n.accountId, n.reason])).toEqual([
+        ['a', 'reconnect'],
+        ['c', 'error'],
+      ]);
+      expect(paneAccountNoticeText(notices[1], 'calendar')).toBe('c@x.com: quota');
+      expect(paneAccountNotices(google, 'mail').map((n) => n.reason)).toEqual([
+        'reconnect',
+        'scope-required',
+      ]);
     });
   });
 });

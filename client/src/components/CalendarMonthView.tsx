@@ -20,9 +20,12 @@ export default function CalendarMonthView<T extends CalendarEventLike>({
   onNext,
   onToday,
   onSelectEvent,
+  eventColor,
 }: {
   month: Date;
   events: T[];
+  /** Per-event accent (e.g. the owning Google account's color). */
+  eventColor?: (event: T) => string | undefined;
   loading?: boolean;
   error?: string | null;
   onRetry?: () => void;
@@ -127,12 +130,14 @@ export default function CalendarMonthView<T extends CalendarEventLike>({
                   {day.events.slice(0, MAX_CHIPS).map((event, i) => {
                     const time = eventChipTime(event);
                     const allDay = !!event.start?.date;
+                    const accent = eventColor?.(event);
                     return (
                       <button
                         type="button"
                         key={`${event.id || event.summary || 'event'}-${i}`}
                         onClick={() => onSelectEvent(event)}
                         title={event.summary || '(no title)'}
+                        style={accent ? { borderLeft: `2px solid ${accent}` } : undefined}
                         className={`block w-full truncate rounded px-1 py-0.5 text-left text-[11px] ${
                           allDay
                             ? 'bg-blue-600/30 text-blue-100 hover:bg-blue-600/40'

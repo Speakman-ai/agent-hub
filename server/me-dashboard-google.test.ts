@@ -6,7 +6,14 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import type { gmail_v1 } from 'googleapis';
-import { computeDayWindow, shapeMailMessage, readRecentMessages } from './me-dashboard-google.js';
+import {
+  computeDayWindow,
+  shapeMailMessage,
+  readRecentMessages,
+  mergeDashboardAccountReads,
+  type DashboardAccountRead,
+  type DashboardGoogleAccount,
+} from './me-dashboard-google.js';
 
 /** Minimal mock of the Gmail client surface `readRecentMessages` touches. */
 function mockGmail(opts: {
@@ -111,6 +118,8 @@ describe('shapeMailMessage', () => {
       },
     });
     expect(row).toEqual({
+      accountId: '',
+      accountEmail: '',
       id: 'm1',
       threadId: 'th1',
       from: 'Jane Doe <jane@example.com>',
@@ -179,5 +188,147 @@ describe('readRecentMessages', () => {
   it('returns [] for an empty inbox', async () => {
     const { gmail } = mockGmail({ list: {}, get: (id) => msg(id, id) });
     await expect(readRecentMessages(gmail)).resolves.toEqual([]);
+  });
+});
+
+describe('mergeDashboardAccountReads', () => {
+  const account = (over: Partial<DashboardGoogleAccount>): DashboardGoogleAccount => ({
+    accountId: 'acc',
+    email: 'a@x.com',
+    isDefault: false,
+    reconnectRequired: false,
+    calendarScopeGranted: true,
+    mailScopeGranted: true,
+    calendarError: null,
+    mailError: null,
+    unread: null,
+    starred: null,
+    important: null,
+    ...over,
+  });
+  const event = (accountId: string, id: string, start: string) => ({
+    accountId,
+    accountEmail: `${accountId}@x.com`,
+    id,
+    summary: id,
+    location: null,
+    allDay: false,
+    start,
+    end: null,
+    htmlLink: null,
+    hangoutLink: null,
+  });
+  const message = (accountId: string, id: string, internalDate: string) => ({
+    accountId,
+    accountEmail: `${accountId}@x.com`,
+    id,
+    threadId: id,
+    from: null,
+    subject: id,
+    snippet: null,
+    date: null,
+    internalDate,
+    unread: true,
+  });
+  const calendar = (events: ReturnType<typeof event>[], error: string | null = null) => ({
+    scopeGranted: true,
+    date: '2026-07-07',
+    timeZone: 'UTC',
+    events,
+    error,
+  });
+  const mail = (
+    counts: [number, number, number],
+    messages: ReturnType<typeof message>[],
+    error: string | null = null,
+  ) => ({
+    scopeGranted: true,
+    unread: counts[0],
+    starred: counts[1],
+    important: counts[2],
+    messages,
+    error,
+  });
+
+  it('merges events by start and sums mail counts across accounts', () => {
+    const reads: DashboardAccountRead[] = [
+      {
+        account: account({ accountId: 'work', email: 'me@work.com', isDefault: true }),
+        calendar: calendar([event('work', 'w1', '2026-07-07T15:00:00Z')]),
+        mail: mail([2, 1, 0], [message('work', 'mw', '200')]),
+      },
+      {
+        account: account({ accountId: 'home', email: 'me@home.com' }),
+        calendar: calendar([event('home', 'h1', '2026-07-07T09:00:00Z')]),
+        mail: mail([3, 0, 4], [message('home', 'mh', '300')]),
+      },
+    ];
+    const out = mergeDashboardAccountReads(reads);
+    expect(out.email).toBe('me@work.com');
+    expect(out.calendar.events.map((e) => [e.id, e.accountId])).toEqual([
+      ['h1', 'home'],
+      ['w1', 'work'],
+    ]);
+    expect([out.mail.unread, out.mail.starred, out.mail.important]).toEqual([5, 1, 4]);
+    expect(out.mail.messages.map((m) => m.id)).toEqual(['mh', 'mw']);
+    expect(out.accounts).toHaveLength(2);
+  });
+
+  it('keeps the pane up when one account fails or needs reconnecting', () => {
+    const out = mergeDashboardAccountReads([
+      {
+        account: account({ accountId: 'work', isDefault: true, reconnectRequired: true }),
+        calendar: null,
+        mail: null,
+      },
+      {
+        account: account({ accountId: 'home', calendarError: 'boom' }),
+        calendar: calendar([], 'boom'),
+        mail: mail([1, 0, 0], []),
+      },
+      {
+        account: account({ accountId: 'side' }),
+        calendar: calendar([event('side', 's1', '2026-07-07T10:00:00Z')]),
+        mail: null,
+      },
+    ]);
+    expect(out.reconnectRequired).toBe(false);
+    expect(out.calendar.error).toBeNull();
+    expect(out.calendar.events.map((e) => e.id)).toEqual(['s1']);
+    expect(out.mail.unread).toBe(1);
+  });
+
+  it('gates scopes per account: a reconnect-only account grants nothing', () => {
+    const out = mergeDashboardAccountReads([
+      {
+        account: account({ accountId: 'a', isDefault: true, reconnectRequired: true }),
+        calendar: null,
+        mail: null,
+      },
+      {
+        account: account({ accountId: 'b', calendarScopeGranted: false }),
+        calendar: null,
+        mail: mail([0, 0, 0], []),
+      },
+    ]);
+    expect(out.calendar.scopeGranted).toBe(false);
+    expect(out.mail.scopeGranted).toBe(true);
+  });
+
+  it('reports reconnect only when every account needs it, and errors only when all fail', () => {
+    const out = mergeDashboardAccountReads([
+      {
+        account: account({ accountId: 'a', isDefault: true }),
+        calendar: calendar([], 'one'),
+        mail: mail([0, 0, 0], [], 'x'),
+      },
+    ]);
+    expect(out.calendar.error).toBe('one');
+    expect(out.mail.unread).toBeNull();
+    const dead = mergeDashboardAccountReads([
+      { account: account({ reconnectRequired: true }), calendar: null, mail: null },
+    ]);
+    expect(dead.reconnectRequired).toBe(true);
+    expect(dead.connected).toBe(true);
   });
 });

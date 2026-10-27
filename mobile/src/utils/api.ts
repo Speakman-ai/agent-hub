@@ -123,6 +123,12 @@ export function infraQuery(params: Record<string, any>): string {
 }
 const qaPlanPath = (projectId: string, planId: string) =>
   `/projects/${encodeURIComponent(projectId)}/qa/plans/${encodeURIComponent(planId)}`;
+
+/** `?account=` suffix for the Google proxies; empty for the default account. */
+function googleAccountQuery(account?: string | null): string {
+  return account ? `?account=${encodeURIComponent(account)}` : '';
+}
+
 export const api = {
   organizations: createOrganizationApi(fetchJSON),
   organizationAgents: createOrganizationAgentApi(fetchJSON),
@@ -1702,8 +1708,10 @@ export const api = {
     maxResults,
     pageToken,
     q,
+    account,
   }: any) => {
     const params = new URLSearchParams();
+    if (account) params.set('account', account);
     if (calendarId) params.set('calendarId', calendarId);
     params.set('timeMin', timeMin);
     params.set('timeMax', timeMax);
@@ -1713,19 +1721,30 @@ export const api = {
     if (q) params.set('q', q);
     return fetchJSON(`/google/calendar/events?${params.toString()}`);
   },
-  createGoogleCalendarEvent: (data: any) =>
-    fetchJSON('/google/calendar/events', {
+  createGoogleCalendarEvent: (data: any, { account }: { account?: string } = {}) =>
+    fetchJSON(`/google/calendar/events${googleAccountQuery(account)}`, {
       method: 'POST',
       body: JSON.stringify(data),
     }),
-  updateGoogleCalendarEvent: (eventId: any, data: any) =>
-    fetchJSON(`/google/calendar/events/${encodeURIComponent(eventId)}`, {
-      method: 'PATCH',
-      body: JSON.stringify(data),
-    }),
+  updateGoogleCalendarEvent: (eventId: any, data: any, { account }: { account?: string } = {}) =>
+    fetchJSON(
+      `/google/calendar/events/${encodeURIComponent(eventId)}${googleAccountQuery(account)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      },
+    ),
   // Gmail proxy (user-scoped). Tokens stay server-side; clients never hold them.
-  listGoogleGmailThreads: ({ q, labelIds, maxResults, pageToken, includeSpamTrash }: any = {}) => {
+  listGoogleGmailThreads: ({
+    q,
+    labelIds,
+    maxResults,
+    pageToken,
+    includeSpamTrash,
+    account,
+  }: any = {}) => {
     const params = new URLSearchParams();
+    if (account) params.set('account', account);
     if (q) params.set('q', q);
     if (labelIds)
       for (const id of Array.isArray(labelIds) ? labelIds : [labelIds])
@@ -1737,14 +1756,15 @@ export const api = {
     const qs = params.toString();
     return fetchJSON(`/google/gmail/threads${qs ? `?${qs}` : ''}`);
   },
-  getGoogleGmailThread: (threadId: any, { format }: any = {}) => {
+  getGoogleGmailThread: (threadId: any, { format, account }: any = {}) => {
     const params = new URLSearchParams();
+    if (account) params.set('account', account);
     if (format) params.set('format', format);
     const qs = params.toString();
     return fetchJSON(`/google/gmail/threads/${encodeURIComponent(threadId)}${qs ? `?${qs}` : ''}`);
   },
-  sendGoogleGmailMessage: (data: any) =>
-    fetchJSON('/google/gmail/messages', {
+  sendGoogleGmailMessage: (data: any, { account }: { account?: string } = {}) =>
+    fetchJSON(`/google/gmail/messages${googleAccountQuery(account)}`, {
       method: 'POST',
       body: JSON.stringify(data),
     }),

@@ -121,20 +121,23 @@ describe('CalendarAgendaPage', () => {
     fireEvent.click(createButtons[createButtons.length - 1]);
 
     await waitFor(() => {
-      expect(mockApi.createGoogleCalendarEvent).toHaveBeenCalledWith({
-        calendarId: 'primary',
-        event: expect.objectContaining({
-          summary: 'Planning',
-          start: {
-            dateTime: '2026-07-01T10:00:00',
-            timeZone: 'America/Los_Angeles',
-          },
-          end: {
-            dateTime: '2026-07-01T11:00:00',
-            timeZone: 'America/Los_Angeles',
-          },
-        }),
-      });
+      expect(mockApi.createGoogleCalendarEvent).toHaveBeenCalledWith(
+        {
+          calendarId: 'primary',
+          event: expect.objectContaining({
+            summary: 'Planning',
+            start: {
+              dateTime: '2026-07-01T10:00:00',
+              timeZone: 'America/Los_Angeles',
+            },
+            end: {
+              dateTime: '2026-07-01T11:00:00',
+              timeZone: 'America/Los_Angeles',
+            },
+          }),
+        },
+        { account: undefined },
+      );
     });
     expect(await screen.findByText('Planning')).toBeInTheDocument();
   });
@@ -293,5 +296,186 @@ describe('CalendarAgendaPage', () => {
       await screen.findByText('Enable Calendar access');
       expect(screen.queryByLabelText('Month view')).not.toBeInTheDocument();
     });
+  });
+
+  describe('multiple Google accounts', () => {
+    const MULTI = {
+      connected: true,
+      email: 'me@work.com',
+      grantedScopes: [CALENDAR_EVENTS_SCOPE],
+      serverConfigured: true,
+      defaultAccountId: 'work',
+      accounts: [
+        {
+          accountId: 'work',
+          email: 'me@work.com',
+          isDefault: true,
+          grantedScopes: [CALENDAR_EVENTS_SCOPE],
+        },
+        {
+          accountId: 'home',
+          email: 'me@home.com',
+          isDefault: false,
+          grantedScopes: [CALENDAR_EVENTS_SCOPE],
+        },
+        { accountId: 'side', email: 'side@x.com', isDefault: false, grantedScopes: [] },
+      ],
+    };
+    const eventsByAccount: Record<string, any[]> = {
+      work: [
+        {
+          id: 'w1',
+          summary: 'Work standup',
+          start: { dateTime: '2026-07-01T15:00:00Z' },
+          end: { dateTime: '2026-07-01T15:15:00Z' },
+        },
+      ],
+      home: [
+        {
+          id: 'h1',
+          summary: 'Dentist',
+          start: { dateTime: '2026-07-01T09:00:00Z' },
+          end: { dateTime: '2026-07-01T10:00:00Z' },
+        },
+      ],
+    };
+
+    beforeEach(() => {
+      window.localStorage.clear();
+      mockApi.getGoogleStatus.mockResolvedValue(MULTI);
+      mockApi.listGoogleCalendarEvents.mockImplementation(async (params: any) => ({
+        events: eventsByAccount[params.account] ?? [],
+      }));
+    });
+
+    it('merges events from every calendar-enabled account in start order, labelled by account', async () => {
+      render(<CalendarAgendaPage />);
+
+      expect(await screen.findByText('Dentist')).toBeInTheDocument();
+      const titles = screen
+        .getAllByRole('heading', { level: 3 })
+        .map((h) => h.textContent)
+        .filter((t) => t === 'Dentist' || t === 'Work standup');
+      expect(titles).toEqual(['Dentist', 'Work standup']);
+      // Only accounts holding the Calendar scope are read.
+      const accountsRead = new Set(
+        mockApi.listGoogleCalendarEvents.mock.calls.map(([p]: any[]) => p.account),
+      );
+      expect([...accountsRead].sort()).toEqual(['home', 'work']);
+      // The account without Calendar access gets an Enable affordance instead of a toggle.
+      expect(screen.getByRole('button', { name: 'Enable' })).toBeInTheDocument();
+      expect(screen.getAllByText('me@home.com').length).toBeGreaterThan(0);
+    });
+
+    it('hides an account when its toggle is switched off and remembers it', async () => {
+      render(<CalendarAgendaPage />);
+      expect(await screen.findByText('Dentist')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByLabelText('Show me@home.com'));
+
+      expect(screen.queryByText('Dentist')).not.toBeInTheDocument();
+      expect(screen.getByText('Work standup')).toBeInTheDocument();
+      expect(window.localStorage.getItem('agent-hub.calendar.hiddenAccounts')).toBe('["home"]');
+    });
+
+    it('asks which account a new event goes to, preselecting the default', async () => {
+      mockApi.createGoogleCalendarEvent.mockResolvedValue({});
+      render(<CalendarAgendaPage />);
+      expect(await screen.findByText('Dentist')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: /Create event/i }));
+      const select = screen.getByLabelText('Account') as HTMLSelectElement;
+      expect(select.value).toBe('work');
+      // Only calendar-enabled accounts are offered.
+      expect([...select.options].map((o) => o.value)).toEqual(['work', 'home']);
+
+      fireEvent.change(select, { target: { value: 'home' } });
+      fireEvent.change(screen.getByRole('textbox', { name: /Title/i }), {
+        target: { value: 'Groceries' },
+      });
+      const createButtons = screen.getAllByRole('button', { name: /Create event/i });
+      fireEvent.click(createButtons[createButtons.length - 1]);
+
+      await waitFor(() =>
+        expect(mockApi.createGoogleCalendarEvent).toHaveBeenCalledWith(
+          expect.objectContaining({ calendarId: 'primary' }),
+          { account: 'home' },
+        ),
+      );
+    });
+
+    it('keeps a reopened modal open when an earlier save finishes', async () => {
+      let finishSave: (v: unknown) => void = () => {};
+      mockApi.updateGoogleCalendarEvent.mockImplementationOnce(
+        () => new Promise((resolve) => (finishSave = resolve)),
+      );
+      render(<CalendarAgendaPage />);
+      expect(await screen.findByText('Dentist')).toBeInTheDocument();
+
+      // Save an edit, cancel while it is in flight, then start a new event.
+      fireEvent.click(screen.getAllByRole('button', { name: /Edit/i })[0]);
+      fireEvent.click(screen.getByRole('button', { name: /Save changes/i }));
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      fireEvent.click(screen.getByRole('button', { name: /Create event/i }));
+      fireEvent.change(screen.getByRole('textbox', { name: /Title/i }), {
+        target: { value: 'Draft' },
+      });
+
+      finishSave({});
+      await waitFor(() =>
+        expect(mockApi.listGoogleCalendarEvents.mock.calls.length).toBeGreaterThan(4),
+      );
+      expect(screen.getByLabelText('Account')).toBeInTheDocument();
+      expect((screen.getByRole('textbox', { name: /Title/i }) as HTMLInputElement).value).toBe(
+        'Draft',
+      );
+    });
+
+    it('saves an edit to the account that owns the event', async () => {
+      mockApi.updateGoogleCalendarEvent.mockResolvedValue({});
+      render(<CalendarAgendaPage />);
+      expect(await screen.findByText('Dentist')).toBeInTheDocument();
+
+      fireEvent.click(screen.getAllByRole('button', { name: /Edit/i })[0]);
+      expect(screen.queryByLabelText('Account')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: /Save changes/i }));
+
+      await waitFor(() =>
+        expect(mockApi.updateGoogleCalendarEvent).toHaveBeenCalledWith(
+          'h1',
+          expect.objectContaining({ calendarId: 'primary' }),
+          { account: 'home' },
+        ),
+      );
+    });
+  });
+
+  it('ignores a stored hidden account once it is the only one linked', async () => {
+    window.localStorage.setItem('agent-hub.calendar.hiddenAccounts', '["work"]');
+    mockApi.getGoogleStatus.mockResolvedValue({
+      ...CONNECTED,
+      defaultAccountId: 'work',
+      accounts: [
+        {
+          accountId: 'work',
+          email: 'person@example.com',
+          isDefault: true,
+          grantedScopes: [CALENDAR_EVENTS_SCOPE],
+        },
+      ],
+    });
+    mockApi.listGoogleCalendarEvents.mockResolvedValue({
+      events: [
+        {
+          id: 'w1',
+          summary: 'Still visible',
+          start: { dateTime: '2026-07-01T15:00:00Z' },
+          end: { dateTime: '2026-07-01T16:00:00Z' },
+        },
+      ],
+    });
+    render(<CalendarAgendaPage />);
+    expect(await screen.findByText('Still visible')).toBeInTheDocument();
+    expect(screen.queryByText('All accounts hidden')).not.toBeInTheDocument();
   });
 });

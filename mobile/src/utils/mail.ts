@@ -6,6 +6,9 @@
  * so the mobile pane catches shape drift instead of leaning on `any`.
  */
 export interface DashboardMailMessage {
+  /** The linked Google account the message came from (absent from older servers). */
+  accountId?: string;
+  accountEmail?: string;
   id: string | null;
   threadId: string | null;
   from: string | null;

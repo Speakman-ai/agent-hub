@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -14,18 +14,35 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SidebarContext } from '../context/SidebarContext';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import {
   addMonths,
   defaultCalendarRange,
-  eventStartMillis,
   monthGridRange,
   startOfMonth,
   eventTimeLabel,
   localTimeZone,
+  type CalendarEventLike,
 } from '@shared/utils/calendarEvents';
+import {
+  CALENDAR_HIDDEN_ACCOUNTS_KEY,
+  defaultGoogleAccount,
+  effectiveHiddenAccounts,
+  fetchAcrossGoogleAccounts,
+  googleAccountColor,
+  googleAccountParam,
+  linkedGoogleAccounts,
+  mergeAccountEvents,
+  parseHiddenAccounts,
+  toggleHiddenAccount,
+  withoutHiddenAccounts,
+  type AccountTagged,
+  type GoogleAccountFetchFailure,
+  type LinkedGoogleAccount,
+} from '@shared/utils/googleAccounts';
 import { buildCalendarTodoDraft } from '@shared/utils/captureTodo';
 import { buildCalendarCardDraft, type CaptureCardDraft } from '@shared/utils/captureCard';
 import CaptureToTicketModal from '../components/CaptureToTicketModal';
@@ -133,16 +150,47 @@ export function calendarReturnTo() {
   return '/#/calendar';
 }
 
-export async function openCalendarOAuth({ apiClient, openURL }: any) {
+export async function openCalendarOAuth({ apiClient, openURL, accountId }: any) {
   const body = await apiClient.startGoogleOAuth({
     returnTo: calendarReturnTo(),
     scopes: [CALENDAR_EVENTS_SCOPE],
+    ...(accountId ? { accountId } : {}),
   });
   await openURL(body.authorizeUrl);
   return body.authorizeUrl;
 }
 
-function hasCalendarScope(status: any) {
+type CalendarEvent = AccountTagged<CalendarEventLike>;
+
+/**
+ * Read events from every account in parallel, tag them by account, and merge
+ * them onto one timeline. Exported so the fan-out is testable without a
+ * native runtime.
+ */
+export async function loadCalendarEventsAcrossAccounts(
+  apiClient: any,
+  accounts: LinkedGoogleAccount[],
+  query: { timeMin: string; timeMax: string; maxResults: number },
+): Promise<{ events: CalendarEvent[]; failures: GoogleAccountFetchFailure[] }> {
+  const { items, failures } = await fetchAcrossGoogleAccounts<CalendarEventLike>(
+    accounts,
+    async (account) => {
+      const body = await apiClient.listGoogleCalendarEvents({
+        ...query,
+        timeZone: localTimeZone(),
+        account: googleAccountParam(account),
+      });
+      return body?.events || [];
+    },
+  );
+  return { events: mergeAccountEvents(items), failures };
+}
+
+function failureText(failures: GoogleAccountFetchFailure[]) {
+  return failures.map((f) => `${f.account.email || 'Google account'}: ${f.error}`).join('; ');
+}
+
+export function hasCalendarScope(status: any) {
   const scopes = status?.grantedScopes || [];
   return (
     scopes.includes(CALENDAR_EVENTS_SCOPE) ||
@@ -166,10 +214,19 @@ export function CalendarAgendaContent({
   capturingId,
   capturedId,
   monthView,
+  hiddenAccounts = [],
+  failedAccountIds = [],
+  onToggleAccount,
+  onEnableAccount,
 }: any) {
   const connected = !!status?.connected;
   const configured = status?.serverConfigured !== false;
-  const calendarEnabled = hasCalendarScope(status);
+  const accounts = linkedGoogleAccounts(status);
+  const calendarEnabled = accounts.some((a) => hasCalendarScope(a));
+  const multiAccount = accounts.length > 1;
+  // With one account left the toggles are gone, so a stored hide must not apply.
+  const hidden = effectiveHiddenAccounts(hiddenAccounts, accounts);
+  const visibleEvents = withoutHiddenAccounts<any>(events || [], hidden);
 
   if (loading) {
     return (
@@ -201,6 +258,12 @@ export function CalendarAgendaContent({
       body: `Connected as ${status?.email || 'Google account'}, but Calendar access has not been granted yet.`,
       action: 'Enable Calendar',
       onAction: onConnect,
+    };
+  } else if (events?.length && !visibleEvents.length && !eventsLoading) {
+    empty = {
+      title: 'All accounts hidden',
+      body: 'Turn an account back on above to see its events.',
+      action: null,
     };
   } else if (!events?.length && !eventsLoading) {
     empty = {
@@ -234,6 +297,16 @@ export function CalendarAgendaContent({
 
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
+      {connected && multiAccount ? (
+        <CalendarAccountBar
+          accounts={accounts}
+          hiddenAccounts={hidden}
+          failedAccountIds={failedAccountIds}
+          onToggle={onToggleAccount}
+          onEnable={onEnableAccount}
+        />
+      ) : null}
+
       {empty ? (
         <ScrollView>
           <View style={styles.emptyCard}>
@@ -249,15 +322,31 @@ export function CalendarAgendaContent({
         </ScrollView>
       ) : (
         <FlatList
-          data={events}
+          data={visibleEvents}
           ListFooterComponent={monthView || null}
-          keyExtractor={(item: any, index) => item.id || `${item.summary}-${index}`}
+          keyExtractor={(item: any, index) =>
+            `${item.accountId ?? ''}:${item.id || `${item.summary}-${index}`}`
+          }
           renderItem={({ item }: any) => {
             const key = item.id || item.summary || '';
             const isCaptured = capturedId === key;
             return (
-              <TouchableOpacity onPress={() => onEdit(item)} style={styles.eventCard}>
+              <TouchableOpacity
+                onPress={() => onEdit(item)}
+                style={[
+                  styles.eventCard,
+                  multiAccount
+                    ? {
+                        borderLeftWidth: 3,
+                        borderLeftColor: googleAccountColor(accounts, item.accountId),
+                      }
+                    : null,
+                ]}
+              >
                 <Text style={styles.eventTime}>{eventTimeLabel(item)}</Text>
+                {multiAccount && item.accountEmail ? (
+                  <Text style={styles.eventMeta}>{item.accountEmail}</Text>
+                ) : null}
                 <Text style={styles.eventTitle}>{item.summary || '(no title)'}</Text>
                 {item.location ? <Text style={styles.eventMeta}>{item.location}</Text> : null}
                 {item.description ? (
@@ -295,8 +384,69 @@ export function CalendarAgendaContent({
   );
 }
 
-function EventModal({ event, saving, error, onClose, onSave }: any) {
+/**
+ * One chip per linked account: tap to show or hide its events, or to grant
+ * Calendar access to an account that hasn't.
+ */
+export function CalendarAccountBar({
+  accounts,
+  hiddenAccounts = [],
+  failedAccountIds = [],
+  onToggle,
+  onEnable,
+}: {
+  accounts: LinkedGoogleAccount[];
+  hiddenAccounts?: string[];
+  failedAccountIds?: string[];
+  onToggle?: (accountId: string) => void;
+  onEnable?: (accountId: string) => void;
+}) {
+  return (
+    <View style={styles.accountBar}>
+      {accounts.map((account) => {
+        const enabled = hasCalendarScope(account);
+        const visible = enabled && !hiddenAccounts.includes(account.accountId);
+        const failed = failedAccountIds.includes(account.accountId);
+        return (
+          <TouchableOpacity
+            key={account.accountId}
+            onPress={() =>
+              enabled ? onToggle?.(account.accountId) : onEnable?.(account.accountId)
+            }
+            style={[styles.accountChip, !visible && styles.accountChipOff]}
+            accessibilityRole={enabled ? 'switch' : 'button'}
+            accessibilityState={enabled ? { checked: visible } : undefined}
+            accessibilityLabel={
+              enabled ? `Show ${account.email}` : `Enable Calendar for ${account.email}`
+            }
+          >
+            <View
+              style={[
+                styles.accountDot,
+                {
+                  backgroundColor: visible
+                    ? googleAccountColor(accounts, account.accountId)
+                    : colors.gray600,
+                },
+              ]}
+            />
+            <Text style={styles.accountChipText} numberOfLines={1}>
+              {account.email}
+            </Text>
+            {!enabled ? <Text style={styles.accountChipAction}>Enable</Text> : null}
+            {failed ? <Text style={styles.accountChipError}>!</Text> : null}
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
+}
+
+export function EventModal({ event, accounts = [], saving, error, onClose, onSave }: any) {
   const [form, setForm] = useState(() => (event ? formFromEvent(event) : defaultFormState()));
+  const [accountId, setAccountId] = useState<string>(
+    () => event?.accountId ?? defaultGoogleAccount(accounts)?.accountId ?? '',
+  );
   const setField = (field: string, value: any) =>
     setForm((current: any) => ({ ...current, [field]: value }));
   const valid =
@@ -308,6 +458,34 @@ function EventModal({ event, saving, error, onClose, onSave }: any) {
         <View style={styles.modalCard}>
           <ScrollView>
             <Text style={styles.modalTitle}>{event ? 'Edit event' : 'Create event'}</Text>
+            {event?.accountEmail ? (
+              <Text style={styles.eventMeta}>Calendar: {event.accountEmail}</Text>
+            ) : null}
+            {!event && accounts.length > 1 ? (
+              <>
+                <Text style={styles.inputLabel}>Account</Text>
+                <View style={styles.accountBar}>
+                  {accounts.map((a: LinkedGoogleAccount) => (
+                    <TouchableOpacity
+                      key={a.accountId}
+                      onPress={() => setAccountId(a.accountId)}
+                      style={[
+                        styles.accountChip,
+                        accountId !== a.accountId && styles.accountChipOff,
+                      ]}
+                      accessibilityRole="radio"
+                      accessibilityState={{ selected: accountId === a.accountId }}
+                      accessibilityLabel={`Create in ${a.email}`}
+                    >
+                      <Text style={styles.accountChipText}>
+                        {a.email}
+                        {a.isDefault ? ' (default)' : ''}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </>
+            ) : null}
             <Text style={styles.inputLabel}>Title</Text>
             <TextInput
               value={form.summary}
@@ -387,7 +565,7 @@ function EventModal({ event, saving, error, onClose, onSave }: any) {
               </TouchableOpacity>
               <TouchableOpacity
                 disabled={!valid || saving}
-                onPress={() => onSave(form)}
+                onPress={() => onSave(form, accountId)}
                 style={[styles.primaryButton, (!valid || saving) && styles.disabledButton]}
               >
                 <Text style={styles.primaryButtonText}>
@@ -421,31 +599,63 @@ export default function CalendarScreen({ navigation }: any) {
   const [monthLoading, setMonthLoading] = useState(false);
   const [monthError, setMonthError] = useState<string | null>(null);
   const [monthReload, setMonthReload] = useState(0);
+  const [hiddenAccounts, setHiddenAccounts] = useState<string[]>([]);
+  const [failedAccountIds, setFailedAccountIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    AsyncStorage.getItem(CALENDAR_HIDDEN_ACCOUNTS_KEY)
+      .then((raw) => setHiddenAccounts(parseHiddenAccounts(raw)))
+      .catch(() => {});
+  }, []);
+
+  const accounts = useMemo(() => linkedGoogleAccounts(status), [status]);
+  const calendarAccounts = useMemo(() => accounts.filter((a) => hasCalendarScope(a)), [accounts]);
+  const calendarAccountKey = calendarAccounts.map((a) => a.accountId).join(',');
+
+  // Only the newest agenda load and the modal session a save started in may
+  // commit state; an overlapping refresh or a reopened modal must not be
+  // overwritten by a slower, older completion.
+  const loadSeq = useRef(0);
+  const modalSession = useRef(0);
+  const showModal = (event: any) => {
+    modalSession.current += 1;
+    setModalError(null);
+    setSaving(false);
+    setModalEvent(event);
+  };
 
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
+    const current = () => seq === loadSeq.current;
     setError(null);
     setEventsLoading(true);
     try {
       const nextStatus = await api.getGoogleStatus();
+      if (!current()) return;
       setStatus(nextStatus);
-      if (nextStatus.connected && hasCalendarScope(nextStatus)) {
-        const body = await api.listGoogleCalendarEvents({
+      const readable = linkedGoogleAccounts(nextStatus).filter((a) => hasCalendarScope(a));
+      if (nextStatus.connected && readable.length) {
+        const { events: merged, failures } = await loadCalendarEventsAcrossAccounts(api, readable, {
           ...range,
-          timeZone: localTimeZone(),
           maxResults: AGENDA_MAX_RESULTS,
         });
-        setEvents(
-          [...(body.events || [])].sort((a, b) => eventStartMillis(a) - eventStartMillis(b)),
-        );
+        if (!current()) return;
+        setEvents(merged);
+        setFailedAccountIds(failures.map((f) => f.account.accountId));
+        if (failures.length === readable.length) setError(failureText(failures));
       } else {
         setEvents([]);
+        setFailedAccountIds([]);
       }
     } catch (err: any) {
+      if (!current()) return;
       setError(err.message || 'Failed to load Calendar');
       setEvents([]);
     } finally {
-      setLoading(false);
-      setEventsLoading(false);
+      if (current()) {
+        setLoading(false);
+        setEventsLoading(false);
+      }
     }
   }, [range]);
 
@@ -453,7 +663,7 @@ export default function CalendarScreen({ navigation }: any) {
     load();
   }, [load]);
 
-  const calendarReady = !!status?.connected && hasCalendarScope(status);
+  const calendarReady = !!status?.connected && calendarAccounts.length > 0;
 
   useEffect(() => {
     if (!calendarReady) {
@@ -464,21 +674,16 @@ export default function CalendarScreen({ navigation }: any) {
     let cancelled = false;
     setMonthLoading(true);
     setMonthError(null);
-    api
-      .listGoogleCalendarEvents({
-        ...monthGridRange(month),
-        timeZone: localTimeZone(),
-        maxResults: MONTH_MAX_RESULTS,
-      })
-      .then((body: any) => {
-        if (!cancelled) setMonthEvents(body?.events || []);
-      })
-      .catch((err: any) => {
+    loadCalendarEventsAcrossAccounts(api, calendarAccounts, {
+      ...monthGridRange(month),
+      maxResults: MONTH_MAX_RESULTS,
+    })
+      .then(({ events: merged, failures }) => {
+        if (cancelled) return;
+        setMonthEvents(merged);
         // Keep the error on the grid itself: month navigation only fires this
         // request, so the agenda banner above never sees the failure.
-        if (cancelled) return;
-        setMonthEvents([]);
-        setMonthError(err?.message || 'Failed to load this month');
+        setMonthError(failures.length ? failureText(failures) : null);
       })
       .finally(() => {
         if (!cancelled) setMonthLoading(false);
@@ -486,16 +691,26 @@ export default function CalendarScreen({ navigation }: any) {
     return () => {
       cancelled = true;
     };
-  }, [calendarReady, month, monthReload]);
+    // calendarAccountKey tracks calendarAccounts by value.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [calendarReady, calendarAccountKey, month, monthReload]);
+
+  const toggleAccount = (accountId: string) => {
+    setHiddenAccounts((current) => {
+      const next = toggleHiddenAccount(current, accountId);
+      AsyncStorage.setItem(CALENDAR_HIDDEN_ACCOUNTS_KEY, JSON.stringify(next)).catch(() => {});
+      return next;
+    });
+  };
 
   const refresh = () => {
     setMonthReload((n) => n + 1);
     return load();
   };
 
-  const connect = async () => {
+  const connect = async (accountId?: string) => {
     try {
-      await openCalendarOAuth({ apiClient: api, openURL: Linking.openURL });
+      await openCalendarOAuth({ apiClient: api, openURL: Linking.openURL, accountId });
     } catch (err: any) {
       Alert.alert('Google Calendar', err.message || 'Failed to start Google consent');
     }
@@ -515,22 +730,32 @@ export default function CalendarScreen({ navigation }: any) {
     }
   };
 
-  const save = async (form: any) => {
+  const save = async (form: any, accountId: string) => {
+    const session = modalSession.current;
+    const current = () => session === modalSession.current;
     setSaving(true);
     setModalError(null);
     try {
       const event = buildCalendarEventInput(form);
+      // An edit stays on the account that owns the event; a new one goes to
+      // the account picked in the modal.
+      const account = (modalEvent?.id ? modalEvent.accountId : accountId) || undefined;
       if (modalEvent?.id) {
-        await api.updateGoogleCalendarEvent(modalEvent.id, { calendarId: 'primary', event });
+        await api.updateGoogleCalendarEvent(
+          modalEvent.id,
+          { calendarId: 'primary', event },
+          { account },
+        );
       } else {
-        await api.createGoogleCalendarEvent({ calendarId: 'primary', event });
+        await api.createGoogleCalendarEvent({ calendarId: 'primary', event }, { account });
       }
-      setModalEvent(undefined);
+      // The event is saved either way; only close the modal it was saved from.
+      if (current()) showModal(undefined);
       await refresh();
     } catch (err: any) {
-      setModalError(err.message || 'Failed to save event');
+      if (current()) setModalError(err.message || 'Failed to save event');
     } finally {
-      setSaving(false);
+      if (current()) setSaving(false);
     }
   };
 
@@ -549,10 +774,14 @@ export default function CalendarScreen({ navigation }: any) {
         status={status}
         events={events}
         onRefresh={refresh}
-        onConnect={connect}
+        onConnect={() => connect(defaultGoogleAccount(accounts)?.accountId || undefined)}
+        hiddenAccounts={hiddenAccounts}
+        failedAccountIds={failedAccountIds}
+        onToggleAccount={toggleAccount}
+        onEnableAccount={(accountId: string) => connect(accountId)}
         onOpenSettings={() => navigation.navigate('Settings', { tab: 'account' })}
-        onCreate={() => setModalEvent(null)}
-        onEdit={(event: any) => setModalEvent(event)}
+        onCreate={() => showModal(null)}
+        onEdit={(event: any) => showModal(event)}
         onCapture={capture}
         onTicket={(event: any) => setTicketDraft(buildCalendarCardDraft(event))}
         capturingId={capturingId}
@@ -561,14 +790,22 @@ export default function CalendarScreen({ navigation }: any) {
           calendarReady ? (
             <CalendarMonthView
               month={month}
-              events={monthEvents}
+              events={withoutHiddenAccounts<CalendarEvent>(
+                monthEvents,
+                effectiveHiddenAccounts(hiddenAccounts, accounts),
+              )}
+              eventColor={
+                accounts.length > 1
+                  ? (event) => googleAccountColor(accounts, (event as CalendarEvent).accountId)
+                  : undefined
+              }
               loading={monthLoading}
               error={monthError}
               onRetry={() => setMonthReload((n) => n + 1)}
               onPrev={() => setMonth((m) => addMonths(m, -1))}
               onNext={() => setMonth((m) => addMonths(m, 1))}
               onToday={() => setMonth(startOfMonth(new Date()))}
-              onSelectEvent={(event: any) => setModalEvent(event)}
+              onSelectEvent={(event: any) => showModal(event)}
             />
           ) : null
         }
@@ -576,9 +813,10 @@ export default function CalendarScreen({ navigation }: any) {
       {modalEvent !== undefined ? (
         <EventModal
           event={modalEvent}
+          accounts={calendarAccounts}
           saving={saving}
           error={modalError}
-          onClose={() => setModalEvent(undefined)}
+          onClose={() => showModal(undefined)}
           onSave={save}
         />
       ) : null}
@@ -591,6 +829,24 @@ export default function CalendarScreen({ navigation }: any) {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.gray950 },
+  accountBar: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 },
+  accountChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    backgroundColor: colors.gray900,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    maxWidth: '100%',
+  },
+  accountChipOff: { opacity: 0.55 },
+  accountDot: { width: 8, height: 8, borderRadius: 4 },
+  accountChipText: { color: colors.gray300, fontSize: 12, flexShrink: 1 },
+  accountChipAction: { color: colors.blue300, fontSize: 12, fontWeight: '600' },
+  accountChipError: { color: colors.red400, fontSize: 12, fontWeight: '700' },
   topBar: {
     flexDirection: 'row',
     alignItems: 'center',

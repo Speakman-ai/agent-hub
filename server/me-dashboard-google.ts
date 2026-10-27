@@ -15,12 +15,18 @@
  * Google in-process, returning only counts and lightly-shaped event summaries.
  */
 import { google, type gmail_v1 } from 'googleapis';
-import { getActiveAccessToken, getGoogleConnectionStatus } from './google-connections-store.js';
+import { getActiveAccessToken, listGoogleConnections } from './google-connections-store.js';
 import { hasCalendarReadScope, hasGmailReadScope } from './google-scopes.js';
 import type { AppConfig } from './types.js';
 
+/** The linked Google account an event or message came from. */
+export interface DashboardAccountTag {
+  accountId: string;
+  accountEmail: string;
+}
+
 /** A single calendar event, trimmed to what a dashboard row needs. */
-export interface DashboardCalendarEvent {
+export interface DashboardCalendarEvent extends DashboardAccountTag {
   id: string | null;
   summary: string | null;
   location: string | null;
@@ -40,7 +46,7 @@ export interface DashboardCalendar {
 }
 
 /** A single recent Gmail message, trimmed to what a dashboard row needs. */
-export interface DashboardMailMessage {
+export interface DashboardMailMessage extends DashboardAccountTag {
   id: string | null;
   threadId: string | null;
   from: string | null;
@@ -63,17 +69,39 @@ export interface DashboardMail {
   error: string | null;
 }
 
+/** Per-account status, so panes can gate and label each linked account. */
+export interface DashboardGoogleAccount {
+  accountId: string;
+  email: string;
+  isDefault: boolean;
+  /** The account is linked but no access token could be minted. */
+  reconnectRequired: boolean;
+  calendarScopeGranted: boolean;
+  mailScopeGranted: boolean;
+  calendarError: string | null;
+  mailError: string | null;
+  unread: number | null;
+  starred: number | null;
+  important: number | null;
+}
+
+/**
+ * The dashboard's Google slice, aggregated across every linked account. The
+ * top-level `calendar` / `mail` blocks merge all usable accounts; `accounts`
+ * carries the per-account detail.
+ */
 export interface DashboardGoogle {
   /** The server has a Google OAuth app configured at all. */
   configured: boolean;
-  /** This user has linked their Google account. */
+  /** This user has linked at least one Google account. */
   connected: boolean;
-  /** The linked Google email, or null when not connected. */
+  /** The default account's email, or null when not connected. */
   email: string | null;
-  /** True when we had a live connection but could not mint an access token. */
+  /** True only when every linked account needs reconnecting. */
   reconnectRequired: boolean;
   calendar: DashboardCalendar;
   mail: DashboardMail;
+  accounts: DashboardGoogleAccount[];
 }
 
 export interface GoogleReaderOptions {
@@ -116,6 +144,7 @@ function notConnected(configured: boolean, reconnectRequired = false): Dashboard
     reconnectRequired,
     calendar: emptyCalendar(false),
     mail: emptyMail(false),
+    accounts: [],
   };
 }
 
@@ -225,6 +254,7 @@ function shortError(err: unknown): string {
 async function readCalendar(
   accessToken: string,
   opts: GoogleReaderOptions,
+  tag: DashboardAccountTag,
 ): Promise<DashboardCalendar> {
   const { date, timeMin, timeMax } = computeDayWindow(opts);
   try {
@@ -241,6 +271,7 @@ async function readCalendar(
       maxResults: 50,
     });
     const events: DashboardCalendarEvent[] = (result.data.items ?? []).map((e) => ({
+      ...tag,
       id: e.id ?? null,
       summary: e.summary ?? null,
       location: e.location ?? null,
@@ -283,10 +314,14 @@ function mailHeaderValue(
 }
 
 /** Trim a `metadata`-format Gmail message to a dashboard row. Pure — exported for tests. */
-export function shapeMailMessage(message: gmail_v1.Schema$Message): DashboardMailMessage {
+export function shapeMailMessage(
+  message: gmail_v1.Schema$Message,
+  tag: DashboardAccountTag = { accountId: '', accountEmail: '' },
+): DashboardMailMessage {
   const headers = message.payload?.headers;
   const labels = message.labelIds ?? [];
   return {
+    ...tag,
     id: message.id ?? null,
     threadId: message.threadId ?? null,
     from: mailHeaderValue(headers, 'From'),
@@ -311,7 +346,10 @@ export function shapeMailMessage(message: gmail_v1.Schema$Message): DashboardMai
  * fetch drops just that row instead of the entire batch. `messages.list`
  * returns newest-first; `allSettled` preserves that order among the survivors.
  */
-export async function readRecentMessages(gmail: gmail_v1.Gmail): Promise<DashboardMailMessage[]> {
+export async function readRecentMessages(
+  gmail: gmail_v1.Gmail,
+  tag?: DashboardAccountTag,
+): Promise<DashboardMailMessage[]> {
   try {
     const list = await gmail.users.messages.list({
       userId: 'me',
@@ -334,7 +372,7 @@ export async function readRecentMessages(gmail: gmail_v1.Gmail): Promise<Dashboa
     // Keep the survivors in messages.list order; a rejected get drops just its row.
     const rows: DashboardMailMessage[] = [];
     for (const r of settled) {
-      if (r.status === 'fulfilled') rows.push(shapeMailMessage(r.value.data));
+      if (r.status === 'fulfilled') rows.push(shapeMailMessage(r.value.data, tag));
     }
     return rows;
   } catch {
@@ -342,7 +380,7 @@ export async function readRecentMessages(gmail: gmail_v1.Gmail): Promise<Dashboa
   }
 }
 
-async function readMail(accessToken: string): Promise<DashboardMail> {
+async function readMail(accessToken: string, tag: DashboardAccountTag): Promise<DashboardMail> {
   try {
     const auth = new google.auth.OAuth2();
     auth.setCredentials({ access_token: accessToken });
@@ -353,7 +391,7 @@ async function readMail(accessToken: string): Promise<DashboardMail> {
       gmail.users.labels.get({ userId: 'me', id: 'UNREAD' }),
       gmail.users.labels.get({ userId: 'me', id: 'STARRED' }),
       gmail.users.labels.get({ userId: 'me', id: 'IMPORTANT' }),
-      readRecentMessages(gmail),
+      readRecentMessages(gmail, tag),
     ]);
     return {
       scopeGranted: true,
@@ -375,10 +413,85 @@ async function readMail(accessToken: string): Promise<DashboardMail> {
   }
 }
 
+/** One linked account's reads, before they are merged. */
+export interface DashboardAccountRead {
+  account: DashboardGoogleAccount;
+  calendar: DashboardCalendar | null;
+  mail: DashboardMail | null;
+}
+
+function startMs(value: string | null): number {
+  if (!value) return Number.POSITIVE_INFINITY;
+  const ms = Date.parse(value);
+  return Number.isNaN(ms) ? Number.POSITIVE_INFINITY : ms;
+}
+
+function sumCounts(values: Array<number | null>): number | null {
+  const present = values.filter((v): v is number => typeof v === 'number');
+  return present.length ? present.reduce((a, b) => a + b, 0) : null;
+}
+
+/**
+ * Fold per-account reads into the dashboard block. Pure: exported for tests.
+ *
+ * Events from every account share one timeline ordered by start; mail counts
+ * are summed and the recent messages interleaved newest first. A block-level
+ * `error` is set only when every account that could be read failed, so one
+ * broken account doesn't blank the pane (its error stays on `accounts[]`).
+ */
+export function mergeDashboardAccountReads(reads: DashboardAccountRead[]): DashboardGoogle {
+  const accounts = reads.map((r) => r.account);
+  const def = accounts.find((a) => a.isDefault) ?? accounts[0];
+  const usable = reads.filter((r) => !r.account.reconnectRequired);
+
+  const calendars = usable.map((r) => r.calendar).filter((c): c is DashboardCalendar => !!c);
+  const calendarOk = calendars.filter((c) => !c.error);
+  const events = calendarOk
+    .flatMap((c) => c.events)
+    .map((e, i) => ({ e, i }))
+    .sort((a, b) => startMs(a.e.start) - startMs(b.e.start) || a.i - b.i)
+    .map(({ e }) => e);
+  const calendar: DashboardCalendar = {
+    scopeGranted: accounts.some((a) => !a.reconnectRequired && a.calendarScopeGranted),
+    date: calendars[0]?.date ?? null,
+    timeZone: calendarOk[0]?.timeZone ?? calendars[0]?.timeZone ?? null,
+    events,
+    error: calendars.length && !calendarOk.length ? calendars.map((c) => c.error).join('; ') : null,
+  };
+
+  const mails = usable.map((r) => r.mail).filter((m): m is DashboardMail => !!m);
+  const mailOk = mails.filter((m) => !m.error);
+  const messages = mailOk
+    .flatMap((m) => m.messages)
+    .map((m, i) => ({ m, i }))
+    .sort((a, b) => Number(b.m.internalDate ?? 0) - Number(a.m.internalDate ?? 0) || a.i - b.i)
+    .slice(0, RECENT_MAIL_LIMIT)
+    .map(({ m }) => m);
+  const mail: DashboardMail = {
+    scopeGranted: accounts.some((a) => !a.reconnectRequired && a.mailScopeGranted),
+    unread: sumCounts(mailOk.map((m) => m.unread)),
+    starred: sumCounts(mailOk.map((m) => m.starred)),
+    important: sumCounts(mailOk.map((m) => m.important)),
+    messages,
+    error: mails.length && !mailOk.length ? mails.map((m) => m.error).join('; ') : null,
+  };
+
+  return {
+    configured: true,
+    connected: accounts.length > 0,
+    email: def?.email ?? null,
+    reconnectRequired: accounts.length > 0 && accounts.every((a) => a.reconnectRequired),
+    calendar,
+    mail,
+    accounts,
+  };
+}
+
 /**
  * Read the user's Google dashboard slice (today's calendar + flagged-mail
- * counts). Never throws: every failure mode collapses to a shaped block the
- * caller can render as "connect Google" / "reconnect" / "scope required".
+ * counts) across every linked account. Never throws: every failure mode
+ * collapses to a shaped block the caller can render as "connect Google" /
+ * "reconnect" / "scope required".
  */
 export const readGoogleForDashboard: GoogleReader = async (userId, config, opts = {}) => {
   const oauth = config.googleOAuth ?? null;
@@ -386,43 +499,49 @@ export const readGoogleForDashboard: GoogleReader = async (userId, config, opts 
     return notConnected(false);
   }
 
-  const status = getGoogleConnectionStatus(userId);
-  if (!status.connected) {
+  const connections = listGoogleConnections(userId);
+  if (!connections.length) {
     return notConnected(true);
   }
 
-  const calScope = hasCalendarReadScope(status.grantedScopes);
-  const mailScope = hasGmailReadScope(status.grantedScopes);
+  const reads = await Promise.all(
+    connections.map(async (conn): Promise<DashboardAccountRead> => {
+      const calScope = hasCalendarReadScope(conn.grantedScopes);
+      const mailScope = hasGmailReadScope(conn.grantedScopes);
+      const tag = { accountId: conn.accountId, accountEmail: conn.googleEmail };
+      let token: string | null;
+      try {
+        token = await getActiveAccessToken(userId, oauth, {
+          account: { accountId: conn.accountId },
+        });
+      } catch {
+        token = null;
+      }
+      const [calendar, mail] = token
+        ? await Promise.all([
+            calScope ? readCalendar(token, opts, tag) : Promise.resolve(null),
+            mailScope ? readMail(token, tag) : Promise.resolve(null),
+          ])
+        : [null, null];
+      return {
+        account: {
+          accountId: conn.accountId,
+          email: conn.googleEmail,
+          isDefault: conn.isDefault,
+          reconnectRequired: !token,
+          calendarScopeGranted: calScope,
+          mailScopeGranted: mailScope,
+          calendarError: calendar?.error ?? null,
+          mailError: mail?.error ?? null,
+          unread: mail?.unread ?? null,
+          starred: mail?.starred ?? null,
+          important: mail?.important ?? null,
+        },
+        calendar,
+        mail,
+      };
+    }),
+  );
 
-  let token: string | null;
-  try {
-    token = await getActiveAccessToken(userId, oauth);
-  } catch {
-    token = null;
-  }
-  if (!token) {
-    // Connection row exists but no usable token (revoked / refresh failed).
-    return {
-      configured: true,
-      connected: true,
-      email: status.email,
-      reconnectRequired: true,
-      calendar: emptyCalendar(calScope),
-      mail: emptyMail(mailScope),
-    };
-  }
-
-  const [calendar, mail] = await Promise.all([
-    calScope ? readCalendar(token, opts) : Promise.resolve(emptyCalendar(false)),
-    mailScope ? readMail(token) : Promise.resolve(emptyMail(false)),
-  ]);
-
-  return {
-    configured: true,
-    connected: true,
-    email: status.email,
-    reconnectRequired: false,
-    calendar,
-    mail,
-  };
+  return mergeDashboardAccountReads(reads);
 };
