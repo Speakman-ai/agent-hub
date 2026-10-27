@@ -225,7 +225,8 @@ describe('QaPlanDetail', () => {
             sessionId: 's2',
             sessionAgentId: 'qa-agent',
           }),
-          run('r1'),
+          // An archived run session keeps its id (for screenshots) but no agent.
+          run('r1', { sessionId: 's1' }),
         ],
       }),
     );

@@ -7,6 +7,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getDb, getStmts, initDb } from '../db.js';
 import type { Agent, ChatMessage, Project, RouteDeps } from '../types.js';
 import { qaRunPreviewOwnerSessionId } from '../qa-run-kickoff.js';
+import { maybeArchiveQaRunSession } from '../qa-run-session-archive.js';
 import createQaRoutes from './qa.js';
 
 vi.mock('../effective-model.js', () => ({
@@ -145,6 +146,12 @@ describe('run kickoff', () => {
     };
     expect(session).toMatchObject({ agent_id: 'proj-qa', session_mode: 'qa' });
     expect(session.name).toBe('[QA run #1] Checkout');
+    // Hidden like the docs agent's sessions: never listed in the sidebar.
+    expect((session as { hidden?: number }).hidden).toBe(1);
+    expect(getStmts().getSessions.all('proj-qa')).toEqual([]);
+    expect(broadcast).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'session_created' }),
+    );
     expect(broadcast).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'qa_update', action: 'run_started', planId }),
     );
@@ -301,5 +308,63 @@ describe('run kickoff', () => {
     const res = await request(app).post(`${base}/runs/${started.run.id}/cancel`).expect(200);
     expect(res.body.run.status).toBe('cancelled');
     expect(handleCancel).toHaveBeenCalledWith(started.sessionId);
+  });
+
+  it('archives the run session once the run is cancelled and hides its Session link', async () => {
+    const { base } = await approvedPlan();
+    const started = (await request(app).post(`${base}/runs`).send({}).expect(201)).body;
+    const live = (await request(app).get(base).expect(200)).body.runs[0];
+    expect(live.sessionAgentId).toBe('proj-qa');
+
+    await request(app).post(`${base}/runs/${started.run.id}/cancel`).expect(200);
+    const session = getStmts().getSession.get(started.sessionId) as { deleted_at: string | null };
+    expect(session.deleted_at).not.toBeNull();
+    expect(broadcast).toHaveBeenCalledWith({
+      type: 'session_deleted',
+      sessionId: started.sessionId,
+    });
+    const after = (await request(app).get(base).expect(200)).body.runs[0];
+    // The run keeps its session id (screenshots are its artifacts) but is no longer openable.
+    expect(after.sessionId).toBe(started.sessionId);
+    expect(after.sessionAgentId).toBeNull();
+  });
+
+  it('keeps an active run session at turn end and archives it once the run is over', async () => {
+    const { base } = await approvedPlan();
+    const started = (await request(app).post(`${base}/runs`).send({}).expect(201)).body;
+    const deps = { stmts: getStmts(), broadcast };
+
+    expect(maybeArchiveQaRunSession(deps, { sessionId: started.sessionId })).toEqual({
+      archived: false,
+    });
+    getStmts().setQaRunStatus.run({ status: 'failed', id: started.run.id });
+    expect(maybeArchiveQaRunSession(deps, { sessionId: started.sessionId })).toEqual({
+      archived: true,
+    });
+    expect(maybeArchiveQaRunSession(deps, { sessionId: started.sessionId })).toEqual({
+      archived: false,
+    });
+  });
+
+  it('never archives a session that is not a hidden QA run session', () => {
+    expect(
+      maybeArchiveQaRunSession({ stmts: getStmts(), broadcast }, { sessionId: HOST_SESSION }),
+    ).toEqual({ archived: false });
+    expect(getStmts().getSession.get(HOST_SESSION)).toMatchObject({ deleted_at: null });
+  });
+
+  it('keeps an archived run session past the purge window until its plan is deleted', async () => {
+    const { base, planId } = await approvedPlan();
+    const started = (await request(app).post(`${base}/runs`).send({}).expect(201)).body;
+    await request(app).post(`${base}/runs/${started.run.id}/cancel`).expect(200);
+    getDb()
+      .prepare("UPDATE sessions SET deleted_at = datetime('now', '-2 days') WHERE id = ?")
+      .run(started.sessionId);
+    const expired = () =>
+      (getStmts().getExpiredArchivedSessions.all() as Array<{ id: string }>).map((r) => r.id);
+
+    expect(expired()).not.toContain(started.sessionId);
+    getDb().prepare('DELETE FROM qa_plans WHERE id = ?').run(planId);
+    expect(expired()).toContain(started.sessionId);
   });
 });

@@ -2252,6 +2252,7 @@ export interface Stmts {
   setQaRunStatus: Stmt<[{ status: QaRunStatus; id: string }]>;
   setQaRunSession: Stmt<[string | null, string]>;
   setQaRunPreviewSession: Stmt<[string | null, string]>;
+  getQaRunBySession: Stmt<[string], QaRunRow>;
   getQaRunPreviewSessionBySession: Stmt<[string], { preview_session_id: string }>;
   upsertQaResult: Stmt<[string, string, string, QaVerdict, string, string, string, string | null]>;
   listQaResultsByRun: Stmt<[string], QaResultRow>;

@@ -1,7 +1,8 @@
 /**
  * Start a QA run end to end: pick the tool for the target, queue the run,
- * open a fresh QA session seeded with the in-scope cases, and mark the run
- * running. Shared by the Rerun / Start run route and the auto-rerun trigger,
+ * open a fresh hidden QA session seeded with the in-scope cases, and mark the
+ * run running. The session is archived when the run ends
+ * (`qa-run-session-archive.ts`). Shared by the Rerun / Start run route and the auto-rerun trigger,
  * so both refuse the same targets and recover the same way.
  *
  * If the session cannot be started the run is cancelled, so it never blocks
@@ -15,7 +16,6 @@ import { findProjectQaAgent } from './qa-authoring.js';
 import { buildQaRunSeed, resolveQaTarget } from './qa-run-kickoff.js';
 import { cancelQaRun, markQaRunRunning, qaRunCaseIds, startQaRun } from './qa-status.js';
 import { abandonUnseededSession, kickoffSeededTurn } from './seeded-session-kickoff.js';
-import { broadcastSessionCreated } from './session-checkpoint-rewind.js';
 import { setSessionOwner } from './session-ownership.js';
 import type { QaPlanRow, QaRunRow, QaRunScope, RouteDeps, SessionRow } from './types.js';
 
@@ -113,6 +113,9 @@ export async function launchQaRun(
       0,
       1,
     );
+    // Hidden before anything broadcasts about it: the broadcast filter caches
+    // hidden-ness on first sight. The run is read on the QA page, not in chat.
+    s.markSessionHidden.run(sessionId);
     setSessionOwner(sessionId, opts.ownerUserId);
     s.updateSessionMode.run('qa', sessionId);
     s.setQaRunSession.run(sessionId, run.id);
@@ -149,8 +152,6 @@ export async function launchQaRun(
       runId: run.id,
     };
   }
-  const session = s.getSession.get(sessionId) as SessionRow;
-  broadcastSessionCreated(deps.broadcast, agent.id, session, s, project);
   deps.broadcast({
     type: 'qa_update',
     projectId: plan.project_id,

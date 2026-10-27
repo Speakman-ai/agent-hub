@@ -4440,6 +4440,9 @@ function initDb(dataDir: string): void {
     ),
     setQaRunSession: db.prepare('UPDATE qa_runs SET session_id = ? WHERE id = ?'),
     setQaRunPreviewSession: db.prepare('UPDATE qa_runs SET preview_session_id = ? WHERE id = ?'),
+    getQaRunBySession: db.prepare(
+      'SELECT * FROM qa_runs WHERE session_id = ? ORDER BY iteration DESC LIMIT 1',
+    ),
     // The preview a QA run session drives, for the chat path's preview tool.
     getQaRunPreviewSessionBySession: db.prepare(
       `SELECT preview_session_id FROM qa_runs
@@ -5400,10 +5403,13 @@ function initDb(dataDir: string): void {
     // and any FK-cascading children (messages, progress, delegations,
     // handoffs, …) get hard-deleted by the hourly session-purge tick. Mirrors
     // the inverse of `getArchivedSessionsByAgent` (>= -1 day).
+    // A QA run's screenshots are artifacts of its (archived) run session, so a
+    // session a run still references is kept until its plan is deleted.
     getExpiredArchivedSessions: db.prepare(
       `SELECT id, worktree_path FROM sessions
        WHERE deleted_at IS NOT NULL
-         AND deleted_at < datetime('now', '-1 day')`,
+         AND deleted_at < datetime('now', '-1 day')
+         AND NOT EXISTS (SELECT 1 FROM qa_runs q WHERE q.session_id = sessions.id)`,
     ),
     // Existence probe used by `cleanupStaleWorkspaces` to decide whether a
     // `session-<prefix>` directory on disk has a live or recoverable row.

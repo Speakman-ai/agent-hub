@@ -281,7 +281,7 @@ function RunRow({
           {run.startedAt ? `Started ${formatDateTime(run.startedAt)}` : 'Not started'}
           {duration ? ` · ${duration}${run.finishedAt ? '' : ' so far'}` : ''}
         </Text>
-        {run.sessionId ? (
+        {run.sessionId && run.sessionAgentId ? (
           <TouchableOpacity
             testID="qa-run-session"
             disabled={!onOpenSession}

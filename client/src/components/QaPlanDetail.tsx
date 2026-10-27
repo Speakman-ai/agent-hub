@@ -774,7 +774,7 @@ function RunHistory({
                 {r.startedAt ? `Started ${formatDateTime(r.startedAt)}` : 'Not started'}
                 {duration ? ` · ${duration}${r.finishedAt ? '' : ' so far'}` : ''}
               </span>
-              {r.sessionId && (
+              {r.sessionId && r.sessionAgentId && (
                 <button
                   type="button"
                   data-testid="qa-run-session"

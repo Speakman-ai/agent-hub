@@ -97,6 +97,7 @@ import {
 import { resolveSessionPrUrl } from './session-title-pr.js';
 import { maybeFinalizeAutoReviewSession } from './native-pr/auto-review-lifecycle.js';
 import { maybeArchiveWikiDocSession } from './wiki-doc-session.js';
+import { maybeArchiveQaRunSession } from './qa-run-session-archive.js';
 import { finishRoutineRun } from './routine-runs.js';
 import { getActiveAccessToken } from './github-connections-store.js';
 import {
@@ -414,6 +415,18 @@ import { resolveDefaultBranch } from './git-default-branch.js';
 
 const stmts = _stmts!;
 const MAX_QUEUE_SIZE = 10;
+
+/**
+ * Turn-end cleanup for system sessions the user never works in: `[Wiki]`
+ * docs sessions and hidden QA run sessions. Each check is a no-op otherwise.
+ */
+function archiveEphemeralSession(
+  deps: { stmts: Stmts; broadcast?: BroadcastFn },
+  args: { sessionId: string; agentId?: string; error?: string | null },
+): void {
+  maybeArchiveWikiDocSession(deps, args);
+  maybeArchiveQaRunSession(deps, { sessionId: args.sessionId });
+}
 
 /**
  * Process-lifetime cache of each checkout's default branch, keyed by cwd.
@@ -4138,10 +4151,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             { stmts, broadcast },
             { sessionId, agentId, error: err.message },
           );
-          maybeArchiveWikiDocSession(
-            { stmts, broadcast },
-            { sessionId, agentId, error: err.message },
-          );
+          archiveEphemeralSession({ stmts, broadcast }, { sessionId, agentId, error: err.message });
           finishRoutineRun({ stmts, broadcast }, { sessionId, error: err.message });
           drainQueue(sessionId);
           return;
@@ -4184,7 +4194,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             { stmts, broadcast },
             { sessionId, agentId, error: errText },
           );
-          maybeArchiveWikiDocSession({ stmts, broadcast }, { sessionId, agentId, error: errText });
+          archiveEphemeralSession({ stmts, broadcast }, { sessionId, agentId, error: errText });
           finishRoutineRun({ stmts, broadcast }, { sessionId, error: errText });
           drainQueue(sessionId);
           return;
@@ -4351,7 +4361,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             { stmts, broadcast },
             { sessionId, agentId, error: errText },
           );
-          maybeArchiveWikiDocSession({ stmts, broadcast }, { sessionId, agentId, error: errText });
+          archiveEphemeralSession({ stmts, broadcast }, { sessionId, agentId, error: errText });
           finishRoutineRun({ stmts, broadcast }, { sessionId, error: errText });
           drainQueue(sessionId);
           return;
@@ -6075,10 +6085,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             { stmts: S, broadcast },
             { sessionId, agentId, error: errorMsg },
           );
-          maybeArchiveWikiDocSession(
-            { stmts: S, broadcast },
-            { sessionId, agentId, error: errorMsg },
-          );
+          archiveEphemeralSession({ stmts: S, broadcast }, { sessionId, agentId, error: errorMsg });
           finishRoutineRun({ stmts: S, broadcast }, { sessionId, error: errorMsg });
           // Terminal errored close (non-transient exit, no output, no failover
           // left). A Finalize fix-dispatch / rebase-conflict wait for this
@@ -7292,7 +7299,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // out of the active-sessions queue instead of lingering "waiting for
         // user input". A ReAct continuation is not terminal yet.
         if (!shouldAutoContinue) {
-          maybeArchiveWikiDocSession({ stmts: S, broadcast }, { sessionId, agentId });
+          archiveEphemeralSession({ stmts: S, broadcast }, { sessionId, agentId });
           finishRoutineRun(
             { stmts: S, broadcast },
             { sessionId, finalContent, error: turnEndError?.errorText ?? null },

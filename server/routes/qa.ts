@@ -24,6 +24,7 @@ import {
   loadQaAuthoringContext,
 } from '../qa-authoring.js';
 import { launchQaRun } from '../qa-run-launch.js';
+import { maybeArchiveQaRunSession } from '../qa-run-session-archive.js';
 import { describeQaAutoRerun, processQaAutoRerun } from '../qa-auto-rerun.js';
 import { abandonUnseededSession, kickoffSeededTurn } from '../seeded-session-kickoff.js';
 import { broadcastSessionCreated } from '../session-checkpoint-rewind.js';
@@ -306,13 +307,17 @@ export function planLinks(plan: QaPlanRow): Pick<QaPlanSummary, 'epic' | 'card'>
   return { epic: epic ?? null, card: card ?? null };
 }
 
-/** Agent that owns each run session, so the UI can open the session in its agent. */
+/**
+ * Agent that owns each live run session, so the UI can open the session in its
+ * agent. Archived run sessions are absent: the run is over and its results live
+ * on the QA page.
+ */
 function runSessionAgents(planId: string): Map<string, string> {
   const rows = getDb()
     .prepare(
       `SELECT r.id AS run_id, s.agent_id FROM qa_runs r
          JOIN sessions s ON s.id = r.session_id
-        WHERE r.plan_id = ?`,
+        WHERE r.plan_id = ? AND s.deleted_at IS NULL`,
     )
     .all(planId) as Array<{ run_id: string; agent_id: string }>;
   return new Map(rows.map((r) => [r.run_id, r.agent_id]));
@@ -811,7 +816,13 @@ export default function createQaRoutes(deps: RouteDeps): Router {
   // Cancelling also stops the run's session, so the agent stops driving the target.
   runAction('cancel', 'run_cancelled', (runId) => {
     const cancelled = cancelQaRun(runId);
-    if (cancelled.session_id) deps.handleCancel?.(cancelled.session_id);
+    if (cancelled.session_id) {
+      deps.handleCancel?.(cancelled.session_id);
+      maybeArchiveQaRunSession(
+        { stmts: getStmts(), broadcast },
+        { sessionId: cancelled.session_id },
+      );
+    }
     return cancelled;
   });
 
