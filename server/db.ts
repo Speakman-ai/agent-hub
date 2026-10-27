@@ -3955,6 +3955,14 @@ function initDb(dataDir: string): void {
       /* column already present */
     }
   }
+  // Whether finding cards get assigned to the dev agent (a fix session starts).
+  try {
+    db.exec(
+      'ALTER TABLE qa_plans ADD COLUMN auto_fix INTEGER NOT NULL DEFAULT 0 CHECK (auto_fix IN (0, 1))',
+    );
+  } catch (_e) {
+    /* column already present */
+  }
   // Installs whose trigger CHECK predates newer trigger values.
   widenInListCheck(db, {
     table: 'qa_plans',
@@ -4401,7 +4409,7 @@ function initDb(dataDir: string): void {
     updateQaPlan: db.prepare(
       `UPDATE qa_plans SET title = @title, goal = @goal, target_url = @target_url,
          epic_id = @epic_id, card_id = @card_id, deploy_environment = @deploy_environment,
-         auto_rerun = @auto_rerun, max_iterations = @max_iterations,
+         auto_rerun = @auto_rerun, auto_fix = @auto_fix, max_iterations = @max_iterations,
          auto_rerun_trigger = @auto_rerun_trigger, auto_rerun_branch = @auto_rerun_branch,
          auto_rerun_delay_minutes = @auto_rerun_delay_minutes, updated_at = datetime('now')
        WHERE id = @id`,

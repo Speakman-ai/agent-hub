@@ -87,6 +87,10 @@ export const QaPlanComponent = registerComponent(
       signedOffAt: z.string().nullable(),
       signedOffBy: z.string().nullable(),
       autoRerun: z.boolean(),
+      autoFix: z.boolean().openapi({
+        description:
+          'Assign finding cards to the dev agent so a fix session starts. Off: cards are filed unassigned.',
+      }),
       autoRerunTrigger: AutoRerunTrigger,
       autoRerunBranch: z.string().nullable().openapi({
         description:
@@ -221,6 +225,7 @@ export const CreateQaPlanRequestSchema = z.object({
   cardId: nullableId,
   deployEnvironment: z.string().min(1).nullable().optional(),
   autoRerun: z.boolean().optional(),
+  autoFix: z.boolean().optional().openapi({ description: 'Defaults to false.' }),
   ...AutoRerunFields,
   maxIterations: z.number().int().min(1).max(100).optional(),
 });
@@ -235,6 +240,7 @@ export const UpdateQaPlanRequestSchema = z.object({
   cardId: nullableId,
   deployEnvironment: z.string().min(1).nullable().optional(),
   autoRerun: z.boolean().optional(),
+  autoFix: z.boolean().optional().openapi({ description: 'Defaults to false.' }),
   ...AutoRerunFields,
   maxIterations: z.number().int().min(1).max(100).optional(),
 });

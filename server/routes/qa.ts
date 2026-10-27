@@ -98,6 +98,7 @@ export function serializeQaPlan(p: QaPlanRow) {
     signedOffAt: p.signed_off_at,
     signedOffBy: p.signed_off_by,
     autoRerun: p.auto_rerun === 1,
+    autoFix: p.auto_fix === 1,
     autoRerunTrigger: p.auto_rerun_trigger,
     autoRerunBranch: p.auto_rerun_branch,
     autoRerunDelayMinutes: p.auto_rerun_delay_minutes,
@@ -496,6 +497,7 @@ export default function createQaRoutes(deps: RouteDeps): Router {
           userId(req),
         );
         return updateQaPlan(id, {
+          autoFix: body.autoFix,
           autoRerunTrigger: body.autoRerunTrigger,
           autoRerunBranch: body.autoRerunBranch,
           autoRerunDelayMinutes: body.autoRerunDelayMinutes,

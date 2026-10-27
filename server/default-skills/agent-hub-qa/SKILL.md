@@ -156,8 +156,10 @@ run replaces the earlier result.
 ## 5. Finding cards
 
 The server files finding cards when the run finishes. Each `fail` or
-`needs_change` result gets a `qa-finding` card on the plan's epic, assigned to
-the project's dev agent, which starts a fix session. A case that fails again
+`needs_change` result gets a `qa-finding` card on the plan's epic. When the
+plan has **Auto-fix findings** on, the card is assigned to the project's dev
+agent, which starts a fix session; with it off (the default) the card waits in
+To Do for a person to assign. A case that fails again
 while its earlier card is still open gets a comment on that card instead of a
 duplicate. The run summary links every card.
 

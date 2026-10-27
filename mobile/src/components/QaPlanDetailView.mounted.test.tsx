@@ -63,6 +63,7 @@ vi.mock('../utils/api', () => ({
           signedOffAt: null,
           signedOffBy: null,
           autoRerun: true,
+          autoFix: false,
           autoRerunTrigger: 'deployment',
           autoRerunBranch: null,
           autoRerunDelayMinutes: 0,

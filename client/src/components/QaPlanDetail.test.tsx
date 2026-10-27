@@ -107,6 +107,7 @@ function detail(over: Partial<QaPlanDetailWire> & { approved?: boolean } = {}): 
       signedOffAt: null,
       signedOffBy: null,
       autoRerun: true,
+      autoFix: false,
       autoRerunTrigger: 'deployment',
       autoRerunBranch: null,
       autoRerunDelayMinutes: 0,
@@ -990,6 +991,16 @@ describe('QaPlanDetail reruns', () => {
     expect(confirm).toHaveBeenCalled();
     expect(mutations.startQaRun).not.toHaveBeenCalled();
     confirm.mockRestore();
+  });
+
+  it('shows auto-fix off by default and saves it when turned on', async () => {
+    renderDetail(detail({ cases: [qaCase('c1')] }));
+    const toggle = await screen.findByTestId('qa-auto-fix-toggle');
+    expect(toggle).not.toBeChecked();
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(mutations.updateQaPlan).toHaveBeenCalledWith('proj', 'p1', { autoFix: true }),
+    );
   });
 
   it('saves the auto-rerun toggle, environment, and max runs', async () => {

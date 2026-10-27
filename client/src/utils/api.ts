@@ -164,6 +164,8 @@ export interface QaPlanWire {
   signedOffAt: string | null;
   signedOffBy: string | null;
   autoRerun: boolean;
+  /** Assign finding cards to the dev agent so a fix session starts. */
+  autoFix: boolean;
   /** What auto-rerun waits on once every fix is Done. */
   autoRerunTrigger: QaAutoRerunTrigger;
   /** Branch the merge trigger waits on. */
@@ -278,6 +280,7 @@ export type QaAutoRerunTrigger = 'deployment' | 'merge' | 'fixes_merged';
 export interface QaPlanPatch {
   deployEnvironment?: string | null;
   autoRerun?: boolean;
+  autoFix?: boolean;
   autoRerunTrigger?: QaAutoRerunTrigger;
   autoRerunBranch?: string | null;
   autoRerunDelayMinutes?: number;

@@ -431,6 +431,15 @@ function RerunSettings({
   return (
     <View style={styles.settings} testID="qa-rerun-settings">
       <View style={styles.settingRow}>
+        <Text style={styles.settingLabel}>Auto-fix findings</Text>
+        <Switch
+          testID="qa-auto-fix-toggle"
+          value={plan.autoFix ?? false}
+          disabled={busy}
+          onValueChange={(v) => onSave({ autoFix: v })}
+        />
+      </View>
+      <View style={styles.settingRow}>
         <Text style={styles.settingLabel}>Auto-rerun when fixes land</Text>
         <Switch
           testID="qa-auto-rerun-toggle"

@@ -126,6 +126,7 @@ describe('plans', () => {
       status: 'new',
       approved: false,
       autoRerun: true,
+      autoFix: false,
       autoRerunTrigger: 'deployment',
       autoRerunBranch: null,
       autoRerunDelayMinutes: 0,
@@ -272,9 +273,14 @@ describe('plans', () => {
     const { planId } = await approvedPlan();
     const label = await request(app)
       .patch(`${base}/${planId}`)
-      .send({ title: 'Renamed', autoRerun: false })
+      .send({ title: 'Renamed', autoRerun: false, autoFix: true })
       .expect(200);
-    expect(label.body.plan).toMatchObject({ title: 'Renamed', autoRerun: false, approved: true });
+    expect(label.body.plan).toMatchObject({
+      title: 'Renamed',
+      autoRerun: false,
+      autoFix: true,
+      approved: true,
+    });
 
     const target = await request(app)
       .patch(`${base}/${planId}`)

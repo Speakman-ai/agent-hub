@@ -2104,6 +2104,8 @@ export interface QaPlanRow {
   signed_off_at: string | null;
   signed_off_by: string | null;
   auto_rerun: 0 | 1;
+  /** 1 = finding cards are assigned to the dev agent, which starts a fix session. */
+  auto_fix: 0 | 1;
   max_iterations: number;
   /** What the auto-rerun waits on once every fix is Done. */
   auto_rerun_trigger: 'deployment' | 'merge' | 'fixes_merged';
@@ -2234,6 +2236,7 @@ export interface Stmts {
         card_id: string | null;
         deploy_environment: string | null;
         auto_rerun: 0 | 1;
+        auto_fix: 0 | 1;
         max_iterations: number;
         auto_rerun_trigger: 'deployment' | 'merge' | 'fixes_merged';
         auto_rerun_branch: string | null;

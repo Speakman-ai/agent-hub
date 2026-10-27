@@ -718,6 +718,18 @@ function RerunSettings({
   return (
     <div className="flex flex-col gap-2" data-testid="qa-rerun-settings">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-gray-400">
+        <label
+          className="inline-flex items-center gap-1.5"
+          title="Assign each finding card to the dev agent so a fix session starts. Off: cards wait in To Do."
+        >
+          <Checkbox
+            data-testid="qa-auto-fix-toggle"
+            checked={plan.autoFix ?? false}
+            disabled={busy}
+            onChange={(e) => onSave({ autoFix: e.target.checked })}
+          />
+          Auto-fix findings
+        </label>
         <label className="inline-flex items-center gap-1.5">
           <Checkbox
             data-testid="qa-auto-rerun-toggle"

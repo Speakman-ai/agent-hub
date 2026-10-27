@@ -11,6 +11,7 @@ import {
   markQaRunRunning,
   recordQaResult,
   startQaRun,
+  updateQaPlan,
 } from './qa-status.js';
 import { buildQaFindingCard, fileQaFindingCards, QA_FINDING_LABEL } from './qa-findings.js';
 import type { AssignCardDeps } from './kanban-assign.js';
@@ -75,7 +76,7 @@ beforeEach(() => {
   handleChat.mockClear();
 });
 
-function approvedPlan(withEpic = true): { planId: string; caseIds: string[] } {
+function approvedPlan(withEpic = true, autoFix = true): { planId: string; caseIds: string[] } {
   const s = getStmts();
   const planId = randomUUID();
   s.insertQaPlan.run(
@@ -96,6 +97,7 @@ function approvedPlan(withEpic = true): { planId: string; caseIds: string[] } {
     s.insertQaCase.run(id, planId, i, title, `1. Open ${title}`, `${title} works`);
     return id;
   });
+  if (autoFix) updateQaPlan(planId, { autoFix: true });
   approveQaPlan(planId, 'user-1');
   return { planId, caseIds };
 }
@@ -189,6 +191,27 @@ describe('fileQaFindingCards', () => {
     const msg = handleChat.mock.calls[0][1];
     expect(msg).toMatchObject({ agentId: 'qf-dev', sessionId });
     expect(msg.content).toContain('QA: Login');
+  });
+
+  it('files the card unassigned in To Do when the plan has auto-fix off', async () => {
+    const { planId, caseIds } = approvedPlan(true, false);
+    expect(getStmts().getQaPlan.get(planId)!.auto_fix).toBe(0);
+    const runId = finishedRun(planId, { [caseIds[0]]: 'fail', [caseIds[1]]: 'pass' });
+
+    const [outcome] = await fileQaFindingCards(deps, runId);
+
+    expect(outcome).toEqual({
+      caseId: caseIds[0],
+      action: 'filed',
+      cardId: expect.any(String),
+      sessionId: null,
+    });
+    const filed = card(outcome.cardId);
+    expect(filed.session_id).toBeNull();
+    expect(filed.assignee).toBeNull();
+    expect(columnName(filed)).toBe('To Do');
+    expect(comments(outcome.cardId)).toEqual([]);
+    expect(handleChat).not.toHaveBeenCalled();
   });
 
   it('comments on the open card when the case fails again instead of filing a duplicate', async () => {

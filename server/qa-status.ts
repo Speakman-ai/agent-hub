@@ -166,6 +166,7 @@ export interface QaPlanPatch {
   cardId?: string | null;
   deployEnvironment?: string | null;
   autoRerun?: boolean;
+  autoFix?: boolean;
   maxIterations?: number;
   autoRerunTrigger?: QaAutoRerunTrigger;
   autoRerunBranch?: string | null;
@@ -194,6 +195,7 @@ export function updateQaPlan(planId: string, patch: QaPlanPatch): QaPlanRow {
       deploy_environment:
         patch.deployEnvironment !== undefined ? patch.deployEnvironment : plan.deploy_environment,
       auto_rerun: patch.autoRerun !== undefined ? (patch.autoRerun ? 1 : 0) : plan.auto_rerun,
+      auto_fix: patch.autoFix !== undefined ? (patch.autoFix ? 1 : 0) : plan.auto_fix,
       max_iterations: patch.maxIterations ?? plan.max_iterations,
       auto_rerun_trigger: patch.autoRerunTrigger ?? plan.auto_rerun_trigger,
       auto_rerun_branch:

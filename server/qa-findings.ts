@@ -1,7 +1,9 @@
 /**
  * QA finding cards: when a run finishes, every fail / needs_change result gets
- * a `qa-finding` kanban card on the plan's epic, assigned to the project's
- * main dev agent through the normal card-assign path so a fix session starts.
+ * a `qa-finding` kanban card on the plan's epic. With the plan's auto-fix on,
+ * the card is assigned to the project's main dev agent through the normal
+ * card-assign path so a fix session starts; with it off the card waits in To
+ * Do for a person to assign.
  *
  * One card per failing case per iteration. A case that still fails on a later
  * run, while the card filed for it earlier is not Done, gets a comment on that
@@ -185,7 +187,8 @@ export type QaFindingOutcome =
  * File or update finding cards for a finished run. Results that already carry
  * a finding card are skipped, so calling this twice for a run is harmless.
  * Card writes are synchronous; assignment (which spawns the fix session) runs
- * after, and a failed assignment leaves the card in To Do with a comment.
+ * after, only when the plan has auto-fix on, and a failed assignment leaves
+ * the card in To Do with a comment.
  */
 export async function fileQaFindingCards(
   deps: AssignCardDeps,
@@ -282,6 +285,12 @@ export async function fileQaFindingCards(
     deps.broadcast({ type: 'kanban_update', projectId: plan.project_id });
   }
 
+  if (plan.auto_fix !== 1) {
+    for (const { caseId, card } of toAssign) {
+      outcomes.push({ caseId, action: 'filed', cardId: card.id, sessionId: null });
+    }
+    return outcomes;
+  }
   const devAgent = pickMainDevAgent(project as Project);
   for (const { caseId, card } of toAssign) {
     const outcome = await assignFinding(deps, {

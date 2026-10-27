@@ -83,6 +83,7 @@ export const QA_SCHEMA = `
     signed_off_at      TEXT,
     signed_off_by      TEXT,
     auto_rerun         INTEGER NOT NULL DEFAULT 1 CHECK (auto_rerun IN (0, 1)),
+    auto_fix           INTEGER NOT NULL DEFAULT 0 CHECK (auto_fix IN (0, 1)),
     max_iterations     INTEGER NOT NULL DEFAULT 5 CHECK (max_iterations >= 1),
     auto_rerun_trigger TEXT NOT NULL DEFAULT 'deployment'
                        CHECK (auto_rerun_trigger IN (${inList(QA_AUTO_RERUN_TRIGGERS)})),

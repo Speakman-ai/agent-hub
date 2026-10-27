@@ -15286,6 +15286,9 @@ components:
           nullable: true
         autoRerun:
           type: boolean
+        autoFix:
+          type: boolean
+          description: "Assign finding cards to the dev agent so a fix session starts. Off: cards are filed unassigned."
         autoRerunTrigger:
           type: string
           enum:
@@ -15330,6 +15333,7 @@ components:
         - signedOffAt
         - signedOffBy
         - autoRerun
+        - autoFix
         - autoRerunTrigger
         - autoRerunBranch
         - autoRerunDelayMinutes
@@ -58758,6 +58762,9 @@ paths:
                   minLength: 1
                 autoRerun:
                   type: boolean
+                autoFix:
+                  type: boolean
+                  description: Defaults to false.
                 autoRerunTrigger:
                   type: string
                   enum:
@@ -58952,6 +58959,9 @@ paths:
                   minLength: 1
                 autoRerun:
                   type: boolean
+                autoFix:
+                  type: boolean
+                  description: Defaults to false.
                 autoRerunTrigger:
                   type: string
                   enum:
