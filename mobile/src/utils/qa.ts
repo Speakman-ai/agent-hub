@@ -72,7 +72,7 @@ export interface QaPlan {
   authoringSessionId: string | null;
 }
 
-export type QaAutoRerunTrigger = 'deployment' | 'merge';
+export type QaAutoRerunTrigger = 'deployment' | 'merge' | 'fixes_merged';
 
 export interface QaPlanPatch {
   deployEnvironment?: string | null;
@@ -83,7 +83,7 @@ export interface QaPlanPatch {
   maxIterations?: number;
 }
 
-/** Merge-trigger delay choices in minutes; the server accepts 0 or 5-60. */
+/** Merge / fixes-merged delay choices in minutes; the server accepts 0 or 5-60. */
 export const QA_RERUN_DELAY_OPTIONS = [0, 5, 10, 15, 30, 45, 60];
 
 export interface QaCase {
@@ -375,6 +375,12 @@ export function autoRerunDescription(
   >,
 ) {
   if (!plan.autoRerun) return 'Auto-rerun is off. Rerun by hand.';
+  if (plan.autoRerunTrigger === 'fixes_merged') {
+    const delay = plan.autoRerunDelayMinutes
+      ? `, ${plan.autoRerunDelayMinutes} minutes after the last one`
+      : '';
+    return `After a failed run, the failed cases rerun once every finding card is Done (its session, ticket, or epic merged)${delay}.`;
+  }
   if (plan.autoRerunTrigger === 'merge') {
     if (!plan.autoRerunBranch) {
       return 'With no branch chosen, you get an inbox notice when every finding card is Done, and rerun by hand.';

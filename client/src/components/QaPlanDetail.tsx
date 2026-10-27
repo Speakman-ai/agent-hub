@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import {
   api,
+  type QaAutoRerunTrigger,
   type QaCaseInput,
   type QaCaseWire,
   type QaPlanDetailWire,
@@ -600,7 +601,7 @@ function RunButtons({
   );
 }
 
-/** Merge-trigger delay choices in minutes; the server accepts 0 or 5-60. */
+/** Merge / fixes-merged delay choices in minutes; the server accepts 0 or 5-60. */
 export const QA_RERUN_DELAY_OPTIONS = [0, 5, 10, 15, 30, 45, 60];
 
 const selectClass =
@@ -637,6 +638,9 @@ function useNames(key: string | null, load: (key: string) => Promise<string[]>) 
   return names;
 }
 
+const parseTrigger = (value: string): QaAutoRerunTrigger =>
+  value === 'merge' || value === 'fixes_merged' ? value : 'deployment';
+
 const namesFrom = (list: unknown): string[] =>
   (Array.isArray(list) ? list : [])
     .map((e: { name?: unknown } | null) => e?.name)
@@ -653,6 +657,12 @@ export function autoRerunSummary(
   >,
 ): string {
   if (!plan.autoRerun) return 'Auto-rerun is off. Rerun by hand.';
+  if (plan.autoRerunTrigger === 'fixes_merged') {
+    const delay = plan.autoRerunDelayMinutes
+      ? `, ${plan.autoRerunDelayMinutes} minutes after the last one`
+      : '';
+    return `After a failed run, the failed cases rerun once every finding card is Done (its session, ticket, or epic merged)${delay}.`;
+  }
   if (plan.autoRerunTrigger === 'merge') {
     if (!plan.autoRerunBranch) {
       return 'With no branch chosen, you get an inbox notice when every finding card is Done, and rerun by hand.';
@@ -722,16 +732,15 @@ function RerunSettings({
             data-testid="qa-auto-rerun-trigger"
             value={trigger}
             disabled={busy}
-            onChange={(e) =>
-              onSave({ autoRerunTrigger: e.target.value === 'merge' ? 'merge' : 'deployment' })
-            }
+            onChange={(e) => onSave({ autoRerunTrigger: parseTrigger(e.target.value) })}
             className={selectClass}
           >
             <option value="deployment">Deployment</option>
             <option value="merge">Merge to branch</option>
+            <option value="fixes_merged">Fixes merged</option>
           </select>
         </label>
-        {trigger === 'deployment' ? (
+        {trigger === 'deployment' && (
           <label className="inline-flex items-center gap-1.5">
             Deploy environment
             <select
@@ -749,42 +758,43 @@ function RerunSettings({
               ))}
             </select>
           </label>
-        ) : (
-          <>
-            <label className="inline-flex items-center gap-1.5">
-              Branch
-              <select
-                data-testid="qa-auto-rerun-branch"
-                value={plan.autoRerunBranch ?? ''}
-                disabled={busy}
-                onChange={(e) => onSave({ autoRerunBranch: e.target.value || null })}
-                className={selectClass}
-              >
-                <option value="">None (rerun by hand)</option>
-                {branchOptions.map((name) => (
-                  <option key={name} value={name}>
-                    {name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="inline-flex items-center gap-1.5">
-              Delay
-              <select
-                data-testid="qa-auto-rerun-delay"
-                value={String(delay)}
-                disabled={busy}
-                onChange={(e) => onSave({ autoRerunDelayMinutes: Number(e.target.value) })}
-                className={selectClass}
-              >
-                {delayOptions.map((m) => (
-                  <option key={m} value={String(m)}>
-                    {m === 0 ? 'None' : `${m} min`}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </>
+        )}
+        {trigger === 'merge' && (
+          <label className="inline-flex items-center gap-1.5">
+            Branch
+            <select
+              data-testid="qa-auto-rerun-branch"
+              value={plan.autoRerunBranch ?? ''}
+              disabled={busy}
+              onChange={(e) => onSave({ autoRerunBranch: e.target.value || null })}
+              className={selectClass}
+            >
+              <option value="">None (rerun by hand)</option>
+              {branchOptions.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        {trigger !== 'deployment' && (
+          <label className="inline-flex items-center gap-1.5">
+            Delay
+            <select
+              data-testid="qa-auto-rerun-delay"
+              value={String(delay)}
+              disabled={busy}
+              onChange={(e) => onSave({ autoRerunDelayMinutes: Number(e.target.value) })}
+              className={selectClass}
+            >
+              {delayOptions.map((m) => (
+                <option key={m} value={String(m)}>
+                  {m === 0 ? 'None' : `${m} min`}
+                </option>
+              ))}
+            </select>
+          </label>
         )}
         <label className="inline-flex items-center gap-1.5">
           Max runs

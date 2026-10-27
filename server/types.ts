@@ -2106,10 +2106,10 @@ export interface QaPlanRow {
   auto_rerun: 0 | 1;
   max_iterations: number;
   /** What the auto-rerun waits on once every fix is Done. */
-  auto_rerun_trigger: 'deployment' | 'merge';
+  auto_rerun_trigger: 'deployment' | 'merge' | 'fixes_merged';
   /** Branch a merge must land on (merge trigger). */
   auto_rerun_branch: string | null;
-  /** Minutes to wait after the merge before rerunning (merge trigger); 0 = none. */
+  /** Minutes to wait after the merge (merge) or the last fix reaching Done (fixes_merged); 0 = none. */
   auto_rerun_delay_minutes: number;
   created_by: string | null;
   /** QA session where the cases were drafted. Null until one is opened. */
@@ -2231,7 +2231,7 @@ export interface Stmts {
         deploy_environment: string | null;
         auto_rerun: 0 | 1;
         max_iterations: number;
-        auto_rerun_trigger: 'deployment' | 'merge';
+        auto_rerun_trigger: 'deployment' | 'merge' | 'fixes_merged';
         auto_rerun_branch: string | null;
         auto_rerun_delay_minutes: number;
       },

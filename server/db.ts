@@ -35,7 +35,7 @@ import {
   FINALIZE_TERMINAL_STATUSES_SQL,
 } from './finalize/terminal-statuses.js';
 import { DEPLOYMENT_SCHEMA } from './deploy/deployment-schema.js';
-import { QA_SCHEMA } from './qa-schema.js';
+import { QA_AUTO_RERUN_TRIGGERS, QA_SCHEMA } from './qa-schema.js';
 import { DEPLOYMENT_ENV_RUNTIME_CONFIG_SCHEMA } from './deploy/deployment-env-config-schema.js';
 import { DEPLOYMENT_ENV_SECRETS_SCHEMA } from './deploy/deployment-env-secrets-schema.js';
 import { DEPLOYMENT_PROJECT_SETTINGS_SCHEMA } from './deploy/deploy-settings-schema.js';
@@ -3936,7 +3936,7 @@ function initDb(dataDir: string): void {
   // What the auto-rerun waits on: a deployment, or a merge into a branch.
   for (const ddl of [
     `ALTER TABLE qa_plans ADD COLUMN auto_rerun_trigger TEXT NOT NULL DEFAULT 'deployment'
-       CHECK (auto_rerun_trigger IN ('deployment', 'merge'))`,
+       CHECK (auto_rerun_trigger IN (${QA_AUTO_RERUN_TRIGGERS.map((t) => `'${t}'`).join(', ')}))`,
     'ALTER TABLE qa_plans ADD COLUMN auto_rerun_branch TEXT',
     `ALTER TABLE qa_plans ADD COLUMN auto_rerun_delay_minutes INTEGER NOT NULL DEFAULT 0
        CHECK (auto_rerun_delay_minutes BETWEEN 0 AND 60)`,
@@ -3947,6 +3947,12 @@ function initDb(dataDir: string): void {
       /* column already present */
     }
   }
+  // Installs whose trigger CHECK predates newer trigger values.
+  widenInListCheck(db, {
+    table: 'qa_plans',
+    column: 'auto_rerun_trigger',
+    values: QA_AUTO_RERUN_TRIGGERS,
+  });
   try {
     db.exec('ALTER TABLE release_notification_outbox ADD COLUMN next_attempt_at TEXT');
   } catch (_e) {

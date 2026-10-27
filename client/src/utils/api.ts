@@ -271,7 +271,7 @@ export interface QaPlanDetailWire {
   autoRerun?: { kind: string; message: string } | null;
 }
 
-export type QaAutoRerunTrigger = 'deployment' | 'merge';
+export type QaAutoRerunTrigger = 'deployment' | 'merge' | 'fixes_merged';
 
 export interface QaPlanPatch {
   deployEnvironment?: string | null;

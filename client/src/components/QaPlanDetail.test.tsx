@@ -1024,6 +1024,34 @@ describe('QaPlanDetail reruns', () => {
     );
   });
 
+  it('offers the fixes-merged trigger with a delay and no branch or environment', async () => {
+    mutations.getDeployEnvironments.mockResolvedValue({ environments: [] });
+    const base = detail({ cases: [qaCase('c1')] });
+    renderDetail(base);
+    fireEvent.change(await screen.findByTestId('qa-auto-rerun-trigger'), {
+      target: { value: 'fixes_merged' },
+    });
+    await waitFor(() =>
+      expect(mutations.updateQaPlan).toHaveBeenCalledWith('proj', 'p1', {
+        autoRerunTrigger: 'fixes_merged',
+      }),
+    );
+
+    cleanup();
+    const fixes = detail({ cases: [qaCase('c1')] });
+    fixes.plan = { ...fixes.plan, autoRerunTrigger: 'fixes_merged' };
+    renderDetail(fixes);
+    await waitFor(() => expect(screen.getByTestId('qa-auto-rerun-delay')).toBeEnabled());
+    expect(screen.queryByTestId('qa-auto-rerun-branch')).toBeNull();
+    expect(screen.queryByTestId('qa-deploy-environment')).toBeNull();
+    fireEvent.change(screen.getByTestId('qa-auto-rerun-delay'), { target: { value: '30' } });
+    await waitFor(() =>
+      expect(mutations.updateQaPlan).toHaveBeenCalledWith('proj', 'p1', {
+        autoRerunDelayMinutes: 30,
+      }),
+    );
+  });
+
   it('summarizes each trigger', () => {
     const plan = detail({}).plan;
     expect(autoRerunSummary({ ...plan, autoRerun: false })).toMatch(/off/);
@@ -1039,6 +1067,12 @@ describe('QaPlanDetail reruns', () => {
       }),
     ).toMatch(/merged into main and 10 more minutes pass/);
     expect(autoRerunSummary({ ...plan, autoRerunTrigger: 'merge' })).toMatch(/no branch chosen/);
+    expect(
+      autoRerunSummary({ ...plan, autoRerunTrigger: 'fixes_merged', autoRerunDelayMinutes: 0 }),
+    ).toMatch(/every finding card is Done \(its session, ticket, or epic merged\)\.$/);
+    expect(
+      autoRerunSummary({ ...plan, autoRerunTrigger: 'fixes_merged', autoRerunDelayMinutes: 15 }),
+    ).toMatch(/merged\), 15 minutes after the last one\.$/);
   });
 
   it('shows where the auto-rerun loop stands', async () => {

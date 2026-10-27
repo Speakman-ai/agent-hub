@@ -11,8 +11,11 @@
  * `auto_rerun_trigger` picks what the auto-rerun waits on once every fix is
  * Done: `deployment` waits for a successful deploy to `deploy_environment`;
  * `merge` waits for a pull request merged into `auto_rerun_branch`, then
- * `auto_rerun_delay_minutes` more. A trigger with no environment or branch
- * set sends an inbox notice instead of rerunning.
+ * `auto_rerun_delay_minutes` more; `fixes_merged` reruns
+ * `auto_rerun_delay_minutes` after the last finding card reached Done (a card
+ * reaches Done when its session, ticket, or epic work merges). A deployment or
+ * merge trigger with no environment or branch set sends an inbox notice
+ * instead of rerunning.
  *
  * qa_cases: the ordered case list. `version` bumps when an approved case is
  * edited, which also clears plan approval.
@@ -45,8 +48,9 @@ export const QA_PLAN_STATUSES = ['new', 'in_progress', 'done'] as const;
 export const QA_RUN_SCOPES = ['full', 'failed_only'] as const;
 export const QA_RUN_STATUSES = ['queued', 'running', 'passed', 'failed', 'cancelled'] as const;
 export const QA_VERDICTS = ['pass', 'fail', 'needs_change', 'blocked'] as const;
-export const QA_AUTO_RERUN_TRIGGERS = ['deployment', 'merge'] as const;
-/** Merge-trigger delay bounds in minutes; 0 means rerun as soon as the merge lands. */
+export const QA_AUTO_RERUN_TRIGGERS = ['deployment', 'merge', 'fixes_merged'] as const;
+export type QaAutoRerunTrigger = (typeof QA_AUTO_RERUN_TRIGGERS)[number];
+/** Merge / fixes-merged delay bounds in minutes; 0 means rerun as soon as the trigger fires. */
 export const QA_AUTO_RERUN_DELAY_MIN = 5;
 export const QA_AUTO_RERUN_DELAY_MAX = 60;
 

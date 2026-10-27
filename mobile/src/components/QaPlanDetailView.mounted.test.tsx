@@ -194,6 +194,35 @@ describe('QaPlanDetailView rerun triggers', () => {
     planOverrides = {};
     tree.unmount();
   });
+
+  it('with the fixes-merged trigger, offers the delay but no branch or environment', async () => {
+    let tree: any;
+    await act(async () => {
+      tree = TestRenderer.create(<QaPlanDetailView projectId="p1" planId="plan-1" />);
+    });
+    await flush();
+    await act(async () => {
+      tree.root.findByProps({ testID: 'qa-auto-rerun-trigger-fixes_merged' }).props.onPress();
+    });
+    await flush();
+    expect(updateQaPlan).toHaveBeenCalledWith('p1', 'plan-1', { autoRerunTrigger: 'fixes_merged' });
+    tree.unmount();
+
+    planOverrides = { autoRerunTrigger: 'fixes_merged' };
+    await act(async () => {
+      tree = TestRenderer.create(<QaPlanDetailView projectId="p1" planId="plan-1" />);
+    });
+    await flush();
+    expect(tree.root.findAllByProps({ testID: 'qa-auto-rerun-branch' })).toHaveLength(0);
+    expect(tree.root.findAllByProps({ testID: 'qa-deploy-environment' })).toHaveLength(0);
+    await act(async () => {
+      tree.root.findByProps({ testID: 'qa-auto-rerun-delay-30' }).props.onPress();
+    });
+    await flush();
+    expect(updateQaPlan).toHaveBeenCalledWith('p1', 'plan-1', { autoRerunDelayMinutes: 30 });
+    planOverrides = {};
+    tree.unmount();
+  });
 });
 
 describe('QaPlanDetailView troubleshoot', () => {

@@ -12,7 +12,10 @@
  *     after the last card reached Done (less a short grace, since a merge moves
  *     its own card to Done a moment after it lands). The latest merge inside
  *     that grace is taken as the one carrying the last fix. Then the optional delay
- *     that gives the branch's own deploy time to finish.
+ *     that gives the branch's own deploy time to finish;
+ *   - `fixes_merged`: once the last finding card reached Done (cards reach
+ *     Done when their session, ticket, or epic work merges), plus the
+ *     optional delay.
  * With no environment / branch set, nothing says when the fixes reach the
  * target, so the plan does not rerun. The owner gets an inbox notice instead.
  * A failed run at `max_iterations` stops the loop and notifies the owner.
@@ -28,7 +31,7 @@
  *
  * Triggers: every `kanban_update` / `deployment_update` / PR merge / plan
  * update broadcast schedules a debounced sweep of that project's plans, a
- * pending merge delay schedules a sweep for when it ends, and the server sweeps
+ * pending delay schedules a sweep for when it ends, and the server sweeps
  * every project once at boot for events missed while down.
  */
 import { getDb, getStmts } from './db.js';
@@ -58,7 +61,7 @@ export type QaAutoRerunDecision =
   | { kind: 'notify_manual'; run: QaRunRow; cardIds: string[] }
   | { kind: 'wait_deploy'; run: QaRunRow; environment: string; fixesDoneAt: string }
   | { kind: 'wait_merge'; run: QaRunRow; branch: string }
-  | { kind: 'wait_delay'; run: QaRunRow; branch: string; dueAt: number }
+  | { kind: 'wait_delay'; run: QaRunRow; landed: string; dueAt: number }
   | { kind: 'rerun'; run: QaRunRow; target: string };
 
 /** SQLite `datetime('now')` text (UTC, no zone) or ISO text to epoch ms. */
@@ -139,8 +142,16 @@ export function evaluateQaAutoRerun(planId: string, now = Date.now()): QaAutoRer
       mergeQuery('merged_at >= MAX(?, ?)', 'ASC');
     if (!merge) return { kind: 'wait_merge', run, branch };
     const dueAt = merge.merged_at + plan.auto_rerun_delay_minutes * 60_000;
-    if (now < dueAt) return { kind: 'wait_delay', run, branch, dueAt };
+    if (now < dueAt) {
+      return { kind: 'wait_delay', run, landed: `A merge into ${branch} landed`, dueAt };
+    }
     return { kind: 'rerun', run, target: branch };
+  }
+
+  if (plan.auto_rerun_trigger === 'fixes_merged') {
+    const dueAt = timestampMs(fixesDoneAt) + plan.auto_rerun_delay_minutes * 60_000;
+    if (now < dueAt) return { kind: 'wait_delay', run, landed: 'Every fix merged', dueAt };
+    return { kind: 'rerun', run, target: 'merged' };
   }
 
   const environment = plan.deploy_environment;
@@ -155,6 +166,14 @@ export function evaluateQaAutoRerun(planId: string, now = Date.now()): QaAutoRer
     .get(plan.project_id, environment, fixesDoneAt) as { id: string } | undefined;
   if (!deployment) return { kind: 'wait_deploy', run, environment, fixesDoneAt };
   return { kind: 'rerun', run, target: environment };
+}
+
+/** "The fixes reached <target>" for the rerun messages, worded per trigger. */
+function fixesLanded(plan: QaPlanRow, target: string, iteration?: number): string {
+  const fixes = iteration === undefined ? 'The fixes' : `The fixes from run ${iteration}`;
+  return plan.auto_rerun_trigger === 'fixes_merged'
+    ? `${fixes} merged`
+    : `${fixes} reached ${target}`;
 }
 
 /**
@@ -196,7 +215,7 @@ export function describeQaAutoRerun(
     case 'wait_delay':
       return {
         kind: d.kind,
-        message: `A merge into ${d.branch} landed. Auto-rerun starts at ${new Date(d.dueAt).toISOString()}.`,
+        message: `${d.landed}. Auto-rerun starts at ${new Date(d.dueAt).toISOString()}.`,
         dueAt: new Date(d.dueAt).toISOString(),
       };
     case 'wait_deploy':
@@ -208,9 +227,9 @@ export function describeQaAutoRerun(
       return d.run.auto_rerun_state === 'rerun_failed'
         ? {
             kind: 'rerun_failed',
-            message: `The fixes reached ${d.target}, but the automatic rerun failed to start. Rerun by hand.`,
+            message: `${fixesLanded(plan, d.target)}, but the automatic rerun failed to start. Rerun by hand.`,
           }
-        : { kind: d.kind, message: `The fixes reached ${d.target}; a rerun is starting.` };
+        : { kind: d.kind, message: `${fixesLanded(plan, d.target)}; a rerun is starting.` };
   }
 }
 
@@ -333,7 +352,7 @@ export async function processQaAutoRerun(
       plan,
       run,
       'auto_rerun_failed',
-      `The fixes from run ${run.iteration} reached ${decision.target}, but the automatic rerun could not start: ${error}`,
+      `${fixesLanded(plan, decision.target, run.iteration)}, but the automatic rerun could not start: ${error}`,
     );
     return 'rerun_failed';
   } catch (e) {
@@ -344,7 +363,7 @@ export async function processQaAutoRerun(
 
 const delayTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-/** Re-check a plan when its merge delay ends; no broadcast marks that moment. */
+/** Re-check a plan when its delay ends; no broadcast marks that moment. */
 function scheduleDelayedSweep(deps: QaRunLaunchDeps, planId: string, dueAt: number): void {
   const existing = delayTimers.get(planId);
   if (existing) clearTimeout(existing);

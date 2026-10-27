@@ -15291,7 +15291,8 @@ components:
           enum:
             - deployment
             - merge
-          description: "What auto-rerun waits on once every finding card is Done: a successful deployment to deployEnvironment, or a pull request merged into autoRerunBranch."
+            - fixes_merged
+          description: "What auto-rerun waits on once every finding card is Done: a successful deployment to deployEnvironment, a pull request merged into autoRerunBranch, or nothing more (fixes_merged: the finding cards reaching Done, which happens when their sessions, tickets, or epics merge). merge and fixes_merged then wait autoRerunDelayMinutes."
         autoRerunBranch:
           type: string
           nullable: true
@@ -58739,7 +58740,8 @@ paths:
                   enum:
                     - deployment
                     - merge
-                  description: "What auto-rerun waits on once every finding card is Done: a successful deployment to deployEnvironment, or a pull request merged into autoRerunBranch."
+                    - fixes_merged
+                  description: "What auto-rerun waits on once every finding card is Done: a successful deployment to deployEnvironment, a pull request merged into autoRerunBranch, or nothing more (fixes_merged: the finding cards reaching Done, which happens when their sessions, tickets, or epics merge). merge and fixes_merged then wait autoRerunDelayMinutes."
                 autoRerunBranch:
                   type: string
                   nullable: true
@@ -58932,7 +58934,8 @@ paths:
                   enum:
                     - deployment
                     - merge
-                  description: "What auto-rerun waits on once every finding card is Done: a successful deployment to deployEnvironment, or a pull request merged into autoRerunBranch."
+                    - fixes_merged
+                  description: "What auto-rerun waits on once every finding card is Done: a successful deployment to deployEnvironment, a pull request merged into autoRerunBranch, or nothing more (fixes_merged: the finding cards reaching Done, which happens when their sessions, tickets, or epics merge). merge and fixes_merged then wait autoRerunDelayMinutes."
                 autoRerunBranch:
                   type: string
                   nullable: true

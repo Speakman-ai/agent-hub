@@ -251,5 +251,15 @@ describe('autoRerunDescription', () => {
     expect(autoRerunDescription({ ...base, autoRerunTrigger: 'merge' })).toMatch(
       /no branch chosen/,
     );
+    expect(autoRerunDescription({ ...base, autoRerunTrigger: 'fixes_merged' })).toMatch(
+      /every finding card is Done \(its session, ticket, or epic merged\)\.$/,
+    );
+    expect(
+      autoRerunDescription({
+        ...base,
+        autoRerunTrigger: 'fixes_merged',
+        autoRerunDelayMinutes: 15,
+      }),
+    ).toMatch(/merged\), 15 minutes after the last one\.$/);
   });
 });

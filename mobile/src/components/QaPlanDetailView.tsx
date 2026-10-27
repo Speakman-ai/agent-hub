@@ -380,6 +380,12 @@ function ChipRow<T extends string | number | null>({
   );
 }
 
+const TRIGGER_LABELS: Record<QaAutoRerunTrigger, string> = {
+  deployment: 'Deployment',
+  merge: 'Merge to branch',
+  fixes_merged: 'Fixes merged',
+};
+
 function RerunSettings({
   projectId,
   detail,
@@ -429,13 +435,13 @@ function RerunSettings({
       <Text style={styles.settingLabel}>Trigger</Text>
       <ChipRow<QaAutoRerunTrigger>
         testID="qa-auto-rerun-trigger"
-        options={['deployment', 'merge']}
+        options={['deployment', 'merge', 'fixes_merged']}
         value={trigger}
         busy={busy}
-        label={(t) => (t === 'merge' ? 'Merge to branch' : 'Deployment')}
+        label={(t) => TRIGGER_LABELS[t]}
         onPick={(t) => onSave({ autoRerunTrigger: t })}
       />
-      {trigger === 'deployment' ? (
+      {trigger === 'deployment' && (
         <>
           <Text style={styles.settingLabel}>Deploy environment</Text>
           <ChipRow<string | null>
@@ -447,7 +453,8 @@ function RerunSettings({
             onPick={(name) => onSave({ deployEnvironment: name })}
           />
         </>
-      ) : (
+      )}
+      {trigger === 'merge' && (
         <>
           <Text style={styles.settingLabel}>Branch</Text>
           <ChipRow<string | null>
@@ -458,6 +465,10 @@ function RerunSettings({
             label={(name) => name ?? 'None (rerun by hand)'}
             onPick={(name) => onSave({ autoRerunBranch: name })}
           />
+        </>
+      )}
+      {trigger !== 'deployment' && (
+        <>
           <Text style={styles.settingLabel}>Delay</Text>
           <ChipRow<number>
             testID="qa-auto-rerun-delay"

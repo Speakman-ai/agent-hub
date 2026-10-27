@@ -26,6 +26,7 @@
  */
 import { randomUUID } from 'crypto';
 import { getDb, getStmts } from './db.js';
+import type { QaAutoRerunTrigger } from './qa-schema.js';
 import type {
   QaCaseRow,
   QaLatestVerdictRow,
@@ -163,7 +164,7 @@ export interface QaPlanPatch {
   deployEnvironment?: string | null;
   autoRerun?: boolean;
   maxIterations?: number;
-  autoRerunTrigger?: 'deployment' | 'merge';
+  autoRerunTrigger?: QaAutoRerunTrigger;
   autoRerunBranch?: string | null;
   autoRerunDelayMinutes?: number;
 }

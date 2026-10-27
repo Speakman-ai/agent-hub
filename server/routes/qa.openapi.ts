@@ -17,7 +17,7 @@ import {
 
 const AutoRerunTrigger = z.enum(QA_AUTO_RERUN_TRIGGERS).openapi({
   description:
-    'What auto-rerun waits on once every finding card is Done: a successful deployment to deployEnvironment, or a pull request merged into autoRerunBranch.',
+    'What auto-rerun waits on once every finding card is Done: a successful deployment to deployEnvironment, a pull request merged into autoRerunBranch, or nothing more (fixes_merged: the finding cards reaching Done, which happens when their sessions, tickets, or epics merge). merge and fixes_merged then wait autoRerunDelayMinutes.',
 });
 
 const AutoRerunDelay = z

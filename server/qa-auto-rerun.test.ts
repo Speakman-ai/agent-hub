@@ -319,6 +319,41 @@ describe('evaluateQaAutoRerun', () => {
     });
   });
 
+  it('with a fixes-merged trigger, reruns once the last fix is Done, after the delay', () => {
+    const { planId, caseIds } = plan();
+    getDb()
+      .prepare(
+        `UPDATE qa_plans SET auto_rerun_trigger = 'fixes_merged', auto_rerun_delay_minutes = 10
+          WHERE id = ?`,
+      )
+      .run(planId);
+    const [a, b] = [card(), card()];
+    failedRun(
+      planId,
+      { [caseIds[0]!]: 'fail', [caseIds[1]!]: 'needs_change' },
+      {
+        [caseIds[0]!]: a,
+        [caseIds[1]!]: b,
+      },
+    );
+    markDone(a, '2026-10-26 10:00:00');
+    expect(evaluateQaAutoRerun(planId).kind).toBe('wait_fixes');
+
+    // No deploy or branch merge needed: the delay runs from the last card's Done.
+    markDone(b, '2026-10-26 11:00:00');
+    const doneAt = Date.parse('2026-10-26T11:00:00Z');
+    expect(evaluateQaAutoRerun(planId, doneAt + 9 * 60_000)).toMatchObject({
+      kind: 'wait_delay',
+      dueAt: doneAt + 10 * 60_000,
+    });
+    expect(describeQaAutoRerun(planId)).not.toBeNull();
+    expect(evaluateQaAutoRerun(planId, doneAt + 10 * 60_000)).toMatchObject({ kind: 'rerun' });
+
+    getDb().prepare('UPDATE qa_plans SET auto_rerun_delay_minutes = 0 WHERE id = ?').run(planId);
+    expect(evaluateQaAutoRerun(planId, doneAt)).toMatchObject({ kind: 'rerun' });
+    expect(describeQaAutoRerun(planId)?.message).toBe('The fixes merged; a rerun is starting.');
+  });
+
   it('with a merge trigger and no branch, asks for a manual rerun', () => {
     const { planId, caseIds } = plan({ env: 'staging' });
     mergeTrigger(planId, null);
