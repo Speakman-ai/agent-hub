@@ -21,7 +21,8 @@ scripts/google-mail.sh threads --q is:unread --account work@x.com
 scripts/google-cal.sh list --from 2026-06-30T00:00:00Z --to 2026-07-01T00:00:00Z --account work@x.com
 ```
 
-`google-chat.sh` has no `--account`; Chat runs as the default account.
+`google-chat.sh` has no `--account`; Chat runs as the owner's Chat account (picked in
+Settings → Account → Google), which can differ from the default.
 
 ## Exit codes
 

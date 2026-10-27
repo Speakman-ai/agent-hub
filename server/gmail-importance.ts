@@ -36,13 +36,14 @@ import {
   deleteGmailImportanceVerdicts,
   markGmailImportanceChecked,
   selectGmailImportanceReconcileBatch,
-  listGmailImportanceAutoScanUsers,
+  listGmailImportanceAutoScanAccounts,
   markGmailImportanceScanRunning,
   pruneGmailImportanceVerdicts,
   recordGmailImportanceScanResult,
   resetStaleGmailImportanceScans,
   upsertGmailImportanceVerdicts,
   type GmailImportanceAutoScan,
+  type GmailImportanceKey,
   type GmailImportanceVerdictInput,
   type GmailImportanceWindowDays,
 } from './gmail-importance-store.js';
@@ -332,7 +333,9 @@ type FailoverRunner = (
 ) => Promise<OneShotFailoverOutcome>;
 
 export interface GmailImportanceScanDeps {
-  resolveToken?: (userId: string, cfg: AppConfig) => Promise<string | null>;
+  resolveToken?: (key: GmailImportanceKey, cfg: AppConfig) => Promise<string | null>;
+  /** True while the account is linked with Gmail read access (auto-scan gate). */
+  hasGmailAccess?: (key: GmailImportanceKey) => boolean;
   createSource?: (accessToken: string) => GmailThreadSource;
   resolveEngine?: typeof resolveOneShotEngine;
   runFailover?: FailoverRunner;
@@ -348,11 +351,15 @@ export interface GmailImportanceScanSummary {
   failover: string | null;
 }
 
-/** Users with a scan in flight in this process. */
+/** Mailboxes (user + account) with a scan in flight in this process. */
 const runningScans = new Set<string>();
 
-export function isGmailImportanceScanRunning(userId: string): boolean {
-  return runningScans.has(userId);
+function scanKey(key: GmailImportanceKey): string {
+  return `${key.userId}\u0000${key.accountId}`;
+}
+
+export function isGmailImportanceScanRunning(key: GmailImportanceKey): boolean {
+  return runningScans.has(scanKey(key));
 }
 
 async function classifyCandidates(
@@ -431,45 +438,65 @@ async function classifyCandidates(
   };
 }
 
-async function defaultResolveToken(userId: string, cfg: AppConfig): Promise<string | null> {
+function defaultHasGmailAccess(key: GmailImportanceKey): boolean {
+  const status = getGoogleConnectionStatus(key.userId, { accountId: key.accountId });
+  return status.connected && hasGmailReadScope(status.grantedScopes);
+}
+
+async function defaultResolveToken(
+  key: GmailImportanceKey,
+  cfg: AppConfig,
+): Promise<string | null> {
   if (!cfg.googleOAuth?.clientId || !cfg.googleOAuth?.clientSecret) {
     throw new GmailImportanceScanError(
       'Google OAuth is not configured on this server',
       'google_oauth_not_configured',
     );
   }
-  const status = getGoogleConnectionStatus(userId);
+  const status = getGoogleConnectionStatus(key.userId, { accountId: key.accountId });
   if (!status.connected) {
     throw new GmailImportanceScanError('Google account is not connected', 'google_not_connected');
   }
   if (!hasGmailReadScope(status.grantedScopes)) {
     throw new GmailImportanceScanError(
-      'Gmail read access has not been granted',
+      `Gmail read access has not been granted for ${status.email ?? 'this account'}`,
       'google_gmail_scope_required',
     );
   }
-  return getActiveAccessToken(userId, cfg.googleOAuth ?? null);
+  return getActiveAccessToken(key.userId, cfg.googleOAuth ?? null, {
+    account: { accountId: key.accountId },
+  });
+}
+
+export interface GmailImportanceScanInput {
+  userId: string;
+  /** Linked Google account whose inbox is scanned. */
+  accountId: string;
+  config: AppConfig;
+  windowDays?: GmailImportanceWindowDays;
 }
 
 /**
- * Scan the user's inbox for the window and refresh cached verdicts. Only
- * threads that are new or changed since their last verdict reach the model.
- * Records status on the settings row either way and rethrows on failure.
+ * Scan one account's inbox for the window and refresh its cached verdicts.
+ * Only threads that are new or changed since their last verdict reach the
+ * model. Records status on the account's settings row either way and
+ * rethrows on failure.
  */
 export async function runGmailImportanceScan(
-  input: { userId: string; config: AppConfig; windowDays?: GmailImportanceWindowDays },
+  input: GmailImportanceScanInput,
   deps: GmailImportanceScanDeps = {},
 ): Promise<GmailImportanceScanSummary> {
   const { userId, config } = input;
-  if (runningScans.has(userId)) {
+  const key: GmailImportanceKey = { userId, accountId: input.accountId };
+  if (runningScans.has(scanKey(key))) {
     throw new GmailImportanceScanError('A scan is already running', 'scan_in_progress');
   }
-  runningScans.add(userId);
-  markGmailImportanceScanRunning(userId);
+  runningScans.add(scanKey(key));
+  markGmailImportanceScanRunning(key);
   const now = deps.now ?? Date.now;
   try {
-    const windowDays = input.windowDays ?? getGmailImportanceSettings(userId).windowDays;
-    const token = await (deps.resolveToken ?? defaultResolveToken)(userId, config);
+    const windowDays = input.windowDays ?? getGmailImportanceSettings(key).windowDays;
+    const token = await (deps.resolveToken ?? defaultResolveToken)(key, config);
     if (!token) {
       throw new GmailImportanceScanError(
         'Google account must be reconnected',
@@ -481,7 +508,7 @@ export async function runGmailImportanceScan(
       gmailImportanceQuery(windowDays),
       GMAIL_IMPORTANCE_THREAD_CAP[windowDays],
     );
-    const cached = getGmailImportanceVerdicts(userId, ids);
+    const cached = getGmailImportanceVerdicts(key, ids);
     // Cached threads are fetched too: a changed historyId means new activity.
     const fetched = await mapWithConcurrency(ids, THREAD_FETCH_CONCURRENCY, async (id) => {
       try {
@@ -500,7 +527,7 @@ export async function runGmailImportanceScan(
     const eligible = candidates.filter((c) => isInboxEligible(c.labelIds));
     const confirmed = new Set(eligible.map((c) => c.threadId));
     deleteGmailImportanceVerdicts(
-      userId,
+      key,
       ids.filter((id) => !confirmed.has(id)),
     );
     const needsVerdict = eligible.filter((c) => {
@@ -527,15 +554,15 @@ export async function runGmailImportanceScan(
         lastMessageAt: c.lastMessageAt,
       });
     }
-    upsertGmailImportanceVerdicts(userId, rows);
+    upsertGmailImportanceVerdicts(key, rows);
 
     // Pinned threads the inbox query no longer returned may have been archived
     // or deleted, or may simply sit past the scan cap. Ask Gmail directly
     // rather than inferring from absence.
     const checkedAt = new Date(now()).toISOString();
-    markGmailImportanceChecked(userId, confirmed, checkedAt);
+    markGmailImportanceChecked(key, confirmed, checkedAt);
     const toCheck = selectGmailImportanceReconcileBatch(
-      userId,
+      key,
       confirmed,
       GMAIL_IMPORTANCE_RECONCILE_CAP,
     );
@@ -544,15 +571,15 @@ export async function runGmailImportanceScan(
       labels: await source.getThreadLabels(id),
     }));
     deleteGmailImportanceVerdicts(
-      userId,
+      key,
       labelsById.filter((r) => !isInboxEligible(r.labels)).map((r) => r.id),
     );
     markGmailImportanceChecked(
-      userId,
+      key,
       labelsById.filter((r) => isInboxEligible(r.labels)).map((r) => r.id),
       checkedAt,
     );
-    pruneGmailImportanceVerdicts(userId, new Date(now() - 31 * DAY_MS).toISOString());
+    pruneGmailImportanceVerdicts(key, new Date(now() - 31 * DAY_MS).toISOString());
 
     const summary: GmailImportanceScanSummary = {
       scanned: eligible.length,
@@ -563,7 +590,7 @@ export async function runGmailImportanceScan(
       failover: result.failover,
     };
     recordGmailImportanceScanResult(
-      userId,
+      key,
       { ok: true, engine: result.engine, model: result.model, failover: result.failover },
       new Date(now()).toISOString(),
     );
@@ -571,28 +598,28 @@ export async function runGmailImportanceScan(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     recordGmailImportanceScanResult(
-      userId,
+      key,
       { ok: false, error: message },
       new Date(now()).toISOString(),
     );
     throw err;
   } finally {
-    runningScans.delete(userId);
+    runningScans.delete(scanKey(key));
   }
 }
 
 /**
  * Kick off a scan without awaiting it. Returns false when one is already
- * running for this user. Errors are recorded on the settings row.
+ * running for this account. Errors are recorded on the settings row.
  */
 export function startGmailImportanceScan(
-  input: { userId: string; config: AppConfig; windowDays?: GmailImportanceWindowDays },
+  input: GmailImportanceScanInput,
   deps: GmailImportanceScanDeps = {},
 ): boolean {
-  if (runningScans.has(input.userId)) return false;
+  if (runningScans.has(scanKey(input))) return false;
   runGmailImportanceScan(input, deps).catch((err: unknown) => {
     console.warn(
-      `[gmail-importance] scan failed for user ${input.userId}: ${
+      `[gmail-importance] scan failed for user ${input.userId} account ${input.accountId}: ${
         err instanceof Error ? err.message : String(err)
       }`,
     );
@@ -600,25 +627,26 @@ export function startGmailImportanceScan(
   return true;
 }
 
-/** Users whose automated scan is due. Pure so the ticker logic is testable. */
+/** Mailboxes whose automated scan is due. Pure so the ticker logic is testable. */
 export function selectDueGmailImportanceScans(
-  users: ReadonlyArray<{
-    userId: string;
-    autoScan: Exclude<GmailImportanceAutoScan, 'off'>;
-    lastScanAt: string | null;
-  }>,
+  accounts: ReadonlyArray<
+    GmailImportanceKey & {
+      autoScan: Exclude<GmailImportanceAutoScan, 'off'>;
+      lastScanAt: string | null;
+    }
+  >,
   nowMs: number,
-  isRunning: (userId: string) => boolean = isGmailImportanceScanRunning,
-): string[] {
-  return users
+  isRunning: (key: GmailImportanceKey) => boolean = isGmailImportanceScanRunning,
+): GmailImportanceKey[] {
+  return accounts
     .filter((u) => {
-      if (isRunning(u.userId)) return false;
+      if (isRunning(u)) return false;
       if (!u.lastScanAt) return true;
       const last = Date.parse(u.lastScanAt);
       if (!Number.isFinite(last)) return true;
       return nowMs - last >= AUTO_SCAN_INTERVAL_MS[u.autoScan];
     })
-    .map((u) => u.userId);
+    .map((u) => ({ userId: u.userId, accountId: u.accountId }));
 }
 
 // wrapCronTick returns before the async work finishes, so node-cron's
@@ -628,7 +656,7 @@ let autoScanTickRunning = false;
 export async function runGmailImportanceAutoScanTick(
   config: AppConfig,
   deps: GmailImportanceScanDeps = {},
-): Promise<string[]> {
+): Promise<GmailImportanceKey[]> {
   if (autoScanTickRunning) return [];
   autoScanTickRunning = true;
   try {
@@ -641,25 +669,26 @@ export async function runGmailImportanceAutoScanTick(
 async function runDueAutoScans(
   config: AppConfig,
   deps: GmailImportanceScanDeps,
-): Promise<string[]> {
+): Promise<GmailImportanceKey[]> {
   const due = selectDueGmailImportanceScans(
-    listGmailImportanceAutoScanUsers(),
+    listGmailImportanceAutoScanAccounts(),
     (deps.now ?? Date.now)(),
   );
   // Sequential on purpose: each scan spawns a CLI on the user's subscription,
   // and a burst of parallel spawns at the top of the hour would pile up RAM.
-  const scanned: string[] = [];
-  for (const userId of due) {
-    // Earlier scans in this loop can take minutes. Re-read this user's
-    // settings right before starting: they may have turned auto-scan off,
-    // disabled the feature, or finished a manual scan while waiting.
-    if (!isAutoScanStillDue(userId, (deps.now ?? Date.now)())) continue;
-    scanned.push(userId);
+  const scanned: GmailImportanceKey[] = [];
+  for (const key of due) {
+    // Earlier scans in this loop can take minutes. Re-read this account's
+    // settings right before starting: auto-scan may have been turned off, the
+    // feature disabled, a manual scan finished, or the account removed or
+    // stripped of Gmail access while waiting.
+    if (!isAutoScanStillDue(key, (deps.now ?? Date.now)(), deps)) continue;
+    scanned.push(key);
     try {
-      await runGmailImportanceScan({ userId, config }, deps);
+      await runGmailImportanceScan({ ...key, config }, deps);
     } catch (err) {
       console.warn(
-        `[gmail-importance] auto-scan failed for user ${userId}: ${
+        `[gmail-importance] auto-scan failed for user ${key.userId} account ${key.accountId}: ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
@@ -668,13 +697,21 @@ async function runDueAutoScans(
   return scanned;
 }
 
-/** Fresh due-check for one user, against current settings and running state. */
-function isAutoScanStillDue(userId: string, nowMs: number): boolean {
-  const settings = getGmailImportanceSettings(userId);
+/**
+ * Fresh due-check for one mailbox, against current settings, running state,
+ * and the account's Gmail access.
+ */
+function isAutoScanStillDue(
+  key: GmailImportanceKey,
+  nowMs: number,
+  deps: GmailImportanceScanDeps,
+): boolean {
+  const settings = getGmailImportanceSettings(key);
   if (!settings.enabled || settings.autoScan === 'off') return false;
+  if (!(deps.hasGmailAccess ?? defaultHasGmailAccess)(key)) return false;
   return (
     selectDueGmailImportanceScans(
-      [{ userId, autoScan: settings.autoScan, lastScanAt: settings.lastScanAt }],
+      [{ ...key, autoScan: settings.autoScan, lastScanAt: settings.lastScanAt }],
       nowMs,
     ).length === 1
   );

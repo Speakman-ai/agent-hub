@@ -76,8 +76,8 @@ describe('mobile GmailImportantSection', () => {
     await act(async () => {
       renderer.root.findByProps({ testID: 'gmail-important-toggle' }).props.onValueChange(true);
     });
-    expect(api.updateGmailImportanceSettings).toHaveBeenCalledWith({ enabled: true });
-    expect(api.startGmailImportanceScan).toHaveBeenCalledWith({ windowDays: 7 });
+    expect(api.updateGmailImportanceSettings).toHaveBeenCalledWith({ enabled: true }, {});
+    expect(api.startGmailImportanceScan).toHaveBeenCalledWith({ windowDays: 7 }, {});
     expect(text(renderer)).toContain('Scanning your inbox');
     renderer.unmount();
   });
@@ -285,7 +285,7 @@ describe('mobile GmailImportantSection', () => {
     await act(async () => {
       renderer.root.findByProps({ testID: 'gmail-important-dismiss-t9' }).props.onPress();
     });
-    expect(api.dismissGmailImportantThread).toHaveBeenCalledWith('t9');
+    expect(api.dismissGmailImportantThread).toHaveBeenCalledWith('t9', {});
     expect(renderer.root.findAllByProps({ testID: 'gmail-important-thread-t9' })).toHaveLength(0);
     expect(onPinnedChange).toHaveBeenLastCalledWith([]);
     renderer.unmount();
@@ -351,12 +351,12 @@ describe('mobile GmailImportantSection', () => {
     await act(async () => {
       renderer.root.findByProps({ testID: 'gmail-important-window-30' }).props.onPress();
     });
-    expect(api.updateGmailImportanceSettings).toHaveBeenCalledWith({ windowDays: 30 });
+    expect(api.updateGmailImportanceSettings).toHaveBeenCalledWith({ windowDays: 30 }, {});
 
     await act(async () => {
       renderer.root.findByProps({ testID: 'gmail-important-auto-daily' }).props.onPress();
     });
-    expect(api.updateGmailImportanceSettings).toHaveBeenCalledWith({ autoScan: 'daily' });
+    expect(api.updateGmailImportanceSettings).toHaveBeenCalledWith({ autoScan: 'daily' }, {});
     renderer.unmount();
   });
 });

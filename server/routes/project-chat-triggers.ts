@@ -22,7 +22,7 @@ import type { z } from '../openapi/registry.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { resolveGoogleConnectionUserId } from '../google-connection-user.js';
 import { getMembershipRole } from '../memberships-store.js';
-import { getGoogleConnectionStatus } from '../google-connections-store.js';
+import { getChatConnectionStatus } from '../google-chat-account.js';
 import { hasChatMessagesCreateScope } from '../google-scopes.js';
 import { getActiveOrgId } from '../orgs.js';
 import { isInternalSystemProject } from '../../shared/utils/hub.js';
@@ -178,7 +178,7 @@ export default function createProjectChatTriggerRoutes(deps: RouteDeps): Router 
 
   /** Whether the caller can post to Google Chat; writes 400 and returns false if not. */
   function googleChatSendable(caller: Caller, res: Response): boolean {
-    const status = getGoogleConnectionStatus(caller.userId);
+    const status = getChatConnectionStatus(caller.userId);
     if (
       deps.config?.googleOAuth?.clientId &&
       status.connected &&

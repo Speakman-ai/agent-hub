@@ -8,6 +8,8 @@
  * for a specific scope is a separate, inline "Enable …" affordance.
  */
 
+import { chatScopedStatus } from '@shared/utils/googleChatAccount';
+
 export const CALENDAR_EVENTS_SCOPE = 'https://www.googleapis.com/auth/calendar.events';
 export const CALENDAR_FULL_SCOPE = 'https://www.googleapis.com/auth/calendar';
 
@@ -121,7 +123,9 @@ export const CHAT_SURFACE_SCOPES = [
 ];
 
 /** True when the account can list spaces and read their messages. */
-export function hasChatReadScope(status: any): boolean {
+export function hasChatReadScope(rawStatus: any): boolean {
+  // Chat runs as its own account; read that account's scopes.
+  const status = chatScopedStatus(rawStatus);
   const spaces =
     hasGoogleScope(status, CHAT_SPACES_READONLY_SCOPE) || hasGoogleScope(status, CHAT_SPACES_SCOPE);
   const messages =
@@ -131,7 +135,8 @@ export function hasChatReadScope(status: any): boolean {
 }
 
 /** True when the account can post Chat messages. */
-export function hasChatSendScope(status: any): boolean {
+export function hasChatSendScope(rawStatus: any): boolean {
+  const status = chatScopedStatus(rawStatus);
   return (
     hasGoogleScope(status, CHAT_MESSAGES_CREATE_SCOPE) ||
     hasGoogleScope(status, CHAT_MESSAGES_SCOPE)

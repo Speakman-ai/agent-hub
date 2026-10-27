@@ -1,6 +1,12 @@
 /**
  * Mirror reminders onto the owner's primary Google Calendar.
  *
+ * A new event goes to the owner's default Google account, and the reminder
+ * records that account. Patches and deletes always target the recorded
+ * account, so an event stays manageable after the default moves to another
+ * account. When the recorded account is removed, its events are no longer
+ * reachable: work on them stops (`skipped`) instead of retrying forever.
+ *
  * Best effort and never blocking: a reminder is saved and fires through the
  * notification inbox whether or not the calendar write works. The mirror only
  * runs when the owner has connected Google with a calendar scope; otherwise
@@ -24,6 +30,7 @@ import type { BroadcastFn } from './types.js';
 import {
   beginCalendarInsert,
   calendarEventIdFor,
+  stampDefaultCalendarAccount,
   completeCalendarCleanup,
   getReminder,
   linkCalendarEvent,
@@ -55,10 +62,25 @@ export interface ReminderCalendarClient {
   remove(calendarId: string, eventId: string): Promise<void>;
 }
 
+/**
+ * Why there is no client. `accountGone` means the account holding the event
+ * is no longer linked, so no retry can ever reach it.
+ */
+export interface ReminderCalendarSkip {
+  skip: string;
+  accountGone?: boolean;
+}
+
 export interface ReminderCalendarDeps {
   googleOAuth: GoogleOAuthConfig | null | undefined;
-  /** Returns a client, or a skip reason when the owner's calendar is unavailable. */
-  resolveClient?: (userId: string) => Promise<ReminderCalendarClient | { skip: string }>;
+  /**
+   * Returns a client for `accountId`'s calendar (null: the default account),
+   * or a skip reason when that calendar is unavailable.
+   */
+  resolveClient?: (
+    userId: string,
+    accountId: string | null,
+  ) => Promise<ReminderCalendarClient | ReminderCalendarSkip>;
   /**
    * Owner-scoped `reminder_update` delivery. Every calendar write that
    * changes what clients show is announced from `exclusive`, whoever's work
@@ -92,16 +114,24 @@ function googleClient(accessToken: string): ReminderCalendarClient {
 export async function resolveReminderCalendarClient(
   userId: string,
   googleOAuth: ReminderCalendarDeps['googleOAuth'],
-): Promise<ReminderCalendarClient | { skip: string }> {
+  accountId: string | null = null,
+): Promise<ReminderCalendarClient | ReminderCalendarSkip> {
   if (!googleOAuth?.clientId || !googleOAuth?.clientSecret) {
     return { skip: 'Google is not configured on this server' };
   }
-  const status = getGoogleConnectionStatus(userId);
-  if (!status.connected) return { skip: 'Google account is not connected' };
-  if (!hasCalendarPrimaryWriteScope(status.grantedScopes)) {
-    return { skip: 'Google Calendar write access has not been granted' };
+  const account = accountId ? { accountId } : undefined;
+  const status = getGoogleConnectionStatus(userId, account);
+  if (!status.connected) {
+    return accountId
+      ? { skip: 'The Google account that holds this event is no longer linked', accountGone: true }
+      : { skip: 'Google account is not connected' };
   }
-  const token = await getActiveAccessToken(userId, googleOAuth);
+  if (!hasCalendarPrimaryWriteScope(status.grantedScopes)) {
+    return {
+      skip: `Google Calendar write access has not been granted${status.email ? ` for ${status.email}` : ''}`,
+    };
+  }
+  const token = await getActiveAccessToken(userId, googleOAuth, account ? { account } : {});
   if (!token) return { skip: 'Google account must be reconnected' };
   return googleClient(token);
 }
@@ -109,10 +139,25 @@ export async function resolveReminderCalendarClient(
 function resolve(
   deps: ReminderCalendarDeps,
   userId: string,
-): Promise<ReminderCalendarClient | { skip: string }> {
+  accountId: string | null,
+): Promise<ReminderCalendarClient | ReminderCalendarSkip> {
   return deps.resolveClient
-    ? deps.resolveClient(userId)
-    : resolveReminderCalendarClient(userId, deps.googleOAuth);
+    ? deps.resolveClient(userId, accountId)
+    : resolveReminderCalendarClient(userId, deps.googleOAuth, accountId);
+}
+
+/** The account can never be reached again: drop the event link for good. */
+function abandonCalendarLink(
+  reminder: Pick<Reminder, 'userId' | 'id'>,
+  eventId: string,
+  reason: string,
+): Reminder | null {
+  return setReminderCalendar(
+    reminder.userId,
+    reminder.id,
+    { status: 'skipped', error: reason },
+    eventId,
+  );
 }
 
 export function reminderEventResource(
@@ -252,19 +297,25 @@ async function insertLocked(
   now: Date,
   firstAttempt: boolean,
 ): Promise<Reminder | null> {
-  const snapshot = getReminder(ref.userId, ref.id);
+  let snapshot = getReminder(ref.userId, ref.id);
   if (!snapshot || snapshot.calendar.status !== 'pending' || !snapshot.calendar.eventId) {
     return snapshot;
   }
   const eventId = snapshot.calendar.eventId;
+  // Reserved while no account was linked: the event goes to today's default.
+  if (!snapshot.calendar.accountId) {
+    snapshot = stampDefaultCalendarAccount(snapshot.userId, snapshot.id, eventId) ?? snapshot;
+  }
+  const accountId = snapshot.calendar.accountId;
   const calendarId = snapshot.calendar.calendarId ?? PRIMARY;
   let htmlLink: string | null = null;
   let alreadyExisted = false;
   // Once the request is out, its outcome is unknown until Google answers.
   let requestSent = false;
   try {
-    const client = await resolve(deps, snapshot.userId);
+    const client = await resolve(deps, snapshot.userId, accountId);
     if ('skip' in client) {
+      if (client.accountGone) return abandonCalendarLink(snapshot, eventId, client.skip);
       if (firstAttempt) {
         return setReminderCalendar(
           snapshot.userId,
@@ -281,6 +332,7 @@ async function insertLocked(
         client.skip,
         false,
         now,
+        accountId,
       );
     }
     try {
@@ -305,6 +357,7 @@ async function insertLocked(
       errMessage(err),
       requestSent,
       now,
+      accountId,
     );
   }
 
@@ -317,6 +370,7 @@ async function insertLocked(
     now,
     snapshot,
     alreadyExisted,
+    accountId,
   );
   if (linked.kind === 'orphaned') {
     if (linked.cleanup) await processCalendarCleanup(linked.cleanup, deps, now);
@@ -347,13 +401,14 @@ async function syncLocked(
 ): Promise<Reminder | null> {
   const start = getReminder(ref.userId, ref.id);
   if (!start) return null;
-  const { eventId, calendarId, status } = start.calendar;
+  const { eventId, calendarId, status, accountId } = start.calendar;
   if (!eventId || (status !== 'synced' && status !== 'failed' && status !== 'updating')) {
     return start;
   }
   try {
-    const client = await resolve(deps, start.userId);
+    const client = await resolve(deps, start.userId, accountId);
     if ('skip' in client) {
+      if (client.accountGone) return abandonCalendarLink(start, eventId, client.skip);
       return recordCalendarSyncFailure(start.userId, start.id, eventId, client.skip, now);
     }
     let sent = start;
@@ -495,8 +550,13 @@ export async function processCalendarCleanup(
     if (current) broadcastReminderUpdate(deps.broadcast, 'updated', current);
   };
   try {
-    const client = await resolve(deps, cleanup.userId);
+    const client = await resolve(deps, cleanup.userId, cleanup.accountId);
     if ('skip' in client) {
+      // Its calendar can't be reached any more, so there is nothing to retry.
+      if (client.accountGone) {
+        announce(completeCalendarCleanup(cleanup.id));
+        return true;
+      }
       announce(recordCalendarCleanupFailure(cleanup.id, client.skip, now));
       return false;
     }

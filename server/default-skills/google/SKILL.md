@@ -58,6 +58,10 @@ The owner can link several Google accounts. Every wrapper except
 `google-chat.sh` takes `--account <email|accountId>`, and the ReAct action takes
 an `account` field.
 
+Chat is the exception: it always runs as the owner's **Chat account**, one
+Workspace account picked under Settings → Account → Google (it does not follow
+the default). `google-chat.sh` and the `chat` ReAct surface ignore `account`.
+
 - **No `--account`**: the owner's **default** account answers (the one marked
   default in Settings → Account → Google).
 - **`--account` names a linked account**: that account answers. Its own scopes

@@ -10,6 +10,11 @@ const connectionStoreMock = vi.hoisted(() => ({
   getGoogleConnection: vi.fn(),
 }));
 vi.mock('../google-connections-store.js', () => connectionStoreMock);
+vi.mock('../google-chat-account.js', async () =>
+  (await import('../test/chat-account-mock.js')).chatAccountFromConnectionStore(
+    connectionStoreMock,
+  ),
+);
 
 const { getDb } = await import('../db.js');
 const { default: createGoogleChatEventsRoutes } = await import('./google-chat-events.js');

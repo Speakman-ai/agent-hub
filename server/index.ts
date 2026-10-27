@@ -355,6 +355,7 @@ import createGoogleDriveRoutes from './routes/google-drive.js';
 import createGoogleAccountsRoutes from './routes/google-accounts.js';
 import createGoogleChatRoutes from './routes/google-chat.js';
 import createGoogleChatEventsRoutes from './routes/google-chat-events.js';
+import createGoogleChatAccountRoutes from './routes/google-chat-account.js';
 import { startChatSubscriptionMaintenance } from './google-chat-events.js';
 import type { AddressInfo } from 'net';
 import { setActualPort } from './server-port.js';
@@ -2722,6 +2723,7 @@ app.use(createGoogleDriveRoutes(routeDeps));
 app.use(createGoogleAccountsRoutes(routeDeps));
 app.use(createGoogleChatRoutes(routeDeps));
 app.use(createGoogleChatEventsRoutes(routeDeps));
+app.use(createGoogleChatAccountRoutes(routeDeps));
 
 const server = createServer(app);
 const drainingLock = new Set<string>();

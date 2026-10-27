@@ -2,14 +2,14 @@
  * Google Chat as a trigger's optional second destination. After a trigger's
  * Agent Hub message commits, `chat-trigger-router.ts` hands the same
  * occurrence here, and it is posted to the trigger's Google Chat space through
- * the trigger creator's own Google connection (the same token the
+ * the trigger creator's Chat account (the same account and token the
  * `/api/google/chat/*` proxy uses). It is fire-and-forget: a missing
  * connection, a missing scope or a Google error is logged and never reaches
  * the Agent Hub post.
  */
 
 import config from './config.js';
-import { getActiveAccessToken, getGoogleConnectionStatus } from './google-connections-store.js';
+import { getChatAccessToken, getChatConnectionStatus } from './google-chat-account.js';
 import { hasChatMessagesCreateScope } from './google-scopes.js';
 import {
   dailySummaryCardHref,
@@ -70,12 +70,12 @@ export function buildGoogleChatTriggerText(
 }
 
 async function defaultResolveToken(userId: string): Promise<string | null> {
-  return getActiveAccessToken(userId, config.googleOAuth ?? null);
+  return getChatAccessToken(userId, config.googleOAuth ?? null);
 }
 
 function defaultCanSend(userId: string): boolean {
   if (!config.googleOAuth?.clientId || !config.googleOAuth?.clientSecret) return false;
-  const status = getGoogleConnectionStatus(userId);
+  const status = getChatConnectionStatus(userId);
   return status.connected && hasChatMessagesCreateScope(status.grantedScopes);
 }
 

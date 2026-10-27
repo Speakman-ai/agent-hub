@@ -899,8 +899,8 @@ describe('/api/me/reminders', () => {
         title: 'Two',
         remindAt: '2026-10-17T00:00:00.000Z',
       });
-      const a = enqueueCalendarCleanup(userA, r.id, 'primary', 'ahrA', NOW)!;
-      const b = enqueueCalendarCleanup(userA, r.id, 'primary', 'ahrB', NOW)!;
+      const a = enqueueCalendarCleanup(userA, r.id, 'primary', 'ahrA', NOW, null)!;
+      const b = enqueueCalendarCleanup(userA, r.id, 'primary', 'ahrB', NOW, null)!;
       updateReminder(userA, r.id, { status: 'dismissed', now: NOW });
       setReminderCalendar(userA, r.id, { status: 'removing' });
       expect(completeCalendarCleanup(a.id)).toBeNull();

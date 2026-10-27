@@ -24,12 +24,19 @@ const NO_PINS: GmailImportantThread[] = [];
  * cadence, and Scan now.
  */
 export default function GmailImportantSection({
+  account,
+  accountLabel,
   onOpenThread,
   onPinnedChange,
 }: {
+  /** Linked account whose mailbox this section rates; omitted means the default. */
+  account?: string;
+  /** Shown under the title when several mailboxes each have a section. */
+  accountLabel?: string;
   onOpenThread: (threadId: string) => void;
   onPinnedChange?: (threads: GmailImportantThread[]) => void;
 }) {
+  const scope = account ? { account } : {};
   const [state, setState] = useState<GmailImportanceState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -45,7 +52,7 @@ export default function GmailImportantSection({
 
   useEffect(() => {
     const sync = createGmailImportanceSync({
-      load: () => api.getGmailImportance(),
+      load: () => api.getGmailImportance(scope),
       onState: (next) => {
         // A recovered fetch clears its own failure, not a scan/settings error.
         if (loadFailedRef.current) {
@@ -65,7 +72,8 @@ export default function GmailImportantSection({
       sync.stop();
       syncRef.current = null;
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `scope` derives from `account`
+  }, [account]);
 
   // The parent hides exactly the pins this section is showing, derived from
   // what renders rather than pushed on fetch success. No state yet, a failed
@@ -88,7 +96,7 @@ export default function GmailImportantSection({
     setError(null);
     setDismissing((prev) => new Set(prev).add(threadId));
     try {
-      accept(await api.dismissGmailImportantThread(threadId));
+      accept(await api.dismissGmailImportantThread(threadId, scope));
     } catch (err: any) {
       // 404: a scan already dropped the verdict, so it is gone either way.
       if (err.status === 404) await refresh();
@@ -105,7 +113,7 @@ export default function GmailImportantSection({
   const scan = async (windowDays?: GmailImportanceWindowDays) => {
     setError(null);
     try {
-      accept(await api.startGmailImportanceScan(windowDays ? { windowDays } : {}));
+      accept(await api.startGmailImportanceScan(windowDays ? { windowDays } : {}, scope));
     } catch (err: any) {
       if (err.status === 409) await refresh();
       else setError(err.message || 'Failed to start scan');
@@ -125,7 +133,7 @@ export default function GmailImportantSection({
     setSaving(true);
     setError(null);
     try {
-      const next: GmailImportanceState = await api.updateGmailImportanceSettings(patch);
+      const next: GmailImportanceState = await api.updateGmailImportanceSettings(patch, scope);
       accept(next);
       const turnedOn = patch.enabled === true && !next.settings.lastScanAt;
       if ((turnedOn || patch.windowDays !== undefined) && !next.running) {
@@ -163,9 +171,16 @@ export default function GmailImportantSection({
   return (
     <View style={styles.card} testID="gmail-important-section">
       <View style={styles.header}>
-        <Text style={styles.title}>
-          ★ Important{settings.enabled && threads.length ? ` (${threads.length})` : ''}
-        </Text>
+        <View style={styles.titleBlock}>
+          <Text style={styles.title}>
+            ★ Important{settings.enabled && threads.length ? ` (${threads.length})` : ''}
+          </Text>
+          {accountLabel ? (
+            <Text style={styles.accountLabel} numberOfLines={1}>
+              {accountLabel}
+            </Text>
+          ) : null}
+        </View>
         <Text style={styles.toggleLabel}>Show first</Text>
         <Switch
           value={settings.enabled}
@@ -292,7 +307,9 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   header: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  title: { flex: 1, color: colors.white, fontSize: 15, fontWeight: '700' },
+  titleBlock: { flex: 1, minWidth: 0 },
+  title: { color: colors.white, fontSize: 15, fontWeight: '700' },
+  accountLabel: { color: colors.gray400, fontSize: 12, marginTop: 2 },
   toggleLabel: { color: colors.gray400, fontSize: 12 },
   muted: { color: colors.gray400, fontSize: 12, lineHeight: 17 },
   subLabel: { color: colors.gray400, fontSize: 11, textTransform: 'uppercase' },

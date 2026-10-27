@@ -284,7 +284,41 @@ describe('GmailPage', () => {
 
       expect(await screen.findByText('Dinner on Friday?')).toBeInTheDocument();
       expect(screen.getByText('Quarterly numbers')).toBeInTheDocument();
-      expect(screen.getByText('me@home.com', { selector: 'span' })).toBeInTheDocument();
+      expect(screen.getAllByText('me@home.com', { selector: 'span' }).length).toBeGreaterThan(0);
+    });
+
+    it('gives each inbox its own Important section and hides pins per account', async () => {
+      const pin = (threadId: string, subject: string) => ({
+        threadId,
+        historyId: '1',
+        important: true,
+        score: 90,
+        reason: 'Needs you',
+        subject,
+        from: 'Boss <boss@example.com>',
+        snippet: null,
+        lastMessageAt: new Date().toISOString(),
+        scannedAt: new Date().toISOString(),
+      });
+      mockApi.getGmailImportance.mockImplementation(async ({ account }: { account?: string }) => ({
+        running: false,
+        settings: { enabled: true, windowDays: 7, autoScan: 'off', lastScanStatus: 'ok' },
+        // Only home's scan pinned anything, and it pinned home's own thread.
+        threads: account === 'home' ? [pin('th', 'Pinned dinner')] : [],
+      }));
+      render(<GmailPage />);
+      expect(await screen.findByText('Quarterly numbers')).toBeInTheDocument();
+
+      fireEvent.change(screen.getByLabelText('Inbox'), { target: { value: '__all_inboxes__' } });
+
+      expect(await screen.findByLabelText('Important mail for me@home.com')).toBeInTheDocument();
+      expect(screen.getByLabelText('Important mail for me@work.com')).toBeInTheDocument();
+      expect(await screen.findByText('Pinned dinner')).toBeInTheDocument();
+      // Home's pinned thread leaves the regular list; work's thread stays.
+      await waitFor(() => expect(screen.queryByText('Dinner on Friday?')).not.toBeInTheDocument());
+      expect(screen.getByText('Quarterly numbers')).toBeInTheDocument();
+      expect(mockApi.getGmailImportance).toHaveBeenCalledWith({ account: 'home' });
+      expect(mockApi.getGmailImportance).toHaveBeenCalledWith({ account: 'work' });
     });
 
     it('reads and replies to a thread through the account that owns it', async () => {

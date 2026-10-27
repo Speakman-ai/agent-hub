@@ -42,9 +42,11 @@ import {
   resolveGoogleRedirectUri,
   exchangeCodeForGoogleTokens,
   fetchGoogleUserInfo,
+  hostedDomainFromUserInfo,
   revokeGoogleToken,
 } from '../google-oauth.js';
 import {
+  getActiveAccessToken,
   upsertGoogleConnection,
   getGoogleConnection,
   getGoogleConnectionStatus,
@@ -53,6 +55,10 @@ import {
   setDefaultGoogleConnection,
   type GoogleConnectionRow,
 } from '../google-connections-store.js';
+import { bindChatAccountIfUnbound, getChatAccountSummary } from '../google-chat-account.js';
+import { broadcastDraft } from './google-chat.js';
+import { teardownChatSubscription } from '../google-chat-events.js';
+import { getChatSubscription } from '../google-chat-events-store.js';
 import { registerPath, z } from '../openapi/registry.js';
 
 registerPath({
@@ -122,6 +128,18 @@ registerPath({
             serverConfigured: z.boolean(),
             defaultAccountId: z.string().nullable(),
             accounts: z.array(GoogleAccountSummarySchema),
+            chatAccount: z
+              .object({
+                accountId: z.string().nullable(),
+                email: z.string().nullable(),
+                grantedScopes: z.array(z.string()),
+                bound: z.boolean(),
+              })
+              .nullable()
+              .openapi({
+                description:
+                  'The account Google Chat runs as (Chat is single-account). Chat consent reads these scopes, and enabling Chat should target `accountId`. `bound: false` means it is only the suggested account; `accountId: null` means the bound account is no longer linked. Null when no linked account can run Chat.',
+              }),
           }),
         },
       },
@@ -390,6 +408,32 @@ export default function createGoogleOAuthRoutes(deps: RouteDeps): Router {
   const { config } = deps;
   const router = Router();
 
+  /**
+   * Chat just moved to `newSub`. Push state still owned by another identity
+   * (its subscription's authority) is torn down, with that account's token
+   * when it is still linked, so requests and push never run as two identities.
+   */
+  const dropForeignChatSubscription = async (userId: string, newSub: string) => {
+    const sub = getChatSubscription(userId);
+    if (!sub) return;
+    const ownerSub = sub.authority?.replace(/^users\//, '') ?? null;
+    if (ownerSub === newSub) return;
+    const owner = ownerSub
+      ? listGoogleConnections(userId).find((c) => c.googleSub === ownerSub)
+      : undefined;
+    let token: string | null = null;
+    if (owner) {
+      try {
+        token = await getActiveAccessToken(userId, config.googleOAuth ?? null, {
+          account: { accountId: owner.accountId },
+        });
+      } catch {
+        token = null;
+      }
+    }
+    await teardownChatSubscription(userId, { config, broadcast: deps.broadcast }, token);
+  };
+
   router.get('/api/auth/google/start', (req: Request, res: Response) => {
     // Config-state check first: it is server-global (same info the Admin GET
     // exposes) and the "degrade gracefully" contract wants this 503 regardless
@@ -576,7 +620,7 @@ export default function createGoogleOAuthRoutes(deps: RouteDeps): Router {
       const alreadyLinked = listGoogleConnections(callerUserId).some(
         (c) => c.googleSub === userInfo.sub,
       );
-      upsertGoogleConnection({
+      const linkedAccountId = upsertGoogleConnection({
         userId: callerUserId,
         googleSub: userInfo.sub,
         googleEmail: userInfo.email,
@@ -584,7 +628,23 @@ export default function createGoogleOAuthRoutes(deps: RouteDeps): Router {
         tokenExpiresAt,
         refreshToken,
         grantedScopes: parseGrantedScopes(tokens.scope),
+        hostedDomain: hostedDomainFromUserInfo(userInfo),
       });
+      // Consenting Chat on an account sets up Chat when there is no usable
+      // Chat account yet. Moving Chat off a working account stays explicit.
+      // Binding discards held replies written as a previous Chat identity.
+      const chatBind = bindChatAccountIfUnbound(callerUserId, linkedAccountId);
+      for (const draft of chatBind.discarded) broadcastDraft(deps, draft);
+      if (chatBind.bound) {
+        try {
+          await dropForeignChatSubscription(callerUserId, userInfo.sub);
+        } catch (err) {
+          // The maintenance loop drops it once access checks fail.
+          console.warn(
+            `[google-oauth] Chat subscription teardown failed: ${(err as Error).message}`,
+          );
+        }
+      }
       const resultTitle = callbackSuccessTitle({
         email: userInfo.email,
         alreadyLinked,
@@ -644,6 +704,7 @@ export default function createGoogleOAuthRoutes(deps: RouteDeps): Router {
       serverConfigured: !!(creds?.clientId && creds?.clientSecret),
       defaultAccountId: accounts.find((a) => a.isDefault)?.accountId ?? null,
       accounts,
+      chatAccount: getChatAccountSummary(uid),
     });
   });
 

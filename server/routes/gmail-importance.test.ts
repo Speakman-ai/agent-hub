@@ -18,17 +18,26 @@ vi.mock('../config.js', () => ({
   },
 }));
 
-const connectionStoreMock = vi.hoisted(() => ({
-  getActiveAccessToken: vi.fn(),
-  getGoogleConnectionStatus: vi.fn(),
-}));
-vi.mock('../google-connections-store.js', () => connectionStoreMock);
 vi.mock('../hub-assistant.js', () => ({
   resolveHubEngineAndModel: () => ({ engine: 'claude-code', model: 'sonnet' }),
 }));
 
 const { initOrgsDb, setOrgsDbPathForTests } = await import('../orgs.js');
 const { createUser } = await import('../users-store.js');
+const { __resetSecretCryptoForTests } = await import('../secret-crypto.js');
+const { upsertGoogleConnection } = await import('../google-connections-store.js');
+
+function linkAccount(userId: string, sub: string, email: string, scopes: string[]): string {
+  return upsertGoogleConnection({
+    userId,
+    googleSub: sub,
+    googleEmail: email,
+    accessToken: 'at',
+    tokenExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    refreshToken: 'rt',
+    grantedScopes: scopes,
+  });
+}
 const store = await import('../gmail-importance-store.js');
 const createGmailImportanceRoutes = (await import('./gmail-importance.js')).default;
 
@@ -54,23 +63,22 @@ function makeApp(userId: string | null, scanDeps = {}) {
 
 describe('Gmail importance routes', () => {
   let userId = '';
+  let key = { userId: '', accountId: '' };
   beforeEach(() => {
     vi.clearAllMocks();
     TMP_DIR = mkdtempSync(path.join(tmpdir(), 'gmail-importance-routes-'));
+    __resetSecretCryptoForTests();
     setOrgsDbPathForTests(path.join(TMP_DIR, 'orgs.db'));
     initOrgsDb();
     userId = createUser({ username: 'alice', passwordHash: 'x' }).id;
-    connectionStoreMock.getGoogleConnectionStatus.mockReturnValue({
-      connected: true,
-      email: 'alice@example.com',
-      grantedScopes: [GMAIL_READONLY_SCOPE],
-      connectedAt: null,
-      tokenExpiresAt: null,
-    });
+    key = {
+      userId,
+      accountId: linkAccount(userId, 'sub-alice', 'alice@example.com', [GMAIL_READONLY_SCOPE]),
+    };
   });
 
   it('returns off-by-default settings and only in-window important threads', async () => {
-    store.upsertGmailImportanceVerdicts(userId, [
+    store.upsertGmailImportanceVerdicts(key, [
       {
         threadId: 'recent',
         historyId: 'h1',
@@ -140,7 +148,7 @@ describe('Gmail importance routes', () => {
       snippet: null,
       lastMessageAt: at,
     };
-    store.upsertGmailImportanceVerdicts(userId, [verdict]);
+    store.upsertGmailImportanceVerdicts(key, [verdict]);
 
     const res = await request(makeApp(userId)).post(
       '/api/google/gmail/importance/threads/pin/dismiss',
@@ -149,12 +157,12 @@ describe('Gmail importance routes', () => {
     expect(res.body.threads).toEqual([]);
 
     // A rescan with no new mail (only a label/history change) keeps it hidden.
-    store.upsertGmailImportanceVerdicts(userId, [{ ...verdict, historyId: 'h2' }]);
+    store.upsertGmailImportanceVerdicts(key, [{ ...verdict, historyId: 'h2' }]);
     const same = await request(makeApp(userId)).get('/api/google/gmail/importance');
     expect(same.body.threads).toEqual([]);
 
     // A newer message brings it back.
-    store.upsertGmailImportanceVerdicts(userId, [
+    store.upsertGmailImportanceVerdicts(key, [
       { ...verdict, historyId: 'h3', lastMessageAt: new Date(NOW - 3600_000).toISOString() },
     ]);
     const back = await request(makeApp(userId)).get('/api/google/gmail/importance');
@@ -189,18 +197,82 @@ describe('Gmail importance routes', () => {
     expect(res.status).toBe(401);
   });
 
-  it('refuses to scan without Gmail read scope', async () => {
-    connectionStoreMock.getGoogleConnectionStatus.mockReturnValue({
-      connected: true,
-      grantedScopes: [],
-    });
-    const res = await request(makeApp(userId)).post('/api/google/gmail/importance/scan').send({});
+  it('refuses to scan an account without Gmail read scope', async () => {
+    linkAccount(userId, 'sub-cal', 'cal@example.com', []);
+    const res = await request(makeApp(userId))
+      .post('/api/google/gmail/importance/scan?account=cal@example.com')
+      .send({});
     expect(res.status).toBe(403);
     expect(res.body.code).toBe('google_gmail_scope_required');
+    expect(res.body.account).toBe('cal@example.com');
+  });
+
+  it('scopes every route to the account named in `account`, default when omitted', async () => {
+    const workId = linkAccount(userId, 'sub-work', 'me@work.example', [GMAIL_READONLY_SCOPE]);
+    const work = { userId, accountId: workId };
+    const verdict = (threadId: string) => ({
+      threadId,
+      historyId: 'h',
+      important: true,
+      score: 50,
+      reason: null,
+      subject: null,
+      from: null,
+      snippet: null,
+      lastMessageAt: new Date(NOW - 3600_000).toISOString(),
+    });
+    store.upsertGmailImportanceVerdicts(key, [verdict('home-thread')]);
+    store.upsertGmailImportanceVerdicts(work, [verdict('work-thread')]);
+    const app = makeApp(userId);
+
+    const byDefault = await request(app).get('/api/google/gmail/importance');
+    expect(byDefault.body.account).toEqual({
+      accountId: key.accountId,
+      email: 'alice@example.com',
+    });
+    expect(byDefault.body.threads.map((t: { threadId: string }) => t.threadId)).toEqual([
+      'home-thread',
+    ]);
+
+    const byEmail = await request(app).get('/api/google/gmail/importance?account=ME@work.example');
+    expect(byEmail.body.account.accountId).toBe(workId);
+    expect(byEmail.body.threads.map((t: { threadId: string }) => t.threadId)).toEqual([
+      'work-thread',
+    ]);
+
+    const saved = await request(app)
+      .put(`/api/google/gmail/importance/settings?account=${workId}`)
+      .send({ enabled: true, autoScan: 'daily' });
+    expect(saved.status).toBe(200);
+    expect(store.getGmailImportanceSettings(work)).toMatchObject({ enabled: true });
+    expect(store.getGmailImportanceSettings(key).enabled).toBe(false);
+
+    // Dismissing on the wrong mailbox finds nothing.
+    const wrongBox = await request(app).post(
+      '/api/google/gmail/importance/threads/work-thread/dismiss',
+    );
+    expect(wrongBox.status).toBe(404);
+
+    const unknown = await request(app).get('/api/google/gmail/importance?account=nobody@x.example');
+    expect(unknown.status).toBe(404);
+    expect(unknown.body.code).toBe('google_account_not_found');
+  });
+
+  it('returns default state for a user with no linked account but 401s writes', async () => {
+    const lonely = createUser({ username: 'nobody', passwordHash: 'x' }).id;
+    const app = makeApp(lonely);
+    const res = await request(app).get('/api/google/gmail/importance');
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ account: null, running: false, threads: [] });
+    const put = await request(app)
+      .put('/api/google/gmail/importance/settings')
+      .send({ enabled: true });
+    expect(put.status).toBe(401);
+    expect(put.body.code).toBe('google_not_connected');
   });
 
   it('refuses a window change while a scan runs, but allows other settings', async () => {
-    store.updateGmailImportanceSettings(userId, { enabled: true, windowDays: 1 });
+    store.updateGmailImportanceSettings(key, { enabled: true, windowDays: 1 });
     let release: (v: string) => void = () => {};
     const tokenGate = new Promise<string>((r) => (release = r));
     const app = makeApp(userId, {
@@ -222,7 +294,7 @@ describe('Gmail importance routes', () => {
       .send({ windowDays: 30 });
     expect(widen.status).toBe(409);
     expect(widen.body.code).toBe('scan_in_progress');
-    expect(store.getGmailImportanceSettings(userId).windowDays).toBe(1);
+    expect(store.getGmailImportanceSettings(key).windowDays).toBe(1);
 
     const cadence = await request(app)
       .put('/api/google/gmail/importance/settings')

@@ -22,6 +22,10 @@ vi.mock('./per-user-cli-spawn.js', () => ({
 
 const { initOrgsDb, setOrgsDbPathForTests } = await import('./orgs.js');
 const { createUser } = await import('./users-store.js');
+const { __resetSecretCryptoForTests } = await import('./secret-crypto.js');
+const { upsertGoogleConnection, deleteGoogleConnection } =
+  await import('./google-connections-store.js');
+const { GMAIL_READONLY_SCOPE } = await import('./google-scopes.js');
 const store = await import('./gmail-importance-store.js');
 const scan = await import('./gmail-importance.js');
 
@@ -83,6 +87,21 @@ function outcome(
   };
 }
 
+let subSeq = 0;
+/** Link a Google account for the user and return its account id. */
+function linkAccount(userId: string, email: string, scopes = [GMAIL_READONLY_SCOPE]): string {
+  subSeq += 1;
+  return upsertGoogleConnection({
+    userId,
+    googleSub: `sub-${subSeq}`,
+    googleEmail: email,
+    accessToken: 'at',
+    tokenExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    refreshToken: 'rt',
+    grantedScopes: scopes,
+  });
+}
+
 const resolveEngine = vi.fn(async () => ({ engine: 'claude-code', model: 'sonnet' })) as never;
 
 describe('parseImportanceOutput', () => {
@@ -128,12 +147,15 @@ describe('shapeThreadCandidate', () => {
 
 describe('runGmailImportanceScan', () => {
   let userId = '';
+  let key = { userId: '', accountId: '' };
   beforeEach(() => {
     TMP_DIR = mkdtempSync(path.join(tmpdir(), 'gmail-importance-'));
+    __resetSecretCryptoForTests();
     setOrgsDbPathForTests(path.join(TMP_DIR, 'orgs.db'));
     initOrgsDb();
     userId = createUser({ username: 'alice', passwordHash: 'x' }).id;
-    store.updateGmailImportanceSettings(userId, { enabled: true, windowDays: 7 });
+    key = { userId, accountId: linkAccount(userId, 'alice@example.com') };
+    store.updateGmailImportanceSettings(key, { enabled: true, windowDays: 7 });
   });
 
   it("rates threads on the user's engine and pins important ones by score", async () => {
@@ -151,7 +173,7 @@ describe('runGmailImportanceScan', () => {
     );
 
     const summary = await scan.runGmailImportanceScan(
-      { userId, config },
+      { ...key, config },
       {
         resolveToken: async () => 'tok',
         createSource: () => source,
@@ -180,11 +202,11 @@ describe('runGmailImportanceScan', () => {
     expect(input.cwd).toContain('gmail-importance-');
 
     const since = new Date(NOW - 7 * 86_400_000).toISOString();
-    const pinned = store.listImportantGmailThreads(userId, since);
+    const pinned = store.listImportantGmailThreads(key, since);
     expect(pinned.map((t) => t.threadId)).toEqual(['t3', 't1']);
     expect(pinned[0]).toMatchObject({ reason: 'Deadline today', subject: 'Subject t3' });
 
-    const settings = store.getGmailImportanceSettings(userId);
+    const settings = store.getGmailImportanceSettings(key);
     expect(settings).toMatchObject({
       lastScanStatus: 'ok',
       lastScanEngine: 'claude-code',
@@ -202,7 +224,7 @@ describe('runGmailImportanceScan', () => {
       now: () => NOW,
     };
     await scan.runGmailImportanceScan(
-      { userId, config },
+      { ...key, config },
       {
         ...deps,
         createSource: () => fakeSource([thread('t1', 'h1'), thread('t2', 'h2')]),
@@ -212,7 +234,7 @@ describe('runGmailImportanceScan', () => {
 
     const second = vi.fn(async () => reply(['t2']));
     await scan.runGmailImportanceScan(
-      { userId, config },
+      { ...key, config },
       {
         ...deps,
         createSource: () => fakeSource([thread('t1', 'h1'), thread('t2', 'h2-new')]),
@@ -226,7 +248,7 @@ describe('runGmailImportanceScan', () => {
 
     const third = vi.fn();
     await scan.runGmailImportanceScan(
-      { userId, config },
+      { ...key, config },
       {
         ...deps,
         createSource: () => fakeSource([thread('t1', 'h1'), thread('t2', 'h2-new')]),
@@ -239,7 +261,7 @@ describe('runGmailImportanceScan', () => {
   it('unpins threads that were archived or deleted, but keeps ones past the scan cap', async () => {
     const deps = { resolveToken: async () => 'tok', resolveEngine, now: () => NOW };
     await scan.runGmailImportanceScan(
-      { userId, config },
+      { ...key, config },
       {
         ...deps,
         createSource: () =>
@@ -254,26 +276,26 @@ describe('runGmailImportanceScan', () => {
       },
     );
     const since = new Date(NOW - 7 * 86_400_000).toISOString();
-    expect(store.listImportantGmailThreads(userId, since)).toHaveLength(3);
+    expect(store.listImportantGmailThreads(key, since)).toHaveLength(3);
 
     // None come back from the inbox query: t1 was archived, t2 deleted, and t3
     // is still in the inbox but fell past the thread cap.
     const source = fakeSource([], { t1: ['CATEGORY_UPDATES'], t2: null, t3: ['INBOX', 'UNREAD'] });
     const runFailover = vi.fn();
     await scan.runGmailImportanceScan(
-      { userId, config },
+      { ...key, config },
       { ...deps, createSource: () => source, runFailover },
     );
     expect(runFailover).not.toHaveBeenCalled();
     expect(source.getThreadLabels).toHaveBeenCalledTimes(3);
-    expect(store.listImportantGmailThreads(userId, since).map((t) => t.threadId)).toEqual(['t3']);
+    expect(store.listImportantGmailThreads(key, since).map((t) => t.threadId)).toEqual(['t3']);
   });
 
   it('rotates reconcile across more pins than one scan can check, so none starve', async () => {
     const day = 86_400_000;
     // 120 pins: 119 newer inbox threads plus one older, top-scoring thread
     // that has since been archived.
-    store.upsertGmailImportanceVerdicts(userId, [
+    store.upsertGmailImportanceVerdicts(key, [
       ...Array.from({ length: 119 }, (_, i) => ({
         threadId: `n${String(i).padStart(3, '0')}`,
         historyId: 'h',
@@ -298,14 +320,14 @@ describe('runGmailImportanceScan', () => {
       },
     ]);
     const since = new Date(NOW - 7 * day).toISOString();
-    expect(store.listImportantGmailThreads(userId, since)[0].threadId).toBe('archived-old');
+    expect(store.listImportantGmailThreads(key, since)[0].threadId).toBe('archived-old');
 
     let clock = NOW;
     const checked: string[][] = [];
     const runScan = async () => {
       const source = fakeSource([thread('n000', 'h')], { 'archived-old': ['CATEGORY_UPDATES'] });
       await scan.runGmailImportanceScan(
-        { userId, config },
+        { ...key, config },
         {
           resolveToken: async () => 'tok',
           createSource: () => source,
@@ -330,7 +352,7 @@ describe('runGmailImportanceScan', () => {
     // Two scans cover all 119 absent pins: the second picks up the rest.
     expect(new Set(checked.flat()).size).toBe(119);
     expect(checked.flat()).toContain('archived-old');
-    expect(store.listImportantGmailThreads(userId, since).map((t) => t.threadId)).not.toContain(
+    expect(store.listImportantGmailThreads(key, since).map((t) => t.threadId)).not.toContain(
       'archived-old',
     );
   });
@@ -347,7 +369,7 @@ describe('runGmailImportanceScan', () => {
       snippet: null,
       lastMessageAt: new Date(NOW - 3_600_000).toISOString(),
     });
-    store.upsertGmailImportanceVerdicts(userId, [pin('gone'), pin('archived')]);
+    store.upsertGmailImportanceVerdicts(key, [pin('gone'), pin('archived')]);
 
     const archived = thread('archived', 'h3');
     archived.messages![0].labelIds = ['CATEGORY_UPDATES'];
@@ -360,7 +382,7 @@ describe('runGmailImportanceScan', () => {
       outcome(JSON.stringify({ threads: [{ id: 't1', important: true, score: 40 }] })),
     );
     const summary = await scan.runGmailImportanceScan(
-      { userId, config },
+      { ...key, config },
       {
         resolveToken: async () => 'tok',
         createSource: () => source,
@@ -370,12 +392,12 @@ describe('runGmailImportanceScan', () => {
       },
     );
     expect(summary).toMatchObject({ scanned: 1, important: 1 });
-    expect(store.getGmailImportanceSettings(userId).lastScanStatus).toBe('ok');
+    expect(store.getGmailImportanceSettings(key).lastScanStatus).toBe('ok');
     // The archived thread is never sent to the model.
     const prompt = ((runFailover.mock.calls as unknown[][])[0][0] as { prompt: string }).prompt;
     expect(prompt).not.toContain('"id":"archived"');
     const since = new Date(NOW - 7 * 86_400_000).toISOString();
-    expect(store.listImportantGmailThreads(userId, since).map((t) => t.threadId)).toEqual(['t1']);
+    expect(store.listImportantGmailThreads(key, since).map((t) => t.threadId)).toEqual(['t1']);
   });
 
   it('builds the candidate from live messages only when a newer reply was trashed', () => {
@@ -467,7 +489,7 @@ describe('runGmailImportanceScan', () => {
       }),
     );
     await scan.runGmailImportanceScan(
-      { userId, config },
+      { ...key, config },
       {
         resolveToken: async () => 'tok',
         createSource: () => fakeSource([thread('t1', 'h1')]),
@@ -476,7 +498,7 @@ describe('runGmailImportanceScan', () => {
         now: () => NOW,
       },
     );
-    expect(store.getGmailImportanceSettings(userId)).toMatchObject({
+    expect(store.getGmailImportanceSettings(key)).toMatchObject({
       lastScanEngine: 'codex-cli',
       lastScanFailover: 'Switched engines: claude-code → codex-cli (usage-exhausted)',
     });
@@ -485,7 +507,7 @@ describe('runGmailImportanceScan', () => {
   it('records the error and rethrows when every engine fails', async () => {
     await expect(
       scan.runGmailImportanceScan(
-        { userId, config, windowDays: 1 },
+        { ...key, config, windowDays: 1 },
         {
           resolveToken: async () => 'tok',
           createSource: () => fakeSource([thread('t1', 'h1')]),
@@ -497,19 +519,19 @@ describe('runGmailImportanceScan', () => {
         },
       ),
     ).rejects.toThrow(/failover chain/);
-    expect(store.getGmailImportanceSettings(userId)).toMatchObject({
+    expect(store.getGmailImportanceSettings(key)).toMatchObject({
       lastScanStatus: 'error',
       lastScanError: 'every engine in the failover chain failed',
       lastScanAt: new Date(NOW).toISOString(),
     });
-    expect(scan.isGmailImportanceScanRunning(userId)).toBe(false);
+    expect(scan.isGmailImportanceScanRunning(key)).toBe(false);
   });
 
   it('refuses a second concurrent scan for the same user', async () => {
     let release: () => void = () => {};
     const gate = new Promise<void>((r) => (release = r));
     const first = scan.runGmailImportanceScan(
-      { userId, config },
+      { ...key, config },
       {
         resolveToken: async () => {
           await gate;
@@ -521,8 +543,8 @@ describe('runGmailImportanceScan', () => {
         now: () => NOW,
       },
     );
-    expect(scan.isGmailImportanceScanRunning(userId)).toBe(true);
-    await expect(scan.runGmailImportanceScan({ userId, config })).rejects.toMatchObject({
+    expect(scan.isGmailImportanceScanRunning(key)).toBe(true);
+    await expect(scan.runGmailImportanceScan({ ...key, config })).rejects.toMatchObject({
       code: 'scan_in_progress',
     });
     release();
@@ -533,23 +555,26 @@ describe('runGmailImportanceScan', () => {
 describe('runGmailImportanceAutoScanTick', () => {
   beforeEach(() => {
     TMP_DIR = mkdtempSync(path.join(tmpdir(), 'gmail-importance-tick-'));
+    __resetSecretCryptoForTests();
     setOrgsDbPathForTests(path.join(TMP_DIR, 'orgs.db'));
     initOrgsDb();
   });
 
   async function twoDueUsers() {
-    const a = createUser({ username: 'auto-a', passwordHash: 'x' }).id;
-    const b = createUser({ username: 'auto-b', passwordHash: 'x' }).id;
-    for (const id of [a, b]) {
-      store.updateGmailImportanceSettings(id, { enabled: true, autoScan: 'hourly' });
+    const ua = createUser({ username: 'auto-a', passwordHash: 'x' }).id;
+    const ub = createUser({ username: 'auto-b', passwordHash: 'x' }).id;
+    const a = { userId: ua, accountId: linkAccount(ua, 'a@example.com') };
+    const b = { userId: ub, accountId: linkAccount(ub, 'b@example.com') };
+    for (const k of [a, b]) {
+      store.updateGmailImportanceSettings(k, { enabled: true, autoScan: 'hourly' });
     }
     let releaseA: (t: string) => void = () => {};
     const gateA = new Promise<string>((r) => (releaseA = r));
     const scannedUsers: string[] = [];
     const deps = {
-      resolveToken: async (userId: string) => {
-        scannedUsers.push(userId);
-        return userId === a ? gateA : 'tok';
+      resolveToken: async (k: { userId: string }) => {
+        scannedUsers.push(k.userId);
+        return k.userId === a.userId ? gateA : 'tok';
       },
       createSource: () => fakeSource([]),
       resolveEngine,
@@ -568,7 +593,7 @@ describe('runGmailImportanceAutoScanTick', () => {
     releaseA('tok');
 
     expect(await tick).toEqual([a]);
-    expect(scannedUsers).toEqual([a]);
+    expect(scannedUsers).toEqual([a.userId]);
     expect(store.getGmailImportanceSettings(b).lastScanAt).toBeNull();
   });
 
@@ -585,7 +610,7 @@ describe('runGmailImportanceAutoScanTick', () => {
     );
     releaseA('tok');
     expect(await tick).toEqual([a]);
-    expect(scannedUsers).toEqual([a]);
+    expect(scannedUsers).toEqual([a.userId]);
 
     // And a disabled user is never picked even when overdue.
     store.updateGmailImportanceSettings(b, { enabled: false });
@@ -601,6 +626,87 @@ describe('runGmailImportanceAutoScanTick', () => {
     );
     expect(await scan.runGmailImportanceAutoScanTick(config, deps)).toEqual([]);
   });
+
+  it('scans each account that has Gmail read access, each with its own settings', async () => {
+    const uid = createUser({ username: 'multi', passwordHash: 'x' }).id;
+    const work = { userId: uid, accountId: linkAccount(uid, 'me@work.example') };
+    const home = { userId: uid, accountId: linkAccount(uid, 'me@home.example') };
+    // Linked without Gmail: auto-scan settings alone never make it scan.
+    const noGmail = { userId: uid, accountId: linkAccount(uid, 'cal@x.example', []) };
+    for (const k of [work, home, noGmail]) {
+      store.updateGmailImportanceSettings(k, { enabled: true, autoScan: 'hourly' });
+    }
+    const tokens: string[] = [];
+    const deps = {
+      resolveToken: async (k: { accountId: string }) => {
+        tokens.push(k.accountId);
+        return `tok-${k.accountId}`;
+      },
+      createSource: () => fakeSource([]),
+      resolveEngine,
+      runFailover: vi.fn(),
+      now: () => NOW,
+    };
+
+    const scanned = await scan.runGmailImportanceAutoScanTick(config, deps);
+    expect(scanned).toEqual(expect.arrayContaining([work, home]));
+    expect(scanned).toHaveLength(2);
+    expect(tokens.sort()).toEqual([work.accountId, home.accountId].sort());
+    expect(store.getGmailImportanceSettings(work).lastScanStatus).toBe('ok');
+    expect(store.getGmailImportanceSettings(home).lastScanStatus).toBe('ok');
+    expect(store.getGmailImportanceSettings(noGmail).lastScanAt).toBeNull();
+  });
+});
+
+describe('per-account importance rows', () => {
+  beforeEach(() => {
+    TMP_DIR = mkdtempSync(path.join(tmpdir(), 'gmail-importance-acct-'));
+    __resetSecretCryptoForTests();
+    setOrgsDbPathForTests(path.join(TMP_DIR, 'orgs.db'));
+    initOrgsDb();
+  });
+
+  const pin = (threadId: string) => ({
+    threadId,
+    historyId: 'h',
+    important: true,
+    score: 80,
+    reason: 'r',
+    subject: threadId,
+    from: 'x',
+    snippet: null,
+    lastMessageAt: new Date(NOW).toISOString(),
+  });
+
+  it('keeps settings and verdicts apart per account, and revoking one leaves the other', () => {
+    const uid = createUser({ username: 'two-boxes', passwordHash: 'x' }).id;
+    const work = { userId: uid, accountId: linkAccount(uid, 'me@work.example') };
+    const home = { userId: uid, accountId: linkAccount(uid, 'me@home.example') };
+    store.updateGmailImportanceSettings(work, { enabled: true, windowDays: 1, autoScan: 'hourly' });
+    store.updateGmailImportanceSettings(home, { enabled: true, windowDays: 30 });
+    store.upsertGmailImportanceVerdicts(work, [pin('w1')]);
+    store.upsertGmailImportanceVerdicts(home, [pin('h1')]);
+    const since = new Date(NOW - 86_400_000).toISOString();
+
+    expect(store.listImportantGmailThreads(work, since).map((t) => t.threadId)).toEqual(['w1']);
+    expect(store.listImportantGmailThreads(home, since).map((t) => t.threadId)).toEqual(['h1']);
+    expect(store.getGmailImportanceSettings(work).windowDays).toBe(1);
+    expect(store.getGmailImportanceSettings(home).windowDays).toBe(30);
+
+    deleteGoogleConnection(uid, { accountId: work.accountId });
+
+    expect(store.listImportantGmailThreads(work, since)).toEqual([]);
+    expect(store.getGmailImportanceSettings(work).enabled).toBe(false);
+    expect(store.listGmailImportanceAutoScanAccounts()).toEqual([]);
+    expect(store.listImportantGmailThreads(home, since).map((t) => t.threadId)).toEqual(['h1']);
+    expect(store.getGmailImportanceSettings(home)).toMatchObject({ enabled: true, windowDays: 30 });
+
+    // A scan that finishes after its account is gone can't bring rows back.
+    store.upsertGmailImportanceVerdicts(work, [pin('late')]);
+    store.recordGmailImportanceScanResult(work, { ok: false, error: 'late' });
+    expect(store.listImportantGmailThreads(work, since)).toEqual([]);
+    expect(store.getGmailImportanceSettings(work).lastScanAt).toBeNull();
+  });
 });
 
 describe('selectDueGmailImportanceScans', () => {
@@ -608,16 +714,26 @@ describe('selectDueGmailImportanceScans', () => {
     const iso = (msAgo: number) => new Date(NOW - msAgo).toISOString();
     const due = scan.selectDueGmailImportanceScans(
       [
-        { userId: 'never', autoScan: 'hourly', lastScanAt: null },
-        { userId: 'hourly-due', autoScan: 'hourly', lastScanAt: iso(61 * 60_000) },
-        { userId: 'hourly-fresh', autoScan: 'hourly', lastScanAt: iso(30 * 60_000) },
-        { userId: 'six-due', autoScan: 'every6h', lastScanAt: iso(7 * 3_600_000) },
-        { userId: 'daily-fresh', autoScan: 'daily', lastScanAt: iso(23 * 3_600_000) },
-        { userId: 'busy', autoScan: 'hourly', lastScanAt: null },
+        { userId: 'u', accountId: 'never', autoScan: 'hourly', lastScanAt: null },
+        { userId: 'u', accountId: 'hourly-due', autoScan: 'hourly', lastScanAt: iso(61 * 60_000) },
+        {
+          userId: 'u',
+          accountId: 'hourly-fresh',
+          autoScan: 'hourly',
+          lastScanAt: iso(30 * 60_000),
+        },
+        { userId: 'u', accountId: 'six-due', autoScan: 'every6h', lastScanAt: iso(7 * 3_600_000) },
+        {
+          userId: 'u',
+          accountId: 'daily-fresh',
+          autoScan: 'daily',
+          lastScanAt: iso(23 * 3_600_000),
+        },
+        { userId: 'u', accountId: 'busy', autoScan: 'hourly', lastScanAt: null },
       ],
       NOW,
-      (id) => id === 'busy',
+      (k) => k.accountId === 'busy',
     );
-    expect(due).toEqual(['never', 'hourly-due', 'six-due']);
+    expect(due.map((k) => k.accountId)).toEqual(['never', 'hourly-due', 'six-due']);
   });
 });

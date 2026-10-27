@@ -1,20 +1,28 @@
 /**
- * Gmail importance scan routes: per-user settings, the cached list of
+ * Gmail importance scan routes: per-account settings, the cached list of
  * important threads, and a manual scan trigger. The scan itself runs in the
  * background (it can take minutes across several model calls), so clients
  * poll the GET while `running` is true.
+ *
+ * Each linked Google account is its own mailbox with its own settings and
+ * verdicts. Every route takes the `account` query parameter the Google
+ * proxies use (account id or email; omitted means the default account).
  */
 import { Router, type Request, type Response } from 'express';
 import type { RouteDeps } from '../types.js';
 import { resolveGoogleConnectionUserId } from '../google-connection-user.js';
 import { getGoogleConnectionStatus } from '../google-connections-store.js';
+import { parseGoogleAccountSelector } from '../google-account-selector.js';
+import { GoogleAccountQuerySchema, googleAccountQueryField } from '../google-proxy-account.js';
 import { GMAIL_READONLY_SCOPE, hasGmailReadScope } from '../google-scopes.js';
 import {
   GMAIL_IMPORTANCE_AUTO_SCAN,
+  DEFAULT_GMAIL_IMPORTANCE_SETTINGS,
   dismissGmailImportanceThread,
   getGmailImportanceSettings,
   listImportantGmailThreads,
   updateGmailImportanceSettings,
+  type GmailImportanceKey,
 } from '../gmail-importance-store.js';
 import {
   isGmailImportanceScanRunning,
@@ -37,6 +45,7 @@ const ErrorResponse = registerComponent(
     error: z.string(),
     code: z.string().optional(),
     requiredScopes: z.array(z.string()).optional(),
+    account: z.string().optional(),
   }),
 );
 
@@ -77,11 +86,16 @@ const ImportantThreadSchema = registerComponent(
 const ImportanceStateSchema = registerComponent(
   'GmailImportanceState',
   z.object({
+    account: z.object({ accountId: z.string(), email: z.string() }).nullable().openapi({
+      description: 'The Google account this state belongs to; null when none is linked.',
+    }),
     settings: SettingsSchema,
-    running: z.boolean().openapi({ description: 'A scan is in progress for this user.' }),
+    running: z.boolean().openapi({ description: 'A scan is in progress for this account.' }),
     threads: z.array(ImportantThreadSchema),
   }),
 );
+
+const AccountQuery = z.object({ account: googleAccountQueryField() });
 
 export const UpdateGmailImportanceSettingsBody = z
   .object({
@@ -111,10 +125,13 @@ registerPath({
   tags: ['Google Gmail'],
   summary: 'Get Gmail importance settings and important threads',
   description:
-    "Returns the caller's importance-scan settings, whether a scan is running, and the threads the AI marked important within the configured window.",
+    "Returns one Google account's importance-scan settings, whether a scan is running for it, and the threads the AI marked important within the configured window.",
+  request: { query: AccountQuery },
   responses: {
     200: stateResponse('Settings and important threads.'),
+    400: errorResponse('Invalid account parameter.'),
     401: errorResponse('Authentication required.'),
+    404: errorResponse('The named Google account is not linked.'),
   },
 });
 
@@ -126,13 +143,15 @@ registerPath({
   description:
     'Toggle the important-threads section, pick the scan window (1, 7, or 30 days), and set the automated scan cadence.',
   request: {
+    query: AccountQuery,
     body: { content: { 'application/json': { schema: UpdateGmailImportanceSettingsBody } } },
   },
   responses: {
     200: stateResponse('Updated settings and important threads.'),
     400: errorResponse('Invalid body.'),
     409: errorResponse('The scan window cannot change while a scan is running.'),
-    401: errorResponse('Authentication required.'),
+    401: errorResponse('Authentication required, or Google is not connected.'),
+    404: errorResponse('The named Google account is not linked.'),
   },
 });
 
@@ -142,15 +161,17 @@ registerPath({
   tags: ['Google Gmail'],
   summary: 'Start a Gmail importance scan',
   description:
-    "Starts a background scan of the caller's inbox over the window, rated by the caller's own AI engine with the session failover chain. Poll the GET until `running` is false.",
+    "Starts a background scan of one account's inbox over the window, rated by the caller's own AI engine with the session failover chain. Poll the GET until `running` is false.",
   request: {
+    query: AccountQuery,
     body: { content: { 'application/json': { schema: StartGmailImportanceScanBody } } },
   },
   responses: {
     202: stateResponse('Scan started.'),
     400: errorResponse('Invalid body.'),
     401: errorResponse('Authentication required, or Google is not connected.'),
-    403: errorResponse('Gmail read access has not been granted.'),
+    403: errorResponse('Gmail read access has not been granted for this account.'),
+    404: errorResponse('The named Google account is not linked.'),
     409: errorResponse('A scan is already running.'),
     503: errorResponse('Google OAuth is not configured.'),
   },
@@ -167,12 +188,14 @@ registerPath({
   summary: 'Remove a thread from the important list',
   description:
     'Hides the thread from the important list. It returns only if a newer message arrives and a later scan rates it important again.',
-  request: { params: DismissGmailImportanceThreadParams },
+  request: { params: DismissGmailImportanceThreadParams, query: AccountQuery },
   responses: {
     200: stateResponse('Updated settings and important threads.'),
     400: errorResponse('Invalid thread id.'),
     401: errorResponse('Authentication required.'),
-    404: errorResponse('No importance verdict exists for this thread.'),
+    404: errorResponse(
+      'No importance verdict exists for this thread, or the account is not linked.',
+    ),
   },
 });
 
@@ -180,17 +203,33 @@ function bad(res: Response, status: number, error: string, code: string, extra =
   res.status(status).json({ error, code, ...extra });
 }
 
-function stateFor(userId: string, nowMs: number) {
-  const settings = getGmailImportanceSettings(userId);
-  const running = isGmailImportanceScanRunning(userId);
+interface ResolvedMailbox {
+  key: GmailImportanceKey;
+  email: string;
+  grantedScopes: string[];
+}
+
+function stateFor(mailbox: ResolvedMailbox | null, nowMs: number) {
+  if (!mailbox) {
+    return {
+      account: null,
+      settings: { ...DEFAULT_GMAIL_IMPORTANCE_SETTINGS },
+      running: false,
+      threads: [],
+    };
+  }
+  const { key } = mailbox;
+  const settings = getGmailImportanceSettings(key);
+  const running = isGmailImportanceScanRunning(key);
   const since = new Date(nowMs - settings.windowDays * 24 * 60 * 60_000).toISOString();
   return {
+    account: { accountId: key.accountId, email: mailbox.email },
     settings: {
       ...settings,
       lastScanStatus: running ? ('running' as const) : settings.lastScanStatus,
     },
     running,
-    threads: listImportantGmailThreads(userId, since),
+    threads: listImportantGmailThreads(key, since),
   };
 }
 
@@ -206,19 +245,61 @@ export default function createGmailImportanceRoutes(
   const router = Router();
   const now = options.now ?? Date.now;
 
-  const requireUser = (req: Request, res: Response): string | null => {
+  /**
+   * Resolve the caller and the mailbox. `undefined` means an error was sent;
+   * `null` means the caller has no linked account and named none.
+   */
+  const resolveMailbox = (req: Request, res: Response): ResolvedMailbox | null | undefined => {
+    let selector: ReturnType<typeof parseGoogleAccountSelector>;
+    if (req.query.account !== undefined) {
+      const parsed = GoogleAccountQuerySchema.safeParse({ account: req.query.account });
+      selector = parsed.success ? parseGoogleAccountSelector(parsed.data.account) : undefined;
+      if (!selector) {
+        bad(
+          res,
+          400,
+          'account must be a linked Google account id or email; omit it to use the default',
+          'invalid_request',
+        );
+        return undefined;
+      }
+    }
     const uid = resolveGoogleConnectionUserId(req, deps.stmts);
     if (!uid) {
       bad(res, 401, 'Authentication required', 'authentication_required');
+      return undefined;
+    }
+    const status = getGoogleConnectionStatus(uid, selector);
+    if (!status.connected || !status.accountId) {
+      if (selector) {
+        const label = selector.email ?? selector.accountId ?? '';
+        bad(res, 404, `Google account ${label} is not linked`, 'google_account_not_found', {
+          account: label,
+        });
+        return undefined;
+      }
       return null;
     }
-    return uid;
+    return {
+      key: { userId: uid, accountId: status.accountId },
+      email: status.email ?? '',
+      grantedScopes: status.grantedScopes,
+    };
+  };
+
+  /** Like resolveMailbox, but a missing account is a 401. */
+  const requireMailbox = (req: Request, res: Response): ResolvedMailbox | null => {
+    const mailbox = resolveMailbox(req, res);
+    if (mailbox === null) {
+      bad(res, 401, 'Google account is not connected', 'google_not_connected');
+    }
+    return mailbox ?? null;
   };
 
   router.get('/api/google/gmail/importance', (req: Request, res: Response) => {
-    const uid = requireUser(req, res);
-    if (!uid) return;
-    res.json(stateFor(uid, now()));
+    const mailbox = resolveMailbox(req, res);
+    if (mailbox === undefined) return;
+    res.json(stateFor(mailbox, now()));
   });
 
   router.put('/api/google/gmail/importance/settings', (req: Request, res: Response) => {
@@ -226,16 +307,16 @@ export default function createGmailImportanceRoutes(
     if (!parsed.success) {
       return bad(res, 400, parsed.error.issues[0]?.message || 'Invalid body', 'invalid_request');
     }
-    const uid = requireUser(req, res);
-    if (!uid) return;
+    const mailbox = requireMailbox(req, res);
+    if (!mailbox) return;
     // A running scan covers the window it started with. Changing the window
     // under it would show the new range as scanned when most of it was never
     // rated, so the change waits until the scan finishes.
-    const current = getGmailImportanceSettings(uid);
+    const current = getGmailImportanceSettings(mailbox.key);
     if (
       parsed.data.windowDays !== undefined &&
       parsed.data.windowDays !== current.windowDays &&
-      isGmailImportanceScanRunning(uid)
+      isGmailImportanceScanRunning(mailbox.key)
     ) {
       return bad(
         res,
@@ -244,8 +325,8 @@ export default function createGmailImportanceRoutes(
         'scan_in_progress',
       );
     }
-    updateGmailImportanceSettings(uid, parsed.data);
-    res.json(stateFor(uid, now()));
+    updateGmailImportanceSettings(mailbox.key, parsed.data);
+    res.json(stateFor(mailbox, now()));
   });
 
   router.post(
@@ -255,12 +336,12 @@ export default function createGmailImportanceRoutes(
       if (!parsed.success) {
         return bad(res, 400, 'Invalid thread id', 'invalid_request');
       }
-      const uid = requireUser(req, res);
-      if (!uid) return;
-      if (!dismissGmailImportanceThread(uid, parsed.data.threadId)) {
+      const mailbox = requireMailbox(req, res);
+      if (!mailbox) return;
+      if (!dismissGmailImportanceThread(mailbox.key, parsed.data.threadId)) {
         return bad(res, 404, 'Thread not found', 'not_found');
       }
-      res.json(stateFor(uid, now()));
+      res.json(stateFor(mailbox, now()));
     },
   );
 
@@ -269,9 +350,11 @@ export default function createGmailImportanceRoutes(
     if (!parsed.success) {
       return bad(res, 400, parsed.error.issues[0]?.message || 'Invalid body', 'invalid_request');
     }
-    const uid = requireUser(req, res);
-    if (!uid) return;
     if (!deps.config.googleOAuth?.clientId || !deps.config.googleOAuth?.clientSecret) {
+      // Still resolve the caller first so an anonymous request gets its 401.
+      if (!resolveGoogleConnectionUserId(req, deps.stmts)) {
+        return bad(res, 401, 'Authentication required', 'authentication_required');
+      }
       return bad(
         res,
         503,
@@ -279,29 +362,28 @@ export default function createGmailImportanceRoutes(
         'google_oauth_not_configured',
       );
     }
-    const status = getGoogleConnectionStatus(uid);
-    if (!status.connected) {
-      return bad(res, 401, 'Google account is not connected', 'google_not_connected');
-    }
-    if (!hasGmailReadScope(status.grantedScopes)) {
+    const mailbox = requireMailbox(req, res);
+    if (!mailbox) return;
+    if (!hasGmailReadScope(mailbox.grantedScopes)) {
       return bad(
         res,
         403,
-        'Required Gmail access has not been granted',
+        `Required Gmail access has not been granted for ${mailbox.email}`,
         'google_gmail_scope_required',
         {
           requiredScopes: [GMAIL_READONLY_SCOPE],
+          account: mailbox.email,
         },
       );
     }
     const started = startGmailImportanceScan(
-      { userId: uid, config: deps.config, windowDays: parsed.data.windowDays },
+      { ...mailbox.key, config: deps.config, windowDays: parsed.data.windowDays },
       options.scanDeps,
     );
     if (!started) {
       return bad(res, 409, 'A scan is already running', 'scan_in_progress');
     }
-    res.status(202).json(stateFor(uid, now()));
+    res.status(202).json(stateFor(mailbox, now()));
   });
 
   return router;

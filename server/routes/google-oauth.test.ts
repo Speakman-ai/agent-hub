@@ -43,6 +43,11 @@ const exchangeMock = vi.mocked(googleOAuth.exchangeCodeForGoogleTokens);
 const userInfoMock = vi.mocked(googleOAuth.fetchGoogleUserInfo);
 const revokeMock = vi.mocked(googleOAuth.revokeGoogleToken);
 const createGoogleOAuthRoutes = (await import('./google-oauth.js')).default;
+const { initDb } = await import('../db.js');
+const { getOrgsDb } = await import('../orgs.js');
+const { upsertChatSubscription, getChatSubscription } =
+  await import('../google-chat-events-store.js');
+const { getChatAccountSub } = await import('../google-chat-account.js');
 
 const STATE_PURPOSE = 'google-oauth';
 
@@ -383,6 +388,7 @@ describe('GET /api/auth/google/status', () => {
       serverConfigured: true,
       defaultAccountId: null,
       accounts: [],
+      chatAccount: null,
     });
     // Defense-in-depth: the status payload exposes only the field names above —
     // no access/refresh token material.
@@ -679,5 +685,93 @@ describe('multi-account: status, default switch, disconnect one', () => {
     expect(res.status).toBe(404);
     expect(revokeMock).not.toHaveBeenCalled();
     expect(listGoogleConnections(owner.id)).toHaveLength(1);
+  });
+});
+
+describe('OAuth callback and the Chat account', () => {
+  const CHAT_SCOPES = [
+    'https://www.googleapis.com/auth/chat.spaces.readonly',
+    'https://www.googleapis.com/auth/chat.messages.readonly',
+    'https://www.googleapis.com/auth/chat.messages.create',
+  ];
+  let userId = '';
+  const broadcast = vi.fn();
+
+  beforeEach(() => {
+    freshEnv();
+    initDb(TMP_DIR);
+    vi.clearAllMocks();
+    userId = createUser({ username: 'chat-owner', passwordHash: 'x' }).id;
+    exchangeMock.mockResolvedValue({
+      access_token: 'second-token',
+      expires_in: 3600,
+      refresh_token: 'r2',
+      scope: ['openid', 'email', ...CHAT_SCOPES].join(' '),
+      token_type: 'Bearer',
+    });
+    userInfoMock.mockResolvedValue({
+      sub: 'second-sub',
+      email: 'second@work.example',
+      email_verified: true,
+      name: null,
+      picture: null,
+      hd: 'work.example',
+    });
+  });
+
+  const callback = () =>
+    request(makeApp({ ...buildDeps(), broadcast } as unknown as RouteDeps))
+      .get('/api/auth/google/callback')
+      .query({ code: 'c', state: mintState(userId) });
+
+  it('keeps a legacy default that already runs Chat when another account consents first', async () => {
+    // Linked before hd was recorded, holds Chat scopes, has a live
+    // subscription, and no binding row exists yet.
+    upsertGoogleConnection({
+      userId,
+      googleSub: 'legacy-sub',
+      googleEmail: 'legacy@work.example',
+      accessToken: 'legacy-token',
+      tokenExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      refreshToken: 'r1',
+      grantedScopes: CHAT_SCOPES,
+    });
+    upsertChatSubscription({
+      userId,
+      subscriptionName: 'subscriptions/legacy',
+      authority: 'users/legacy-sub',
+      state: 'ACTIVE',
+      expireTime: null,
+    });
+
+    expect((await callback()).status).toBe(200);
+
+    expect(getChatAccountSub(userId)).toBe('legacy-sub');
+    expect(getChatSubscription(userId)?.subscriptionName).toBe('subscriptions/legacy');
+  });
+
+  it('tears down push state owned by another identity when the callback moves Chat', async () => {
+    // Chat was bound to an account that is no longer linked, and its
+    // subscription row was left behind.
+    getOrgsDb()
+      .prepare(
+        `INSERT INTO google_chat_accounts (user_id, google_sub, google_email) VALUES (?, ?, ?)`,
+      )
+      .run(userId, 'gone-sub', 'gone@work.example');
+    upsertChatSubscription({
+      userId,
+      subscriptionName: 'subscriptions/gone',
+      authority: 'users/gone-sub',
+      state: 'ACTIVE',
+      expireTime: null,
+    });
+
+    expect((await callback()).status).toBe(200);
+
+    expect(getChatAccountSub(userId)).toBe('second-sub');
+    expect(getChatSubscription(userId)).toBeNull();
+    expect(broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'google_chat_events_status', subscription: null }),
+    );
   });
 });

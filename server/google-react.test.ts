@@ -37,6 +37,9 @@ const storeMock = vi.hoisted(() => ({
 
 vi.mock('googleapis', () => ({ google: googleMock.google }));
 vi.mock('./google-connections-store.js', () => storeMock);
+vi.mock('./google-chat-account.js', async () =>
+  (await import('./test/chat-account-mock.js')).chatAccountFromConnectionStore(storeMock),
+);
 
 const { runGoogleReadAction } = await import('./google-react.js');
 

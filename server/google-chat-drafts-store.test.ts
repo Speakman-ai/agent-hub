@@ -37,8 +37,9 @@ describe('google-chat-drafts-store', () => {
   const claim = (
     id: string,
     user: string,
-    opts: Omit<Parameters<typeof store.claimChatDraftForSend>[2], 'expectedRevision'> = {},
-  ) => store.claimChatDraftForSend(id, user, { expectedRevision: rev(id), ...opts });
+    opts: Partial<Omit<Parameters<typeof store.claimChatDraftForSend>[2], 'expectedRevision'>> = {},
+  ) =>
+    store.claimChatDraftForSend(id, user, { expectedRevision: rev(id), accountSub: null, ...opts });
   const edit = (id: string, user: string, text: string) => {
     const r = store.updateChatDraftText(id, user, text, rev(id));
     return r.ok ? r.draft : null;
@@ -187,5 +188,23 @@ describe('google-chat-drafts-store', () => {
     expect(store.getChatSettings(bob)).toEqual({ autoSendAgentReplies: false });
     store.setChatSettings(alice, { autoSendAgentReplies: false });
     expect(store.getChatSettings(alice).autoSendAgentReplies).toBe(false);
+  });
+
+  it('refuses to send a draft with a token for a different Chat identity', () => {
+    const d = store.createChatDraft({
+      userId: alice,
+      sessionId: 's1',
+      spaceId: 'AAA',
+      accountSub: 'sub-a',
+      text: 'hi',
+    });
+    expect(claim(d.id, alice, { accountSub: 'sub-b', replyThread: null })).toMatchObject({
+      ok: false,
+      reason: 'account_changed',
+    });
+    expect(store.getChatDraft(d.id, alice)?.status).toBe('pending');
+    expect(claim(d.id, alice, { accountSub: 'sub-a', replyThread: null })).toMatchObject({
+      ok: true,
+    });
   });
 });

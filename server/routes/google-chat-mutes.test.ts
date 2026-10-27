@@ -43,6 +43,11 @@ vi.mock('googleapis', () => ({
   google: { auth: { OAuth2: googleMock.OAuth2 }, chat: googleMock.chat },
 }));
 vi.mock('../google-connections-store.js', () => connectionStoreMock);
+vi.mock('../google-chat-account.js', async () =>
+  (await import('../test/chat-account-mock.js')).chatAccountFromConnectionStore(
+    connectionStoreMock,
+  ),
+);
 
 const { initOrgsDb, setOrgsDbPathForTests } = await import('../orgs.js');
 const { createUser } = await import('../users-store.js');

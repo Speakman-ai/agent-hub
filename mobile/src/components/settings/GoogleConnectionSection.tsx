@@ -12,6 +12,7 @@ import {
 import { api } from '../../utils/api';
 import { colors } from '../../theme/colors';
 import { relativeTime } from '../../utils/time';
+import GoogleChatAccountPicker from './GoogleChatAccountPicker';
 
 interface GoogleSurface {
   key: string;
@@ -267,6 +268,8 @@ export function GoogleConnectionContent({
               </View>
             </View>
           ))}
+
+          <GoogleChatAccountPicker reloadKey={status} />
 
           {serverConfigured ? (
             <TouchableOpacity

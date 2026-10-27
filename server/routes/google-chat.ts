@@ -3,10 +3,12 @@ import { Readable } from 'node:stream';
 import { google, type chat_v1 } from 'googleapis';
 import type { RouteDeps } from '../types.js';
 import {
-  getActiveAccessToken,
-  getGoogleConnection,
-  getGoogleConnectionStatus,
-} from '../google-connections-store.js';
+  getChatAccessIdentity,
+  getChatAccessToken,
+  getChatAccountBinding,
+  getChatAccountSub,
+  getChatConnectionStatus,
+} from '../google-chat-account.js';
 import { resolveChatParticipants } from '../google-chat-participants.js';
 import { resolveGoogleConnectionUserId } from '../google-connection-user.js';
 import {
@@ -1055,10 +1057,23 @@ export function requireChatAccess(
     bad(res, 503, 'Google OAuth is not configured on this server', 'google_oauth_not_configured');
     return null;
   }
-  const status = getGoogleConnectionStatus(uid);
+  const status = getChatConnectionStatus(uid);
   if (!status.connected) {
     bad(res, 401, 'Google account is not connected', 'google_not_connected');
     return null;
+  }
+  if (!status.accountId) {
+    const { boundEmail } = getChatAccountBinding(uid);
+    if (boundEmail) {
+      bad(
+        res,
+        409,
+        `Google Chat is set to ${boundEmail}, which is no longer linked. Relink it or choose another Chat account in Settings → Account → Google.`,
+        'google_chat_account_unavailable',
+        { account: boundEmail },
+      );
+      return null;
+    }
   }
   if (!check(status.grantedScopes)) {
     bad(res, 403, 'Required Google Chat access has not been granted', scopeCode, {
@@ -1076,7 +1091,7 @@ async function resolveChatToken(
 ): Promise<string | null> {
   let token: string | null;
   try {
-    token = await getActiveAccessToken(userId, deps.config.googleOAuth ?? null);
+    token = await getChatAccessToken(userId, deps.config.googleOAuth ?? null);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`[google-chat] Failed to resolve token for user ${userId}: ${msg}`);
@@ -1088,6 +1103,28 @@ async function resolveChatToken(
     return null;
   }
   return token;
+}
+
+/** Like resolveChatToken, plus the Chat identity the token belongs to. */
+async function resolveChatIdentity(
+  userId: string,
+  deps: RouteDeps,
+  res: Response,
+): Promise<{ token: string; sub: string } | null> {
+  let identity: { token: string; sub: string } | null;
+  try {
+    identity = await getChatAccessIdentity(userId, deps.config.googleOAuth ?? null);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[google-chat] Failed to resolve token for user ${userId}: ${msg}`);
+    bad(res, 502, 'Failed to resolve Google access token', 'google_token_resolution_failed');
+    return null;
+  }
+  if (!identity) {
+    bad(res, 401, 'Google account must be reconnected', 'google_reconnect_required');
+    return null;
+  }
+  return identity;
 }
 
 // Links are shared across Hub users, so each read proves the caller can read
@@ -1108,9 +1145,12 @@ export function clearChatSpaceAccessCache(): void {
 async function assertCanReadSpace(
   chat: chat_v1.Chat,
   userId: string,
+  identitySub: string | null,
   spaceName: string,
 ): Promise<void> {
-  const key = `${userId}\u0000${spaceName}`;
+  // Keyed by the identity `chat`'s token belongs to (resolved together with
+  // it), so proof made with one account's token is never reused for another.
+  const key = `${userId}\u0000${identitySub ?? ''}\u0000${spaceName}`;
   const until = spaceAccessCache.get(key);
   if (until && until > Date.now()) return;
   await chat.spaces.messages.list({ parent: spaceName, pageSize: 1 });
@@ -1153,12 +1193,12 @@ async function mirrorMuteToGoogle(
   if (!deps.config.googleOAuth?.clientId || !deps.config.googleOAuth?.clientSecret) {
     return { googleSync: 'not_granted' };
   }
-  const status = getGoogleConnectionStatus(userId);
+  const status = getChatConnectionStatus(userId);
   if (!status.connected || !hasChatSpaceSettingsScope(status.grantedScopes)) {
     return { googleSync: 'not_granted' };
   }
   try {
-    const token = await getActiveAccessToken(userId, deps.config.googleOAuth);
+    const token = await getChatAccessToken(userId, deps.config.googleOAuth);
     if (!token) return { googleSync: 'failed', googleError: 'Google account must be reconnected' };
     await patchSpaceMuteSetting(createChatClient(token), spaceId, muted);
     return { googleSync: 'synced' };
@@ -1419,7 +1459,10 @@ function publicDraft(draft: GoogleChatDraft) {
   return rest;
 }
 
-function broadcastDraft(deps: RouteDeps, draft: GoogleChatDraft | null): void {
+export function broadcastDraft(
+  deps: Pick<RouteDeps, 'broadcast'>,
+  draft: GoogleChatDraft | null,
+): void {
   if (!draft) return;
   deps.broadcast?.({
     type: 'google_chat_draft_update',
@@ -1590,10 +1633,10 @@ export default function createGoogleChatRoutes(deps: RouteDeps): Router {
         pageToken: parsed.data.pageToken,
       });
       const spaces = sortSpacesByActivity((result.data.spaces ?? []).map(shapeSpace));
-      const status = getGoogleConnectionStatus(uid);
+      const status = getChatConnectionStatus(uid);
       const unnamed = spaces.filter(needsParticipants);
       if (unnamed.length && hasChatMembershipsReadScope(status.grantedScopes)) {
-        const sub = getGoogleConnection(uid)?.googleSub;
+        const sub = getChatAccountSub(uid);
         const resolved = await resolveChatParticipants({
           userId: uid,
           // Chat user ids are the Google account id, i.e. the OIDC `sub`.
@@ -1675,7 +1718,7 @@ export default function createGoogleChatRoutes(deps: RouteDeps): Router {
         showDeleted: true,
         ...(filter ? { filter } : {}),
       });
-      const sub = getGoogleConnection(uid)?.googleSub;
+      const sub = getChatAccountSub(uid);
       return res.json({
         messages: (result.data.messages ?? []).map(shapeMessage),
         nextPageToken: result.data.nextPageToken || null,
@@ -1717,7 +1760,7 @@ export default function createGoogleChatRoutes(deps: RouteDeps): Router {
     if (!uid) return;
     // A thread reply depends on the conversation's capabilities, which need the
     // space itself. Plain sends never read the space.
-    if (threadName && !hasChatSpacesReadScope(getGoogleConnectionStatus(uid).grantedScopes)) {
+    if (threadName && !hasChatSpacesReadScope(getChatConnectionStatus(uid).grantedScopes)) {
       return bad(
         res,
         403,
@@ -1747,6 +1790,7 @@ export default function createGoogleChatRoutes(deps: RouteDeps): Router {
         sessionId: agentSessionId,
         spaceId,
         threadName: threadName ?? null,
+        accountSub: getChatAccountSub(uid),
         text,
       });
       broadcastDraft(deps, draft);
@@ -1935,7 +1979,7 @@ export default function createGoogleChatRoutes(deps: RouteDeps): Router {
         'google_chat_reactions_scope_required',
       );
       if (!uid) return;
-      const sub = getGoogleConnection(uid)?.googleSub;
+      const sub = getChatAccountSub(uid);
       if (!sub) return bad(res, 401, 'Google account is not connected', 'google_not_connected');
       const token = await resolveChatToken(uid, deps, res);
       if (!token) return;
@@ -2014,7 +2058,7 @@ export default function createGoogleChatRoutes(deps: RouteDeps): Router {
         'google_chat_edit_scope_required',
       );
       if (!uid) return;
-      const sub = getGoogleConnection(uid)?.googleSub;
+      const sub = getChatAccountSub(uid);
       if (!sub) return bad(res, 401, 'Google account is not connected', 'google_not_connected');
       const token = await resolveChatToken(uid, deps, res);
       if (!token) return;
@@ -2174,11 +2218,11 @@ export default function createGoogleChatRoutes(deps: RouteDeps): Router {
         'google_chat_scope_required',
       );
       if (!uid) return;
-      const token = await resolveChatToken(uid, deps, res);
-      if (!token) return;
+      const identity = await resolveChatIdentity(uid, deps, res);
+      if (!identity) return;
       const spaceName = `spaces/${params.data.spaceId}`;
       try {
-        await assertCanReadSpace(createChatClient(token), uid, spaceName);
+        await assertCanReadSpace(createChatClient(identity.token), uid, identity.sub, spaceName);
       } catch (err: unknown) {
         return sendGoogleError(res, err);
       }
@@ -2276,6 +2320,15 @@ export default function createGoogleChatRoutes(deps: RouteDeps): Router {
     res: Response,
     result: { reason: string; draft: GoogleChatDraft | null },
   ) => {
+    if (result.reason === 'account_changed') {
+      return bad(
+        res,
+        409,
+        'This reply was written for a different Google Chat account than the one Chat uses now. Discard it.',
+        'google_chat_draft_account_changed',
+        { draft: result.draft && publicDraft(result.draft) },
+      );
+    }
     if (result.reason === 'revision_mismatch' && result.draft) {
       return bad(
         res,
@@ -2364,7 +2417,7 @@ export default function createGoogleChatRoutes(deps: RouteDeps): Router {
     }
     if (
       existing.threadName &&
-      !hasChatSpacesReadScope(getGoogleConnectionStatus(uid).grantedScopes)
+      !hasChatSpacesReadScope(getChatConnectionStatus(uid).grantedScopes)
     ) {
       return bad(
         res,
@@ -2374,9 +2427,11 @@ export default function createGoogleChatRoutes(deps: RouteDeps): Router {
         { requiredScopes: [CHAT_SPACES_READONLY_SCOPE] },
       );
     }
-    const token = await resolveChatToken(uid, deps, res);
-    if (!token) return;
-    const chat = createChatClient(token);
+    // Token and identity come from one lookup; the claim refuses a draft
+    // written as another Chat account, however the binding moved meanwhile.
+    const identity = await resolveChatIdentity(uid, deps, res);
+    if (!identity) return;
+    const chat = createChatClient(identity.token);
 
     // A fresh attempt resolves its reply thread before claiming, so the claim
     // stores the complete request in one write. A retry reuses the stored one.
@@ -2391,6 +2446,7 @@ export default function createGoogleChatRoutes(deps: RouteDeps): Router {
 
     const claim = claimChatDraftForSend(draftId, uid, {
       expectedRevision: body.data.revision,
+      accountSub: identity.sub,
       text: body.data.text,
       replyThread,
     });

@@ -22,6 +22,15 @@
  *     tokens always expire, ~1h). Drives the 5-minute proactive refresh.
  *   - granted_scopes_json: JSON array of the scopes Google actually granted
  *     (incremental authorization grows this set per surface).
+ *   - hosted_domain: the userinfo `hd` claim. A domain for Google Workspace
+ *     accounts, '' for personal accounts, NULL when not yet recorded.
+ *
+ * `google_chat_accounts` binds each user's Google Chat to one linked account.
+ * Chat stays single-account (one push subscription, one sender identity), so
+ * the binding is explicit and survives default-account switches. It names the
+ * Google identity (`google_sub`), not the row id: relinking the same Google
+ * account restores Chat, while removing it leaves Chat unbound instead of
+ * silently moving to another account.
  */
 import type Database from 'better-sqlite3';
 
@@ -34,6 +43,7 @@ const TABLE_COLUMNS = `
     token_expires_at    TEXT,
     refresh_token_enc   TEXT NOT NULL DEFAULT '',
     granted_scopes_json TEXT NOT NULL DEFAULT '[]',
+    hosted_domain       TEXT,
     is_default          INTEGER NOT NULL DEFAULT 0 CHECK(is_default IN (0, 1)),
     connected_at        TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
@@ -46,7 +56,25 @@ export const GOOGLE_CONNECTIONS_SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_google_connections_user ON google_connections(user_id, connected_at);
   CREATE UNIQUE INDEX IF NOT EXISTS idx_google_connections_one_default
     ON google_connections(user_id) WHERE is_default = 1;
+
+  CREATE TABLE IF NOT EXISTS google_chat_accounts (
+    user_id      TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    google_sub   TEXT NOT NULL,
+    google_email TEXT NOT NULL,
+    updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 `;
+
+/** Add columns that arrived after the multi-account table shipped. */
+export function migrateGoogleConnectionsColumns(db: Database.Database): void {
+  const cols = db.prepare(`PRAGMA table_info(google_connections)`).all() as Array<{
+    name: string;
+  }>;
+  if (cols.length === 0) return;
+  if (!cols.some((c) => c.name === 'hosted_domain')) {
+    db.exec('ALTER TABLE google_connections ADD COLUMN hosted_domain TEXT');
+  }
+}
 
 /**
  * Rekey a single-account table (`user_id` as PK) to the multi-account shape.

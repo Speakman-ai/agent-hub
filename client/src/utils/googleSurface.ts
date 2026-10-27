@@ -9,6 +9,8 @@
  * affordance rather than being hidden from navigation).
  */
 
+import { chatScopedStatus, type GoogleStatusChatAccount } from '@shared/utils/googleChatAccount';
+
 export const CALENDAR_EVENTS_SCOPE = 'https://www.googleapis.com/auth/calendar.events';
 export const CALENDAR_FULL_SCOPE = 'https://www.googleapis.com/auth/calendar';
 
@@ -54,6 +56,8 @@ export type GoogleStatusLike = {
   email?: string | null;
   grantedScopes?: string[];
   serverConfigured?: boolean;
+  /** The account Google Chat runs as; Chat consent reads its scopes. */
+  chatAccount?: GoogleStatusChatAccount | null;
 } | null;
 
 /** True only when the calling user has linked a Google account. */
@@ -166,7 +170,8 @@ export const CHAT_SURFACE_SCOPES = [
 ];
 
 /** True when the account can list spaces AND read their messages. */
-export function hasChatReadScope(status: GoogleStatusLike): boolean {
+export function hasChatReadScope(rawStatus: GoogleStatusLike): boolean {
+  const status = chatScopedStatus(rawStatus) ?? null;
   const spaces =
     hasGoogleScope(status, CHAT_SPACES_READONLY_SCOPE) || hasGoogleScope(status, CHAT_SPACES_SCOPE);
   const messages =
@@ -205,7 +210,8 @@ export type ChatConsent = {
  * driven from this, so a partial grant can never leave a capability with no
  * way to request it.
  */
-export function chatConsent(status: GoogleStatusLike): ChatConsent {
+export function chatConsent(rawStatus: GoogleStatusLike): ChatConsent {
+  const status = chatScopedStatus(rawStatus) ?? null;
   const hasSpaces =
     hasGoogleScope(status, CHAT_SPACES_READONLY_SCOPE) || hasGoogleScope(status, CHAT_SPACES_SCOPE);
   const hasMessagesRead =
@@ -252,7 +258,8 @@ export const CHAT_SEND_SCOPE_ERROR = 'google_chat_send_scope_required';
 export const CHAT_EDIT_SCOPE_ERROR = 'google_chat_edit_scope_required';
 
 /** True when the account can post Chat messages. */
-export function hasChatSendScope(status: GoogleStatusLike): boolean {
+export function hasChatSendScope(rawStatus: GoogleStatusLike): boolean {
+  const status = chatScopedStatus(rawStatus) ?? null;
   return (
     hasGoogleScope(status, CHAT_MESSAGES_CREATE_SCOPE) ||
     hasGoogleScope(status, CHAT_MESSAGES_SCOPE)

@@ -13,6 +13,13 @@ import { CHAT_MESSAGES_CREATE_SCOPE } from '../google-scopes.js';
 
 /** Scopes each user's Google connection grants; absent = not connected. */
 const googleScopes = new Map<string, string[]>();
+vi.mock('../google-chat-account.js', async (orig) => ({
+  ...(await orig<typeof import('../google-chat-account.js')>()),
+  getChatConnectionStatus: (userId: string) => ({
+    connected: googleScopes.has(userId),
+    grantedScopes: googleScopes.get(userId) ?? [],
+  }),
+}));
 vi.mock('../google-connections-store.js', async (orig) => ({
   ...(await orig<typeof import('../google-connections-store.js')>()),
   getGoogleConnectionStatus: (userId: string) => ({

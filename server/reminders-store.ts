@@ -58,6 +58,11 @@ export interface Reminder {
   calendar: {
     status: ReminderCalendarStatus;
     calendarId: string | null;
+    /**
+     * Linked Google account whose calendar holds the event. Null only for an
+     * event recorded before accounts were tracked (treated as the default).
+     */
+    accountId: string | null;
     eventId: string | null;
     eventUrl: string | null;
     error: string | null;
@@ -83,6 +88,7 @@ interface ReminderRow {
   project_id: string | null;
   calendar_status: ReminderCalendarStatus;
   calendar_id: string | null;
+  calendar_account_id: string | null;
   calendar_event_id: string | null;
   calendar_event_url: string | null;
   calendar_error: string | null;
@@ -113,6 +119,7 @@ function rowToReminder(row: ReminderRow): Reminder {
     calendar: {
       status: row.calendar_status,
       calendarId: row.calendar_id,
+      accountId: row.calendar_account_id ?? null,
       eventId: row.calendar_event_id,
       eventUrl: row.calendar_event_url,
       error: row.calendar_error,
@@ -245,6 +252,13 @@ export interface UpdateReminderResult {
 const NO_CALENDAR_EFFECT: ReminderCalendarEffect = { cleanup: null, insert: false, sync: false };
 
 /**
+ * The owner's default Google account at the moment of the write (one `?`
+ * parameter: the user id). New events always go to the current default.
+ */
+const DEFAULT_ACCOUNT_SQL =
+  '(SELECT id FROM google_connections WHERE user_id = ? AND is_default = 1)';
+
+/**
  * The Google event id for a reminder. Deterministic, so it can be stored
  * before the insert runs and a retried insert can't create a duplicate
  * (Google answers 409). `generation` advances each time a cancelled
@@ -285,6 +299,7 @@ function applyCalendarTransition(
       cal.calendarId ?? 'primary',
       cal.eventId,
       now,
+      cal.accountId,
     );
     // `removing` until Google confirms the delete (see completeCalendarCleanup);
     // claiming "removed" now would be wrong while the popup can still fire.
@@ -303,10 +318,12 @@ function applyCalendarTransition(
     const generation = row.calendar_generation + 1;
     db.prepare(
       `UPDATE reminders SET calendar_status = 'pending', calendar_id = 'primary',
+         calendar_account_id = ${DEFAULT_ACCOUNT_SQL},
          calendar_event_id = ?, calendar_event_url = NULL, calendar_error = NULL,
          calendar_attempts = 0, calendar_retry_at = ?, calendar_generation = ?
        WHERE user_id = ? AND id = ?`,
     ).run(
+      after.userId,
       calendarEventIdFor(after.id, generation),
       new Date(now.getTime() + insertLeaseMs).toISOString(),
       generation,
@@ -410,6 +427,8 @@ export function updateReminder(
 export interface CalendarLinkUpdate {
   status: ReminderCalendarStatus;
   calendarId?: string | null;
+  /** Account holding the event. Omit to keep the recorded one. */
+  accountId?: string | null;
   eventId?: string | null;
   eventUrl?: string | null;
   error?: string | null;
@@ -430,14 +449,17 @@ export function setReminderCalendar(
   const guard = expectEventId === undefined ? '' : ' AND calendar_event_id IS ?';
   getOrgsDb()
     .prepare(
-      `UPDATE reminders SET calendar_status = ?, calendar_id = ?, calendar_event_id = ?,
-         calendar_event_url = ?, calendar_error = ?, calendar_attempts = 0,
-         calendar_retry_at = NULL
+      `UPDATE reminders SET calendar_status = ?, calendar_id = ?,
+         calendar_account_id = CASE WHEN ? THEN ? ELSE calendar_account_id END,
+         calendar_event_id = ?, calendar_event_url = ?, calendar_error = ?,
+         calendar_attempts = 0, calendar_retry_at = NULL
        WHERE user_id = ? AND id = ?${guard}`,
     )
     .run(
       link.status,
       link.calendarId ?? null,
+      link.accountId !== undefined ? 1 : 0,
+      link.accountId ?? null,
       link.eventId ?? null,
       link.eventUrl ?? null,
       link.error ?? null,
@@ -505,6 +527,8 @@ export interface CalendarCleanup {
   userId: string;
   reminderId: string;
   calendarId: string;
+  /** Account whose calendar holds the event; null means the default (legacy rows). */
+  accountId: string | null;
   eventId: string;
   attempts: number;
   lastError: string | null;
@@ -516,6 +540,7 @@ interface CalendarCleanupRow {
   user_id: string;
   reminder_id: string;
   calendar_id: string;
+  account_id: string | null;
   event_id: string;
   attempts: number;
   last_error: string | null;
@@ -528,6 +553,7 @@ function rowToCleanup(row: CalendarCleanupRow): CalendarCleanup {
     userId: row.user_id,
     reminderId: row.reminder_id,
     calendarId: row.calendar_id,
+    accountId: row.account_id ?? null,
     eventId: row.event_id,
     attempts: row.attempts,
     lastError: row.last_error,
@@ -564,6 +590,7 @@ export function deleteReminder(
           existing.calendar.calendarId ?? 'primary',
           existing.calendar.eventId,
           now,
+          existing.calendar.accountId,
         )
       : null;
     db.prepare('DELETE FROM reminders WHERE user_id = ? AND id = ?').run(userId, id);
@@ -571,13 +598,18 @@ export function deleteReminder(
   })();
 }
 
-/** Queue a calendar event for removal. Returns null if the user is gone. */
+/**
+ * Queue a calendar event for removal on `accountId`'s calendar (null: the
+ * default account, for events recorded before accounts were tracked).
+ * Returns null if the user is gone.
+ */
 export function enqueueCalendarCleanup(
   userId: string,
   reminderId: string,
   calendarId: string,
   eventId: string,
-  now: Date = new Date(),
+  now: Date,
+  accountId: string | null,
 ): CalendarCleanup | null {
   const db = getOrgsDb();
   const user = db.prepare('SELECT 1 FROM users WHERE id = ?').get(userId);
@@ -586,9 +618,9 @@ export function enqueueCalendarCleanup(
   const cleanupId = uuidv4();
   db.prepare(
     `INSERT INTO reminder_calendar_cleanups
-       (id, user_id, reminder_id, calendar_id, event_id, next_attempt_at, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(cleanupId, userId, reminderId, calendarId, eventId, at, at);
+       (id, user_id, reminder_id, calendar_id, account_id, event_id, next_attempt_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(cleanupId, userId, reminderId, calendarId, accountId, eventId, at, at);
   // A reminder already shown as removed has an event to remove again (a late
   // or lost-response insert landed after its dismissal): back to `removing`.
   db.prepare(
@@ -612,11 +644,31 @@ export function beginCalendarInsert(
 ): Reminder | null {
   getOrgsDb()
     .prepare(
-      `UPDATE reminders SET calendar_status = 'pending', calendar_id = ?, calendar_event_id = ?,
+      `UPDATE reminders SET calendar_status = 'pending', calendar_id = ?,
+         calendar_account_id = ${DEFAULT_ACCOUNT_SQL}, calendar_event_id = ?,
          calendar_event_url = NULL, calendar_error = NULL, calendar_retry_at = ?
        WHERE user_id = ? AND id = ? AND calendar_event_id IS NULL`,
     )
-    .run(calendarId, eventId, leaseUntil.toISOString(), userId, id);
+    .run(calendarId, userId, eventId, leaseUntil.toISOString(), userId, id);
+  return getReminder(userId, id);
+}
+
+/**
+ * Record the owner's current default account on a reservation that has none
+ * (reserved while no account was linked, or before accounts were tracked).
+ * Applies only while the reminder still holds `eventId`.
+ */
+export function stampDefaultCalendarAccount(
+  userId: string,
+  id: string,
+  eventId: string,
+): Reminder | null {
+  getOrgsDb()
+    .prepare(
+      `UPDATE reminders SET calendar_account_id = ${DEFAULT_ACCOUNT_SQL}
+       WHERE user_id = ? AND id = ? AND calendar_event_id = ? AND calendar_account_id IS NULL`,
+    )
+    .run(userId, userId, id, eventId);
   return getReminder(userId, id);
 }
 
@@ -670,6 +722,7 @@ export function linkCalendarEvent(
   now: Date = new Date(),
   sentFields?: Pick<Reminder, 'title' | 'notes' | 'remindAt'>,
   mayBeStale = false,
+  accountId: string | null = null,
 ): LinkCalendarEventResult {
   const db = getOrgsDb();
   return db.transaction((): LinkCalendarEventResult => {
@@ -677,7 +730,7 @@ export function linkCalendarEvent(
     if (!existing || existing.calendar.eventId !== eventId) {
       return {
         kind: 'orphaned',
-        cleanup: enqueueCalendarCleanup(userId, id, calendarId, eventId, now),
+        cleanup: enqueueCalendarCleanup(userId, id, calendarId, eventId, now, accountId),
         reminder: existing,
       };
     }
@@ -687,7 +740,13 @@ export function linkCalendarEvent(
         (sentFields.title !== existing.title ||
           sentFields.notes !== existing.notes ||
           sentFields.remindAt !== existing.remindAt));
-    setReminderCalendar(userId, id, { status: 'synced', calendarId, eventId, eventUrl });
+    setReminderCalendar(userId, id, {
+      status: 'synced',
+      calendarId,
+      eventId,
+      eventUrl,
+      ...(accountId ? { accountId } : {}),
+    });
     if (stale) markCalendarUpdating(userId, id, eventId, now);
     return { kind: 'linked', reminder: getReminder(userId, id) as Reminder };
   })();
@@ -714,12 +773,13 @@ export function recordCalendarInsertFailure(
   error: string,
   requestSent: boolean,
   now: Date = new Date(),
+  accountId: string | null = null,
 ): Reminder | null {
   const db = getOrgsDb();
   return db.transaction((): Reminder | null => {
     const existing = getReminder(userId, id);
     if (!existing || existing.calendar.eventId !== eventId) {
-      if (requestSent) enqueueCalendarCleanup(userId, id, calendarId, eventId, now);
+      if (requestSent) enqueueCalendarCleanup(userId, id, calendarId, eventId, now, accountId);
       return existing;
     }
     const row = db
@@ -983,6 +1043,7 @@ export function pruneDismissedReminders(
           r.calendar_id ?? 'primary',
           r.calendar_event_id,
           now,
+          r.calendar_account_id ?? null,
         );
       }
       del.run(r.user_id, r.id);

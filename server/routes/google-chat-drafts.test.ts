@@ -46,6 +46,11 @@ vi.mock('googleapis', () => ({
   google: { auth: { OAuth2: googleMock.OAuth2 }, chat: googleMock.chat },
 }));
 vi.mock('../google-connections-store.js', () => connectionStoreMock);
+vi.mock('../google-chat-account.js', async () =>
+  (await import('../test/chat-account-mock.js')).chatAccountFromConnectionStore(
+    connectionStoreMock,
+  ),
+);
 
 const { initOrgsDb, setOrgsDbPathForTests } = await import('../orgs.js');
 const { createUser } = await import('../users-store.js');
@@ -320,6 +325,7 @@ describe('Google Chat agent reply drafts', () => {
     // The approval claimed the attempt, then the server died before Google answered.
     const claim = claimChatDraftForSend(id, owner, {
       expectedRevision: 1,
+      accountSub: getChatDraft(id, owner)!.accountSub,
       replyThread: 'spaces/AAA/threads/T1',
     });
     if (!claim.ok) throw new Error('claim failed');

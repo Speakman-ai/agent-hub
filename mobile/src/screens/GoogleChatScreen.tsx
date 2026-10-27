@@ -30,6 +30,7 @@ import {
   isGoogleConnected,
 } from '../utils/googleSurface';
 import { chatSenderLabel, chatSpaceLabel, type ChatSpace } from '@shared/utils/googleChat';
+import { chatConsentAccountId } from '@shared/utils/googleChatAccount';
 
 /** Merges a fetched page into a list, keeping the first copy of each record. */
 function mergeByKey<T>(base: T[], page: T[], key: (item: T) => string | null | undefined): T[] {
@@ -293,6 +294,8 @@ function AccountGoogleChatPane() {
       const body = await api.startGoogleOAuth({
         returnTo: '/#/chat',
         scopes: CHAT_SURFACE_SCOPES,
+        // Chat consent goes to the Chat account, not necessarily the default.
+        accountId: chatConsentAccountId(status),
       });
       if (body?.authorizeUrl) await Linking.openURL(body.authorizeUrl);
     } catch (err: any) {

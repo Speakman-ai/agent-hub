@@ -1,6 +1,10 @@
 /**
  * Persistence for the Gmail importance scan (schema in
- * `gmail-importance-schema.ts`). All reads and writes are scoped by user id.
+ * `gmail-importance-schema.ts`). Every read and write is scoped to one linked
+ * Google account of one user (`GmailImportanceKey`).
+ *
+ * Writes only land while the account is still linked, so a scan that finishes
+ * after its account was removed can't bring its rows back.
  */
 import { getOrgsDb } from './orgs.js';
 
@@ -72,6 +76,20 @@ interface ThreadRow {
 
 const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 
+/** One mailbox: a user's linked Google account (`google_connections.id`). */
+export interface GmailImportanceKey {
+  userId: string;
+  accountId: string;
+}
+
+const ACCOUNT_LINKED = 'EXISTS (SELECT 1 FROM google_connections WHERE id = ? AND user_id = ?)';
+
+function isLinked(key: GmailImportanceKey): boolean {
+  return !!getOrgsDb()
+    .prepare(`SELECT 1 FROM google_connections WHERE id = ? AND user_id = ?`)
+    .get(key.accountId, key.userId);
+}
+
 export const DEFAULT_GMAIL_IMPORTANCE_SETTINGS: GmailImportanceSettings = {
   enabled: false,
   windowDays: 7,
@@ -111,58 +129,70 @@ function shapeSettings(row: SettingsRow | undefined): GmailImportanceSettings {
   };
 }
 
-export function getGmailImportanceSettings(userId: string): GmailImportanceSettings {
+export function getGmailImportanceSettings(key: GmailImportanceKey): GmailImportanceSettings {
   const row = getOrgsDb()
-    .prepare('SELECT * FROM gmail_importance_settings WHERE user_id = ?')
-    .get(userId) as SettingsRow | undefined;
+    .prepare('SELECT * FROM gmail_importance_settings WHERE user_id = ? AND account_id = ?')
+    .get(key.userId, key.accountId) as SettingsRow | undefined;
   return shapeSettings(row);
 }
 
 export function updateGmailImportanceSettings(
-  userId: string,
+  key: GmailImportanceKey,
   patch: Partial<Pick<GmailImportanceSettings, 'enabled' | 'windowDays' | 'autoScan'>>,
 ): GmailImportanceSettings {
-  const next = { ...getGmailImportanceSettings(userId), ...patch };
+  const next = { ...getGmailImportanceSettings(key), ...patch };
   getOrgsDb()
     .prepare(
-      `INSERT INTO gmail_importance_settings (user_id, enabled, window_days, auto_scan, updated_at)
-       VALUES (?, ?, ?, ?, ${NOW})
-       ON CONFLICT(user_id) DO UPDATE SET
+      `INSERT INTO gmail_importance_settings
+         (user_id, account_id, enabled, window_days, auto_scan, updated_at)
+       SELECT ?, ?, ?, ?, ?, ${NOW} WHERE ${ACCOUNT_LINKED}
+       ON CONFLICT(user_id, account_id) DO UPDATE SET
          enabled = excluded.enabled,
          window_days = excluded.window_days,
          auto_scan = excluded.auto_scan,
          updated_at = excluded.updated_at`,
     )
-    .run(userId, next.enabled ? 1 : 0, next.windowDays, next.autoScan);
-  return getGmailImportanceSettings(userId);
+    .run(
+      key.userId,
+      key.accountId,
+      next.enabled ? 1 : 0,
+      next.windowDays,
+      next.autoScan,
+      key.accountId,
+      key.userId,
+    );
+  return getGmailImportanceSettings(key);
 }
 
 /** Ensure a settings row exists so scan bookkeeping has something to update. */
-function ensureSettingsRow(userId: string): void {
+function ensureSettingsRow(key: GmailImportanceKey): void {
   getOrgsDb()
-    .prepare(`INSERT OR IGNORE INTO gmail_importance_settings (user_id) VALUES (?)`)
-    .run(userId);
+    .prepare(
+      `INSERT OR IGNORE INTO gmail_importance_settings (user_id, account_id)
+       SELECT ?, ? WHERE ${ACCOUNT_LINKED}`,
+    )
+    .run(key.userId, key.accountId, key.accountId, key.userId);
 }
 
-export function markGmailImportanceScanRunning(userId: string): void {
-  ensureSettingsRow(userId);
+export function markGmailImportanceScanRunning(key: GmailImportanceKey): void {
+  ensureSettingsRow(key);
   getOrgsDb()
     .prepare(
       `UPDATE gmail_importance_settings
          SET last_scan_status = 'running', last_scan_error = NULL, updated_at = ${NOW}
-       WHERE user_id = ?`,
+       WHERE user_id = ? AND account_id = ?`,
     )
-    .run(userId);
+    .run(key.userId, key.accountId);
 }
 
 export function recordGmailImportanceScanResult(
-  userId: string,
+  key: GmailImportanceKey,
   result:
     | { ok: true; engine: string | null; model: string | null; failover: string | null }
     | { ok: false; error: string },
   finishedAt: string = new Date().toISOString(),
 ): void {
-  ensureSettingsRow(userId);
+  ensureSettingsRow(key);
   if (result.ok) {
     getOrgsDb()
       .prepare(
@@ -170,9 +200,9 @@ export function recordGmailImportanceScanResult(
            SET last_scan_status = 'ok', last_scan_error = NULL, last_scan_at = ?,
                last_scan_engine = ?, last_scan_model = ?, last_scan_failover = ?,
                updated_at = ${NOW}
-         WHERE user_id = ?`,
+         WHERE user_id = ? AND account_id = ?`,
       )
-      .run(finishedAt, result.engine, result.model, result.failover, userId);
+      .run(finishedAt, result.engine, result.model, result.failover, key.userId, key.accountId);
   } else {
     // A failed scan still stamps last_scan_at so the auto-scan ticker backs off
     // for a full interval instead of retrying a broken setup every minute.
@@ -181,9 +211,9 @@ export function recordGmailImportanceScanResult(
         `UPDATE gmail_importance_settings
            SET last_scan_status = 'error', last_scan_error = ?, last_scan_at = ?,
                updated_at = ${NOW}
-         WHERE user_id = ?`,
+         WHERE user_id = ? AND account_id = ?`,
       )
-      .run(result.error.slice(0, 1000), finishedAt, userId);
+      .run(result.error.slice(0, 1000), finishedAt, key.userId, key.accountId);
   }
 }
 
@@ -201,21 +231,34 @@ export function resetStaleGmailImportanceScans(): number {
     .run().changes;
 }
 
-export function listGmailImportanceAutoScanUsers(): Array<{
+/**
+ * Every mailbox with automated scans on, one entry per linked account. Rows
+ * whose account is gone are skipped (cleanup normally deletes them).
+ */
+export function listGmailImportanceAutoScanAccounts(): Array<{
   userId: string;
+  accountId: string;
   autoScan: Exclude<GmailImportanceAutoScan, 'off'>;
   lastScanAt: string | null;
 }> {
   const rows = getOrgsDb()
     .prepare(
-      `SELECT user_id, auto_scan, last_scan_at FROM gmail_importance_settings
-        WHERE enabled = 1 AND auto_scan != 'off'`,
+      `SELECT s.user_id, s.account_id, s.auto_scan, s.last_scan_at
+         FROM gmail_importance_settings s
+         JOIN google_connections g ON g.id = s.account_id AND g.user_id = s.user_id
+        WHERE s.enabled = 1 AND s.auto_scan != 'off'`,
     )
-    .all() as Array<{ user_id: string; auto_scan: string; last_scan_at: string | null }>;
+    .all() as Array<{
+    user_id: string;
+    account_id: string;
+    auto_scan: string;
+    last_scan_at: string | null;
+  }>;
   return rows
     .filter((r) => r.auto_scan !== 'off' && isGmailImportanceAutoScan(r.auto_scan))
     .map((r) => ({
       userId: r.user_id,
+      accountId: r.account_id,
       autoScan: r.auto_scan as Exclude<GmailImportanceAutoScan, 'off'>,
       lastScanAt: r.last_scan_at,
     }));
@@ -223,16 +266,16 @@ export function listGmailImportanceAutoScanUsers(): Array<{
 
 /** Cached verdicts for these threads, keyed by thread id. */
 export function getGmailImportanceVerdicts(
-  userId: string,
+  key: GmailImportanceKey,
   threadIds: readonly string[],
 ): Map<string, GmailImportanceThread> {
   const out = new Map<string, GmailImportanceThread>();
   if (threadIds.length === 0) return out;
   const stmt = getOrgsDb().prepare(
-    'SELECT * FROM gmail_importance_threads WHERE user_id = ? AND thread_id = ?',
+    'SELECT * FROM gmail_importance_threads WHERE user_id = ? AND account_id = ? AND thread_id = ?',
   );
   for (const id of threadIds) {
-    const row = stmt.get(userId, id) as ThreadRow | undefined;
+    const row = stmt.get(key.userId, key.accountId, id) as ThreadRow | undefined;
     if (row) out.set(id, shapeThread(row));
   }
   return out;
@@ -256,17 +299,17 @@ function shapeThread(row: ThreadRow): GmailImportanceThread {
 export type GmailImportanceVerdictInput = Omit<GmailImportanceThread, 'scannedAt'>;
 
 export function upsertGmailImportanceVerdicts(
-  userId: string,
+  key: GmailImportanceKey,
   verdicts: readonly GmailImportanceVerdictInput[],
 ): void {
   if (verdicts.length === 0) return;
   const db = getOrgsDb();
   const stmt = db.prepare(
     `INSERT INTO gmail_importance_threads
-       (user_id, thread_id, history_id, important, score, reason, subject, from_addr,
-        snippet, last_message_at, scanned_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${NOW})
-     ON CONFLICT(user_id, thread_id) DO UPDATE SET
+       (user_id, account_id, thread_id, history_id, important, score, reason, subject,
+        from_addr, snippet, last_message_at, scanned_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${NOW})
+     ON CONFLICT(user_id, account_id, thread_id) DO UPDATE SET
        history_id = excluded.history_id,
        important = excluded.important,
        score = excluded.score,
@@ -278,9 +321,11 @@ export function upsertGmailImportanceVerdicts(
        scanned_at = excluded.scanned_at`,
   );
   db.transaction(() => {
+    if (!isLinked(key)) return;
     for (const v of verdicts) {
       stmt.run(
-        userId,
+        key.userId,
+        key.accountId,
         v.threadId,
         v.historyId,
         v.important ? 1 : 0,
@@ -300,27 +345,30 @@ export function upsertGmailImportanceVerdicts(
  * score first. `sinceIso` is computed by the caller so tests can pin the clock.
  */
 export function listImportantGmailThreads(
-  userId: string,
+  key: GmailImportanceKey,
   sinceIso: string,
   limit = 50,
 ): GmailImportanceThread[] {
   const rows = getOrgsDb()
     .prepare(
       `SELECT * FROM gmail_importance_threads
-        WHERE user_id = ? AND important = 1 AND last_message_at >= ?
+        WHERE user_id = ? AND account_id = ? AND important = 1 AND last_message_at >= ?
           AND (dismissed_at_message IS NULL OR last_message_at > dismissed_at_message)
         ORDER BY score DESC, last_message_at DESC
         LIMIT ?`,
     )
-    .all(userId, sinceIso, limit) as ThreadRow[];
+    .all(key.userId, key.accountId, sinceIso, limit) as ThreadRow[];
   return rows.map(shapeThread);
 }
 
 /** Drop verdicts for mail older than the widest window. */
-export function pruneGmailImportanceVerdicts(userId: string, beforeIso: string): number {
+export function pruneGmailImportanceVerdicts(key: GmailImportanceKey, beforeIso: string): number {
   return getOrgsDb()
-    .prepare(`DELETE FROM gmail_importance_threads WHERE user_id = ? AND last_message_at < ?`)
-    .run(userId, beforeIso).changes;
+    .prepare(
+      `DELETE FROM gmail_importance_threads
+        WHERE user_id = ? AND account_id = ? AND last_message_at < ?`,
+    )
+    .run(key.userId, key.accountId, beforeIso).changes;
 }
 
 /**
@@ -331,17 +379,17 @@ export function pruneGmailImportanceVerdicts(userId: string, beforeIso: string):
  * reached on later scans instead of starving.
  */
 export function selectGmailImportanceReconcileBatch(
-  userId: string,
+  key: GmailImportanceKey,
   excludeIds: ReadonlySet<string>,
   limit: number,
 ): string[] {
   const rows = getOrgsDb()
     .prepare(
       `SELECT thread_id FROM gmail_importance_threads
-        WHERE user_id = ? AND important = 1
+        WHERE user_id = ? AND account_id = ? AND important = 1
         ORDER BY checked_at IS NOT NULL, checked_at ASC, score DESC, thread_id ASC`,
     )
-    .all(userId) as Array<{ thread_id: string }>;
+    .all(key.userId, key.accountId) as Array<{ thread_id: string }>;
   const out: string[] = [];
   for (const r of rows) {
     if (excludeIds.has(r.thread_id)) continue;
@@ -353,31 +401,32 @@ export function selectGmailImportanceReconcileBatch(
 
 /** Stamp threads Gmail just confirmed are still in the inbox. */
 export function markGmailImportanceChecked(
-  userId: string,
+  key: GmailImportanceKey,
   threadIds: Iterable<string>,
   checkedAtIso: string,
 ): void {
   const db = getOrgsDb();
   const stmt = db.prepare(
-    'UPDATE gmail_importance_threads SET checked_at = ? WHERE user_id = ? AND thread_id = ?',
+    `UPDATE gmail_importance_threads SET checked_at = ?
+      WHERE user_id = ? AND account_id = ? AND thread_id = ?`,
   );
   db.transaction(() => {
-    for (const id of threadIds) stmt.run(checkedAtIso, userId, id);
+    for (const id of threadIds) stmt.run(checkedAtIso, key.userId, key.accountId, id);
   })();
 }
 
 export function deleteGmailImportanceVerdicts(
-  userId: string,
+  key: GmailImportanceKey,
   threadIds: readonly string[],
 ): number {
   if (threadIds.length === 0) return 0;
   const db = getOrgsDb();
   const stmt = db.prepare(
-    'DELETE FROM gmail_importance_threads WHERE user_id = ? AND thread_id = ?',
+    'DELETE FROM gmail_importance_threads WHERE user_id = ? AND account_id = ? AND thread_id = ?',
   );
   let changes = 0;
   db.transaction(() => {
-    for (const id of threadIds) changes += stmt.run(userId, id).changes;
+    for (const id of threadIds) changes += stmt.run(key.userId, key.accountId, id).changes;
   })();
   return changes;
 }
@@ -387,14 +436,14 @@ export function deleteGmailImportanceVerdicts(
  * newer than the one it was dismissed at arrives. Returns false when the user
  * has no verdict for the thread.
  */
-export function dismissGmailImportanceThread(userId: string, threadId: string): boolean {
+export function dismissGmailImportanceThread(key: GmailImportanceKey, threadId: string): boolean {
   return (
     getOrgsDb()
       .prepare(
         `UPDATE gmail_importance_threads
             SET dismissed_at_message = COALESCE(last_message_at, ${NOW})
-          WHERE user_id = ? AND thread_id = ?`,
+          WHERE user_id = ? AND account_id = ? AND thread_id = ?`,
       )
-      .run(userId, threadId).changes > 0
+      .run(key.userId, key.accountId, threadId).changes > 0
   );
 }

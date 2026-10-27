@@ -230,6 +230,22 @@ export interface GoogleUserInfo {
   email_verified?: boolean;
   name?: string | null;
   picture?: string | null;
+  /**
+   * Hosted domain (`hd` claim), present only for Google Workspace / Cloud
+   * organization accounts.
+   */
+  hd?: string | null;
+}
+
+/**
+ * What to store as the account's hosted domain: the `hd` claim when Google
+ * sent one, otherwise '' (Google sent userinfo without `hd`, so the account
+ * belongs to no Workspace organization). Never inferred from the email
+ * domain: personal Google accounts can use any address. Null is reserved for
+ * rows linked before `hd` was recorded.
+ */
+export function hostedDomainFromUserInfo(info: Pick<GoogleUserInfo, 'hd'>): string {
+  return typeof info.hd === 'string' ? info.hd.trim().toLowerCase() : '';
 }
 
 /**
@@ -312,6 +328,7 @@ export async function fetchGoogleUserInfo(opts: {
     email_verified: json.email_verified,
     name: json.name ?? null,
     picture: json.picture ?? null,
+    hd: typeof json.hd === 'string' ? json.hd : null,
   };
 }
 

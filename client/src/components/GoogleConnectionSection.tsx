@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { Loader2, ExternalLink, CheckCircle2, AlertCircle, Mail, Plus, Star } from 'lucide-react';
 import { api } from '../utils/api';
 import { formatDate } from '../utils/time';
+import GoogleChatAccountPicker from './GoogleChatAccountPicker';
 
 /**
  * GoogleConnectionSection — per-user "Connect Google" UI.
@@ -343,6 +344,8 @@ export default function GoogleConnectionSection({ bare = false }: { bare?: boole
               );
             })}
           </ul>
+
+          <GoogleChatAccountPicker reloadKey={status} />
 
           {serverConfigured && (
             <button

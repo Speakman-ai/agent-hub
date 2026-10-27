@@ -25,7 +25,7 @@ import { buildEmailCardDraft, type CaptureCardDraft } from '@shared/utils/captur
 import CaptureToTicketModal from '../components/CaptureToTicketModal';
 import StartSessionModal from '../components/StartSessionModal';
 import GmailImportantSection from '../components/GmailImportantSection';
-import { withoutImportantThreads, type GmailImportantThread } from '@shared/utils/gmailImportance';
+import type { GmailImportantThread } from '@shared/utils/gmailImportance';
 import {
   ALL_INBOXES,
   buildGmailReplyBody,
@@ -41,6 +41,9 @@ import {
 } from '@shared/utils/googleAccounts';
 
 export { GMAIL_SURFACE_SCOPES };
+
+const EMPTY_PINS: ReadonlySet<string> = new Set();
+const pinKey = (accountId: string, threadId: string) => `${accountId}\u0000${threadId}`;
 
 /**
  * Split a comma/semicolon/whitespace-separated recipient string into a trimmed,
@@ -175,7 +178,7 @@ export function GmailContent({
   onCompose,
   onOpenThread,
   importantSection = null,
-  pinned = [],
+  pinnedKeys = EMPTY_PINS,
   inbox = null,
   onSelectInbox,
   onEnableAccount,
@@ -220,7 +223,10 @@ export function GmailContent({
     };
   }
   const showImportant = connected && gmailEnabled && importantSection;
-  const listThreads = withoutImportantThreads<any>(threads || [], pinned);
+  // Pins are per account: hide a thread only when its own account pinned it.
+  const listThreads = (threads || []).filter(
+    (t: any) => !t?.id || !pinnedKeys.has(pinKey(t.accountId ?? '', t.id)),
+  );
   if (!empty && !threads?.length && !threadsLoading) {
     empty = {
       title: 'No messages',
@@ -593,8 +599,12 @@ export default function GmailScreen({ navigation }: any) {
   };
   const [ticketDraft, setTicketDraft] = useState<CaptureCardDraft | null>(null);
   const [sessionSeed, setSessionSeed] = useState<{ label: string; seed: string } | null>(null);
-  // Threads pinned by the importance scan; hidden from the regular list.
-  const [pinned, setPinned] = useState<GmailImportantThread[]>([]);
+  // Threads each account's importance scan pinned, by account id; hidden from
+  // the regular list.
+  const [pinned, setPinned] = useState<Record<string, GmailImportantThread[]>>({});
+  const setPinnedFor = useCallback((accountId: string, threads: GmailImportantThread[]) => {
+    setPinned((prev) => (prev[accountId] === threads ? prev : { ...prev, [accountId]: threads }));
+  }, []);
   const [inbox, setInbox] = useState<string | null>(null);
   const [replying, setReplying] = useState(false);
   const [replyError, setReplyError] = useState<string | null>(null);
@@ -652,12 +662,17 @@ export default function GmailScreen({ navigation }: any) {
   const accounts = useMemo(() => linkedGoogleAccounts(status), [status]);
   const sendAccounts = accounts.filter((a) => hasGmailSendScope(a));
   const defaultAccount = defaultGoogleAccount(accounts);
-  // The importance scan reads the default account, so its pinned threads only
-  // belong in views that include that inbox.
-  const showImportant =
-    !!defaultAccount &&
-    hasGmailReadScope(defaultAccount) &&
-    (inbox === ALL_INBOXES || inbox === defaultAccount.accountId);
+  // Each readable account rates its own inbox, so a view shows the Important
+  // sections of the inboxes it includes.
+  const importantAccounts = accounts.filter(
+    (a) => hasGmailReadScope(a) && (inbox === ALL_INBOXES || inbox === a.accountId),
+  );
+  const multiAccount = accounts.length > 1;
+  const pinnedKeys = new Set(
+    importantAccounts.flatMap((a) =>
+      (pinned[a.accountId] ?? []).map((t) => pinKey(a.accountId, t.threadId)),
+    ),
+  );
   const composeAccountId =
     sendAccounts.find((a) => a.accountId === inbox)?.accountId ??
     (defaultAccount && hasGmailSendScope(defaultAccount)
@@ -882,19 +897,22 @@ export default function GmailScreen({ navigation }: any) {
         onOpenSettings={() => navigation.navigate('Settings', { tab: 'account' })}
         onCompose={() => setCompose(true)}
         onOpenThread={openThreadDetail}
-        pinned={showImportant ? pinned : []}
+        pinnedKeys={pinnedKeys}
         importantSection={
-          showImportant ? (
-            <GmailImportantSection
-              onOpenThread={(id) =>
-                openThreadDetail({
-                  id,
-                  accountId: defaultAccount?.accountId ?? '',
-                  accountEmail: defaultAccount?.email ?? '',
-                })
-              }
-              onPinnedChange={setPinned}
-            />
+          importantAccounts.length ? (
+            <>
+              {importantAccounts.map((a) => (
+                <GmailImportantSection
+                  key={a.accountId || 'default'}
+                  account={a.accountId || undefined}
+                  accountLabel={multiAccount ? a.email : undefined}
+                  onOpenThread={(id) =>
+                    openThreadDetail({ id, accountId: a.accountId, accountEmail: a.email })
+                  }
+                  onPinnedChange={(pins) => setPinnedFor(a.accountId, pins)}
+                />
+              ))}
+            </>
           ) : null
         }
       />

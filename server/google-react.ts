@@ -11,6 +11,7 @@
  */
 import { google } from 'googleapis';
 import { getActiveAccessToken, getGoogleConnectionStatus } from './google-connections-store.js';
+import { getChatAccessToken, getChatConnectionStatus } from './google-chat-account.js';
 import { parseGoogleAccountSelector } from './google-account-selector.js';
 import type { GoogleOAuthCredentials } from './google-oauth.js';
 import {
@@ -155,8 +156,13 @@ export async function runGoogleReadAction(
     return NOT_LINKED('Google OAuth is not configured on this Hub.');
   }
 
-  const selector = parseGoogleAccountSelector(action.account);
-  const status = getGoogleConnectionStatus(ownerId, selector);
+  // Chat runs as the owner's single Chat account; `account` only picks among
+  // the multi-account surfaces.
+  const isChat = action.surface === 'chat';
+  const selector = isChat ? undefined : parseGoogleAccountSelector(action.account);
+  const status = isChat
+    ? getChatConnectionStatus(ownerId)
+    : getGoogleConnectionStatus(ownerId, selector);
   if (!status.connected) {
     if (selector) {
       // Never fall back to the default: the agent asked for a specific account.
@@ -179,8 +185,9 @@ export async function runGoogleReadAction(
 
   let token: string | null;
   try {
-    token =
-      selector && status.accountId
+    token = isChat
+      ? await getChatAccessToken(ownerId, ctx.oauthConfig)
+      : selector && status.accountId
         ? await getActiveAccessToken(ownerId, ctx.oauthConfig, {
             account: { accountId: status.accountId },
           })

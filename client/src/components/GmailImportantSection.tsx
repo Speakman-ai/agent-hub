@@ -22,12 +22,19 @@ const NO_PINS: GmailImportantThread[] = [];
  * regular list.
  */
 export default function GmailImportantSection({
+  account,
+  accountLabel,
   onOpenThread,
   onPinnedChange,
 }: {
+  /** Linked account whose mailbox this section rates; omitted means the default. */
+  account?: string;
+  /** Shown next to the title when several mailboxes each have a section. */
+  accountLabel?: string;
   onOpenThread: (threadId: string) => void;
   onPinnedChange?: (threads: GmailImportantThread[]) => void;
 }) {
+  const scope = account ? { account } : {};
   const [state, setState] = useState<GmailImportanceState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -43,7 +50,7 @@ export default function GmailImportantSection({
 
   useEffect(() => {
     const sync = createGmailImportanceSync({
-      load: () => api.getGmailImportance(),
+      load: () => api.getGmailImportance(scope),
       onState: (next) => {
         // A recovered fetch clears its own failure, not a scan/settings error.
         if (loadFailedRef.current) {
@@ -63,7 +70,8 @@ export default function GmailImportantSection({
       sync.stop();
       syncRef.current = null;
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `scope` derives from `account`
+  }, [account]);
 
   // The parent hides exactly the pins this section is showing, derived from
   // what renders rather than pushed on fetch success. No state yet, a failed
@@ -86,7 +94,7 @@ export default function GmailImportantSection({
     setError(null);
     setDismissing((prev) => new Set(prev).add(threadId));
     try {
-      accept(await api.dismissGmailImportantThread(threadId));
+      accept(await api.dismissGmailImportantThread(threadId, scope));
     } catch (err: any) {
       // 404: a scan already dropped the verdict, so it is gone either way.
       if (err.status === 404) await refresh();
@@ -103,7 +111,7 @@ export default function GmailImportantSection({
   const scan = async (windowDays?: GmailImportanceWindowDays) => {
     setError(null);
     try {
-      accept(await api.startGmailImportanceScan(windowDays ? { windowDays } : {}));
+      accept(await api.startGmailImportanceScan(windowDays ? { windowDays } : {}, scope));
     } catch (err: any) {
       // 409 means a scan is already going; just pick up its state.
       if (err.status === 409) await refresh();
@@ -124,7 +132,7 @@ export default function GmailImportantSection({
     setSaving(true);
     setError(null);
     try {
-      const next: GmailImportanceState = await api.updateGmailImportanceSettings(patch);
+      const next: GmailImportanceState = await api.updateGmailImportanceSettings(patch, scope);
       accept(next);
       // First enable, or a new window: rate what is in it now. Cached verdicts
       // keep this cheap, since only unrated threads reach the model.
@@ -159,7 +167,7 @@ export default function GmailImportantSection({
     return errorBox ? (
       <section
         className="mb-4 rounded-lg border border-amber-500/20 bg-gray-900 pt-2"
-        aria-label="Important mail"
+        aria-label={accountLabel ? `Important mail for ${accountLabel}` : 'Important mail'}
       >
         {errorBox}
       </section>
@@ -171,12 +179,17 @@ export default function GmailImportantSection({
   return (
     <section
       className="mb-4 rounded-lg border border-amber-500/20 bg-gray-900"
-      aria-label="Important mail"
+      aria-label={accountLabel ? `Important mail for ${accountLabel}` : 'Important mail'}
     >
       <div className="flex flex-wrap items-center gap-3 px-4 py-3">
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <Sparkles size={15} className="flex-shrink-0 text-amber-300" />
           <h3 className="text-sm font-semibold text-white">Important</h3>
+          {accountLabel && (
+            <span className="truncate text-xs text-gray-400" title={accountLabel}>
+              {accountLabel}
+            </span>
+          )}
           {settings.enabled && threads.length > 0 && (
             <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-xs text-amber-200">
               {threads.length}

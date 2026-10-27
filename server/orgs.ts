@@ -10,13 +10,20 @@ import { USER_SKILL_OPTIONS_SCHEMA } from './skill-options-schema.js';
 import {
   GOOGLE_CONNECTIONS_SCHEMA,
   migrateGoogleConnectionsToMultiAccount,
+  migrateGoogleConnectionsColumns,
 } from './google-connections-schema.js';
 import { BROWSER_PROFILES_SCHEMA } from './browser-profiles-schema.js';
 import { DESKTOP_COMPUTERS_SCHEMA } from './desktop/desktop-computers-schema.js';
 import { DESKTOP_CONTAINERS_SCHEMA } from './desktop/desktop-containers-schema.js';
 import { APPROVALS_SCHEMA } from './approvals-schema.js';
-import { GOOGLE_CHAT_DRAFTS_SCHEMA } from './google-chat-drafts-schema.js';
-import { GMAIL_IMPORTANCE_SCHEMA } from './gmail-importance-schema.js';
+import {
+  GOOGLE_CHAT_DRAFTS_SCHEMA,
+  migrateChatDraftAccounts,
+} from './google-chat-drafts-schema.js';
+import {
+  GMAIL_IMPORTANCE_SCHEMA,
+  migrateGmailImportanceToMultiAccount,
+} from './gmail-importance-schema.js';
 import { AUTH_CREDENTIAL_AUDIT_SCHEMA } from './auth-credential-audit-schema.js';
 import { RUNNER_QUEUE_SCHEMA } from './finalize/runner-queue-schema.js';
 import {
@@ -30,7 +37,7 @@ import { TODO_SOURCE_TYPES } from './source-provenance.js';
 import { ORG_TODOS_SCHEMA } from './org-todos-schema.js';
 import { PROJECT_MEMBERS_SCHEMA } from './project-members-schema.js';
 import { NOTIFICATIONS_SCHEMA } from './notifications-schema.js';
-import { REMINDERS_SCHEMA } from './reminders-schema.js';
+import { REMINDERS_SCHEMA, migrateReminderCalendarAccounts } from './reminders-schema.js';
 import {
   BUSINESS_ORGANIZATIONS_SCHEMA,
   migrateBusinessOrganizationLinkIds,
@@ -228,6 +235,7 @@ export function initOrgsDb(): void {
   // off the hot identity row. Rekey single-account installs first so the
   // schema's indexes see the multi-account columns. See google-connections-store.ts.
   migrateGoogleConnectionsToMultiAccount(orgsDb);
+  migrateGoogleConnectionsColumns(orgsDb);
   orgsDb.exec(GOOGLE_CONNECTIONS_SCHEMA);
   // Per-(user, agent, project) browser logins, encrypted at rest. See
   // browser-profiles-store.ts.
@@ -248,14 +256,12 @@ export function initOrgsDb(): void {
   // approvals-store.ts.
   orgsDb.exec(APPROVALS_SCHEMA);
   // Agent-written Chat replies held for the owner's approval.
+  migrateChatDraftAccounts(orgsDb);
   orgsDb.exec(GOOGLE_CHAT_DRAFTS_SCHEMA);
   // AI importance scan settings + cached per-thread verdicts for the Gmail pane.
+  // Per Google account; older installs are rekeyed onto each user's default.
+  migrateGmailImportanceToMultiAccount(orgsDb);
   orgsDb.exec(GMAIL_IMPORTANCE_SCHEMA);
-  try {
-    orgsDb.prepare('SELECT dismissed_at_message FROM gmail_importance_threads LIMIT 1').get();
-  } catch {
-    orgsDb.exec('ALTER TABLE gmail_importance_threads ADD COLUMN dismissed_at_message TEXT');
-  }
   orgsDb.exec(AUTH_CREDENTIAL_AUDIT_SCHEMA);
   // Cross-project personal todos, keyed by user_id. Global (non-project)
   // capture primitive — see user-todos-store.ts / user-todos-schema.ts.
@@ -276,6 +282,7 @@ export function initOrgsDb(): void {
   orgsDb.exec(NOTIFICATIONS_SCHEMA);
   // Per-user reminders that fire into the inbox. See reminders-store.ts.
   orgsDb.exec(REMINDERS_SCHEMA);
+  migrateReminderCalendarAccounts(orgsDb);
 
   // Additive migration for installs that created user_todos before the
   // priority / do_date-window / polymorphic-link columns existed (spec

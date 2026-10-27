@@ -18,6 +18,8 @@ export interface GoogleChatDraft {
   sessionId: string;
   spaceId: string;
   threadName: string | null;
+  /** Google identity (sub) of the Chat account the reply was written as; internal. */
+  accountSub: string | null;
   text: string;
   /** Bumped on every text change; actions must name the revision they saw. */
   revision: number;
@@ -40,6 +42,7 @@ interface RawDraftRow {
   session_id: string;
   space_id: string;
   thread_name: string | null;
+  account_sub: string | null;
   text: string;
   revision: number;
   status: GoogleChatDraftStatus;
@@ -60,6 +63,7 @@ function toDraft(row: RawDraftRow): GoogleChatDraft {
     sessionId: row.session_id,
     spaceId: row.space_id,
     threadName: row.thread_name,
+    accountSub: row.account_sub ?? null,
     text: row.text,
     revision: row.revision,
     status: row.status,
@@ -77,15 +81,26 @@ export function createChatDraft(input: {
   sessionId: string;
   spaceId: string;
   threadName?: string | null;
+  /** Chat identity the reply is written as; approval sends only as this account. */
+  accountSub?: string | null;
   text: string;
 }): GoogleChatDraft {
   const id = uuidv4();
   getOrgsDb()
     .prepare(
-      `INSERT INTO google_chat_drafts (id, user_id, session_id, space_id, thread_name, text)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO google_chat_drafts
+         (id, user_id, session_id, space_id, thread_name, account_sub, text)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(id, input.userId, input.sessionId, input.spaceId, input.threadName ?? null, input.text);
+    .run(
+      id,
+      input.userId,
+      input.sessionId,
+      input.spaceId,
+      input.threadName ?? null,
+      input.accountSub ?? null,
+      input.text,
+    );
   return getChatDraft(id, input.userId) as GoogleChatDraft;
 }
 
@@ -220,11 +235,21 @@ export interface ChatDraftAttempt {
  *   - unconfirmed (including an abandoned send): retry the earlier request.
  *     Text, request id, and reply thread stay as they were so Google sees an
  *     identical request. A `text` that differs is refused (`text_changed`).
+ *
+ * `accountSub` is the identity of the token the caller will send with. A draft
+ * written as another Chat account is refused (`account_changed`), so a reply
+ * never goes out under an identity it wasn't written for, whatever moved the
+ * Chat account in between.
  */
 export function claimChatDraftForSend(
   id: string,
   userId: string,
-  opts: { expectedRevision: number; text?: string; replyThread?: string | null },
+  opts: {
+    expectedRevision: number;
+    accountSub: string | null;
+    text?: string;
+    replyThread?: string | null;
+  },
 ):
   | { ok: true; draft: GoogleChatDraft; attempt: ChatDraftAttempt; retry: boolean }
   | {
@@ -234,7 +259,8 @@ export function claimChatDraftForSend(
         | 'not_sendable'
         | 'revision_mismatch'
         | 'text_changed'
-        | 'thread_unresolved';
+        | 'thread_unresolved'
+        | 'account_changed';
       draft: GoogleChatDraft | null;
     } {
   const db = getOrgsDb();
@@ -248,6 +274,12 @@ export function claimChatDraftForSend(
       draft.revision !== opts.expectedRevision
     ) {
       return { ok: false as const, reason: 'revision_mismatch' as const, draft };
+    }
+    if (
+      (draft.status === 'pending' || draft.status === 'unconfirmed') &&
+      draft.accountSub !== opts.accountSub
+    ) {
+      return { ok: false as const, reason: 'account_changed' as const, draft };
     }
     let retry: boolean;
     if (draft.status === 'pending') {
@@ -365,6 +397,34 @@ export function discardChatDraft(
        WHERE id = ? AND user_id = ?`,
     ).run(id, userId);
     return { ok: true, draft: getChatDraft(id, userId)! };
+  })();
+}
+
+/**
+ * Discard every draft waiting for approval that was written as a Chat
+ * identity other than `keepSub`. Runs in the same transaction that moves
+ * Chat to `keepSub`: a held reply would otherwise sit there for an account
+ * that no longer sends. Returns the drafts that changed.
+ */
+export function discardPendingChatDrafts(
+  userId: string,
+  keepSub: string | null = null,
+): GoogleChatDraft[] {
+  const db = getOrgsDb();
+  return db.transaction((): GoogleChatDraft[] => {
+    const ids = (
+      db
+        .prepare(
+          `SELECT id FROM google_chat_drafts
+            WHERE user_id = ? AND status = 'pending' AND account_sub IS NOT ?`,
+        )
+        .all(userId, keepSub) as Array<{ id: string }>
+    ).map((r) => r.id);
+    db.prepare(
+      `UPDATE google_chat_drafts SET status = 'discarded', updated_at = ${NOW}
+       WHERE user_id = ? AND status = 'pending' AND account_sub IS NOT ?`,
+    ).run(userId, keepSub);
+    return ids.map((id) => getChatDraft(id, userId)).filter((d): d is GoogleChatDraft => !!d);
   })();
 }
 

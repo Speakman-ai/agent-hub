@@ -33,6 +33,7 @@ import {
   type GoogleOAuthCredentials,
 } from './google-oauth.js';
 import { wakeReminderCalendarWork } from './reminders-store.js';
+import { releaseGoogleAccountWork } from './google-account-cleanup.js';
 
 export interface GoogleConnectionRow {
   /** Stable id of this linked Google account (one user can hold several). */
@@ -46,6 +47,11 @@ export interface GoogleConnectionRow {
   /** Long-lived refresh token (reusable; Google does not rotate it on refresh). */
   refreshToken: string | null;
   grantedScopes: string[];
+  /**
+   * Userinfo `hd` claim: a domain for Google Workspace accounts, '' for
+   * personal accounts, null when it was never recorded.
+   */
+  hostedDomain: string | null;
   /** The account callers get when they do not name one. */
   isDefault: boolean;
   connectedAt: string; // ISO
@@ -82,6 +88,7 @@ interface RawGoogleRow {
   token_expires_at: string | null;
   refresh_token_enc: string;
   granted_scopes_json: string;
+  hosted_domain: string | null;
   is_default: number;
   connected_at: string;
 }
@@ -116,6 +123,7 @@ function rowToConnection(row: RawGoogleRow | undefined): GoogleConnectionRow | n
     tokenExpiresAt: row.token_expires_at,
     refreshToken: row.refresh_token_enc ? decryptSecret(row.refresh_token_enc) : null,
     grantedScopes: parseScopes(row.granted_scopes_json),
+    hostedDomain: row.hosted_domain ?? null,
     isDefault: row.is_default === 1,
     connectedAt: row.connected_at,
   };
@@ -182,6 +190,8 @@ export function upsertGoogleConnection(args: {
   tokenExpiresAt: string | null;
   refreshToken: string | null;
   grantedScopes: string[];
+  /** Userinfo `hd` ('' for a personal account). Omit to keep the stored value. */
+  hostedDomain?: string | null;
   connectedAt?: string;
   makeDefault?: boolean;
   exclusive?: boolean;
@@ -194,10 +204,10 @@ export function upsertGoogleConnection(args: {
 
   const accountId = db.transaction((): string => {
     if (args.exclusive) {
-      db.prepare(`DELETE FROM google_connections WHERE user_id = ? AND google_sub != ?`).run(
-        args.userId,
-        args.googleSub,
-      );
+      const others = db
+        .prepare(`SELECT * FROM google_connections WHERE user_id = ? AND google_sub != ?`)
+        .all(args.userId, args.googleSub) as RawGoogleRow[];
+      for (const other of others) removeConnectionRow(other);
     }
     if (args.makeDefault) {
       db.prepare(
@@ -213,6 +223,7 @@ export function upsertGoogleConnection(args: {
         `UPDATE google_connections SET
            google_email = ?, access_token_enc = ?, token_expires_at = ?,
            refresh_token_enc = ?, granted_scopes_json = ?,
+           hosted_domain = CASE WHEN ? THEN ? ELSE hosted_domain END,
            is_default = CASE WHEN ? THEN 1 ELSE is_default END,
            updated_at = datetime('now')
          WHERE id = ?`,
@@ -222,6 +233,8 @@ export function upsertGoogleConnection(args: {
         args.tokenExpiresAt,
         refreshTokenEnc,
         scopesJson,
+        args.hostedDomain !== undefined ? 1 : 0,
+        args.hostedDomain ?? null,
         args.makeDefault ? 1 : 0,
         existing.id,
       );
@@ -232,8 +245,9 @@ export function upsertGoogleConnection(args: {
     db.prepare(
       `INSERT INTO google_connections
          (id, user_id, google_sub, google_email, access_token_enc, token_expires_at,
-          refresh_token_enc, granted_scopes_json, is_default, connected_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, datetime('now'))`,
+          refresh_token_enc, granted_scopes_json, hosted_domain, is_default, connected_at,
+          updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, datetime('now'))`,
     ).run(
       id,
       args.userId,
@@ -243,6 +257,7 @@ export function upsertGoogleConnection(args: {
       args.tokenExpiresAt,
       refreshTokenEnc,
       scopesJson,
+      args.hostedDomain ?? null,
       connectedAt,
     );
     if (args.makeDefault) {
@@ -361,9 +376,20 @@ export function deleteGoogleConnection(userId: string, selector?: GoogleAccountS
   db.transaction(() => {
     const row = findRawConnection(userId, selector);
     if (!row) return;
-    db.prepare(`DELETE FROM google_connections WHERE id = ?`).run(row.id);
+    removeConnectionRow(row);
     if (row.is_default === 1) promoteDefaultIfMissing(userId);
   })();
+}
+
+/**
+ * Delete one account row and stop the background work it owned (importance
+ * scans, reminder calendar sync, Chat push). Other accounts are untouched.
+ * Call inside a transaction.
+ */
+function removeConnectionRow(row: RawGoogleRow): void {
+  const db = getOrgsDb();
+  db.prepare(`DELETE FROM google_connections WHERE id = ?`).run(row.id);
+  releaseGoogleAccountWork(db, row);
 }
 
 /**

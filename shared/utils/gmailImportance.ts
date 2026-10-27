@@ -32,6 +32,8 @@ export interface GmailImportantThread {
 }
 
 export interface GmailImportanceState {
+  /** The Google account this state belongs to; null when none is linked. */
+  account?: { accountId: string; email: string } | null;
   settings: GmailImportanceSettings;
   running: boolean;
   threads: GmailImportantThread[];

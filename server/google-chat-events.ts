@@ -2,7 +2,7 @@
  * Google Chat push via the Google Workspace Events API.
  *
  * Each Hub user with Chat read access gets one subscription, created with the
- * user's own OAuth token, on `//chat.googleapis.com/spaces/-` (every space the
+ * OAuth token of the user's Chat account (`google-chat-account.ts`), on `//chat.googleapis.com/spaces/-` (every space the
  * user is a member of; user auth only). Google publishes message events to the
  * Hub's Pub/Sub topic, and a push subscription delivers them to
  * `POST /api/google/chat/events/push` with an OIDC token. The event's
@@ -20,7 +20,11 @@
 import { google, type workspaceevents_v1 } from 'googleapis';
 import type { AppConfig, BroadcastFn } from './types.js';
 import { getDb } from './db.js';
-import { getActiveAccessToken, getGoogleConnectionStatus } from './google-connections-store.js';
+import {
+  getChatAccessToken,
+  getChatAccountSub,
+  getChatConnectionStatus,
+} from './google-chat-account.js';
 import { hasChatMessagesReadScope } from './google-scopes.js';
 import {
   clearChatEventState,
@@ -129,6 +133,11 @@ export interface ChatEventsDeps {
   getAccessToken?: (userId: string) => Promise<string | null>;
   /** True while the user still has a Google connection with Chat read access. */
   hasChatAccess?: (userId: string) => boolean;
+  /**
+   * Google identity (sub) the user's Chat runs as. A reconcile captures it up
+   * front and saves nothing once it changes (switch, removal).
+   */
+  chatIdentity?: (userId: string) => string | null;
   eventsClient?: (accessToken: string) => workspaceevents_v1.Workspaceevents;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -162,12 +171,19 @@ function defaultEventsClient(accessToken: string): workspaceevents_v1.Workspacee
 function tokenFor(deps: ChatEventsDeps, userId: string): Promise<string | null> {
   return deps.getAccessToken
     ? deps.getAccessToken(userId)
-    : getActiveAccessToken(userId, deps.config.googleOAuth ?? null);
+    : getChatAccessToken(userId, deps.config.googleOAuth ?? null);
+}
+
+function identityOf(deps: ChatEventsDeps, userId: string): string | null {
+  if (deps.chatIdentity) return deps.chatIdentity(userId);
+  // Tests that stub access alone have no account store to read.
+  if (deps.hasChatAccess) return null;
+  return getChatAccountSub(userId);
 }
 
 function hasAccess(deps: ChatEventsDeps, userId: string): boolean {
   if (deps.hasChatAccess) return deps.hasChatAccess(userId);
-  const status = getGoogleConnectionStatus(userId);
+  const status = getChatConnectionStatus(userId);
   return status.connected && hasChatMessagesReadScope(status.grantedScopes);
 }
 
@@ -506,11 +522,15 @@ async function ensureChatSubscriptionNow(
     return existing;
   }
 
-  // Access can be revoked while this waits on Google. Check before calling
-  // Google and again before saving anything it returned, so a reconcile in
-  // flight can't restore what access-loss cleanup removed.
+  // Access can be revoked, or Chat moved to another account, while this
+  // waits on Google. The identity is captured now; before saving anything
+  // (including an error) both access and the same identity must still hold,
+  // so a reconcile in flight can't restore what removal cleanup or a switch
+  // cleared. The check and each save run synchronously, with no await between.
+  const identity = identityOf(deps, userId);
+  const stillCurrent = () => hasAccess(deps, userId) && identityOf(deps, userId) === identity;
   const requireAccess = () => {
-    if (!hasAccess(deps, userId)) throw new ChatEventsAccessLostError();
+    if (!stillCurrent()) throw new ChatEventsAccessLostError();
   };
   requireAccess();
   const token = await tokenFor(deps, userId);
@@ -541,10 +561,43 @@ async function ensureChatSubscriptionNow(
     return save(deps, userId, sub);
   } catch (err) {
     // Recording the error would recreate the row cleanup just removed.
-    if (err instanceof ChatEventsAccessLostError) throw err;
+    if (err instanceof ChatEventsAccessLostError || !stillCurrent()) throw err;
     recordError(deps, userId, errorMessage(err));
     throw err;
   }
+}
+
+/**
+ * Drop the user's push subscription before Chat moves to another account.
+ * The old subscription is deleted at Google with the old account's token
+ * (best effort; it expires within hours anyway), and its local state is
+ * cleared so its late deliveries and unread counts never reach the user.
+ * Runs under the user's reconcile lock, so a reconcile already in flight
+ * finishes first and anything it saved is removed here. The next ensure
+ * creates a subscription for the new account.
+ */
+export function teardownChatSubscription(
+  userId: string,
+  deps: ChatEventsDeps,
+  previousAccessToken: string | null,
+): Promise<void> {
+  return withUserLock(userId, async () => {
+    const sub = getChatSubscription(userId);
+    if (sub?.subscriptionName && previousAccessToken) {
+      try {
+        const client = (deps.eventsClient ?? defaultEventsClient)(previousAccessToken);
+        await deleteSubscription(deps, client, sub.subscriptionName);
+      } catch (err) {
+        console.warn(
+          `[google-chat-events] Could not delete ${sub.subscriptionName} for user ${userId}: ${errorMessage(err)}`,
+        );
+      }
+    }
+    lastRemoteCheck.delete(userId);
+    const cleared = clearChatEventState(userId);
+    for (const unread of cleared) emitUnread(deps, userId, unread);
+    emitStatus(deps, null, userId);
+  });
 }
 
 /** One pass of the maintenance loop. Exported for tests. */

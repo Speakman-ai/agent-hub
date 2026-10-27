@@ -81,10 +81,12 @@ describe('GmailScreen mobile parity', () => {
           serverConfigured: true,
         }}
         threads={[
-          { id: 't1', snippet: 'Quarterly review', historyId: '9' },
-          { id: 't2', snippet: 'Weekly newsletter', historyId: '8' },
+          { id: 't1', accountId: 'work', snippet: 'Quarterly review', historyId: '9' },
+          { id: 't2', accountId: 'work', snippet: 'Weekly newsletter', historyId: '8' },
+          // Same thread id in another mailbox: only work pinned t1, so this stays.
+          { id: 't1', accountId: 'home', snippet: 'Home thread', historyId: '7' },
         ]}
-        pinned={[{ threadId: 't1' }]}
+        pinnedKeys={new Set(['work\u0000t1'])}
         importantSection={<span>IMPORTANT-SECTION</span>}
         onRefresh={() => undefined}
         onConnect={() => undefined}
@@ -95,6 +97,7 @@ describe('GmailScreen mobile parity', () => {
     );
     expect(html.indexOf('IMPORTANT-SECTION')).toBeLessThan(html.indexOf('Weekly newsletter'));
     expect(html).not.toContain('Quarterly review');
+    expect(html).toContain('Home thread');
   });
 
   it('renders the not-linked route to connect Google', () => {

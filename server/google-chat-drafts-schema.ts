@@ -21,6 +21,8 @@
  * before anything is sent, so a `sending` row left by a restart or crash is
  * recovered as `unconfirmed` and never re-sent automatically.
  */
+import type Database from 'better-sqlite3';
+
 export const GOOGLE_CHAT_DRAFTS_SCHEMA = `
   CREATE TABLE IF NOT EXISTS google_chat_drafts (
     id                TEXT PRIMARY KEY,
@@ -28,6 +30,9 @@ export const GOOGLE_CHAT_DRAFTS_SCHEMA = `
     session_id        TEXT NOT NULL,
     space_id          TEXT NOT NULL,
     thread_name       TEXT,
+    -- Google identity (sub) of the Chat account the reply was written as.
+    -- Approval only sends it with a token for that same identity.
+    account_sub       TEXT,
     text              TEXT NOT NULL,
     -- Bumped on every text change. Approve, edit, and discard name the
     -- revision the user reviewed, so a concurrent edit is never acted on unseen.
@@ -73,3 +78,21 @@ export const GOOGLE_CHAT_DRAFTS_SCHEMA = `
     revision  INTEGER NOT NULL DEFAULT 0
   );
 `;
+
+/**
+ * Add `account_sub` to installs that predate it. Chat ran as the default
+ * account until then, so open drafts are stamped with its identity. Run after
+ * the google_connections schema.
+ */
+export function migrateChatDraftAccounts(db: Database.Database): void {
+  const cols = db.prepare('PRAGMA table_info(google_chat_drafts)').all() as Array<{ name: string }>;
+  if (cols.length === 0 || cols.some((c) => c.name === 'account_sub')) return;
+  db.transaction(() => {
+    db.exec('ALTER TABLE google_chat_drafts ADD COLUMN account_sub TEXT');
+    db.exec(
+      `UPDATE google_chat_drafts SET account_sub = (
+         SELECT google_sub FROM google_connections g
+          WHERE g.user_id = google_chat_drafts.user_id AND g.is_default = 1)`,
+    );
+  })();
+}

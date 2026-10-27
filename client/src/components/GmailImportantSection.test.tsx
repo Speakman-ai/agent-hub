@@ -57,10 +57,10 @@ describe('GmailImportantSection', () => {
     fireEvent.click(await screen.findByRole('switch', { name: /Show important mail first/i }));
 
     await waitFor(() =>
-      expect(mockApi.updateGmailImportanceSettings).toHaveBeenCalledWith({ enabled: true }),
+      expect(mockApi.updateGmailImportanceSettings).toHaveBeenCalledWith({ enabled: true }, {}),
     );
     await waitFor(() =>
-      expect(mockApi.startGmailImportanceScan).toHaveBeenCalledWith({ windowDays: 7 }),
+      expect(mockApi.startGmailImportanceScan).toHaveBeenCalledWith({ windowDays: 7 }, {}),
     );
     expect(await screen.findByText('Scanning your inbox…')).toBeInTheDocument();
   });
@@ -86,7 +86,7 @@ describe('GmailImportantSection', () => {
     render(<GmailImportantSection onOpenThread={vi.fn()} onPinnedChange={onPinnedChange} />);
     fireEvent.click(await screen.findByRole('button', { name: /Remove Renewal from important/i }));
 
-    expect(mockApi.dismissGmailImportantThread).toHaveBeenCalledWith('t9');
+    expect(mockApi.dismissGmailImportantThread).toHaveBeenCalledWith('t9', {});
     await waitFor(() => expect(screen.queryByText('Renewal')).not.toBeInTheDocument());
     expect(onPinnedChange).toHaveBeenLastCalledWith([]);
   });
@@ -123,12 +123,15 @@ describe('GmailImportantSection', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '30 days' }));
     await waitFor(() =>
-      expect(mockApi.updateGmailImportanceSettings).toHaveBeenCalledWith({ windowDays: 30 }),
+      expect(mockApi.updateGmailImportanceSettings).toHaveBeenCalledWith({ windowDays: 30 }, {}),
     );
 
     fireEvent.change(screen.getByLabelText('Automated scan'), { target: { value: 'hourly' } });
     await waitFor(() =>
-      expect(mockApi.updateGmailImportanceSettings).toHaveBeenCalledWith({ autoScan: 'hourly' }),
+      expect(mockApi.updateGmailImportanceSettings).toHaveBeenCalledWith(
+        { autoScan: 'hourly' },
+        {},
+      ),
     );
   });
 

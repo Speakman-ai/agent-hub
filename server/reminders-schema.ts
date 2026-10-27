@@ -12,7 +12,11 @@
  *
  * `calendar_*` columns track the optional Google Calendar mirror. A failed
  * update of a linked event keeps its id and is retried with backoff
- * (`calendar_attempts` / `calendar_retry_at`).
+ * (`calendar_attempts` / `calendar_retry_at`). `calendar_account_id` is the
+ * linked Google account (`google_connections.id`) whose calendar holds the
+ * event: new events go to the owner's default account, and every later patch
+ * or delete targets the recorded account, so switching the default never
+ * strands an event on the old calendar. Cleanup rows record it too.
  *
  * Every side effect owed after a commit is recorded in that commit and
  * cleared only once it is confirmed, so a crash or failed call is retried by
@@ -28,6 +32,8 @@
  * delete and removed only once Google confirms the event is gone, so a failed
  * or interrupted delete is retried instead of leaving an orphaned event.
  */
+import type Database from 'better-sqlite3';
+
 export const REMINDERS_SCHEMA = `
   CREATE TABLE IF NOT EXISTS reminders (
     id                 TEXT PRIMARY KEY,
@@ -44,6 +50,7 @@ export const REMINDERS_SCHEMA = `
     calendar_status    TEXT NOT NULL DEFAULT 'none'
                        CHECK (calendar_status IN ('none', 'pending', 'synced', 'updating', 'skipped', 'failed', 'removing', 'cancelled')),
     calendar_id        TEXT,
+    calendar_account_id TEXT,
     calendar_event_id  TEXT,
     calendar_event_url TEXT,
     calendar_error     TEXT,
@@ -75,6 +82,7 @@ export const REMINDERS_SCHEMA = `
     user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     reminder_id     TEXT NOT NULL,
     calendar_id     TEXT NOT NULL,
+    account_id      TEXT,
     event_id        TEXT NOT NULL,
     attempts        INTEGER NOT NULL DEFAULT 0,
     last_error      TEXT,
@@ -84,3 +92,34 @@ export const REMINDERS_SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_reminder_calendar_cleanups_due
     ON reminder_calendar_cleanups(next_attempt_at);
 `;
+
+/**
+ * Add the account columns to installs that predate them. Existing events were
+ * written to the owner's default account (the only one there was), so they
+ * are stamped with it. Run after REMINDERS_SCHEMA and the google_connections
+ * schema.
+ */
+export function migrateReminderCalendarAccounts(db: Database.Database): void {
+  const has = (table: string, col: string) =>
+    (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some(
+      (c) => c.name === col,
+    );
+  const defaultAccount = (alias: string) =>
+    `(SELECT id FROM google_connections g WHERE g.user_id = ${alias}.user_id AND g.is_default = 1)`;
+  db.transaction(() => {
+    if (!has('reminders', 'calendar_account_id')) {
+      db.exec('ALTER TABLE reminders ADD COLUMN calendar_account_id TEXT');
+      db.exec(
+        `UPDATE reminders SET calendar_account_id = ${defaultAccount('reminders')}
+          WHERE calendar_event_id IS NOT NULL`,
+      );
+    }
+    if (!has('reminder_calendar_cleanups', 'account_id')) {
+      db.exec('ALTER TABLE reminder_calendar_cleanups ADD COLUMN account_id TEXT');
+      db.exec(
+        `UPDATE reminder_calendar_cleanups
+            SET account_id = ${defaultAccount('reminder_calendar_cleanups')}`,
+      );
+    }
+  })();
+}

@@ -1771,19 +1771,38 @@ export const api = {
       body: JSON.stringify(data),
     }),
   // AI importance scan for the Gmail pane (runs on the caller's own engine).
-  getGmailImportance: () => fetchJSON('/google/gmail/importance'),
-  updateGmailImportanceSettings: (data: {
-    enabled?: boolean;
-    windowDays?: 1 | 7 | 30;
-    autoScan?: 'off' | 'hourly' | 'every6h' | 'daily';
-  }) =>
-    fetchJSON('/google/gmail/importance/settings', { method: 'PUT', body: JSON.stringify(data) }),
-  startGmailImportanceScan: (data: { windowDays?: 1 | 7 | 30 } = {}) =>
-    fetchJSON('/google/gmail/importance/scan', { method: 'POST', body: JSON.stringify(data) }),
-  dismissGmailImportantThread: (threadId: string) =>
-    fetchJSON(`/google/gmail/importance/threads/${encodeURIComponent(threadId)}/dismiss`, {
-      method: 'POST',
+  // Each linked account has its own settings and pins; omit `account` for the default.
+  getGmailImportance: ({ account }: { account?: string } = {}) =>
+    fetchJSON(`/google/gmail/importance${googleAccountQuery(account)}`),
+  updateGmailImportanceSettings: (
+    data: {
+      enabled?: boolean;
+      windowDays?: 1 | 7 | 30;
+      autoScan?: 'off' | 'hourly' | 'every6h' | 'daily';
+    },
+    { account }: { account?: string } = {},
+  ) =>
+    fetchJSON(`/google/gmail/importance/settings${googleAccountQuery(account)}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
     }),
+  startGmailImportanceScan: (
+    data: { windowDays?: 1 | 7 | 30 } = {},
+    { account }: { account?: string } = {},
+  ) =>
+    fetchJSON(`/google/gmail/importance/scan${googleAccountQuery(account)}`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  dismissGmailImportantThread: (threadId: string, { account }: { account?: string } = {}) =>
+    fetchJSON(
+      `/google/gmail/importance/threads/${encodeURIComponent(threadId)}/dismiss${googleAccountQuery(account)}`,
+      { method: 'POST' },
+    ),
+  // The one linked Workspace account Google Chat runs as.
+  getGoogleChatAccount: () => fetchJSON('/google/chat/account'),
+  setGoogleChatAccount: (accountId: string) =>
+    fetchJSON('/google/chat/account', { method: 'PUT', body: JSON.stringify({ accountId }) }),
   // Agent-written Google Chat replies held for the owner's approval.
   listGoogleChatDrafts: ({ sessionId, spaceId }: { sessionId?: string; spaceId?: string } = {}) => {
     const params = new URLSearchParams();

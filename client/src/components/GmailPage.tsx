@@ -20,7 +20,7 @@ import { buildEmailCardDraft, type CaptureCardDraft } from '@shared/utils/captur
 import CaptureToTicketModal from './CaptureToTicketModal';
 import StartSessionModal from './StartSessionModal';
 import GmailImportantSection from './GmailImportantSection';
-import { withoutImportantThreads, type GmailImportantThread } from '@shared/utils/gmailImportance';
+import type { GmailImportantThread } from '@shared/utils/gmailImportance';
 import {
   GMAIL_SURFACE_SCOPES,
   hasGmailReadScope,
@@ -442,8 +442,12 @@ export default function GmailPage({
   // "Start session with this email as context": holds the pre-built seed and
   // display label while the project/agent picker is open; null when closed.
   const [sessionSeed, setSessionSeed] = useState<{ label: string; seed: string } | null>(null);
-  // Threads the importance scan pinned above the list; hidden from the list below.
-  const [pinned, setPinned] = useState<GmailImportantThread[]>([]);
+  // Threads each account's importance scan pinned above the list, by account
+  // id; hidden from the list below.
+  const [pinned, setPinned] = useState<Record<string, GmailImportantThread[]>>({});
+  const setPinnedFor = useCallback((accountId: string, threads: GmailImportantThread[]) => {
+    setPinned((prev) => (prev[accountId] === threads ? prev : { ...prev, [accountId]: threads }));
+  }, []);
 
   // Each load takes a ticket; only the latest may commit state, so a slow
   // response for an inbox the user already left can't overwrite the new one.
@@ -707,13 +711,18 @@ export default function GmailPage({
   const configured = status?.serverConfigured !== false;
   const gmailEnabled = readableAccounts.length > 0;
   const canSend = sendAccounts.length > 0;
-  // The importance scan reads the default account, so its pinned threads only
-  // belong in views that include that inbox.
-  const showImportant =
-    !!defaultAccount &&
-    hasGmailReadScope(defaultAccount) &&
-    (allInboxes || inbox === defaultAccount.accountId);
-  const listThreads = withoutImportantThreads(threads, showImportant ? pinned : []);
+  // Each readable account rates its own inbox, so a view shows the Important
+  // sections of the inboxes it includes, and hides each one's pins only from
+  // that account's threads.
+  const importantAccounts = readableAccounts.filter((a) => allInboxes || inbox === a.accountId);
+  const pinnedKeys = new Set(
+    importantAccounts.flatMap((a) =>
+      (pinned[a.accountId] ?? []).map((t) => `${a.accountId}\u0000${t.threadId}`),
+    ),
+  );
+  const listThreads = threads.filter(
+    (t) => !t.id || !pinnedKeys.has(`${t.accountId}\u0000${t.id}`),
+  );
   const composeAccountId =
     sendAccounts.find((a) => a.accountId === inbox)?.accountId ??
     (defaultAccount && hasGmailSendScope(defaultAccount)
@@ -837,18 +846,19 @@ export default function GmailPage({
           </div>
         )}
 
-        {!loading && connected && showImportant && (
-          <GmailImportantSection
-            onOpenThread={(id) =>
-              openThreadDetail({
-                id,
-                accountId: defaultAccount?.accountId ?? '',
-                accountEmail: defaultAccount?.email ?? '',
-              })
-            }
-            onPinnedChange={setPinned}
-          />
-        )}
+        {!loading &&
+          connected &&
+          importantAccounts.map((a) => (
+            <GmailImportantSection
+              key={a.accountId || 'default'}
+              account={a.accountId || undefined}
+              accountLabel={multiAccount ? a.email : undefined}
+              onOpenThread={(id) =>
+                openThreadDetail({ id, accountId: a.accountId, accountEmail: a.email })
+              }
+              onPinnedChange={(pins) => setPinnedFor(a.accountId, pins)}
+            />
+          ))}
 
         {loading ? (
           <div className="flex items-center gap-2 rounded-lg border border-gray-800 bg-gray-900 p-4 text-sm text-gray-400">

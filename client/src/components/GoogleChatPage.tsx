@@ -127,6 +127,7 @@ import { getAuthRecord } from '../utils/auth';
 import { unreadSpacesStore } from '../utils/googleChatUnreadSpaces';
 import { useStickToBottom } from '../hooks/useStickToBottom';
 import { chatMuteStore, isSpaceQuiet, useChatMutes } from '../utils/googleChatMutes';
+import { chatConsentAccountId } from '@shared/utils/googleChatAccount';
 
 type GoogleStatus = NonNullable<GoogleStatusLike>;
 
@@ -1307,7 +1308,13 @@ export default function GoogleChatPage({
     setErrorHelp(null);
     try {
       const returnTo = window.location.pathname + window.location.search + window.location.hash;
-      const body = await api.startGoogleOAuth({ returnTo, scopes });
+      // Chat consent goes to the Chat account, not necessarily the default.
+      const accountId = chatConsentAccountId(status);
+      const body = await api.startGoogleOAuth({
+        returnTo,
+        scopes,
+        ...(accountId ? { accountId } : {}),
+      });
       window.location.href = body.authorizeUrl;
     } catch (err: any) {
       setError(err.message || 'Failed to start Google consent');
