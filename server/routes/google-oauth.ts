@@ -42,6 +42,7 @@ import {
   getGoogleConnection,
   getGoogleConnectionStatus,
   deleteGoogleConnection,
+  listGoogleConnections,
 } from '../google-connections-store.js';
 import { registerPath, z } from '../openapi/registry.js';
 
@@ -413,7 +414,10 @@ export default function createGoogleOAuthRoutes(deps: RouteDeps): Router {
       // existing refresh token if this response lacks one so a re-consent
       // never strands the connection without a refresh path.
       const refreshToken =
-        tokens.refresh_token || getGoogleConnection(callerUserId)?.refreshToken || null;
+        tokens.refresh_token ||
+        listGoogleConnections(callerUserId).find((c) => c.googleSub === userInfo.sub)
+          ?.refreshToken ||
+        null;
       upsertGoogleConnection({
         userId: callerUserId,
         googleSub: userInfo.sub,
@@ -422,6 +426,9 @@ export default function createGoogleOAuthRoutes(deps: RouteDeps): Router {
         tokenExpiresAt,
         refreshToken,
         grantedScopes: parseGrantedScopes(tokens.scope),
+        // Connect still means "this is my Google account": linking a different
+        // one replaces the previous link rather than adding a second.
+        exclusive: true,
       });
 
       // Defense-in-depth: re-validate at render time even though /start already

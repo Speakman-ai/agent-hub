@@ -7,7 +7,10 @@ import { registerCheckpointDb } from './db-checkpoint.js';
 import type { OrgRow } from './types.js';
 import { USER_SKILL_CREDENTIALS_SCHEMA } from './skill-credentials-schema.js';
 import { USER_SKILL_OPTIONS_SCHEMA } from './skill-options-schema.js';
-import { GOOGLE_CONNECTIONS_SCHEMA } from './google-connections-schema.js';
+import {
+  GOOGLE_CONNECTIONS_SCHEMA,
+  migrateGoogleConnectionsToMultiAccount,
+} from './google-connections-schema.js';
 import { BROWSER_PROFILES_SCHEMA } from './browser-profiles-schema.js';
 import { DESKTOP_COMPUTERS_SCHEMA } from './desktop/desktop-computers-schema.js';
 import { DESKTOP_CONTAINERS_SCHEMA } from './desktop/desktop-containers-schema.js';
@@ -222,7 +225,9 @@ export function initOrgsDb(): void {
   orgsDb.exec(USER_SKILL_OPTIONS_SCHEMA);
   // Per-user Google OAuth connection (tokens encrypted at rest). Separate
   // table rather than columns on `users` — keeps the encrypted token blobs
-  // off the hot identity row. See google-connections-store.ts.
+  // off the hot identity row. Rekey single-account installs first so the
+  // schema's indexes see the multi-account columns. See google-connections-store.ts.
+  migrateGoogleConnectionsToMultiAccount(orgsDb);
   orgsDb.exec(GOOGLE_CONNECTIONS_SCHEMA);
   // Per-(user, agent, project) browser logins, encrypted at rest. See
   // browser-profiles-store.ts.
