@@ -619,6 +619,12 @@ export interface BrowserProfileDomainsWire {
  */
 export const DIGEST_RUN_TIMEOUT_MS = 15 * 60_000;
 
+/**
+ * `GET /board?limit=all` returns every card on the board, which runs to many
+ * megabytes on large projects; 15s is not enough on a slow link.
+ */
+export const FULL_BOARD_TIMEOUT_MS = 60_000;
+
 async function fetchJSON<T = any>(url: string, options: FetchJsonOptions = {}): Promise<T> {
   const base = getApiBase();
   const authHeaders = getAuthHeaders();
@@ -3587,7 +3593,11 @@ export const api = {
     const params = new URLSearchParams();
     if (opts.limit != null) params.set('limit', String(opts.limit));
     const qs = params.toString();
-    return fetchJSON(`/projects/${projectId}/board${qs ? `?${qs}` : ''}`);
+    const timeout = opts.timeout ?? (opts.limit === 'all' ? FULL_BOARD_TIMEOUT_MS : undefined);
+    return fetchJSON(
+      `/projects/${projectId}/board${qs ? `?${qs}` : ''}`,
+      timeout ? { timeout } : {},
+    );
   },
   // One keyset page of a single column's cards. `cursor` is the opaque token
   // from a prior `nextCursor` (or the board's `cursors` map). Returns

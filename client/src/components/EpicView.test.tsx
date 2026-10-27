@@ -834,3 +834,110 @@ describe('EpicView', () => {
     );
   });
 });
+
+describe('EpicView board refresh', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    (api.getBoard as any).mockReset();
+  });
+
+  function renderAt(refreshKey: number) {
+    return (
+      <EpicView
+        projectId="p1"
+        epicId={null}
+        project={{ name: 'P' }}
+        refreshKey={refreshKey}
+        onBackToBoard={vi.fn()}
+        onOpenEpicsList={vi.fn()}
+        onOpenEpic={vi.fn()}
+      />
+    );
+  }
+
+  it('collapses refreshes that arrive mid-fetch into one trailing fetch', async () => {
+    let releaseFirst: (value: any) => void = () => {};
+    (api.getBoard as any)
+      .mockImplementationOnce(() => new Promise((resolve) => (releaseFirst = resolve)))
+      .mockResolvedValue(board);
+
+    const { rerender } = render(renderAt(0));
+    await waitFor(() => expect(api.getBoard).toHaveBeenCalledTimes(1));
+
+    // A burst of kanban_update events while the first download is in flight.
+    for (let key = 1; key <= 5; key++) rerender(renderAt(key));
+    expect(api.getBoard).toHaveBeenCalledTimes(1);
+
+    releaseFirst(board);
+    expect(await screen.findByText('Platform')).toBeInTheDocument();
+    await waitFor(() => expect(api.getBoard).toHaveBeenCalledTimes(2));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(api.getBoard).toHaveBeenCalledTimes(2);
+  });
+
+  it('never overlaps downloads or shows a stale board when switching projects and back', async () => {
+    const withEpic = (name: string) => ({ ...board, epics: [{ ...board.epics[0], name }] });
+    const deferred: Record<string, Array<(value: any) => void>> = { pA: [], pB: [] };
+    (api.getBoard as any).mockImplementation(
+      (pid: string) => new Promise((resolve) => deferred[pid].push(resolve)),
+    );
+    const at = (projectId: string) => (
+      <EpicView
+        projectId={projectId}
+        epicId={null}
+        project={{ name: 'P' }}
+        refreshKey={0}
+        onBackToBoard={vi.fn()}
+        onOpenEpicsList={vi.fn()}
+        onOpenEpic={vi.fn()}
+      />
+    );
+
+    const { rerender } = render(at('pA'));
+    await waitFor(() => expect(api.getBoard).toHaveBeenCalledTimes(1));
+    rerender(at('pB'));
+    await waitFor(() => expect(api.getBoard).toHaveBeenCalledTimes(2));
+    rerender(at('pA'));
+    // Returning to A reuses A's pending download instead of starting a second one.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(api.getBoard).toHaveBeenCalledTimes(2);
+
+    // B answers after we left it: dropped.
+    deferred.pB[0](withEpic('Bravo epic'));
+    // A's first download predates the return, so A is fetched once more.
+    deferred.pA[0](withEpic('Alpha old'));
+    await waitFor(() => expect(api.getBoard).toHaveBeenCalledTimes(3));
+    expect((api.getBoard as any).mock.calls[2][0]).toBe('pA');
+    deferred.pA[1](withEpic('Alpha new'));
+
+    expect(await screen.findByText('Alpha new')).toBeInTheDocument();
+    expect(screen.queryByText('Alpha old')).not.toBeInTheDocument();
+    expect(screen.queryByText('Bravo epic')).not.toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(api.getBoard).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps the loaded page when a background refresh times out', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    (api.getBoard as any)
+      .mockResolvedValueOnce(board)
+      .mockRejectedValueOnce(new Error('Request timed out after 60000ms: GET /projects/p1/board'));
+
+    const { rerender } = render(renderAt(0));
+    expect(await screen.findByText('Platform')).toBeInTheDocument();
+
+    rerender(renderAt(1));
+    await waitFor(() => expect(api.getBoard).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(warn).toHaveBeenCalled());
+
+    expect(screen.getByText('Platform')).toBeInTheDocument();
+    expect(screen.queryByText(/timed out/)).not.toBeInTheDocument();
+    warn.mockRestore();
+  });
+
+  it('shows the error when the first load fails', async () => {
+    (api.getBoard as any).mockRejectedValue(new Error('Request timed out after 60000ms'));
+    render(renderAt(0));
+    expect(await screen.findByText(/timed out/)).toBeInTheDocument();
+  });
+});

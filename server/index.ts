@@ -11,6 +11,7 @@ import { createServer } from 'http';
 import createWebSocket from './websocket.js';
 import cors from 'cors';
 import { corsOptions } from './cors-config.js';
+import { createJsonCompression } from './http-compression.js';
 import { exec } from 'child_process';
 import type { ChildProcess } from 'child_process';
 import { promisify } from 'util';
@@ -905,6 +906,7 @@ const prEnvironmentProxyDeps: PrEnvironmentProxyDeps = {
 };
 app.use(createPrEnvironmentProxyMiddleware(prEnvironmentProxyDeps));
 app.use(cors(corsOptions));
+app.use(createJsonCompression());
 
 let _broadcast: BroadcastFn;
 function broadcast(data: Record<string, unknown>): void {

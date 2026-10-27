@@ -128,25 +128,77 @@ export default function EpicView({
 
   const epic = epicId ? epics.find((e: any) => e.id === epicId) : null;
 
+  // The full board can be many megabytes and every kanban_update event asks for
+  // it again. Each project has at most one fetch in flight; requests that arrive
+  // while it runs (including navigating away and back) collapse into a single
+  // trailing fetch on that entry, so board events cannot stack overlapping
+  // downloads until they all time out.
+  type BoardFetch = { promise: Promise<any[] | undefined>; rerun: boolean };
+  const boardFetchesRef = useRef<Map<string, BoardFetch>>(new Map());
+  // Every request gets an increasing number. A response is applied only if it is
+  // for the project on screen and newer than the last one applied, so a late
+  // reply can never overwrite fresher data.
+  const requestSeqRef = useRef(0);
+  const appliedSeqRef = useRef(0);
+  const currentProjectIdRef = useRef(projectId);
+  currentProjectIdRef.current = projectId;
+  const loadedProjectIdRef = useRef<string | null>(null);
+
   const fetchBoard = useCallback(async () => {
     if (!projectId) return undefined;
-    try {
-      const data = await api.getBoard(projectId, { limit: 'all' });
-      setColumns(data.columns || []);
-      setCards(data.cards || []);
-      setEpics(data.epics || []);
-      setCardTemplates(data.cardTemplates || []);
-      setPhases(data.phases || []);
-      setSpecItems(data.specItems || []);
-      setAssignableUsers(data.assignableUsers || []);
-      setError(null);
-      return data.cards || [];
-    } catch (err: any) {
-      setError(err.message);
-      return undefined;
-    } finally {
-      setLoading(false);
+    const fetches = boardFetchesRef.current;
+    const pending = fetches.get(projectId);
+    if (pending) {
+      pending.rerun = true;
+      return pending.promise;
     }
+
+    const loadOnce = async (): Promise<any[] | undefined> => {
+      const seq = ++requestSeqRef.current;
+      const isCurrent = () =>
+        currentProjectIdRef.current === projectId && seq > appliedSeqRef.current;
+      try {
+        const data = await api.getBoard(projectId, { limit: 'all' });
+        if (!isCurrent()) return undefined;
+        appliedSeqRef.current = seq;
+        setColumns(data.columns || []);
+        setCards(data.cards || []);
+        setEpics(data.epics || []);
+        setCardTemplates(data.cardTemplates || []);
+        setPhases(data.phases || []);
+        setSpecItems(data.specItems || []);
+        setAssignableUsers(data.assignableUsers || []);
+        setError(null);
+        loadedProjectIdRef.current = projectId;
+        setLoading(false);
+        return data.cards || [];
+      } catch (err: any) {
+        if (!isCurrent()) return undefined;
+        // A failed background refresh keeps the page that is already showing;
+        // only a failed first load has nothing to show but the error.
+        if (loadedProjectIdRef.current === projectId) {
+          console.warn('Epic board refresh failed:', err?.message || err);
+        } else {
+          setError(err.message);
+        }
+        setLoading(false);
+        return undefined;
+      }
+    };
+
+    const entry: BoardFetch = { rerun: false, promise: Promise.resolve(undefined) };
+    entry.promise = (async () => {
+      let result: any[] | undefined;
+      do {
+        entry.rerun = false;
+        result = await loadOnce();
+      } while (entry.rerun && currentProjectIdRef.current === projectId);
+      return result;
+    })().finally(() => {
+      if (fetches.get(projectId) === entry) fetches.delete(projectId);
+    });
+    fetches.set(projectId, entry);
+    return entry.promise;
   }, [projectId]);
 
   const cardDetail = useKanbanCardDetail({
