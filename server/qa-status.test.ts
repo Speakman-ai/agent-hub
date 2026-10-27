@@ -12,6 +12,7 @@ import {
   editQaCase,
   finishQaRun,
   markQaRunRunning,
+  overrideQaResult,
   recordQaResult,
   removeQaCase,
   nextQaPlanStatus,
@@ -637,5 +638,102 @@ describe('lifecycle guards', () => {
     const before = getStmts().getQaPlan.get(planId)!.approval_seq;
     expect(approveQaPlan(planId, 'u2').approval_seq).toBe(before);
     expect(qaPlanSignOffBlocker(planId)).toBeNull();
+  });
+});
+
+describe('overrideQaResult', () => {
+  function failedRun() {
+    const { planId, caseIds } = makePlan(2);
+    approveQaPlan(planId, 'u1');
+    const run = begin(planId);
+    record(run.id, caseIds[0], 'pass');
+    record(run.id, caseIds[1], 'fail');
+    expect(getStmts().getQaRun.get(run.id)!.status).toBe('running');
+    const finished = finishQaRun(run.id);
+    expect(finished.status).toBe('failed');
+    return { planId, caseIds, run: finished };
+  }
+
+  it("overrides a failed run's only failure to pass, which passes the run and allows sign-off", () => {
+    const { planId, caseIds, run } = failedRun();
+    const finishedAt = run.finished_at;
+    expect(qaPlanSignOffBlocker(planId)).not.toBeNull();
+
+    const out = overrideQaResult(run.id, caseIds[1], 'pass', 'human');
+    expect(out).toMatchObject({ runStatusChanged: true, previousVerdict: 'fail' });
+    expect(out.result).toMatchObject({
+      verdict: 'pass',
+      original_verdict: 'fail',
+      overridden_by: 'human',
+    });
+    expect(out.result.overridden_at).toBeTruthy();
+    expect(out.run.status).toBe('passed');
+    expect(out.run.finished_at).toBe(finishedAt);
+    expect(qaPlanSignOffBlocker(planId)).toBeNull();
+    expect(signOffQaPlan(planId, 'human').status).toBe('done');
+  });
+
+  it("overriding back to the agent's verdict clears the override and re-fails the run", () => {
+    const { caseIds, run } = failedRun();
+    overrideQaResult(run.id, caseIds[1], 'pass', 'human');
+    const back = overrideQaResult(run.id, caseIds[1], 'fail', 'human');
+    expect(back.result).toMatchObject({
+      verdict: 'fail',
+      original_verdict: null,
+      overridden_by: null,
+      overridden_at: null,
+    });
+    expect(back.run.status).toBe('failed');
+    expect(back.runStatusChanged).toBe(true);
+  });
+
+  it('keeps the agent verdict across chained overrides and can fail a passed run', () => {
+    const { caseIds, run } = failedRun();
+    overrideQaResult(run.id, caseIds[1], 'pass', 'a');
+    const out = overrideQaResult(run.id, caseIds[0], 'needs_change', 'b');
+    expect(out.run.status).toBe('failed');
+    expect(out.result.original_verdict).toBe('pass');
+    const again = overrideQaResult(run.id, caseIds[0], 'blocked', 'c');
+    expect(again.result).toMatchObject({ verdict: 'blocked', original_verdict: 'pass' });
+  });
+
+  it('a same-verdict override is a no-op', () => {
+    const { caseIds, run } = failedRun();
+    const out = overrideQaResult(run.id, caseIds[0], 'pass', 'human');
+    expect(out.runStatusChanged).toBe(false);
+    expect(out.result.original_verdict).toBeNull();
+  });
+
+  it('a run that finished with a case missing stays failed after an override', () => {
+    const { planId, caseIds } = makePlan(2);
+    approveQaPlan(planId, 'u1');
+    const run = begin(planId);
+    record(run.id, caseIds[0], 'fail');
+    finishQaRun(run.id);
+    const out = overrideQaResult(run.id, caseIds[0], 'pass', 'human');
+    expect(out.run.status).toBe('failed');
+  });
+
+  it('refuses running and cancelled runs, signed-off plans, and cases without a result', () => {
+    const { planId, caseIds } = makePlan(2);
+    approveQaPlan(planId, 'u1');
+    const running = begin(planId);
+    record(running.id, caseIds[0], 'fail');
+    expectQaError(
+      () => overrideQaResult(running.id, caseIds[0], 'pass', 'h'),
+      'run_not_finished',
+      409,
+    );
+    expectQaError(() => overrideQaResult(running.id, caseIds[1], 'pass', 'h'), 'not_found', 404);
+    cancelQaRun(running.id);
+    expectQaError(
+      () => overrideQaResult(running.id, caseIds[0], 'pass', 'h'),
+      'run_not_finished',
+      409,
+    );
+
+    const passed = passRun(planId, caseIds);
+    signOffQaPlan(planId, 'h');
+    expectQaError(() => overrideQaResult(passed.id, caseIds[0], 'fail', 'h'), 'plan_done', 409);
   });
 });

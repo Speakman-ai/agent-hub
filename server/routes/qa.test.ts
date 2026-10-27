@@ -552,6 +552,101 @@ describe('approval and runs', () => {
     expect(card.description).toContain('Pay button does nothing');
   });
 
+  it("overrides a finished run's verdict, passes the run, and notes it on the finding card", async () => {
+    const { planId, caseIds } = await approvedPlan();
+    getDb().exec(
+      `INSERT OR IGNORE INTO kanban_columns (id, board_id, name, position)
+         VALUES ('col-todo', 'board-proj', 'To Do', 0)`,
+    );
+    const runId = (await request(app).post(`${base}/${planId}/runs`).send({}).expect(201)).body.run
+      .id;
+    await request(app)
+      .post(`${base}/${planId}/runs/${runId}/results`)
+      .send({ caseId: caseIds[0], verdict: 'pass' })
+      .expect(200);
+    const failed = await request(app)
+      .post(`${base}/${planId}/runs/${runId}/results`)
+      .send({ caseId: caseIds[1], verdict: 'fail' })
+      .expect(200);
+    const cardId = failed.body.result.findingCardId as string;
+    expect(failed.body.result.override).toBeNull();
+
+    broadcast.mockClear();
+    const res = await request(app)
+      .post(`${base}/${planId}/runs/${runId}/results/${caseIds[1]}/override`)
+      .send({ verdict: 'pass' })
+      .expect(200);
+    expect(res.body.run.status).toBe('passed');
+    expect(res.body.result).toMatchObject({
+      verdict: 'pass',
+      findingCardId: cardId,
+      override: { originalVerdict: 'fail', by: 'user-1' },
+    });
+    expect(
+      broadcast.mock.calls.some(
+        (c) => (c[0] as Record<string, unknown>).action === 'result_overridden',
+      ),
+    ).toBe(true);
+    const comments = getDb()
+      .prepare('SELECT content FROM kanban_card_comments WHERE card_id = ?')
+      .all(cardId) as Array<{ content: string }>;
+    expect(comments.at(-1)?.content).toContain('from **fail** to **pass**');
+
+    await request(app).post(`${base}/${planId}/sign-off`).expect(200);
+    const done = await request(app)
+      .post(`${base}/${planId}/runs/${runId}/results/${caseIds[1]}/override`)
+      .send({ verdict: 'fail' })
+      .expect(409);
+    expect(done.body.code).toBe('plan_done');
+  });
+
+  it('files a finding card when a passed result is overridden to fail', async () => {
+    const { planId, caseIds } = await approvedPlan();
+    getDb().exec(
+      `INSERT OR IGNORE INTO kanban_columns (id, board_id, name, position)
+         VALUES ('col-todo', 'board-proj', 'To Do', 0)`,
+    );
+    const runId = (await request(app).post(`${base}/${planId}/runs`).send({}).expect(201)).body.run
+      .id;
+    for (const caseId of caseIds) {
+      await request(app)
+        .post(`${base}/${planId}/runs/${runId}/results`)
+        .send({ caseId, verdict: 'pass' })
+        .expect(200);
+    }
+    const res = await request(app)
+      .post(`${base}/${planId}/runs/${runId}/results/${caseIds[0]}/override`)
+      .send({ verdict: 'fail' })
+      .expect(200);
+    expect(res.body.run.status).toBe('failed');
+    expect(res.body.result.override).toMatchObject({ originalVerdict: 'pass' });
+    await vi.waitFor(() => {
+      const row = getDb()
+        .prepare('SELECT finding_card_id FROM qa_results WHERE run_id = ? AND case_id = ?')
+        .get(runId, caseIds[0]) as { finding_card_id: string | null };
+      expect(row.finding_card_id).toBeTruthy();
+    });
+  });
+
+  it('refuses an override on a running run and rejects an unknown verdict', async () => {
+    const { planId, caseIds } = await approvedPlan();
+    const runId = (await request(app).post(`${base}/${planId}/runs`).send({}).expect(201)).body.run
+      .id;
+    await request(app)
+      .post(`${base}/${planId}/runs/${runId}/results`)
+      .send({ caseId: caseIds[0], verdict: 'fail' })
+      .expect(200);
+    const running = await request(app)
+      .post(`${base}/${planId}/runs/${runId}/results/${caseIds[0]}/override`)
+      .send({ verdict: 'pass' })
+      .expect(409);
+    expect(running.body.code).toBe('run_not_finished');
+    await request(app)
+      .post(`${base}/${planId}/runs/${runId}/results/${caseIds[0]}/override`)
+      .send({ verdict: 'maybe' })
+      .expect(400);
+  });
+
   it('refuses results on a queued run and on a cancelled run', async () => {
     const { planId, caseIds } = await approvedPlan();
     // A run queued outside the route has no session yet and stays queued.

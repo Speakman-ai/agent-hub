@@ -9,8 +9,10 @@
  *   signed_off:  in_progress -> done
  *
  * Run status: queued -> running -> passed | failed; queued | running ->
- * cancelled. Terminal runs never change, and neither do their results.
- * passed / failed is derived from the recorded verdicts, not supplied.
+ * cancelled. passed / failed is derived from the recorded verdicts, not
+ * supplied. The agent cannot change a finished run's results; a person can
+ * override one verdict at a time (`overrideQaResult`), which re-derives
+ * passed / failed. Cancelled runs never change.
  *
  * Each run fixes its in-scope case ids when it is queued: every case for
  * `full`, and for `failed_only` every case without a `pass` on its current
@@ -50,6 +52,7 @@ export type QaStatusErrorCode =
   | 'plan_done'
   | 'run_active'
   | 'run_not_running'
+  | 'run_not_finished'
   | 'not_all_pass'
   | 'invalid_order'
   | 'edit_conflict'
@@ -590,6 +593,67 @@ export function recordQaResult(runId: string, caseId: string, input: QaResultInp
       input.findingCardId ?? null,
     );
     return s.listQaResultsByRun.all(runId).find((r) => r.case_id === caseId)!;
+  })();
+}
+
+export interface QaResultOverrideOutcome {
+  result: QaResultRow;
+  run: QaRunRow;
+  /** The run moved between passed and failed. */
+  runStatusChanged: boolean;
+  /** The verdict before this call. */
+  previousVerdict: QaVerdict;
+}
+
+/**
+ * A person's verdict for one result of a finished (passed / failed) run, for
+ * when the agent judged a case wrong. The agent's verdict is kept in
+ * `original_verdict`; overriding back to it clears the override. The run's
+ * passed / failed status is re-derived from the new verdicts, so a failed run
+ * whose only failure was overridden to pass becomes passed and the plan can be
+ * signed off. Refused on a signed-off plan: start a run to reopen it.
+ */
+export function overrideQaResult(
+  runId: string,
+  caseId: string,
+  verdict: QaVerdict,
+  userId: string | null,
+): QaResultOverrideOutcome {
+  return getDb().transaction(() => {
+    const s = getStmts();
+    const run = requireRun(runId);
+    const result = s.listQaResultsByRun.all(runId).find((r) => r.case_id === caseId);
+    if (!result)
+      throw new QaStatusError('not_found', `No result for QA case ${caseId} in this run`);
+    if (run.status !== 'passed' && run.status !== 'failed') {
+      throw new QaStatusError(
+        'run_not_finished',
+        `QA run ${run.iteration} is ${run.status}; only a finished run's verdicts can be overridden`,
+      );
+    }
+    if (requirePlan(run.plan_id).status === 'done') {
+      throw new QaStatusError('plan_done', 'QA plan is signed off; start a run to reopen it');
+    }
+    const previousVerdict = result.verdict;
+    if (verdict !== previousVerdict) {
+      const original = result.original_verdict ?? result.verdict;
+      const reverting = verdict === original;
+      s.setQaResultOverride.run({
+        id: result.id,
+        verdict,
+        original_verdict: reverting ? null : original,
+        overridden_by: reverting ? null : userId,
+      });
+    }
+    const { passed } = qaRunCoverage(run);
+    const status: QaRunStatus = passed ? 'passed' : 'failed';
+    if (status !== run.status) s.setQaRunFinishedStatus.run(status, runId);
+    return {
+      result: s.listQaResultsByRun.all(runId).find((r) => r.case_id === caseId)!,
+      run: requireRun(runId),
+      runStatusChanged: status !== run.status,
+      previousVerdict,
+    };
   })();
 }
 

@@ -25,13 +25,17 @@ import type {
   QaPlanRow,
   QaResultRow,
   QaRunRow,
+  QaVerdict,
 } from './types.js';
 
 export const QA_FINDING_LABEL = 'qa-finding';
 const QA_FINDING_AUTHOR = 'QA';
 
-const isFinding = (r: Pick<QaResultRow, 'verdict'>) =>
-  r.verdict === 'fail' || r.verdict === 'needs_change';
+/** Verdicts that get a finding card. */
+export const isQaFindingVerdict = (verdict: QaVerdict): boolean =>
+  verdict === 'fail' || verdict === 'needs_change';
+
+const isFinding = (r: Pick<QaResultRow, 'verdict'>) => isQaFindingVerdict(r.verdict);
 
 const VERDICT_TEXT = { fail: 'fail', needs_change: 'needs change' } as const;
 
@@ -104,6 +108,43 @@ export function buildQaFindingRepeatComment(args: {
   if (result.notes.trim()) lines.push('', `**Notes:** ${result.notes.trim()}`);
   lines.push('', '**Screenshots:**', ...screenshotLines(run, result, screenshots));
   return lines.join('\n');
+}
+
+const OVERRIDE_VERDICT_TEXT: Record<QaVerdict, string> = {
+  pass: 'pass',
+  fail: 'fail',
+  needs_change: 'needs change',
+  blocked: 'blocked',
+};
+
+/** Comment for a finding card whose result a person overrode. Pure. */
+export function buildQaOverrideComment(args: {
+  caseTitle: string;
+  iteration: number;
+  from: QaVerdict;
+  to: QaVerdict;
+}): string {
+  const { caseTitle, iteration, from, to } = args;
+  const line = `A person changed the verdict for **${caseTitle}** in QA run #${iteration} from **${OVERRIDE_VERDICT_TEXT[from]}** to **${OVERRIDE_VERDICT_TEXT[to]}**.`;
+  return isQaFindingVerdict(to)
+    ? line
+    : `${line} QA no longer counts this case as failing; close this card if no fix is needed.`;
+}
+
+/** Note an override on the result's finding card and refresh the board. */
+export function noteQaVerdictOverride(
+  broadcast: AssignCardDeps['broadcast'],
+  projectId: string,
+  cardId: string,
+  args: Parameters<typeof buildQaOverrideComment>[0],
+): void {
+  getStmts().createKanbanCardComment.run(
+    uuidv4(),
+    cardId,
+    QA_FINDING_AUTHOR,
+    buildQaOverrideComment(args),
+  );
+  broadcast({ type: 'kanban_update', projectId });
 }
 
 /**

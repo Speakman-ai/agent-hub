@@ -904,6 +904,17 @@ export const api = {
       `${qaPlanPath(projectId, planId)}/runs/${encodeURIComponent(runId)}/results/${encodeURIComponent(caseId)}/troubleshoot`,
       { method: 'POST' },
     ),
+  overrideQaResult: (
+    projectId: string,
+    planId: string,
+    runId: string,
+    caseId: string,
+    verdict: 'pass' | 'fail' | 'needs_change' | 'blocked',
+  ) =>
+    fetchJSON(
+      `${qaPlanPath(projectId, planId)}/runs/${encodeURIComponent(runId)}/results/${encodeURIComponent(caseId)}/override`,
+      { method: 'POST', body: JSON.stringify({ verdict }) },
+    ),
   addQaCase: (projectId: string, planId: string, input: QaCaseDraft) =>
     fetchJSON(`${qaPlanPath(projectId, planId)}/cases`, {
       method: 'POST',

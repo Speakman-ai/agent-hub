@@ -36,6 +36,7 @@ import {
   type QaPlanPatch,
   type QaRun,
   type QaRunScope,
+  type QaVerdict,
 } from '../utils/qa';
 import QaRunResults from './QaRunResults';
 
@@ -258,6 +259,7 @@ function RunRow({
   onOpenSession,
   onOpenCard,
   onTroubleshoot,
+  onOverride,
 }: {
   run: QaRun;
   cases: QaCase[];
@@ -266,6 +268,8 @@ function RunRow({
   onOpenSession?: (agentId: string | null, sessionId: string) => void;
   onOpenCard?: (cardId: string) => void;
   onTroubleshoot?: (runId: string, caseId: string) => Promise<void>;
+  /** Absent once the plan is signed off: its evidence is frozen. */
+  onOverride?: (runId: string, caseId: string, verdict: QaVerdict) => Promise<void>;
 }) {
   const duration = runDuration(run);
   const resultCount = run.results?.length ?? 0;
@@ -302,6 +306,9 @@ function RunRow({
           cases={cases}
           onOpenCard={onOpenCard}
           onTroubleshoot={onTroubleshoot ? (caseId) => onTroubleshoot(run.id, caseId) : undefined}
+          onOverride={
+            onOverride ? (caseId, verdict) => onOverride(run.id, caseId, verdict) : undefined
+          }
         />
       ) : null}
     </View>
@@ -593,6 +600,14 @@ export default function QaPlanDetailView({
   const troubleshoot = async (runId: string, caseId: string) => {
     const { agentId, sessionId } = await api.troubleshootQaResult(projectId, planId, runId, caseId);
     onOpenSession?.(agentId, sessionId);
+  };
+
+  const overrideVerdict = async (runId: string, caseId: string, verdict: QaVerdict) => {
+    try {
+      await api.overrideQaResult(projectId, planId, runId, caseId, verdict);
+    } finally {
+      await load();
+    }
   };
 
   const plan = detail?.plan;
@@ -905,6 +920,7 @@ export default function QaPlanDetailView({
                 onOpenSession={onOpenSession}
                 onOpenCard={onOpenCard}
                 onTroubleshoot={onOpenSession ? troubleshoot : undefined}
+                onOverride={plan.status === 'done' ? undefined : overrideVerdict}
               />
             );
           })}

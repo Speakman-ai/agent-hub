@@ -21,6 +21,7 @@ function result(caseId: string, extra: Partial<QaResultWire> = {}): QaResultWire
     screenshotArtifactIds: [],
     screenshots: [],
     findingCardId: null,
+    override: null,
     createdAt: '2026-10-26 10:00:00',
     updatedAt: '2026-10-26 10:00:00',
     ...extra,
@@ -212,5 +213,103 @@ describe('QaRunResults troubleshoot', () => {
     await waitFor(() =>
       expect(screen.getByTestId('qa-result-troubleshoot-error').textContent).toBe('No dev agent'),
     );
+  });
+});
+
+describe('QaRunResults verdict override', () => {
+  it('offers Mark pass on a failure and Mark fail on a pass, only on finished runs', async () => {
+    const onOverride = vi.fn().mockResolvedValue(undefined);
+    const results = [result('a', { verdict: 'fail' }), result('b')];
+    const { rerender } = render(
+      <QaRunResults
+        run={{ id: 'r1', sessionId: 's1', status: 'running', results }}
+        cases={cases}
+        onOverride={onOverride}
+      />,
+    );
+    expect(screen.queryByTestId('qa-result-override')).toBeNull();
+
+    rerender(
+      <QaRunResults
+        run={{ id: 'r1', sessionId: 's1', status: 'failed', results }}
+        cases={cases}
+        onOverride={onOverride}
+      />,
+    );
+    const rowA = screen.getByTestId('qa-result-a');
+    const rowB = screen.getByTestId('qa-result-b');
+    expect(within(rowB).getByTestId('qa-result-override').textContent).toContain('Mark fail');
+    fireEvent.click(within(rowA).getByTestId('qa-result-override'));
+    await waitFor(() => expect(onOverride).toHaveBeenCalledWith('a', 'pass'));
+  });
+
+  it("labels an overridden result and its Undo restores the agent's verdict", async () => {
+    const onOverride = vi.fn().mockResolvedValue(undefined);
+    render(
+      <QaRunResults
+        run={{
+          id: 'r1',
+          sessionId: 's1',
+          status: 'passed',
+          results: [
+            result('a', {
+              verdict: 'pass',
+              override: { originalVerdict: 'fail', by: 'u1', at: '2026-10-27 10:00:00' },
+            }),
+          ],
+        }}
+        cases={cases}
+        onOverride={onOverride}
+      />,
+    );
+    expect(screen.getByTestId('qa-result-overridden').textContent).toContain('agent said fail');
+    fireEvent.click(screen.getByTestId('qa-result-override-undo'));
+    await waitFor(() => expect(onOverride).toHaveBeenCalledWith('a', 'fail'));
+  });
+
+  it('shows the error when the override is refused', async () => {
+    const onOverride = vi.fn().mockRejectedValue(new Error('QA plan is signed off'));
+    render(
+      <QaRunResults
+        run={{
+          id: 'r1',
+          sessionId: 's1',
+          status: 'failed',
+          results: [result('a', { verdict: 'fail' })],
+        }}
+        cases={cases}
+        onOverride={onOverride}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('qa-result-override'));
+    expect(await screen.findByText('QA plan is signed off')).toBeTruthy();
+  });
+
+  it('clears the saving state so a later Troubleshoot shows its own progress', async () => {
+    const onOverride = vi.fn().mockResolvedValue(undefined);
+    const onTroubleshoot = vi.fn(() => new Promise<void>(() => {}));
+    render(
+      <QaRunResults
+        run={{
+          id: 'r1',
+          sessionId: 's1',
+          status: 'failed',
+          results: [result('a', { verdict: 'fail' })],
+        }}
+        cases={cases}
+        onOverride={onOverride}
+        onTroubleshoot={onTroubleshoot}
+      />,
+    );
+    const overrideButton = screen.getByTestId('qa-result-override');
+    fireEvent.click(overrideButton);
+    await waitFor(() => expect(overrideButton.textContent).toContain('Mark pass'));
+    expect((overrideButton as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.click(screen.getByTestId('qa-result-troubleshoot'));
+    await waitFor(() =>
+      expect(screen.getByTestId('qa-result-troubleshoot').textContent).toContain('Opening…'),
+    );
+    expect(overrideButton.textContent).not.toContain('Saving…');
   });
 });

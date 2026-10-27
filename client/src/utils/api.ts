@@ -253,6 +253,8 @@ export interface QaResultWire {
   /** Screenshots still present in the run session's artifacts, in order. */
   screenshots: QaScreenshotWire[];
   findingCardId: string | null;
+  /** Set when a person overrode the agent's verdict. */
+  override: { originalVerdict: QaVerdict; by: string | null; at: string | null } | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -2735,6 +2737,18 @@ export const api = {
     fetchJSON<{ sessionId: string; agentId: string }>(
       `${qaPlanPath(projectId, planId)}/runs/${encodeURIComponent(runId)}/results/${encodeURIComponent(caseId)}/troubleshoot`,
       { method: 'POST' },
+    ),
+  /** A person's verdict for one result of a finished run; re-derives the run's status. */
+  overrideQaResult: (
+    projectId: string,
+    planId: string,
+    runId: string,
+    caseId: string,
+    verdict: QaVerdict,
+  ) =>
+    fetchJSON<{ result: QaResultWire; run: QaRunWire }>(
+      `${qaPlanPath(projectId, planId)}/runs/${encodeURIComponent(runId)}/results/${encodeURIComponent(caseId)}/override`,
+      { method: 'POST', body: JSON.stringify({ verdict }) },
     ),
   openQaAuthoringSession: (projectId: string, planId: string) =>
     fetchJSON<QaAuthoringSessionWire>(`${qaPlanPath(projectId, planId)}/authoring-session`, {

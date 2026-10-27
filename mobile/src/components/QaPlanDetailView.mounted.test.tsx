@@ -38,6 +38,7 @@ let planOverrides: Record<string, unknown> = {};
 let runs: unknown[] = [];
 const troubleshootQaResult = vi.fn(async () => ({ sessionId: 's7', agentId: 'p1-dev' }));
 const updateQaPlan = vi.fn(async () => ({}));
+const overrideQaResult = vi.fn(async () => ({}));
 const getProjectBranches = vi.fn(async () => ({
   branches: [{ name: 'main' }, { name: 'release' }],
 }));
@@ -81,6 +82,7 @@ vi.mock('../utils/api', () => ({
     updateQaPlan,
     updateQaCase,
     troubleshootQaResult,
+    overrideQaResult,
   },
 }));
 
@@ -267,6 +269,78 @@ describe('QaPlanDetailView troubleshoot', () => {
     expect(troubleshootQaResult).toHaveBeenCalledWith('p1', 'plan-1', 'r1', 'c1');
     expect(onOpenSession).toHaveBeenCalledWith('p1-dev', 's7');
     runs = [];
+    tree.unmount();
+  });
+});
+
+describe('QaPlanDetailView verdict override', () => {
+  const failedRun = (override: unknown = null) => ({
+    id: 'r1',
+    planId: 'plan-1',
+    iteration: 1,
+    scope: 'full',
+    status: 'failed',
+    sessionId: null,
+    sessionAgentId: null,
+    results: [
+      {
+        id: 'res-1',
+        runId: 'r1',
+        caseId: 'c1',
+        caseVersion: 1,
+        verdict: 'fail',
+        actual: 'Looks right to a person',
+        notes: '',
+        screenshotArtifactIds: [],
+        screenshots: [],
+        findingCardId: null,
+        override,
+      },
+    ],
+  });
+
+  it('marks a failed result as pass and refreshes the plan', async () => {
+    runs = [failedRun()];
+    planOverrides = { status: 'in_progress', approved: true };
+    let tree: any;
+    await act(async () => {
+      tree = TestRenderer.create(<QaPlanDetailView projectId="p1" planId="plan-1" />);
+    });
+    await flush();
+    const calls = getQaPlanCalls.length;
+    await act(async () => {
+      tree.root.findByProps({ testID: 'qa-result-override' }).props.onPress();
+    });
+    await flush();
+    expect(overrideQaResult).toHaveBeenCalledWith('p1', 'plan-1', 'r1', 'c1', 'pass');
+    expect(getQaPlanCalls.length).toBeGreaterThan(calls);
+    tree.unmount();
+  });
+
+  it('labels an override, undoes it, and hides the controls on a signed-off plan', async () => {
+    overrideQaResult.mockClear();
+    runs = [failedRun({ originalVerdict: 'pass', by: 'u1', at: null })];
+    planOverrides = { status: 'in_progress', approved: true };
+    let tree: any;
+    await act(async () => {
+      tree = TestRenderer.create(<QaPlanDetailView projectId="p1" planId="plan-1" />);
+    });
+    await flush();
+    tree.root.findByProps({ testID: 'qa-result-overridden' });
+    await act(async () => {
+      tree.root.findByProps({ testID: 'qa-result-override-undo' }).props.onPress();
+    });
+    expect(overrideQaResult).toHaveBeenCalledWith('p1', 'plan-1', 'r1', 'c1', 'pass');
+    tree.unmount();
+
+    planOverrides = { status: 'done', approved: true };
+    await act(async () => {
+      tree = TestRenderer.create(<QaPlanDetailView projectId="p1" planId="plan-1" />);
+    });
+    await flush();
+    expect(tree.root.findAllByProps({ testID: 'qa-result-override' })).toHaveLength(0);
+    runs = [];
+    planOverrides = {};
     tree.unmount();
   });
 });

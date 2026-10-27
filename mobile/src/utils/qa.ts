@@ -119,6 +119,13 @@ export interface QaResult {
   notes: string;
   screenshots: QaScreenshot[];
   findingCardId: string | null;
+  /** Set when a person overrode the agent's verdict. */
+  override?: { originalVerdict: QaVerdict; by: string | null; at: string | null } | null;
+}
+
+/** The override a person can apply: pass for anything else, fail for a pass. Pure. */
+export function overrideTarget(verdict: QaVerdict): QaVerdict {
+  return verdict === 'pass' ? 'fail' : 'pass';
 }
 
 export interface QaRun {

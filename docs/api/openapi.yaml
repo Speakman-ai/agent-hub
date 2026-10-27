@@ -15504,6 +15504,28 @@ components:
         findingCardId:
           type: string
           nullable: true
+        override:
+          type: object
+          nullable: true
+          properties:
+            originalVerdict:
+              type: string
+              enum:
+                - pass
+                - fail
+                - needs_change
+                - blocked
+            by:
+              type: string
+              nullable: true
+            at:
+              type: string
+              nullable: true
+          required:
+            - originalVerdict
+            - by
+            - at
+          description: "Set when a person overrode the agent's verdict: the agent's verdict and who changed it. Null otherwise."
         createdAt:
           type: string
         updatedAt:
@@ -15519,6 +15541,7 @@ components:
         - screenshotArtifactIds
         - screenshots
         - findingCardId
+        - override
         - createdAt
         - updatedAt
     QaPlanListItem:
@@ -59754,6 +59777,80 @@ paths:
       responses:
         "200":
           description: Stored result and the run, finished when this was the last in-scope case.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    $ref: "#/components/schemas/QaResult"
+                  run:
+                    $ref: "#/components/schemas/QaRun"
+                required:
+                  - result
+                  - run
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+        "404":
+          description: Project, plan, case, or run not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+        "409":
+          description: Refused by the plan or run lifecycle (see `code`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+  /api/projects/{projectId}/qa/plans/{planId}/runs/{runId}/results/{caseId}/override:
+    post:
+      tags: *a9
+      summary: Override the verdict of one result in a finished run
+      description: For a person who judges the agent's verdict wrong. The agent's verdict is kept in `override.originalVerdict`; overriding back to it clears the override. The run's passed/failed status is re-derived, so overriding a run's only failure to `pass` makes the run passed. Overriding to `fail` or `needs_change` files a finding card; overriding to `pass` comments on an existing finding card. 409 `run_not_finished` for a queued, running, or cancelled run; 409 `plan_done` on a signed-off plan.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: planId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: caseId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: runId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                verdict:
+                  type: string
+                  enum:
+                    - pass
+                    - fail
+                    - needs_change
+                    - blocked
+              required:
+                - verdict
+      responses:
+        "200":
+          description: Updated result and run.
           content:
             application/json:
               schema:

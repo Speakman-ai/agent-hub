@@ -1,7 +1,13 @@
 import { useEffect, useState } from 'react';
-import { ImageIcon, Stethoscope, X } from 'lucide-react';
+import { Check, ImageIcon, Stethoscope, Undo2, X } from 'lucide-react';
 import { artifactRenderKind, isGenericArtifactType } from '@shared/utils/artifactView';
-import type { QaCaseWire, QaResultWire, QaRunWire, QaScreenshotWire } from '../utils/api';
+import type {
+  QaCaseWire,
+  QaResultWire,
+  QaRunWire,
+  QaScreenshotWire,
+  QaVerdict,
+} from '../utils/api';
 import { fetchArtifactBlob } from '../utils/artifactContent';
 import { VERDICT_CLASS, VERDICT_LABELS } from '../utils/qaLabels';
 import SessionArtifactViewer from './SessionArtifactViewer';
@@ -183,21 +189,50 @@ export const TROUBLESHOOT_VERDICTS: ReadonlySet<QaResultWire['verdict']> = new S
   'blocked',
 ]);
 
+/**
+ * The override a person can apply to a result: pass for anything else, fail
+ * for a pass. Pure.
+ */
+export function overrideTarget(verdict: QaVerdict): QaVerdict {
+  return verdict === 'pass' ? 'fail' : 'pass';
+}
+
 export default function QaRunResults({
   run,
   cases,
   onOpenCard,
   onTroubleshoot,
+  onOverride,
 }: {
-  run: Pick<QaRunWire, 'id' | 'sessionId' | 'results'>;
+  run: Pick<QaRunWire, 'id' | 'sessionId' | 'results'> & Partial<Pick<QaRunWire, 'status'>>;
   cases: Pick<QaCaseWire, 'id' | 'title' | 'expected' | 'version'>[];
   onOpenCard?: (cardId: string) => void;
   /** Opens a dev session seeded with this result; rejects with the error to show. */
   onTroubleshoot?: (caseId: string) => Promise<void>;
+  /** Overrides one verdict; rejects with the error to show. Offered on finished runs only. */
+  onOverride?: (caseId: string, verdict: QaVerdict) => Promise<void>;
 }) {
   const [pending, setPending] = useState<string | null>(null);
+  const [overriding, setOverriding] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const rows = orderRunResults(run.results ?? [], cases);
+  const canOverride = !!onOverride && (run.status === 'passed' || run.status === 'failed');
+
+  const override = async (caseId: string, verdict: QaVerdict) => {
+    if (!onOverride || pending) return;
+    setPending(caseId);
+    setOverriding(true);
+    setErrors(({ [caseId]: _drop, ...rest }) => rest);
+    try {
+      await onOverride(caseId, verdict);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : 'Failed to override the verdict';
+      setErrors((cur) => ({ ...cur, [caseId]: message }));
+    } finally {
+      setPending(null);
+      setOverriding(false);
+    }
+  };
 
   const troubleshoot = async (caseId: string) => {
     if (!onTroubleshoot || pending) return;
@@ -210,6 +245,7 @@ export default function QaRunResults({
       setErrors((cur) => ({ ...cur, [caseId]: message }));
     } finally {
       setPending(null);
+      setOverriding(false);
     }
   };
 
@@ -246,6 +282,51 @@ export default function QaRunResults({
                   recorded against v{result.caseVersion}
                 </span>
               )}
+              {result.override && (
+                <span className="text-[11px] text-gray-500" data-testid="qa-result-overridden">
+                  set by a person · agent said {VERDICT_LABELS[result.override.originalVerdict]}
+                </span>
+              )}
+              {canOverride && (
+                <span className="ml-auto inline-flex items-center gap-2">
+                  {result.override && (
+                    <button
+                      type="button"
+                      data-testid="qa-result-override-undo"
+                      title="Restore the agent's verdict"
+                      disabled={pending !== null}
+                      onClick={() => void override(result.caseId, result.override!.originalVerdict)}
+                      className="inline-flex items-center gap-1 rounded-full border border-gray-700 px-2 py-0.5 text-[11px] text-gray-300 hover:bg-gray-800 disabled:opacity-60"
+                    >
+                      <Undo2 size={11} />
+                      Undo
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    data-testid="qa-result-override"
+                    title="Override the agent's verdict for this case"
+                    disabled={pending !== null}
+                    onClick={() => void override(result.caseId, overrideTarget(result.verdict))}
+                    className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] disabled:opacity-60 ${
+                      overrideTarget(result.verdict) === 'pass'
+                        ? 'border-emerald-900 text-emerald-300 hover:bg-emerald-950'
+                        : 'border-red-900 text-red-300 hover:bg-red-950'
+                    }`}
+                  >
+                    {overrideTarget(result.verdict) === 'pass' ? (
+                      <Check size={11} />
+                    ) : (
+                      <X size={11} />
+                    )}
+                    {overriding && pending === result.caseId
+                      ? 'Saving…'
+                      : overrideTarget(result.verdict) === 'pass'
+                        ? 'Mark pass'
+                        : 'Mark fail'}
+                  </button>
+                </span>
+              )}
               {canTroubleshoot && (
                 <button
                   type="button"
@@ -253,10 +334,10 @@ export default function QaRunResults({
                   title="Open a dev agent session with this result's context"
                   disabled={pending !== null}
                   onClick={() => void troubleshoot(result.caseId)}
-                  className="ml-auto inline-flex items-center gap-1 rounded-full border border-blue-900 px-2 py-0.5 text-[11px] text-blue-300 hover:bg-blue-950 disabled:opacity-60"
+                  className={`${canOverride ? '' : 'ml-auto '}inline-flex items-center gap-1 rounded-full border border-blue-900 px-2 py-0.5 text-[11px] text-blue-300 hover:bg-blue-950 disabled:opacity-60`}
                 >
                   <Stethoscope size={11} />
-                  {pending === result.caseId ? 'Opening…' : 'Troubleshoot'}
+                  {!overriding && pending === result.caseId ? 'Opening…' : 'Troubleshoot'}
                 </button>
               )}
               {result.findingCardId && (

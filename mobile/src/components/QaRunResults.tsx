@@ -6,11 +6,13 @@ import { buildArtifactContentUrl } from '../utils/artifactContent';
 import { getApiBaseUrl, getAuthHeaders } from '../utils/config';
 import {
   orderRunResults,
+  overrideTarget,
   VERDICT_COLORS,
   VERDICT_LABELS,
   type QaCase,
   type QaRun,
   type QaScreenshot,
+  type QaVerdict,
 } from '../utils/qa';
 import SessionArtifactViewerModal from './SessionArtifactViewerModal';
 
@@ -116,16 +118,37 @@ export default function QaRunResults({
   cases,
   onOpenCard,
   onTroubleshoot,
+  onOverride,
 }: {
-  run: Pick<QaRun, 'id' | 'sessionId' | 'results'>;
+  run: Pick<QaRun, 'id' | 'sessionId' | 'results'> & Partial<Pick<QaRun, 'status'>>;
   cases: Pick<QaCase, 'id' | 'title' | 'expected' | 'version'>[];
   onOpenCard?: (cardId: string) => void;
   /** Opens a dev session seeded with this result; rejects with the error to show. */
   onTroubleshoot?: (caseId: string) => Promise<void>;
+  /** Overrides one verdict; rejects with the error to show. Offered on finished runs only. */
+  onOverride?: (caseId: string, verdict: QaVerdict) => Promise<void>;
 }) {
   const [pending, setPending] = useState<string | null>(null);
+  const [overriding, setOverriding] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const rows = orderRunResults(run.results ?? [], cases);
+  const canOverride = !!onOverride && (run.status === 'passed' || run.status === 'failed');
+
+  const override = async (caseId: string, verdict: QaVerdict) => {
+    if (!onOverride || pending) return;
+    setPending(caseId);
+    setOverriding(true);
+    setErrors(({ [caseId]: _drop, ...rest }) => rest);
+    try {
+      await onOverride(caseId, verdict);
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : 'Failed to override the verdict';
+      setErrors((cur) => ({ ...cur, [caseId]: message }));
+    } finally {
+      setPending(null);
+      setOverriding(false);
+    }
+  };
 
   const troubleshoot = async (caseId: string) => {
     if (!onTroubleshoot || pending) return;
@@ -165,6 +188,11 @@ export default function QaRunResults({
               {qaCase && result.caseVersion !== qaCase.version ? (
                 <Text style={styles.muted}>recorded against v{result.caseVersion}</Text>
               ) : null}
+              {result.override ? (
+                <Text style={styles.muted} testID="qa-result-overridden">
+                  set by a person · agent said {VERDICT_LABELS[result.override.originalVerdict]}
+                </Text>
+              ) : null}
               {canTroubleshoot ? (
                 <TouchableOpacity
                   testID="qa-result-troubleshoot"
@@ -174,7 +202,7 @@ export default function QaRunResults({
                   style={[styles.troubleshootChip, pending !== null && styles.disabled]}
                 >
                   <Text style={styles.troubleshootText}>
-                    {pending === result.caseId ? 'Opening…' : 'Troubleshoot'}
+                    {!overriding && pending === result.caseId ? 'Opening…' : 'Troubleshoot'}
                   </Text>
                 </TouchableOpacity>
               ) : null}
@@ -189,6 +217,52 @@ export default function QaRunResults({
                 </TouchableOpacity>
               ) : null}
             </View>
+            {canOverride ? (
+              <View style={styles.overrideRow}>
+                <TouchableOpacity
+                  testID="qa-result-override"
+                  accessibilityLabel="Override the agent's verdict for this case"
+                  disabled={pending !== null}
+                  onPress={() => void override(result.caseId, overrideTarget(result.verdict))}
+                  style={[
+                    styles.overrideChip,
+                    overrideTarget(result.verdict) === 'pass'
+                      ? styles.overridePass
+                      : styles.overrideFail,
+                    pending !== null && styles.disabled,
+                  ]}
+                >
+                  <Text
+                    style={
+                      overrideTarget(result.verdict) === 'pass'
+                        ? styles.overridePassText
+                        : styles.overrideFailText
+                    }
+                  >
+                    {overriding && pending === result.caseId
+                      ? 'Saving…'
+                      : overrideTarget(result.verdict) === 'pass'
+                        ? 'Mark pass'
+                        : 'Mark fail'}
+                  </Text>
+                </TouchableOpacity>
+                {result.override ? (
+                  <TouchableOpacity
+                    testID="qa-result-override-undo"
+                    accessibilityLabel="Restore the agent's verdict"
+                    disabled={pending !== null}
+                    onPress={() => void override(result.caseId, result.override!.originalVerdict)}
+                    style={[
+                      styles.overrideChip,
+                      styles.overrideUndo,
+                      pending !== null && styles.disabled,
+                    ]}
+                  >
+                    <Text style={styles.overrideUndoText}>Undo</Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+            ) : null}
             {errors[result.caseId] ? (
               <Text style={styles.error} testID="qa-result-troubleshoot-error">
                 {errors[result.caseId]}
@@ -238,6 +312,14 @@ const styles = StyleSheet.create({
   },
   troubleshootText: { fontSize: 11, color: colors.blue300 },
   disabled: { opacity: 0.6 },
+  overrideRow: { flexDirection: 'row', gap: 8 },
+  overrideChip: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4 },
+  overridePass: { borderColor: colors.emerald800 },
+  overridePassText: { fontSize: 12, color: colors.emerald300 },
+  overrideFail: { borderColor: colors.red900_50 },
+  overrideFailText: { fontSize: 12, color: colors.red400 },
+  overrideUndo: { borderColor: colors.gray700 },
+  overrideUndoText: { fontSize: 12, color: colors.gray300 },
   error: { fontSize: 12, color: colors.red400 },
   field: { gap: 2 },
   fieldLabel: { fontSize: 10, color: colors.gray500, textTransform: 'uppercase' },

@@ -2163,6 +2163,10 @@ export interface QaResultRow {
   /** JSON array of artifact ids. */
   screenshot_artifact_ids: string;
   finding_card_id: string | null;
+  /** The agent's verdict when a person overrode it; null when not overridden. */
+  original_verdict: QaVerdict | null;
+  overridden_by: string | null;
+  overridden_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -2265,6 +2269,17 @@ export interface Stmts {
   getQaRunBySession: Stmt<[string], QaRunRow>;
   getQaRunPreviewSessionBySession: Stmt<[string], { preview_session_id: string }>;
   upsertQaResult: Stmt<[string, string, string, QaVerdict, string, string, string, string | null]>;
+  setQaResultOverride: Stmt<
+    [
+      {
+        id: string;
+        verdict: QaVerdict;
+        original_verdict: QaVerdict | null;
+        overridden_by: string | null;
+      },
+    ]
+  >;
+  setQaRunFinishedStatus: Stmt<[QaRunStatus, string]>;
   listQaResultsByRun: Stmt<[string], QaResultRow>;
   listLatestQaVerdictsByPlan: Stmt<[string], QaLatestVerdictRow>;
   // Session replays (record-on-error rrweb captures)

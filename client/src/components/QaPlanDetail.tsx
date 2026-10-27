@@ -23,6 +23,7 @@ import {
   type QaPlanPatch,
   type QaPlanWire,
   type QaRunWire,
+  type QaVerdict,
 } from '../utils/api';
 import {
   QA_STATUS_LABELS,
@@ -835,6 +836,7 @@ function RunHistory({
   onOpenSession,
   onOpenCard,
   onTroubleshoot,
+  onOverride,
 }: {
   runs: QaRunWire[];
   cases: QaCaseWire[];
@@ -842,6 +844,8 @@ function RunHistory({
   onOpenSession?: (agentId: string | null, sessionId: string) => void;
   onOpenCard?: (cardId: string) => void;
   onTroubleshoot?: (runId: string, caseId: string) => Promise<void>;
+  /** Absent once the plan is signed off: its evidence is frozen. */
+  onOverride?: (runId: string, caseId: string, verdict: QaVerdict) => Promise<void>;
 }) {
   // Newest run open by default; the user's toggles win afterwards.
   const [toggled, setToggled] = useState<Record<string, boolean>>({});
@@ -912,6 +916,9 @@ function RunHistory({
                   onOpenCard={onOpenCard}
                   onTroubleshoot={
                     onTroubleshoot ? (caseId) => onTroubleshoot(r.id, caseId) : undefined
+                  }
+                  onOverride={
+                    onOverride ? (caseId, verdict) => onOverride(r.id, caseId, verdict) : undefined
                   }
                 />
               </div>
@@ -1018,6 +1025,14 @@ export default function QaPlanDetail({
   const troubleshoot = async (runId: string, caseId: string) => {
     const { agentId, sessionId } = await api.troubleshootQaResult(projectId, planId, runId, caseId);
     onOpenSession?.(agentId, sessionId);
+  };
+
+  const overrideVerdict = async (runId: string, caseId: string, verdict: QaVerdict) => {
+    try {
+      await api.overrideQaResult(projectId, planId, runId, caseId, verdict);
+    } finally {
+      await load();
+    }
   };
 
   const confirmApprovalLoss = (): boolean =>
@@ -1288,6 +1303,7 @@ export default function QaPlanDetail({
               onOpenSession={onOpenSession}
               onOpenCard={onOpenCard}
               onTroubleshoot={onOpenSession ? troubleshoot : undefined}
+              onOverride={plan.status === 'done' ? undefined : overrideVerdict}
             />
           </section>
         </>

@@ -31,7 +31,7 @@ import { abandonUnseededSession, kickoffSeededTurn } from '../seeded-session-kic
 import { broadcastSessionCreated } from '../session-checkpoint-rewind.js';
 import { resolveOwnerUserId, setSessionOwner } from '../session-ownership.js';
 import { QA_VERDICTS } from '../qa-schema.js';
-import { fileQaFindingCards } from '../qa-findings.js';
+import { fileQaFindingCards, isQaFindingVerdict, noteQaVerdictOverride } from '../qa-findings.js';
 import { startQaTroubleshootSession } from '../qa-troubleshoot.js';
 import {
   parseQaArtifactIds,
@@ -48,6 +48,7 @@ import {
   editQaCase,
   finishQaRun,
   markQaRunRunning,
+  overrideQaResult,
   qaPlanSignOffBlocker,
   qaRunCaseIds,
   QaStatusError,
@@ -71,6 +72,7 @@ import {
   CreateQaCaseRequestSchema,
   CreateQaPlanRequestSchema,
   ListQaPlansQuerySchema,
+  OverrideQaResultRequestSchema,
   RecordQaResultRequestSchema,
   ReorderQaCasesRequestSchema,
   StartQaRunRequestSchema,
@@ -165,6 +167,9 @@ export function serializeQaResult(r: QaResultRow, screenshots?: Map<string, QaSc
       ? ids.map((id) => screenshots.get(id)).filter((x): x is QaScreenshot => !!x)
       : [],
     findingCardId: r.finding_card_id,
+    override: r.original_verdict
+      ? { originalVerdict: r.original_verdict, by: r.overridden_by, at: r.overridden_at }
+      : null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -865,6 +870,57 @@ export default function createQaRoutes(deps: RouteDeps): Router {
       res.json({
         result: serializeQaRunResults(finished ?? run).find((r) => r.id === result.id)!,
         run: serializeQaRun(finished ?? getStmts().getQaRun.get(run.id)!),
+      });
+    }),
+  );
+
+  /**
+   * A person overrides one verdict of a finished run. A result that already
+   * has a finding card gets a note on it, so whoever is fixing it knows; a
+   * new fail / needs_change files its card like a finished run does.
+   */
+  router.post(
+    `${BASE}/:planId/runs/:runId/results/:caseId/override`,
+    guard((req, res) => {
+      const plan = loadPlan(req, res);
+      if (!plan) return;
+      const run = loadRun(req, res, plan);
+      if (!run) return;
+      const qaCase = loadCase(req, res, plan);
+      if (!qaCase) return;
+      const body = parse(OverrideQaResultRequestSchema, req.body, res);
+      if (!body) return;
+      const outcome = overrideQaResult(run.id, qaCase.id, body.verdict, userId(req));
+      const changed = outcome.previousVerdict !== outcome.result.verdict;
+      if (changed) {
+        emit(plan.project_id, plan.id, {
+          action: 'result_overridden',
+          runId: run.id,
+          caseId: qaCase.id,
+        });
+        if (outcome.result.finding_card_id) {
+          noteQaVerdictOverride(broadcast, plan.project_id, outcome.result.finding_card_id, {
+            caseTitle: qaCase.title,
+            iteration: run.iteration,
+            from: outcome.previousVerdict,
+            to: outcome.result.verdict,
+          });
+        } else if (isQaFindingVerdict(outcome.result.verdict)) {
+          fileQaFindingCards(deps, run.id)
+            .then((filed) => {
+              if (filed.length > 0) {
+                emit(plan.project_id, plan.id, { action: 'findings_filed', runId: run.id });
+              }
+            })
+            .catch((err) => console.error(`[qa] filing finding cards failed run=${run.id}:`, err));
+        }
+        // A failed run that is now passed has nothing to rerun; one that is
+        // now failed may be at the iteration cap.
+        if (outcome.runStatusChanged) void processQaAutoRerun(deps, plan.id);
+      }
+      res.json({
+        result: serializeQaRunResults(outcome.run).find((r) => r.id === outcome.result.id)!,
+        run: serializeQaRun(outcome.run),
       });
     }),
   );

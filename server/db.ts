@@ -35,7 +35,7 @@ import {
   FINALIZE_TERMINAL_STATUSES_SQL,
 } from './finalize/terminal-statuses.js';
 import { DEPLOYMENT_SCHEMA } from './deploy/deployment-schema.js';
-import { QA_AUTO_RERUN_TRIGGERS, QA_SCHEMA } from './qa-schema.js';
+import { QA_AUTO_RERUN_TRIGGERS, QA_RESULT_OVERRIDE_COLUMNS, QA_SCHEMA } from './qa-schema.js';
 import { DEPLOYMENT_ENV_RUNTIME_CONFIG_SCHEMA } from './deploy/deployment-env-config-schema.js';
 import { DEPLOYMENT_ENV_SECRETS_SCHEMA } from './deploy/deployment-env-secrets-schema.js';
 import { DEPLOYMENT_PROJECT_SETTINGS_SCHEMA } from './deploy/deploy-settings-schema.js';
@@ -3933,6 +3933,14 @@ function initDb(dataDir: string): void {
   } catch (_e) {
     /* column already present */
   }
+  // A person's override of a finished run's verdict.
+  for (const col of QA_RESULT_OVERRIDE_COLUMNS) {
+    try {
+      db.exec(`ALTER TABLE qa_results ADD COLUMN ${col}`);
+    } catch (_e) {
+      /* column already present */
+    }
+  }
   // What the auto-rerun waits on: a deployment, or a merge into a branch.
   for (const ddl of [
     `ALTER TABLE qa_plans ADD COLUMN auto_rerun_trigger TEXT NOT NULL DEFAULT 'deployment'
@@ -4490,6 +4498,18 @@ function initDb(dataDir: string): void {
          screenshot_artifact_ids = excluded.screenshot_artifact_ids,
          finding_card_id = COALESCE(excluded.finding_card_id, qa_results.finding_card_id),
          updated_at = datetime('now')`,
+    ),
+    setQaResultOverride: db.prepare(
+      `UPDATE qa_results SET verdict = @verdict, original_verdict = @original_verdict,
+         overridden_by = @overridden_by,
+         overridden_at = CASE WHEN @original_verdict IS NULL THEN NULL ELSE datetime('now') END,
+         updated_at = datetime('now')
+       WHERE id = @id`,
+    ),
+    // Status only: an override re-derives passed / failed but the run still
+    // finished when the agent finished it.
+    setQaRunFinishedStatus: db.prepare(
+      `UPDATE qa_runs SET status = ? WHERE id = ? AND status IN ('passed', 'failed')`,
     ),
     listQaResultsByRun: db.prepare(
       'SELECT * FROM qa_results WHERE run_id = ? ORDER BY created_at, id',

@@ -32,7 +32,9 @@
  * that was tested, so a verdict stops counting once the case is edited.
  * `screenshot_artifact_ids` is a JSON
  * array of artifact ids. `finding_card_id` is the kanban card filed for a
- * failing verdict.
+ * failing verdict. A person can override the verdict of a finished run:
+ * `original_verdict` keeps what the agent recorded and `overridden_by` /
+ * `overridden_at` say who changed it; all three are NULL when not overridden.
  *
  * qa_environments: project-level servers QA tests against (base URL plus
  * free-form notes about the server) and the test accounts for each. `accounts`
@@ -53,6 +55,13 @@ export type QaAutoRerunTrigger = (typeof QA_AUTO_RERUN_TRIGGERS)[number];
 /** Merge / fixes-merged delay bounds in minutes; 0 means rerun as soon as the trigger fires. */
 export const QA_AUTO_RERUN_DELAY_MIN = 5;
 export const QA_AUTO_RERUN_DELAY_MAX = 60;
+
+/** Columns added to qa_results after it first shipped, for the db.ts migration. */
+export const QA_RESULT_OVERRIDE_COLUMNS = [
+  `original_verdict TEXT CHECK (original_verdict IS NULL OR original_verdict IN (${QA_VERDICTS.map((v) => `'${v}'`).join(', ')}))`,
+  'overridden_by TEXT',
+  'overridden_at TEXT',
+];
 
 const inList = (values: readonly string[]) => values.map((v) => `'${v}'`).join(', ');
 
@@ -131,6 +140,9 @@ export const QA_SCHEMA = `
     notes                   TEXT NOT NULL DEFAULT '',
     screenshot_artifact_ids TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(screenshot_artifact_ids)),
     finding_card_id         TEXT REFERENCES kanban_cards(id) ON DELETE SET NULL,
+    original_verdict        TEXT CHECK (original_verdict IS NULL OR original_verdict IN (${inList(QA_VERDICTS)})),
+    overridden_by           TEXT,
+    overridden_at           TEXT,
     created_at              TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at              TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (run_id, case_id)

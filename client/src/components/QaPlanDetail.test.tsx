@@ -12,6 +12,7 @@ const mutations = {
   reorderQaCases: vi.fn(),
   openQaAuthoringSession: vi.fn(),
   troubleshootQaResult: vi.fn(),
+  overrideQaResult: vi.fn(),
   signOffQaPlan: vi.fn(),
   startQaRun: vi.fn(),
   updateQaPlan: vi.fn(),
@@ -29,6 +30,7 @@ vi.mock('../utils/api', () => ({
     reorderQaCases: (...a: unknown[]) => mutations.reorderQaCases(...a),
     openQaAuthoringSession: (...a: unknown[]) => mutations.openQaAuthoringSession(...a),
     troubleshootQaResult: (...a: unknown[]) => mutations.troubleshootQaResult(...a),
+    overrideQaResult: (...a: unknown[]) => mutations.overrideQaResult(...a),
     signOffQaPlan: (...a: unknown[]) => mutations.signOffQaPlan(...a),
     startQaRun: (...a: unknown[]) => mutations.startQaRun(...a),
     updateQaPlan: (...a: unknown[]) => mutations.updateQaPlan(...a),
@@ -757,6 +759,39 @@ describe('QaPlanDetail authoring', () => {
     await waitFor(() => expect(onOpenSession).toHaveBeenCalledWith('proj-qa', 's9'));
   });
 
+  it('overrides a failed result to pass and hides the override once signed off', async () => {
+    mutations.overrideQaResult.mockResolvedValue({});
+    const failedResult = {
+      id: 'res-1',
+      runId: 'r3',
+      caseId: 'c1',
+      caseVersion: 1,
+      verdict: 'fail' as const,
+      actual: 'Looks fine actually',
+      notes: '',
+      screenshotArtifactIds: [],
+      screenshots: [],
+      findingCardId: null,
+      override: null,
+      createdAt: '2026-10-26 10:00:00',
+      updatedAt: '2026-10-26 10:00:00',
+    };
+    const d = detail({
+      cases: [qaCase('c1')],
+      runs: [run('r3', { status: 'failed', results: [failedResult] })],
+    });
+    renderDetail(d);
+    fireEvent.click(await screen.findByTestId('qa-result-override'));
+    await waitFor(() =>
+      expect(mutations.overrideQaResult).toHaveBeenCalledWith('proj', 'p1', 'r3', 'c1', 'pass'),
+    );
+
+    cleanup();
+    renderDetail({ ...d, plan: { ...d.plan, status: 'done' } });
+    await screen.findByTestId('qa-result-c1');
+    expect(screen.queryByTestId('qa-result-override')).toBeNull();
+  });
+
   it('opens a troubleshoot session from a blocked result', async () => {
     mutations.troubleshootQaResult.mockResolvedValue({ sessionId: 's7', agentId: 'proj-dev' });
     const onOpenSession = renderDetail(
@@ -777,6 +812,7 @@ describe('QaPlanDetail authoring', () => {
                 screenshotArtifactIds: [],
                 screenshots: [],
                 findingCardId: null,
+                override: null,
                 createdAt: '2026-10-26 10:00:00',
                 updatedAt: '2026-10-26 10:00:00',
               },

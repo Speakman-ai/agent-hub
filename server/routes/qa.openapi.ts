@@ -180,6 +180,17 @@ export const QaResultComponent = registerComponent(
           "Metadata for screenshotArtifactIds still present in the run session's artifacts, in order. Open each through that session's artifact content route.",
       }),
     findingCardId: z.string().nullable(),
+    override: z
+      .object({
+        originalVerdict: Verdict,
+        by: z.string().nullable(),
+        at: z.string().nullable(),
+      })
+      .nullable()
+      .openapi({
+        description:
+          "Set when a person overrode the agent's verdict: the agent's verdict and who changed it. Null otherwise.",
+      }),
     createdAt: z.string(),
     updatedAt: z.string(),
   }),
@@ -274,6 +285,10 @@ export const RecordQaResultRequestSchema = z.object({
   notes: z.string().optional(),
   screenshotArtifactIds: z.array(z.string()).optional(),
   findingCardId: z.string().min(1).nullable().optional(),
+});
+
+export const OverrideQaResultRequestSchema = z.object({
+  verdict: Verdict,
 });
 
 export const ListQaPlansQuerySchema = z.object({
@@ -629,6 +644,32 @@ registerPath({
   responses: {
     200: ok(
       'Stored result and the run, finished when this was the last in-scope case.',
+      z.object({ result: QaResultComponent, run: QaRunComponent }),
+    ),
+    400: invalid,
+    404: notFound,
+    409: conflict,
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: `${BASE}/{planId}/runs/{runId}/results/{caseId}/override`,
+  tags: TAGS,
+  summary: 'Override the verdict of one result in a finished run',
+  description:
+    "For a person who judges the agent's verdict wrong. The agent's verdict is kept in `override.originalVerdict`; " +
+    "overriding back to it clears the override. The run's passed/failed status is re-derived, so overriding a run's " +
+    'only failure to `pass` makes the run passed. Overriding to `fail` or `needs_change` files a finding card; ' +
+    'overriding to `pass` comments on an existing finding card. 409 `run_not_finished` for a queued, running, or ' +
+    'cancelled run; 409 `plan_done` on a signed-off plan.',
+  request: {
+    params: caseParams.extend({ runId: z.string() }),
+    body: { content: json(OverrideQaResultRequestSchema) },
+  },
+  responses: {
+    200: ok(
+      'Updated result and run.',
       z.object({ result: QaResultComponent, run: QaRunComponent }),
     ),
     400: invalid,
