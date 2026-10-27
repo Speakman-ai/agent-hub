@@ -9,13 +9,17 @@
 #
 # Sends/labels within the granted sensitive scopes (no permanent delete). Read
 # ops need no extra tooling; send/modify build JSON with `jq`.
+#
+# Every command takes --account EMAIL|ID to act as one of the owner's linked
+# Google accounts (list them with google-accounts.sh). Without it the owner's
+# default account answers; an account that isn't linked fails, never falls back.
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./_common.sh
 source "$DIR/_common.sh"
 
 usage() {
-  sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "${BASH_SOURCE[0]}"
 }
 
 require_jq_for_write() {
@@ -117,6 +121,8 @@ cmd_modify() {
 }
 
 main() {
+  google_take_account_flag "$@"
+  set -- ${GOOGLE_ARGS[@]+"${GOOGLE_ARGS[@]}"}
   local sub="${1:-}"
   [[ $# -gt 0 ]] && shift || true
   case "$sub" in

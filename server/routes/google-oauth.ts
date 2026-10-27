@@ -628,7 +628,8 @@ export default function createGoogleOAuthRoutes(deps: RouteDeps): Router {
     if (!uid) {
       return res.status(401).json({ error: 'Not authenticated' });
     }
-    const status = getGoogleConnectionStatus(uid);
+    // `accountId` is already exposed as `defaultAccountId` below.
+    const { accountId: _defaultId, ...status } = getGoogleConnectionStatus(uid);
     const accounts = listGoogleConnections(uid).map((c) => ({
       accountId: c.accountId,
       email: c.googleEmail,

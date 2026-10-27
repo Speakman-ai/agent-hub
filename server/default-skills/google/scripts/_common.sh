@@ -23,10 +23,19 @@
 #   gq KEY [JSON]                          → tiny jq-or-fallback field reader
 #   require_arg NAME VALUE                 → abort (exit 2) if VALUE is empty
 #   google_usage_die MESSAGE               → print usage + exit 2
+#   google_take_account_flag ARGS…         → pull `--account EMAIL|ID` out of ARGS
+#                                            into GOOGLE_ACCOUNT; the rest go to
+#                                            GOOGLE_ARGS. google_api then adds
+#                                            `account=` to every proxy call.
 
 set -euo pipefail
 
 : "${AGENT_HUB_URL:=http://localhost:3051}"
+
+# Linked Google account to act as (email or account id). Empty = the owner's
+# default account. Set by google_take_account_flag.
+GOOGLE_ACCOUNT=""
+GOOGLE_ARGS=()
 
 # ── Locate ah-api.sh (shipped by the bundled agent-hub skill) ────────────
 # Prefer PATH (the server prepends the agent-hub skill's scripts/ dir), then
@@ -81,8 +90,10 @@ gq() {
 _google_explain_error() {
   local http_code="$1"
   local body="$2"
-  local code
+  local code account account_label=""
   code="$(gq code "$body")"
+  account="$(gq account "$body")"
+  [[ -n "$account" ]] && account_label=" (${account})"
 
   case "$code" in
     google_not_connected | authentication_required)
@@ -94,8 +105,12 @@ _google_explain_error() {
       echo "google: an Owner/Admin must add the Google client id/secret in server settings." >&2
       ;;
     google_reconnect_required)
-      echo "google: the session owner's Google connection expired or was revoked." >&2
+      echo "google: the session owner's Google connection${account_label} expired or was revoked." >&2
       echo "google: re-link it under Settings → Account → Google, then retry." >&2
+      ;;
+    google_account_not_found)
+      echo "google: the session owner has not linked the Google account '$(gq account "$body")'." >&2
+      echo "google: run google-accounts.sh to list linked accounts, or drop --account to use the default." >&2
       ;;
     google_calendar_scope_required | google_gmail_scope_required | \
       google_gmail_send_scope_required | google_sheets_scope_required | \
@@ -109,7 +124,7 @@ _google_explain_error() {
         google_drive_*) surface="Google Drive" ;;
         google_chat_*) surface="Google Chat" ;;
       esac
-      echo "google: ${surface} access has not been granted for the session owner." >&2
+      echo "google: ${surface} access has not been granted for the session owner's account${account_label}." >&2
       echo "google: enable it under Settings → Account → Google (incremental consent)." >&2
       ;;
     google_chat_workspace_required | google_chat_api_disabled | google_chat_app_not_configured)
@@ -144,6 +159,12 @@ google_api() {
   shift
   local path="$1"
   shift
+
+  if [[ -n "$GOOGLE_ACCOUNT" ]]; then
+    local sep="?"
+    [[ "$path" == *\?* ]] && sep="&"
+    path+="${sep}account=$(urlenc "$GOOGLE_ACCOUNT")"
+  fi
 
   local key
   key="$(ah_resolve_key)"
@@ -228,6 +249,31 @@ require_arg() {
 google_usage_die() {
   echo "$*" >&2
   exit 2
+}
+
+# google_take_account_flag ARGS… — strip `--account VALUE` / `--account=VALUE`
+# from ARGS. Sets GOOGLE_ACCOUNT and leaves the remaining args in GOOGLE_ARGS:
+#   google_take_account_flag "$@"; set -- ${GOOGLE_ARGS[@]+"${GOOGLE_ARGS[@]}"}
+google_take_account_flag() {
+  GOOGLE_ARGS=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --account)
+        [[ $# -ge 2 && -n "${2:-}" ]] || google_usage_die "google: --account needs an email or account id."
+        GOOGLE_ACCOUNT="$2"
+        shift 2
+        ;;
+      --account=*)
+        GOOGLE_ACCOUNT="${1#--account=}"
+        [[ -n "$GOOGLE_ACCOUNT" ]] || google_usage_die "google: --account needs an email or account id."
+        shift
+        ;;
+      *)
+        GOOGLE_ARGS+=("$1")
+        shift
+        ;;
+    esac
+  done
 }
 
 # urlenc STRING — percent-encode a query value (uses jq when available).

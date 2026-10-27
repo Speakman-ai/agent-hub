@@ -5,6 +5,24 @@ OWNER. Tokens stay server-side. The wrappers send `x-api-key` (resolved by the
 agent-hub skill's `ah-api.sh`) plus `X-Agent-Hub-Session-Id`, so the proxy
 resolves the owner even on the global break-glass key.
 
+## Choosing an account
+
+Without `--account` the owner's default Google account answers. Pass
+`--account <email|accountId>` (anywhere on the command line) to act as another
+linked account; it is sent as the `account` query parameter on every proxy
+call. An account the owner hasn't linked fails with `google_account_not_found`
+(exit 3) and never falls back to the default. Scope errors name the account
+they were checked against.
+
+```bash
+scripts/google-accounts.sh            # {"defaultAccountId", "accounts": [...]}
+scripts/google-accounts.sh --emails   # "* home@x.com" / "  work@x.com"
+scripts/google-mail.sh threads --q is:unread --account work@x.com
+scripts/google-cal.sh list --from 2026-06-30T00:00:00Z --to 2026-07-01T00:00:00Z --account work@x.com
+```
+
+`google-chat.sh` has no `--account`; Chat runs as the default account.
+
 ## Exit codes
 
 | Code | Meaning                                                    |
@@ -85,12 +103,18 @@ It is **read-only** and scoped to the session owner; writes stay on the wrappers
 {"actions":[
   {"tool":"google","surface":"calendar","from":"2026-06-30T00:00:00Z","to":"2026-07-01T00:00:00Z","max":10},
   {"tool":"google","surface":"gmail","q":"is:unread","max":10},
+  {"tool":"google","surface":"gmail","q":"is:unread","account":"work@example.com"},
   {"tool":"google","surface":"gmail","threadId":"<id>"},
   {"tool":"google","surface":"sheets","spreadsheetId":"<id>","range":"Sheet1!A1:C10"},
   {"tool":"google","surface":"chat","spaceId":"spaces/<id>","max":20}
 ]}
 </agenthub:react>
 ```
+
+Every surface accepts an optional `account` (email or account id). Omitted, the
+owner's default account answers; an unlinked account returns a not-linked note
+instead of falling back. The injected heading ends with `· account <email>` so
+you can tell which account answered.
 
 Fields by surface:
 

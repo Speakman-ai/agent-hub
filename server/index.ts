@@ -352,6 +352,7 @@ import createGmailImportanceRoutes from './routes/gmail-importance.js';
 import { initGmailImportanceAutoScan } from './gmail-importance.js';
 import createGoogleSheetsRoutes from './routes/google-sheets.js';
 import createGoogleDriveRoutes from './routes/google-drive.js';
+import createGoogleAccountsRoutes from './routes/google-accounts.js';
 import createGoogleChatRoutes from './routes/google-chat.js';
 import createGoogleChatEventsRoutes from './routes/google-chat-events.js';
 import { startChatSubscriptionMaintenance } from './google-chat-events.js';
@@ -2718,6 +2719,7 @@ app.use(createGoogleGmailRoutes(routeDeps));
 app.use(createGmailImportanceRoutes(routeDeps));
 app.use(createGoogleSheetsRoutes(routeDeps));
 app.use(createGoogleDriveRoutes(routeDeps));
+app.use(createGoogleAccountsRoutes(routeDeps));
 app.use(createGoogleChatRoutes(routeDeps));
 app.use(createGoogleChatEventsRoutes(routeDeps));
 

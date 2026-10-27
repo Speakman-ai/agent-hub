@@ -109,6 +109,71 @@ describe('runGoogleReadAction', () => {
     expect(res.errorMarkdown).toBeUndefined();
   });
 
+  it('names the default account that answered when account is omitted', async () => {
+    googleMock.gmailThreadsList.mockResolvedValue({ data: { threads: [{ id: 't1' }] } });
+    const res = await runGoogleReadAction(
+      { surface: 'gmail' },
+      { ownerUserId: 'owner-1', oauthConfig: OAUTH },
+    );
+    expect(storeMock.getGoogleConnectionStatus).toHaveBeenCalledWith('owner-1', undefined);
+    expect(res.account).toBe('u@x.com');
+    expect(res.markdown.split('\n')[0]).toContain('account u@x.com');
+  });
+
+  it('reads as an explicit account by email and pins the token to it', async () => {
+    storeMock.getGoogleConnectionStatus.mockImplementation(
+      (_uid: string, sel?: { email?: string }) =>
+        sel?.email === 'work@x.com'
+          ? { ...connected(), accountId: 'acct-work', email: 'work@x.com' }
+          : { ...connected(), accountId: 'acct-home' },
+    );
+    googleMock.gmailThreadsList.mockResolvedValue({ data: { threads: [{ id: 't1' }] } });
+    const res = await runGoogleReadAction(
+      { surface: 'gmail', account: 'work@x.com' },
+      { ownerUserId: 'owner-1', oauthConfig: OAUTH },
+    );
+    expect(storeMock.getActiveAccessToken).toHaveBeenCalledWith('owner-1', OAUTH, {
+      account: { accountId: 'acct-work' },
+    });
+    expect(res.account).toBe('work@x.com');
+    expect(res.markdown).toContain('account work@x.com');
+  });
+
+  it('refuses an unlinked account instead of falling back to the default', async () => {
+    storeMock.getGoogleConnectionStatus.mockImplementation((_uid: string, sel?: unknown) =>
+      sel ? { ...connected(), connected: false } : connected(),
+    );
+    const res = await runGoogleReadAction(
+      { surface: 'gmail', account: 'stranger@x.com' },
+      { ownerUserId: 'owner-1', oauthConfig: OAUTH },
+    );
+    expect(res.errorMarkdown).toContain('stranger@x.com');
+    expect(res.failed).toBeFalsy();
+    expect(storeMock.getActiveAccessToken).not.toHaveBeenCalled();
+  });
+
+  it('names the requested account even when the owner has none linked', async () => {
+    storeMock.getGoogleConnectionStatus.mockReturnValue({ ...connected(), connected: false });
+    const res = await runGoogleReadAction(
+      { surface: 'gmail', account: 'work@x.com' },
+      { ownerUserId: 'owner-1', oauthConfig: OAUTH },
+    );
+    expect(res.errorMarkdown).toContain('work@x.com');
+    expect(storeMock.getActiveAccessToken).not.toHaveBeenCalled();
+  });
+
+  it('names the account in a missing-scope note', async () => {
+    storeMock.getGoogleConnectionStatus.mockReturnValue({
+      ...connected([]),
+      email: 'work@x.com',
+    });
+    const res = await runGoogleReadAction(
+      { surface: 'sheets', spreadsheetId: 's', range: 'A1' },
+      { ownerUserId: 'owner-1', oauthConfig: OAUTH },
+    );
+    expect(res.errorMarkdown).toContain('work@x.com');
+  });
+
   it('requires from/to for a calendar read', async () => {
     const res = await runGoogleReadAction(
       { surface: 'calendar' },

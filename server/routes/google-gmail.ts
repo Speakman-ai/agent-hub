@@ -2,8 +2,13 @@ import { Router, Request, Response } from 'express';
 import { randomBytes } from 'crypto';
 import { google, type gmail_v1 } from 'googleapis';
 import type { RouteDeps } from '../types.js';
-import { getActiveAccessToken, getGoogleConnectionStatus } from '../google-connections-store.js';
-import { resolveGoogleConnectionUserId } from '../google-connection-user.js';
+import {
+  googleAccountQueryField,
+  GoogleAccountQuerySchema,
+  requireGoogleProxyAccess,
+  resolveGoogleProxyToken,
+  type GoogleProxyAccess,
+} from '../google-proxy-account.js';
 import {
   GMAIL_READONLY_SCOPE,
   GMAIL_SEND_SCOPE,
@@ -45,6 +50,9 @@ const ErrorResponse = registerComponent(
     error: z.string(),
     code: z.string().optional(),
     requiredScopes: z.array(z.string()).optional(),
+    account: z.string().optional().openapi({
+      description: 'Google account the error applies to (email or requested selector).',
+    }),
   }),
 );
 
@@ -89,6 +97,7 @@ const GmailThreadSchema = registerComponent(
 );
 
 const ListGmailThreadsQuerySchema = z.object({
+  account: googleAccountQueryField(),
   q: z.string().optional().openapi({
     description: 'Gmail search query, e.g. `from:alice is:unread`.',
     example: 'is:unread',
@@ -113,6 +122,7 @@ const ReadGmailThreadParamsSchema = z.object({
 });
 
 const ReadGmailThreadQuerySchema = z.object({
+  account: googleAccountQueryField(),
   format: z.enum(['full', 'metadata', 'minimal']).optional(),
 });
 
@@ -201,6 +211,7 @@ registerPath({
     400: errorResponse('Invalid query.'),
     401: errorResponse('Not authenticated or Google not connected.'),
     403: errorResponse('Required Gmail scope has not been granted.'),
+    404: errorResponse('Google account not linked (`google_account_not_found`).'),
     429: errorResponse('Gmail rate limit exceeded.'),
     502: errorResponse('Gmail request failed.'),
     503: errorResponse('Google OAuth is not configured.'),
@@ -221,7 +232,7 @@ registerPath({
     400: errorResponse('Invalid thread id or query.'),
     401: errorResponse('Not authenticated or Google not connected.'),
     403: errorResponse('Required Gmail scope has not been granted.'),
-    404: errorResponse('Thread not found.'),
+    404: errorResponse('Thread not found. Google account not linked (`google_account_not_found`).'),
     429: errorResponse('Gmail rate limit exceeded.'),
     502: errorResponse('Gmail request failed.'),
     503: errorResponse('Google OAuth is not configured.'),
@@ -233,7 +244,10 @@ registerPath({
   path: '/api/google/gmail/messages',
   tags: ['Google'],
   summary: 'Send a Gmail message as the calling user',
-  request: { body: { content: jsonContent(SendGmailMessageBodySchema), required: true } },
+  request: {
+    query: GoogleAccountQuerySchema,
+    body: { content: jsonContent(SendGmailMessageBodySchema), required: true },
+  },
   responses: {
     201: {
       description: 'The sent message.',
@@ -242,6 +256,7 @@ registerPath({
     400: errorResponse('Invalid body.'),
     401: errorResponse('Not authenticated or Google not connected.'),
     403: errorResponse('Required Gmail send scope has not been granted.'),
+    404: errorResponse('Google account not linked (`google_account_not_found`).'),
     429: errorResponse('Gmail rate limit exceeded.'),
     502: errorResponse('Gmail request failed.'),
     503: errorResponse('Google OAuth is not configured.'),
@@ -254,6 +269,7 @@ registerPath({
   tags: ['Google'],
   summary: 'Add or remove labels on a Gmail message for the calling user',
   request: {
+    query: GoogleAccountQuerySchema,
     params: ModifyGmailMessageParamsSchema,
     body: { content: jsonContent(ModifyGmailMessageBodySchema), required: true },
   },
@@ -265,7 +281,9 @@ registerPath({
     400: errorResponse('Invalid body or message id.'),
     401: errorResponse('Not authenticated or Google not connected.'),
     403: errorResponse('Required Gmail modify scope has not been granted.'),
-    404: errorResponse('Message not found.'),
+    404: errorResponse(
+      'Message not found. Google account not linked (`google_account_not_found`).',
+    ),
     429: errorResponse('Gmail rate limit exceeded.'),
     502: errorResponse('Gmail request failed.'),
     503: errorResponse('Google OAuth is not configured.'),
@@ -300,47 +318,21 @@ function requireGmailAccess(
   check: (scopes: string[]) => boolean,
   requiredScopes: string[],
   scopeCode: string,
-): string | null {
-  const uid = resolveGoogleConnectionUserId(req, deps.stmts);
-  if (!uid) {
-    bad(res, 401, 'Authentication required', 'authentication_required');
-    return null;
-  }
-  if (!deps.config.googleOAuth?.clientId || !deps.config.googleOAuth?.clientSecret) {
-    bad(res, 503, 'Google OAuth is not configured on this server', 'google_oauth_not_configured');
-    return null;
-  }
-  const status = getGoogleConnectionStatus(uid);
-  if (!status.connected) {
-    bad(res, 401, 'Google account is not connected', 'google_not_connected');
-    return null;
-  }
-  if (!check(status.grantedScopes)) {
-    bad(res, 403, 'Required Gmail access has not been granted', scopeCode, { requiredScopes });
-    return null;
-  }
-  return uid;
+): GoogleProxyAccess | null {
+  return requireGoogleProxyAccess(req, res, deps, {
+    surface: 'Gmail',
+    check,
+    requiredScopes,
+    scopeCode,
+  });
 }
 
-async function resolveGmailToken(
-  userId: string,
+function resolveGmailToken(
+  access: GoogleProxyAccess,
   deps: RouteDeps,
   res: Response,
 ): Promise<string | null> {
-  let token: string | null;
-  try {
-    token = await getActiveAccessToken(userId, deps.config.googleOAuth ?? null);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[google-gmail] Failed to resolve token for user ${userId}: ${msg}`);
-    bad(res, 502, 'Failed to resolve Google access token', 'google_token_resolution_failed');
-    return null;
-  }
-  if (!token) {
-    bad(res, 401, 'Google account must be reconnected', 'google_reconnect_required');
-    return null;
-  }
-  return token;
+  return resolveGoogleProxyToken(access, deps, res, 'google-gmail');
 }
 
 function createGmailClient(accessToken: string): gmail_v1.Gmail {
@@ -552,7 +544,7 @@ export default function createGoogleGmailRoutes(deps: RouteDeps): Router {
     if (!parsed.success) {
       return bad(res, 400, parsed.error.issues[0]?.message || 'Invalid query', 'invalid_request');
     }
-    const uid = requireGmailAccess(
+    const access = requireGmailAccess(
       req,
       res,
       deps,
@@ -560,8 +552,8 @@ export default function createGoogleGmailRoutes(deps: RouteDeps): Router {
       [GMAIL_READONLY_SCOPE],
       'google_gmail_scope_required',
     );
-    if (!uid) return;
-    const token = await resolveGmailToken(uid, deps, res);
+    if (!access) return;
+    const token = await resolveGmailToken(access, deps, res);
     if (!token) return;
 
     const query = parsed.data;
@@ -607,7 +599,7 @@ export default function createGoogleGmailRoutes(deps: RouteDeps): Router {
         'invalid_request',
       );
     }
-    const uid = requireGmailAccess(
+    const access = requireGmailAccess(
       req,
       res,
       deps,
@@ -615,8 +607,8 @@ export default function createGoogleGmailRoutes(deps: RouteDeps): Router {
       [GMAIL_READONLY_SCOPE],
       'google_gmail_scope_required',
     );
-    if (!uid) return;
-    const token = await resolveGmailToken(uid, deps, res);
+    if (!access) return;
+    const token = await resolveGmailToken(access, deps, res);
     if (!token) return;
 
     try {
@@ -641,7 +633,7 @@ export default function createGoogleGmailRoutes(deps: RouteDeps): Router {
     if (!parsed.success) {
       return bad(res, 400, parsed.error.issues[0]?.message || 'Invalid body', 'invalid_request');
     }
-    const uid = requireGmailAccess(
+    const access = requireGmailAccess(
       req,
       res,
       deps,
@@ -649,8 +641,8 @@ export default function createGoogleGmailRoutes(deps: RouteDeps): Router {
       [GMAIL_SEND_SCOPE],
       'google_gmail_send_scope_required',
     );
-    if (!uid) return;
-    const token = await resolveGmailToken(uid, deps, res);
+    if (!access) return;
+    const token = await resolveGmailToken(access, deps, res);
     if (!token) return;
 
     try {
@@ -684,7 +676,7 @@ export default function createGoogleGmailRoutes(deps: RouteDeps): Router {
       if (!body.success) {
         return bad(res, 400, body.error.issues[0]?.message || 'Invalid body', 'invalid_request');
       }
-      const uid = requireGmailAccess(
+      const access = requireGmailAccess(
         req,
         res,
         deps,
@@ -692,8 +684,8 @@ export default function createGoogleGmailRoutes(deps: RouteDeps): Router {
         [GMAIL_MODIFY_SCOPE],
         'google_gmail_scope_required',
       );
-      if (!uid) return;
-      const token = await resolveGmailToken(uid, deps, res);
+      if (!access) return;
+      const token = await resolveGmailToken(access, deps, res);
       if (!token) return;
 
       try {

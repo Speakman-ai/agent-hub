@@ -2,8 +2,13 @@ import { Router, Request, Response } from 'express';
 import { google, type drive_v3 } from 'googleapis';
 import { Readable } from 'node:stream';
 import type { RouteDeps } from '../types.js';
-import { getActiveAccessToken, getGoogleConnectionStatus } from '../google-connections-store.js';
-import { resolveGoogleConnectionUserId } from '../google-connection-user.js';
+import {
+  googleAccountQueryField,
+  GoogleAccountQuerySchema,
+  requireGoogleProxyAccess,
+  resolveGoogleProxyToken,
+  type GoogleProxyAccess,
+} from '../google-proxy-account.js';
 import { registerComponent, registerPath, z } from '../openapi/registry.js';
 
 /**
@@ -56,6 +61,9 @@ const ErrorResponse = registerComponent(
     error: z.string(),
     code: z.string().optional(),
     requiredScopes: z.array(z.string()).optional(),
+    account: z.string().optional().openapi({
+      description: 'Google account the error applies to (email or requested selector).',
+    }),
   }),
 );
 
@@ -78,6 +86,7 @@ const DriveFileSchema = registerComponent(
 );
 
 const ListDriveFilesQuerySchema = z.object({
+  account: googleAccountQueryField(),
   q: z.string().optional().openapi({
     description: 'Drive query string, e.g. `mimeType = "application/pdf"`.',
     example: "mimeType = 'application/vnd.google-apps.spreadsheet'",
@@ -159,6 +168,7 @@ registerPath({
     400: errorResponse('Invalid query.'),
     401: errorResponse('Not authenticated or Google not connected.'),
     403: errorResponse('Required Drive scope (drive.file) has not been granted.'),
+    404: errorResponse('Google account not linked (`google_account_not_found`).'),
     429: errorResponse('Google Drive rate limit exceeded.'),
     502: errorResponse('Google Drive request failed.'),
     503: errorResponse('Google OAuth is not configured.'),
@@ -170,7 +180,7 @@ registerPath({
   path: '/api/google/drive/files/{fileId}',
   tags: ['Google'],
   summary: 'Read metadata for an app-accessible Drive file for the calling user',
-  request: { params: DriveFileIdParamsSchema },
+  request: { query: GoogleAccountQuerySchema, params: DriveFileIdParamsSchema },
   responses: {
     200: {
       description: 'The file metadata.',
@@ -179,7 +189,9 @@ registerPath({
     400: errorResponse('Invalid file id.'),
     401: errorResponse('Not authenticated or Google not connected.'),
     403: errorResponse('Required Drive scope (drive.file) has not been granted.'),
-    404: errorResponse('File not found or not accessible to this app.'),
+    404: errorResponse(
+      'File not found or not accessible to this app. Google account not linked (`google_account_not_found`).',
+    ),
     429: errorResponse('Google Drive rate limit exceeded.'),
     502: errorResponse('Google Drive request failed.'),
     503: errorResponse('Google OAuth is not configured.'),
@@ -192,6 +204,7 @@ registerPath({
   tags: ['Google'],
   summary: 'Create a Drive or Google Docs file for the calling user and return its link',
   request: {
+    query: GoogleAccountQuerySchema,
     body: { content: jsonContent(CreateDriveFileBodySchema), required: true },
   },
   responses: {
@@ -202,7 +215,9 @@ registerPath({
     400: errorResponse('Invalid file payload.'),
     401: errorResponse('Not authenticated or Google not connected.'),
     403: errorResponse('Required Drive scope (drive.file) has not been granted.'),
-    404: errorResponse('Folder not found or not accessible to this app.'),
+    404: errorResponse(
+      'Folder not found or not accessible to this app. Google account not linked (`google_account_not_found`).',
+    ),
     413: errorResponse('File payload is too large.'),
     429: errorResponse('Google Drive rate limit exceeded.'),
     502: errorResponse('Google Drive request failed.'),
@@ -237,49 +252,25 @@ function hasDriveFileScope(scopes: string[]): boolean {
  * drive.file scope. Returns the resolved userId or null (a response has already
  * been sent).
  */
-function requireDriveAccess(req: Request, res: Response, deps: RouteDeps): string | null {
-  const uid = resolveGoogleConnectionUserId(req, deps.stmts);
-  if (!uid) {
-    bad(res, 401, 'Authentication required', 'authentication_required');
-    return null;
-  }
-  if (!deps.config.googleOAuth?.clientId || !deps.config.googleOAuth?.clientSecret) {
-    bad(res, 503, 'Google OAuth is not configured on this server', 'google_oauth_not_configured');
-    return null;
-  }
-  const status = getGoogleConnectionStatus(uid);
-  if (!status.connected) {
-    bad(res, 401, 'Google account is not connected', 'google_not_connected');
-    return null;
-  }
-  if (!hasDriveFileScope(status.grantedScopes)) {
-    bad(res, 403, 'Google Drive access has not been granted', 'google_drive_scope_required', {
-      requiredScopes: [DRIVE_FILE_SCOPE],
-    });
-    return null;
-  }
-  return uid;
+function requireDriveAccess(
+  req: Request,
+  res: Response,
+  deps: RouteDeps,
+): GoogleProxyAccess | null {
+  return requireGoogleProxyAccess(req, res, deps, {
+    surface: 'Google Drive',
+    check: hasDriveFileScope,
+    requiredScopes: [DRIVE_FILE_SCOPE],
+    scopeCode: 'google_drive_scope_required',
+  });
 }
 
-async function resolveDriveToken(
-  userId: string,
+function resolveDriveToken(
+  access: GoogleProxyAccess,
   deps: RouteDeps,
   res: Response,
 ): Promise<string | null> {
-  let token: string | null;
-  try {
-    token = await getActiveAccessToken(userId, deps.config.googleOAuth ?? null);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[google-drive] Failed to resolve token for user ${userId}: ${msg}`);
-    bad(res, 502, 'Failed to resolve Google access token', 'google_token_resolution_failed');
-    return null;
-  }
-  if (!token) {
-    bad(res, 401, 'Google account must be reconnected', 'google_reconnect_required');
-    return null;
-  }
-  return token;
+  return resolveGoogleProxyToken(access, deps, res, 'google-drive');
 }
 
 function createDriveClient(accessToken: string): drive_v3.Drive {
@@ -425,9 +416,9 @@ export default function createGoogleDriveRoutes(deps: RouteDeps): Router {
     if ('error' in decoded) {
       return bad(res, decoded.status, decoded.error, 'invalid_request');
     }
-    const uid = requireDriveAccess(req, res, deps);
-    if (!uid) return;
-    const token = await resolveDriveToken(uid, deps, res);
+    const access = requireDriveAccess(req, res, deps);
+    if (!access) return;
+    const token = await resolveDriveToken(access, deps, res);
     if (!token) return;
 
     try {
@@ -457,9 +448,9 @@ export default function createGoogleDriveRoutes(deps: RouteDeps): Router {
     if (!query.success) {
       return bad(res, 400, query.error.issues[0]?.message || 'Invalid query', 'invalid_request');
     }
-    const uid = requireDriveAccess(req, res, deps);
-    if (!uid) return;
-    const token = await resolveDriveToken(uid, deps, res);
+    const access = requireDriveAccess(req, res, deps);
+    if (!access) return;
+    const token = await resolveDriveToken(access, deps, res);
     if (!token) return;
 
     try {
@@ -495,9 +486,9 @@ export default function createGoogleDriveRoutes(deps: RouteDeps): Router {
     if (!params.success) {
       return bad(res, 400, params.error.issues[0]?.message || 'Invalid file id', 'invalid_request');
     }
-    const uid = requireDriveAccess(req, res, deps);
-    if (!uid) return;
-    const token = await resolveDriveToken(uid, deps, res);
+    const access = requireDriveAccess(req, res, deps);
+    if (!access) return;
+    const token = await resolveDriveToken(access, deps, res);
     if (!token) return;
 
     try {

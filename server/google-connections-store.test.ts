@@ -48,6 +48,7 @@ describe('google-connections-store — CRUD', () => {
     expect(getGoogleConnection(user.id)).toBeNull();
     expect(getGoogleConnectionStatus(user.id)).toEqual({
       connected: false,
+      accountId: null,
       email: null,
       grantedScopes: [],
       connectedAt: null,

@@ -49,6 +49,27 @@ Only **non-sensitive + sensitive** scopes, requested incrementally per surface:
 If a surface's scope was never granted, the proxy returns a `*_scope_required`
 error and the wrapper tells you to enable it under Settings → Account → Google.
 
+## Which account answers
+
+The owner can link several Google accounts. Every wrapper except
+`google-chat.sh` takes `--account <email|accountId>`, and the ReAct action takes
+an `account` field.
+
+- **No `--account`**: the owner's **default** account answers (the one marked
+  default in Settings → Account → Google).
+- **`--account` names a linked account**: that account answers. Its own scopes
+  apply, so one account can have Sheets while another does not.
+- **`--account` names anything else**: the call fails with
+  `google_account_not_found` (exit 3). It never falls back to the default, so a
+  mail meant for `work@` can't go out from `personal@`.
+
+List linked accounts with `scripts/google-accounts.sh` (`--emails` for one per
+line, default marked `*`). When the user names a mailbox or calendar ("my work
+calendar", "from my personal Gmail"), pass that account explicitly. Proxy
+responses carry an `X-Google-Account` header naming the account that served the
+call; ReAct observations name it in the heading. Google Chat always uses the
+default account.
+
 ## Wrappers
 
 The scripts live in this skill's `scripts/` directory (run them by their path
@@ -57,6 +78,11 @@ of this injection). They resolve auth through the agent-hub skill's `ah-api.sh`
 and send the acting session id so the proxy attributes the call to the owner.
 
 ```bash
+# Accounts (default first)
+scripts/google-accounts.sh [--emails]
+
+# Any command below (except google-chat.sh) also takes --account <email|accountId>.
+
 # Calendar
 scripts/google-cal.sh list   --from 2026-06-30T00:00:00Z --to 2026-07-01T00:00:00Z [--q TEXT] [--max N] [--calendar ID]
 scripts/google-cal.sh create --summary "Launch review" --start 2026-06-30T10:00:00Z --end 2026-06-30T11:00:00Z \
@@ -124,7 +150,7 @@ shape and response examples.
   reference; `--thread` is ignored there. When the task is done, post the reply
   with `google-chat.sh send <space> --thread <thread>`. From a session it is
   **not sent**: the Hub saves it as a draft (exit 0, `"status":
-  "pending_approval"`, a notice on stderr) because it goes out under the
+"pending_approval"`, a notice on stderr) because it goes out under the
   owner's name. The owner approves, edits, or discards it in Agent Hub. Tell
   them the draft is waiting and do not resend it. Only an owner who turned on
   auto-send in the Chat pane gets agent replies posted immediately (`201`).

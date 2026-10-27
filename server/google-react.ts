@@ -11,6 +11,7 @@
  */
 import { google } from 'googleapis';
 import { getActiveAccessToken, getGoogleConnectionStatus } from './google-connections-store.js';
+import { parseGoogleAccountSelector } from './google-account-selector.js';
 import type { GoogleOAuthCredentials } from './google-oauth.js';
 import {
   hasCalendarReadScope,
@@ -39,6 +40,8 @@ export interface GoogleReactAction {
   calendarId?: string;
   /** chat — `spaces/AAAA` or the bare space id. */
   spaceId?: string;
+  /** Linked Google account (email or account id). Omitted → the owner's default account. */
+  account?: string;
 }
 
 export interface GoogleReactContext {
@@ -60,6 +63,8 @@ export interface GoogleReactResult {
    * the assistant can relay it, NOT a tool error.
    */
   failed?: boolean;
+  /** Email of the Google account that answered (set once an account was resolved). */
+  account?: string;
 }
 
 const NOT_LINKED = (detail: string): GoogleReactResult => ({
@@ -81,11 +86,12 @@ const SURFACE_LABEL: Record<GoogleReactSurface, string> = {
  * Like NOT_LINKED it leaves `failed` falsy — with incremental consent this is a
  * normal, user-fixable state, not a host/tool error.
  */
-const SCOPE_REQUIRED = (surface: GoogleReactSurface): GoogleReactResult => ({
+const SCOPE_REQUIRED = (surface: GoogleReactSurface, account?: string): GoogleReactResult => ({
   markdown: '',
+  account,
   errorMarkdown:
     `## ${SURFACE_LABEL[surface]} not enabled\n` +
-    `The session owner is connected but has not granted ${SURFACE_LABEL[surface]} access.\n\n` +
+    `The session owner's Google account${account ? ` ${account}` : ''} has not granted ${SURFACE_LABEL[surface]} access.\n\n` +
     'Enable it under **Settings → Account → Google** (incremental consent).',
 });
 
@@ -149,58 +155,89 @@ export async function runGoogleReadAction(
     return NOT_LINKED('Google OAuth is not configured on this Hub.');
   }
 
-  const status = getGoogleConnectionStatus(ownerId);
+  const selector = parseGoogleAccountSelector(action.account);
+  const status = getGoogleConnectionStatus(ownerId, selector);
   if (!status.connected) {
+    if (selector) {
+      // Never fall back to the default: the agent asked for a specific account.
+      return NOT_LINKED(
+        `The session owner has not linked the Google account \`${action.account}\`. ` +
+          'Omit `account` to use their default account, or list linked accounts with `google-accounts.sh`.',
+      );
+    }
     return NOT_LINKED('The session owner has not linked a Google account.');
   }
+  const accountEmail = status.email ?? undefined;
 
   // Incremental consent: connected does NOT imply this surface's scope was
   // granted. Gate per-surface up front (mirrors the proxy routes) so a missing
   // scope is a recoverable observation, not a googleapis throw marked failed.
   const readGate = READ_SCOPE_GATE[action.surface];
   if (readGate && !readGate(status.grantedScopes)) {
-    return SCOPE_REQUIRED(action.surface);
+    return SCOPE_REQUIRED(action.surface, accountEmail);
   }
 
   let token: string | null;
   try {
-    token = await getActiveAccessToken(ownerId, ctx.oauthConfig);
+    token =
+      selector && status.accountId
+        ? await getActiveAccessToken(ownerId, ctx.oauthConfig, {
+            account: { accountId: status.accountId },
+          })
+        : await getActiveAccessToken(ownerId, ctx.oauthConfig);
   } catch {
     return NOT_LINKED('Could not resolve a Google access token (refresh failed).');
   }
   if (!token) {
-    return NOT_LINKED('The session owner must reconnect their Google account.');
+    return NOT_LINKED(
+      `The session owner must reconnect their Google account${accountEmail ? ` ${accountEmail}` : ''}.`,
+    );
   }
 
   try {
-    switch (action.surface) {
-      case 'calendar':
-        return await readCalendar(action, token);
-      case 'gmail':
-        return await readGmail(action, token);
-      case 'sheets':
-        return await readSheets(action, token);
-      case 'chat':
-        return await readChat(action, token);
-      default:
-        return {
-          markdown: '',
-          errorMarkdown: `## Google read error\nUnknown surface "${String(action.surface)}".`,
-          failed: true,
-        };
-    }
+    const result = await readSurface(action, token);
+    if (!accountEmail) return result;
+    // State which account answered so the agent can't mistake one mailbox for another.
+    const stamp = (md: string | undefined) =>
+      md?.trim() ? md.replace(/^(## [^\n]*)/, `$1 · account ${accountEmail}`) : md;
+    return {
+      ...result,
+      markdown: stamp(result.markdown) ?? '',
+      errorMarkdown: stamp(result.errorMarkdown),
+      account: accountEmail,
+    };
   } catch (err: unknown) {
     // A late insufficient-scope failure (scope revoked mid-session, or one our
     // grant list doesn't enumerate) is recoverable, not a host error.
     if (isInsufficientScopeError(err)) {
-      return SCOPE_REQUIRED(action.surface);
+      return SCOPE_REQUIRED(action.surface, accountEmail);
     }
     const msg = err instanceof Error ? err.message : String(err);
     return {
       markdown: '',
-      errorMarkdown: `## Google read error\nThe ${action.surface} read failed: ${truncate(msg, 200)}`,
+      errorMarkdown: `## Google read error\nThe ${action.surface} read failed${accountEmail ? ` for ${accountEmail}` : ''}: ${truncate(msg, 200)}`,
       failed: true,
+      account: accountEmail,
     };
+  }
+}
+
+async function readSurface(action: GoogleReactAction, token: string): Promise<GoogleReactResult> {
+  switch (action.surface) {
+    case 'calendar':
+      return readCalendar(action, token);
+    case 'gmail':
+      return readGmail(action, token);
+    case 'sheets':
+      return readSheets(action, token);
+    case 'chat':
+      return readChat(action, token);
+    default:
+      return {
+        markdown: '',
+        errorMarkdown: `## Google read error\nUnknown surface "${String(action.surface)}".`,
+        failed: true,
+      };
   }
 }
 

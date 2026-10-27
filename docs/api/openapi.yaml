@@ -7184,6 +7184,9 @@ components:
           type: array
           items:
             type: string
+        account:
+          type: string
+          description: Google account the error applies to (email or requested selector).
       required:
         - error
     GoogleCalendarDateTime:
@@ -7875,6 +7878,9 @@ components:
           type: array
           items:
             type: string
+        account:
+          type: string
+          description: Google account the error applies to (email or requested selector).
       required:
         - error
     GoogleDriveFile:
@@ -7944,6 +7950,9 @@ components:
           type: array
           items:
             type: string
+        account:
+          type: string
+          description: Google account the error applies to (email or requested selector).
       required:
         - error
     GoogleGmailThreadSummary:
@@ -8059,6 +8068,9 @@ components:
           type: array
           items:
             type: string
+        account:
+          type: string
+          description: Google account the error applies to (email or requested selector).
       required:
         - error
     GoogleSheetsValueRange:
@@ -19631,6 +19643,27 @@ components:
         - agentId
         - importedMessages
         - reused
+    LinkedGoogleAccount:
+      type: object
+      properties:
+        accountId:
+          type: string
+        email:
+          type: string
+        isDefault:
+          type: boolean
+        grantedScopes:
+          type: array
+          items:
+            type: string
+        connectedAt:
+          type: string
+      required:
+        - accountId
+        - email
+        - isDefault
+        - grantedScopes
+        - connectedAt
     GoogleAccountSummary:
       type: object
       properties:
@@ -35908,12 +35941,60 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/GmailImportanceErrorResponse"
+  /api/google/accounts:
+    get:
+      tags:
+        - Google
+      summary: List the Google accounts the caller can act as through the Google proxies
+      description: Default account first. Pass an `accountId` or `email` from this list as the `account` query parameter on `/api/google/{calendar,gmail,sheets,drive}/*` to act as that account; omit it to use the default.
+      responses:
+        "200":
+          description: Linked accounts (empty when none are linked).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  defaultAccountId:
+                    type: string
+                    nullable: true
+                  accounts:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/LinkedGoogleAccount"
+                required:
+                  - defaultAccountId
+                  - accounts
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                required:
+                  - error
+                  - code
   /api/google/calendar/events:
     get:
       tags:
         - Google
       summary: List Google Calendar events for the calling user over a time range
       parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 320
+            description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+            example: work@example.com
+          required: false
+          description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+          name: account
+          in: query
         - schema:
             type: string
             minLength: 1
@@ -36015,6 +36096,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+        "404":
+          description: Google account not linked (`google_account_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
         "429":
           description: Google Calendar rate limit exceeded.
           content:
@@ -36037,6 +36124,17 @@ paths:
       tags:
         - Google
       summary: Create a Google Calendar event for the calling user
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 320
+            description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+            example: work@example.com
+          required: false
+          description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+          name: account
+          in: query
       requestBody:
         required: true
         content:
@@ -36091,6 +36189,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+        "404":
+          description: Google account not linked (`google_account_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
         "429":
           description: Google Calendar rate limit exceeded.
           content:
@@ -36121,6 +36225,16 @@ paths:
           required: true
           name: eventId
           in: path
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 320
+            description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+            example: work@example.com
+          required: false
+          description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+          name: account
+          in: query
       requestBody:
         required: true
         content:
@@ -36176,7 +36290,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/GoogleCalendarErrorResponse"
         "404":
-          description: Calendar or event not found.
+          description: Calendar or event not found. Google account not linked (`google_account_not_found`).
           content:
             application/json:
               schema:
@@ -37783,6 +37897,16 @@ paths:
       parameters:
         - schema:
             type: string
+            minLength: 1
+            maxLength: 320
+            description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+            example: work@example.com
+          required: false
+          description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+          name: account
+          in: query
+        - schema:
+            type: string
             description: Drive query string, e.g. `mimeType = "application/pdf"`.
             example: mimeType = 'application/vnd.google-apps.spreadsheet'
           required: false
@@ -37857,6 +37981,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/GoogleDriveErrorResponse"
+        "404":
+          description: Google account not linked (`google_account_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleDriveErrorResponse"
         "429":
           description: Google Drive rate limit exceeded.
           content:
@@ -37879,6 +38009,17 @@ paths:
       tags:
         - Google
       summary: Create a Drive or Google Docs file for the calling user and return its link
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 320
+            description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+            example: work@example.com
+          required: false
+          description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+          name: account
+          in: query
       requestBody:
         required: true
         content:
@@ -37946,7 +38087,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/GoogleDriveErrorResponse"
         "404":
-          description: Folder not found or not accessible to this app.
+          description: Folder not found or not accessible to this app. Google account not linked (`google_account_not_found`).
           content:
             application/json:
               schema:
@@ -37987,6 +38128,16 @@ paths:
           required: true
           name: fileId
           in: path
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 320
+            description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+            example: work@example.com
+          required: false
+          description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+          name: account
+          in: query
       responses:
         "200":
           description: The file metadata.
@@ -38013,7 +38164,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/GoogleDriveErrorResponse"
         "404":
-          description: File not found or not accessible to this app.
+          description: File not found or not accessible to this app. Google account not linked (`google_account_not_found`).
           content:
             application/json:
               schema:
@@ -38042,6 +38193,16 @@ paths:
         - Google
       summary: List Gmail threads for the calling user
       parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 320
+            description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+            example: work@example.com
+          required: false
+          description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+          name: account
+          in: query
         - schema:
             type: string
             description: Gmail search query, e.g. `from:alice is:unread`.
@@ -38121,6 +38282,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/GoogleGmailErrorResponse"
+        "404":
+          description: Google account not linked (`google_account_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleGmailErrorResponse"
         "429":
           description: Gmail rate limit exceeded.
           content:
@@ -38151,6 +38318,16 @@ paths:
           required: true
           name: threadId
           in: path
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 320
+            description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+            example: work@example.com
+          required: false
+          description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+          name: account
+          in: query
         - schema:
             type: string
             enum:
@@ -38186,7 +38363,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/GoogleGmailErrorResponse"
         "404":
-          description: Thread not found.
+          description: Thread not found. Google account not linked (`google_account_not_found`).
           content:
             application/json:
               schema:
@@ -38214,6 +38391,17 @@ paths:
       tags:
         - Google
       summary: Send a Gmail message as the calling user
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 320
+            description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+            example: work@example.com
+          required: false
+          description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+          name: account
+          in: query
       requestBody:
         required: true
         content:
@@ -38284,6 +38472,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/GoogleGmailErrorResponse"
+        "404":
+          description: Google account not linked (`google_account_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleGmailErrorResponse"
         "429":
           description: Gmail rate limit exceeded.
           content:
@@ -38314,6 +38508,16 @@ paths:
           required: true
           name: messageId
           in: path
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 320
+            description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+            example: work@example.com
+          required: false
+          description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+          name: account
+          in: query
       requestBody:
         required: true
         content:
@@ -38358,7 +38562,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/GoogleGmailErrorResponse"
         "404":
-          description: Message not found.
+          description: Message not found. Google account not linked (`google_account_not_found`).
           content:
             application/json:
               schema:
@@ -38719,6 +38923,16 @@ paths:
           required: true
           name: spreadsheetId
           in: path
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 320
+            description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+            example: work@example.com
+          required: false
+          description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+          name: account
+          in: query
       responses:
         "200":
           description: Spreadsheet metadata with its sheet tabs.
@@ -38745,7 +38959,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/GoogleSheetsErrorResponse"
         "404":
-          description: Spreadsheet not found.
+          description: Spreadsheet not found. Google account not linked (`google_account_not_found`).
           content:
             application/json:
               schema:
@@ -38780,6 +38994,16 @@ paths:
           required: true
           name: spreadsheetId
           in: path
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 320
+            description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+            example: work@example.com
+          required: false
+          description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+          name: account
+          in: query
         - schema:
             type: string
             minLength: 1
@@ -38840,7 +39064,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/GoogleSheetsErrorResponse"
         "404":
-          description: Spreadsheet or range not found.
+          description: Spreadsheet or range not found. Google account not linked (`google_account_not_found`).
           content:
             application/json:
               schema:
@@ -38874,6 +39098,16 @@ paths:
           required: true
           name: spreadsheetId
           in: path
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 320
+            description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+            example: work@example.com
+          required: false
+          description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+          name: account
+          in: query
       requestBody:
         required: true
         content:
@@ -38964,7 +39198,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/GoogleSheetsErrorResponse"
         "404":
-          description: Spreadsheet or range not found.
+          description: Spreadsheet or range not found. Google account not linked (`google_account_not_found`).
           content:
             application/json:
               schema:
@@ -38999,6 +39233,16 @@ paths:
           required: true
           name: spreadsheetId
           in: path
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 320
+            description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+            example: work@example.com
+          required: false
+          description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+          name: account
+          in: query
       requestBody:
         required: true
         content:
@@ -39104,7 +39348,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/GoogleSheetsErrorResponse"
         "404":
-          description: Spreadsheet not found.
+          description: Spreadsheet not found. Google account not linked (`google_account_not_found`).
           content:
             application/json:
               schema:

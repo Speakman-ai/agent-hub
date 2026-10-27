@@ -53,6 +53,8 @@ export interface GoogleConnectionRow {
 
 export interface GoogleConnectionStatus {
   connected: boolean;
+  /** Id of the account this status describes; null when not connected. */
+  accountId: string | null;
   email: string | null;
   grantedScopes: string[];
   connectedAt: string | null;
@@ -332,6 +334,7 @@ export function getGoogleConnectionStatus(
   if (!conn) {
     return {
       connected: false,
+      accountId: null,
       email: null,
       grantedScopes: [],
       connectedAt: null,
@@ -340,6 +343,7 @@ export function getGoogleConnectionStatus(
   }
   return {
     connected: true,
+    accountId: conn.accountId,
     email: conn.googleEmail,
     grantedScopes: conn.grantedScopes,
     connectedAt: conn.connectedAt,

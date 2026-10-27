@@ -29,6 +29,7 @@ const MAIL = path.join(SCRIPTS, 'google-mail.sh');
 const SHEETS = path.join(SCRIPTS, 'google-sheets.sh');
 const DRIVE = path.join(SCRIPTS, 'google-drive.sh');
 const CHAT = path.join(SCRIPTS, 'google-chat.sh');
+const ACCOUNTS = path.join(SCRIPTS, 'google-accounts.sh');
 
 let stubDir = '';
 let curlLog = '';
@@ -161,6 +162,131 @@ function queryParams(log: string): URLSearchParams {
   const q = line.slice('URL='.length).split('?')[1] ?? '';
   return new URLSearchParams(q);
 }
+
+describe('--account selection', () => {
+  function urlLine(log: string): string {
+    return log.split('\n').find((l) => l.startsWith('URL=')) ?? '';
+  }
+
+  it('omits account when --account is not passed (default account)', () => {
+    const r = run(MAIL, ['threads']);
+    expect(r.status).toBe(0);
+    expect(queryParams(r.log).has('account')).toBe(false);
+  });
+
+  it('adds account= to GET calls on every wrapper, wherever the flag sits', () => {
+    const cases: Array<[string, string[]]> = [
+      [
+        CAL,
+        [
+          'list',
+          '--account',
+          'work@x.com',
+          '--from',
+          '2026-06-30T00:00:00Z',
+          '--to',
+          '2026-07-01T00:00:00Z',
+        ],
+      ],
+      [MAIL, ['--account', 'work@x.com', 'threads']],
+      [SHEETS, ['values', 'sheet-1', '--range', 'A1:B2', '--account=work@x.com']],
+      [DRIVE, ['list', '--account', 'work@x.com']],
+    ];
+    for (const [script, args] of cases) {
+      if (existsSync(curlLog)) rmSync(curlLog);
+      const r = run(script, args);
+      expect(r.status, `${path.basename(script)}: ${r.stderr}`).toBe(0);
+      expect(queryParams(r.log).get('account')).toBe('work@x.com');
+    }
+  });
+
+  it('adds account= as the first query param on body-carrying calls', () => {
+    const r = run(MAIL, [
+      'send',
+      '--account',
+      'work@x.com',
+      '--to',
+      'a@example.com',
+      '--subject',
+      'Hi',
+      '--text',
+      'Body',
+    ]);
+    expect(r.status).toBe(0);
+    expect(urlLine(r.log)).toBe(
+      'URL=http://hub.test/api/google/gmail/messages?account=work%40x.com',
+    );
+    expect(JSON.stringify(requestBody(r.log))).not.toContain('work@x.com');
+  });
+
+  it('--account without a value is a usage error', () => {
+    const r = run(DRIVE, ['list', '--account']);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('--account needs an email or account id');
+  });
+
+  it('explains google_account_not_found', () => {
+    const r = run(CAL, ['list', '--account', 'bob@x.com', '--from', 'a', '--to', 'b'], {
+      status: '404',
+      body: '{"error":"not linked","code":"google_account_not_found","account":"bob@x.com"}',
+    });
+    expect(r.status).toBe(3);
+    expect(r.stderr).toContain("has not linked the Google account 'bob@x.com'");
+    expect(r.stderr).toContain('google-accounts.sh');
+  });
+
+  it('names the account in a scope error', () => {
+    const r = run(SHEETS, ['get', 's1', '--account', 'work@x.com'], {
+      status: '403',
+      body: '{"error":"x","code":"google_sheets_scope_required","account":"work@x.com"}',
+    });
+    expect(r.status).toBe(3);
+    expect(r.stderr).toContain(
+      "Google Sheets access has not been granted for the session owner's account (work@x.com)",
+    );
+  });
+
+  it('google-chat.sh does not accept --account (Chat is single-account)', () => {
+    const r = run(CHAT, ['spaces', '--account', 'work@x.com']);
+    expect(r.status).toBe(2);
+  });
+});
+
+describe('google-accounts.sh', () => {
+  const BODY = JSON.stringify({
+    defaultAccountId: 'a1',
+    accounts: [
+      {
+        accountId: 'a1',
+        email: 'home@x.com',
+        isDefault: true,
+        grantedScopes: [],
+        connectedAt: 'c',
+      },
+      {
+        accountId: 'a2',
+        email: 'work@x.com',
+        isDefault: false,
+        grantedScopes: [],
+        connectedAt: 'c',
+      },
+    ],
+  });
+
+  it('GETs /api/google/accounts with the session header and prints the JSON', () => {
+    const r = run(ACCOUNTS, [], { body: BODY });
+    expect(r.status).toBe(0);
+    expect(r.log).toContain('URL=http://hub.test/api/google/accounts');
+    expect(r.log).toContain('X-Agent-Hub-Session-Id: sess-owner-1');
+    expect(JSON.parse(r.stdout).accounts).toHaveLength(2);
+  });
+
+  it('--emails prints one email per line with the default marked', () => {
+    const r = run(ACCOUNTS, ['list', '--emails'], { body: BODY });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('* home@x.com\n  work@x.com\n');
+  });
+});
 
 describe('google-cal.sh', () => {
   it('list → GET /calendar/events with required time window + auth/session headers', () => {

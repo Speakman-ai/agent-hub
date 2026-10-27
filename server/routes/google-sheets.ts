@@ -1,8 +1,13 @@
 import { Router, Request, Response } from 'express';
 import { google, type sheets_v4 } from 'googleapis';
 import type { RouteDeps } from '../types.js';
-import { getActiveAccessToken, getGoogleConnectionStatus } from '../google-connections-store.js';
-import { resolveGoogleConnectionUserId } from '../google-connection-user.js';
+import {
+  googleAccountQueryField,
+  GoogleAccountQuerySchema,
+  requireGoogleProxyAccess,
+  resolveGoogleProxyToken,
+  type GoogleProxyAccess,
+} from '../google-proxy-account.js';
 import { SHEETS_SCOPE, hasSheetsReadScope, hasSheetsWriteScope } from '../google-scopes.js';
 import { registerComponent, registerPath, z } from '../openapi/registry.js';
 
@@ -31,6 +36,9 @@ const ErrorResponse = registerComponent(
     error: z.string(),
     code: z.string().optional(),
     requiredScopes: z.array(z.string()).optional(),
+    account: z.string().optional().openapi({
+      description: 'Google account the error applies to (email or requested selector).',
+    }),
   }),
 );
 
@@ -80,6 +88,7 @@ const SpreadsheetIdParamsSchema = z.object({
 });
 
 const ReadValuesQuerySchema = z.object({
+  account: googleAccountQueryField(),
   range: z.string().min(1).openapi({
     description: 'A1 notation range to read, e.g. `Sheet1!A1:C10`.',
     example: 'Sheet1!A1:C10',
@@ -136,7 +145,7 @@ registerPath({
   path: '/api/google/sheets/{spreadsheetId}',
   tags: ['Google'],
   summary: 'Read spreadsheet metadata (title + tabs) for the calling user',
-  request: { params: SpreadsheetIdParamsSchema },
+  request: { query: GoogleAccountQuerySchema, params: SpreadsheetIdParamsSchema },
   responses: {
     200: {
       description: 'Spreadsheet metadata with its sheet tabs.',
@@ -145,7 +154,9 @@ registerPath({
     400: errorResponse('Invalid spreadsheet id.'),
     401: errorResponse('Not authenticated or Google not connected.'),
     403: errorResponse('Required Sheets scope has not been granted.'),
-    404: errorResponse('Spreadsheet not found.'),
+    404: errorResponse(
+      'Spreadsheet not found. Google account not linked (`google_account_not_found`).',
+    ),
     429: errorResponse('Google Sheets rate limit exceeded.'),
     502: errorResponse('Google Sheets request failed.'),
     503: errorResponse('Google OAuth is not configured.'),
@@ -166,7 +177,9 @@ registerPath({
     400: errorResponse('Invalid range or spreadsheet id.'),
     401: errorResponse('Not authenticated or Google not connected.'),
     403: errorResponse('Required Sheets scope has not been granted.'),
-    404: errorResponse('Spreadsheet or range not found.'),
+    404: errorResponse(
+      'Spreadsheet or range not found. Google account not linked (`google_account_not_found`).',
+    ),
     429: errorResponse('Google Sheets rate limit exceeded.'),
     502: errorResponse('Google Sheets request failed.'),
     503: errorResponse('Google OAuth is not configured.'),
@@ -179,6 +192,7 @@ registerPath({
   tags: ['Google'],
   summary: 'Append rows of values to a spreadsheet for the calling user',
   request: {
+    query: GoogleAccountQuerySchema,
     params: SpreadsheetIdParamsSchema,
     body: { content: jsonContent(AppendValuesBodySchema), required: true },
   },
@@ -196,7 +210,9 @@ registerPath({
     400: errorResponse('Invalid body or spreadsheet id.'),
     401: errorResponse('Not authenticated or Google not connected.'),
     403: errorResponse('Required Sheets write scope has not been granted.'),
-    404: errorResponse('Spreadsheet not found.'),
+    404: errorResponse(
+      'Spreadsheet not found. Google account not linked (`google_account_not_found`).',
+    ),
     429: errorResponse('Google Sheets rate limit exceeded.'),
     502: errorResponse('Google Sheets request failed.'),
     503: errorResponse('Google OAuth is not configured.'),
@@ -209,6 +225,7 @@ registerPath({
   tags: ['Google'],
   summary: 'Update a range of values in a spreadsheet for the calling user',
   request: {
+    query: GoogleAccountQuerySchema,
     params: SpreadsheetIdParamsSchema,
     body: { content: jsonContent(UpdateValuesBodySchema), required: true },
   },
@@ -220,7 +237,9 @@ registerPath({
     400: errorResponse('Invalid body or spreadsheet id.'),
     401: errorResponse('Not authenticated or Google not connected.'),
     403: errorResponse('Required Sheets write scope has not been granted.'),
-    404: errorResponse('Spreadsheet or range not found.'),
+    404: errorResponse(
+      'Spreadsheet or range not found. Google account not linked (`google_account_not_found`).',
+    ),
     429: errorResponse('Google Sheets rate limit exceeded.'),
     502: errorResponse('Google Sheets request failed.'),
     503: errorResponse('Google OAuth is not configured.'),
@@ -255,47 +274,21 @@ function requireSheetsAccess(
   check: (scopes: string[]) => boolean,
   requiredScopes: string[],
   scopeCode: string,
-): string | null {
-  const uid = resolveGoogleConnectionUserId(req, deps.stmts);
-  if (!uid) {
-    bad(res, 401, 'Authentication required', 'authentication_required');
-    return null;
-  }
-  if (!deps.config.googleOAuth?.clientId || !deps.config.googleOAuth?.clientSecret) {
-    bad(res, 503, 'Google OAuth is not configured on this server', 'google_oauth_not_configured');
-    return null;
-  }
-  const status = getGoogleConnectionStatus(uid);
-  if (!status.connected) {
-    bad(res, 401, 'Google account is not connected', 'google_not_connected');
-    return null;
-  }
-  if (!check(status.grantedScopes)) {
-    bad(res, 403, 'Required Sheets access has not been granted', scopeCode, { requiredScopes });
-    return null;
-  }
-  return uid;
+): GoogleProxyAccess | null {
+  return requireGoogleProxyAccess(req, res, deps, {
+    surface: 'Google Sheets',
+    check,
+    requiredScopes,
+    scopeCode,
+  });
 }
 
-async function resolveSheetsToken(
-  userId: string,
+function resolveSheetsToken(
+  access: GoogleProxyAccess,
   deps: RouteDeps,
   res: Response,
 ): Promise<string | null> {
-  let token: string | null;
-  try {
-    token = await getActiveAccessToken(userId, deps.config.googleOAuth ?? null);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[google-sheets] Failed to resolve token for user ${userId}: ${msg}`);
-    bad(res, 502, 'Failed to resolve Google access token', 'google_token_resolution_failed');
-    return null;
-  }
-  if (!token) {
-    bad(res, 401, 'Google account must be reconnected', 'google_reconnect_required');
-    return null;
-  }
-  return token;
+  return resolveGoogleProxyToken(access, deps, res, 'google-sheets');
 }
 
 function createSheetsClient(accessToken: string): sheets_v4.Sheets {
@@ -435,7 +428,7 @@ export default function createGoogleSheetsRoutes(deps: RouteDeps): Router {
         'invalid_request',
       );
     }
-    const uid = requireSheetsAccess(
+    const access = requireSheetsAccess(
       req,
       res,
       deps,
@@ -443,8 +436,8 @@ export default function createGoogleSheetsRoutes(deps: RouteDeps): Router {
       [SHEETS_SCOPE],
       'google_sheets_scope_required',
     );
-    if (!uid) return;
-    const token = await resolveSheetsToken(uid, deps, res);
+    if (!access) return;
+    const token = await resolveSheetsToken(access, deps, res);
     if (!token) return;
 
     try {
@@ -473,7 +466,7 @@ export default function createGoogleSheetsRoutes(deps: RouteDeps): Router {
     if (!query.success) {
       return bad(res, 400, query.error.issues[0]?.message || 'Invalid query', 'invalid_request');
     }
-    const uid = requireSheetsAccess(
+    const access = requireSheetsAccess(
       req,
       res,
       deps,
@@ -481,8 +474,8 @@ export default function createGoogleSheetsRoutes(deps: RouteDeps): Router {
       [SHEETS_SCOPE],
       'google_sheets_scope_required',
     );
-    if (!uid) return;
-    const token = await resolveSheetsToken(uid, deps, res);
+    if (!access) return;
+    const token = await resolveSheetsToken(access, deps, res);
     if (!token) return;
 
     try {
@@ -516,7 +509,7 @@ export default function createGoogleSheetsRoutes(deps: RouteDeps): Router {
       if (!body.success) {
         return bad(res, 400, body.error.issues[0]?.message || 'Invalid body', 'invalid_request');
       }
-      const uid = requireSheetsAccess(
+      const access = requireSheetsAccess(
         req,
         res,
         deps,
@@ -524,8 +517,8 @@ export default function createGoogleSheetsRoutes(deps: RouteDeps): Router {
         [SHEETS_SCOPE],
         'google_sheets_write_scope_required',
       );
-      if (!uid) return;
-      const token = await resolveSheetsToken(uid, deps, res);
+      if (!access) return;
+      const token = await resolveSheetsToken(access, deps, res);
       if (!token) return;
 
       try {
@@ -566,7 +559,7 @@ export default function createGoogleSheetsRoutes(deps: RouteDeps): Router {
     if (!body.success) {
       return bad(res, 400, body.error.issues[0]?.message || 'Invalid body', 'invalid_request');
     }
-    const uid = requireSheetsAccess(
+    const access = requireSheetsAccess(
       req,
       res,
       deps,
@@ -574,8 +567,8 @@ export default function createGoogleSheetsRoutes(deps: RouteDeps): Router {
       [SHEETS_SCOPE],
       'google_sheets_write_scope_required',
     );
-    if (!uid) return;
-    const token = await resolveSheetsToken(uid, deps, res);
+    if (!access) return;
+    const token = await resolveSheetsToken(access, deps, res);
     if (!token) return;
 
     try {

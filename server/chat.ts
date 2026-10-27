@@ -859,6 +859,8 @@ interface ReActAction {
   range?: string;
   calendarId?: string;
   spaceId?: string;
+  /** google — linked account (email or id); omitted → the owner's default account. */
+  account?: string;
 }
 
 interface ParsedReAct {
@@ -2136,6 +2138,7 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
         range: str(a.range),
         calendarId: str(a.calendarId),
         spaceId: str(a.spaceId),
+        account: str(a.account),
       });
       continue;
     }
@@ -6573,6 +6576,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                     range: action.range,
                     calendarId: action.calendarId,
                     spaceId: action.spaceId,
+                    account: action.account,
                   },
                   {
                     ownerUserId: session!.owner_user_id ?? null,
@@ -6586,7 +6590,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                   assistantContextToAppend = assistantContextToAppend
                     ? `${assistantContextToAppend}\n\n${injection}`
                     : injection;
-                  reactObservations.push(`- google(${surface}) returned context.`);
+                  reactObservations.push(
+                    `- google(${surface}) returned context${googleRes.account ? ` from ${googleRes.account}` : ''}.`,
+                  );
                 }
                 if (hasGoogleError) {
                   const err = googleRes.errorMarkdown!.trim();
@@ -6599,7 +6605,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                   // relays — they must NOT mark the host step failed.
                   reactObservations.push(
                     googleRes.failed
-                      ? `- google(${surface}) errored.`
+                      ? `- google(${surface}) errored${googleRes.account ? ` (account ${googleRes.account})` : ''}.`
                       : `- google(${surface}) reported a recoverable state (e.g. not linked / missing args).`,
                   );
                 }

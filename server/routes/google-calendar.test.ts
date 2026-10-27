@@ -178,7 +178,10 @@ describe('Google Calendar proxy routes', () => {
       .query({ timeMin: '2026-06-30T00:00:00Z', timeMax: '2026-07-01T00:00:00Z' });
 
     expect(res.status).toBe(200);
-    expect(connectionStoreMock.getGoogleConnectionStatus).toHaveBeenCalledWith('owner-xyz');
+    expect(connectionStoreMock.getGoogleConnectionStatus).toHaveBeenCalledWith(
+      'owner-xyz',
+      undefined,
+    );
     expect(connectionStoreMock.getActiveAccessToken).toHaveBeenCalledWith('owner-xyz', {
       clientId: 'goog-client-id.apps.googleusercontent.com',
       clientSecret: 'goog-secret',

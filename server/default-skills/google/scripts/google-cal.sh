@@ -11,13 +11,17 @@
 # ISO timestamps are RFC3339, e.g. 2026-06-30T09:00:00-07:00 (or pass --timezone
 # for offset-less local times). Read ops need no extra tooling; create/update
 # build JSON with `jq`.
+#
+# Every command takes --account EMAIL|ID to act as one of the owner's linked
+# Google accounts (list them with google-accounts.sh). Without it the owner's
+# default account answers; an account that isn't linked fails, never falls back.
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./_common.sh
 source "$DIR/_common.sh"
 
 usage() {
-  sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "${BASH_SOURCE[0]}"
 }
 
 require_jq_for_write() {
@@ -126,6 +130,8 @@ cmd_update() {
 }
 
 main() {
+  google_take_account_flag "$@"
+  set -- ${GOOGLE_ARGS[@]+"${GOOGLE_ARGS[@]}"}
   local sub="${1:-}"
   [[ $# -gt 0 ]] && shift || true
   case "$sub" in

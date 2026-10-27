@@ -364,6 +364,19 @@ describe('ReAct block parse', () => {
     });
   });
 
+  it('parses the google account selector', () => {
+    const payload = JSON.stringify({
+      actions: [{ tool: 'google', surface: 'gmail', account: ' work@x.com ' }],
+    });
+    const parsed = parseReActBlock(`<agenthub:react>${payload}</agenthub:react>`);
+    if ('error' in parsed) throw new Error(parsed.detail);
+    expect(parsed.actions[0]).toMatchObject({
+      tool: 'google',
+      surface: 'gmail',
+      account: 'work@x.com',
+    });
+  });
+
   it('parses a google chat read action', () => {
     const payload = JSON.stringify({
       actions: [{ tool: 'google', surface: 'chat', spaceId: 'spaces/AAAA', max: 10 }],
