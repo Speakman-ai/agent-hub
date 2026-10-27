@@ -48,6 +48,7 @@ beforeAll(() => {
 beforeEach(() => {
   getDb().exec('DELETE FROM qa_plans');
   getDb().exec('DELETE FROM deployments');
+  getDb().exec('DELETE FROM pull_requests');
   getDb().exec(`DELETE FROM kanban_cards WHERE board_id = '${boardId}'`);
   broadcast.mockClear();
   launchQaRun.mockReset().mockResolvedValue({ ok: true });
@@ -127,6 +128,28 @@ function deployment(env: string, status: string, createdAt: string) {
     .run(randomUUID(), PROJECT, env, status, createdAt, createdAt);
 }
 
+let prNumber = 0;
+function mergedPr(branch: string, mergedAt: string) {
+  const at = Date.parse(`${mergedAt.replace(' ', 'T')}Z`);
+  getDb()
+    .prepare(
+      `INSERT INTO pull_requests
+         (id, project_id, number, title, head_branch, base_branch, head_sha, status, author,
+          created_at, updated_at, merged_at)
+       VALUES (?, ?, ?, 'fix', 'fix-branch', ?, 'abc123', 'merged', 'dev', ?, ?, ?)`,
+    )
+    .run(randomUUID(), PROJECT, ++prNumber, branch, at, at, at);
+}
+
+function mergeTrigger(planId: string, branch: string | null, delayMinutes = 0) {
+  getDb()
+    .prepare(
+      `UPDATE qa_plans SET auto_rerun_trigger = 'merge', auto_rerun_branch = ?,
+         auto_rerun_delay_minutes = ? WHERE id = ?`,
+    )
+    .run(branch, delayMinutes, planId);
+}
+
 const attention = () =>
   broadcast.mock.calls.map((c) => c[0]).filter((d) => d.type === 'qa_attention');
 
@@ -198,7 +221,112 @@ describe('evaluateQaAutoRerun', () => {
     deployment('production', 'success', '2026-10-26 11:30:00');
     expect(evaluateQaAutoRerun(planId).kind).toBe('wait_deploy');
     deployment('staging', 'success', '2026-10-26 11:45:00');
-    expect(evaluateQaAutoRerun(planId)).toMatchObject({ kind: 'rerun', environment: 'staging' });
+    expect(evaluateQaAutoRerun(planId)).toMatchObject({ kind: 'rerun', target: 'staging' });
+  });
+
+  it('with a merge trigger, waits for a merge into the branch that carries the last fix', () => {
+    const { planId, caseIds } = plan({ env: 'staging' });
+    mergeTrigger(planId, 'release');
+    const c = card();
+    const run = failedRun(
+      planId,
+      { [caseIds[0]!]: 'fail', [caseIds[1]!]: 'pass' },
+      { [caseIds[0]!]: c },
+    );
+    getDb()
+      .prepare("UPDATE qa_runs SET finished_at = '2026-10-26 09:00:00' WHERE id = ?")
+      .run(run.id);
+    markDone(c, '2026-10-26 11:00:00');
+    expect(evaluateQaAutoRerun(planId)).toMatchObject({ kind: 'wait_merge', branch: 'release' });
+
+    // A deploy does not count, nor a merge well before the fix or into another branch.
+    deployment('staging', 'success', '2026-10-26 11:30:00');
+    mergedPr('release', '2026-10-26 10:00:00');
+    mergedPr('main', '2026-10-26 11:30:00');
+    expect(evaluateQaAutoRerun(planId).kind).toBe('wait_merge');
+
+    // The merge that moved the card to Done lands a moment before it.
+    mergedPr('release', '2026-10-26 10:59:58');
+    expect(evaluateQaAutoRerun(planId)).toMatchObject({ kind: 'rerun', target: 'release' });
+  });
+
+  it('with a merge delay, waits until the delay after the merge ends', () => {
+    const { planId, caseIds } = plan();
+    mergeTrigger(planId, 'main', 15);
+    const c = card();
+    const run = failedRun(
+      planId,
+      { [caseIds[0]!]: 'fail', [caseIds[1]!]: 'pass' },
+      { [caseIds[0]!]: c },
+    );
+    getDb()
+      .prepare("UPDATE qa_runs SET finished_at = '2026-10-26 09:00:00' WHERE id = ?")
+      .run(run.id);
+    markDone(c, '2026-10-26 11:00:00');
+    mergedPr('main', '2026-10-26 11:00:00');
+    const mergedAt = Date.parse('2026-10-26T11:00:00Z');
+    expect(evaluateQaAutoRerun(planId, mergedAt + 14 * 60_000)).toMatchObject({
+      kind: 'wait_delay',
+      dueAt: mergedAt + 15 * 60_000,
+    });
+    expect(evaluateQaAutoRerun(planId, mergedAt + 15 * 60_000)).toMatchObject({
+      kind: 'rerun',
+    });
+  });
+
+  it('anchors the delay to the merge carrying the last fix, not an earlier one', () => {
+    const { planId, caseIds } = plan();
+    mergeTrigger(planId, 'main', 15);
+    const [a, b] = [card(), card()];
+    const run = failedRun(
+      planId,
+      { [caseIds[0]!]: 'fail', [caseIds[1]!]: 'fail' },
+      { [caseIds[0]!]: a, [caseIds[1]!]: b },
+    );
+    getDb()
+      .prepare("UPDATE qa_runs SET finished_at = '2026-10-26 09:00:00' WHERE id = ?")
+      .run(run.id);
+    mergedPr('main', '2026-10-26 11:00:00');
+    markDone(a, '2026-10-26 11:00:00');
+    mergedPr('main', '2026-10-26 11:04:00');
+    markDone(b, '2026-10-26 11:04:00');
+    mergedPr('main', '2026-10-26 11:30:00');
+    const lastFix = Date.parse('2026-10-26T11:04:00Z');
+    expect(evaluateQaAutoRerun(planId, lastFix + 15 * 60_000 - 1)).toMatchObject({
+      kind: 'wait_delay',
+      dueAt: lastFix + 15 * 60_000,
+    });
+  });
+
+  it('with no merge near the last fix, waits for the first merge after it', () => {
+    const { planId, caseIds } = plan();
+    mergeTrigger(planId, 'release', 5);
+    const c = card();
+    const run = failedRun(
+      planId,
+      { [caseIds[0]!]: 'fail', [caseIds[1]!]: 'pass' },
+      { [caseIds[0]!]: c },
+    );
+    getDb()
+      .prepare("UPDATE qa_runs SET finished_at = '2026-10-26 09:00:00' WHERE id = ?")
+      .run(run.id);
+    markDone(c, '2026-10-26 11:00:00');
+    mergedPr('release', '2026-10-26 12:00:00');
+    mergedPr('release', '2026-10-26 13:00:00');
+    expect(evaluateQaAutoRerun(planId, Date.parse('2026-10-26T12:01:00Z'))).toMatchObject({
+      kind: 'wait_delay',
+      dueAt: Date.parse('2026-10-26T12:05:00Z'),
+    });
+  });
+
+  it('with a merge trigger and no branch, asks for a manual rerun', () => {
+    const { planId, caseIds } = plan({ env: 'staging' });
+    mergeTrigger(planId, null);
+    const c = card();
+    failedRun(planId, { [caseIds[0]!]: 'fail', [caseIds[1]!]: 'pass' }, { [caseIds[0]!]: c });
+    markDone(c, '2026-10-26 10:00:00');
+    expect(evaluateQaAutoRerun(planId).kind).toBe('notify_manual');
+    expect(describeQaAutoRerun(planId)?.message).toContain('no branch is chosen');
   });
 
   it('stops at max_iterations even when fixes are deployed', () => {
@@ -390,6 +518,12 @@ describe('qaAutoRerunProjectFor', () => {
     ).toBe('p');
     expect(
       qaAutoRerunProjectFor({ type: 'qa_update', projectId: 'p', action: 'run_started' }),
+    ).toBeNull();
+    expect(
+      qaAutoRerunProjectFor({ type: 'native_pr_update', projectId: 'p', action: 'merged' }),
+    ).toBe('p');
+    expect(
+      qaAutoRerunProjectFor({ type: 'native_pr_update', projectId: 'p', action: 'edited' }),
     ).toBeNull();
     expect(qaAutoRerunProjectFor({ type: 'kanban_update' })).toBeNull();
   });

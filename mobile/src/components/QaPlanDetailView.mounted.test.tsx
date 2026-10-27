@@ -34,6 +34,11 @@ const original = { title: 'Login works', steps: '1. Open /login', expected: 'Das
 let savedCase = { ...original };
 const updateQaCase = vi.fn(async () => ({}));
 const getQaPlanCalls: string[] = [];
+let planOverrides: Record<string, unknown> = {};
+const updateQaPlan = vi.fn(async () => ({}));
+const getProjectBranches = vi.fn(async () => ({
+  branches: [{ name: 'main' }, { name: 'release' }],
+}));
 vi.mock('../utils/api', () => ({
   api: {
     getQaPlan: vi.fn(async (_p: string, planId: string) => {
@@ -55,8 +60,12 @@ vi.mock('../utils/api', () => ({
           signedOffAt: null,
           signedOffBy: null,
           autoRerun: true,
+          autoRerunTrigger: 'deployment',
+          autoRerunBranch: null,
+          autoRerunDelayMinutes: 0,
           maxIterations: 5,
           authoringSessionId: null,
+          ...planOverrides,
         },
         links: { epic: null, card: null },
         cases: [{ id: 'c1', planId: 'plan-1', position: 0, version: 1, ...savedCase }],
@@ -66,6 +75,8 @@ vi.mock('../utils/api', () => ({
       };
     }),
     getDeployEnvironments: vi.fn(async () => ({ environments: [] })),
+    getProjectBranches,
+    updateQaPlan,
     updateQaCase,
   },
 }));
@@ -141,6 +152,43 @@ describe('QaPlanDetailView case editing', () => {
     await flush();
 
     expect(getQaPlanCalls).toEqual(['plan-1']);
+    tree.unmount();
+  });
+});
+
+describe('QaPlanDetailView rerun triggers', () => {
+  it('saves the trigger, and with the merge trigger the branch and delay', async () => {
+    let tree: any;
+    await act(async () => {
+      tree = TestRenderer.create(<QaPlanDetailView projectId="p1" planId="plan-1" />);
+    });
+    await flush();
+    expect(tree.root.findAllByProps({ testID: 'qa-auto-rerun-branch' })).toHaveLength(0);
+    await act(async () => {
+      tree.root.findByProps({ testID: 'qa-auto-rerun-trigger-merge' }).props.onPress();
+    });
+    await flush();
+    expect(updateQaPlan).toHaveBeenCalledWith('p1', 'plan-1', { autoRerunTrigger: 'merge' });
+    tree.unmount();
+
+    planOverrides = { autoRerunTrigger: 'merge' };
+    await act(async () => {
+      tree = TestRenderer.create(<QaPlanDetailView projectId="p1" planId="plan-1" />);
+    });
+    await flush();
+    expect(getProjectBranches).toHaveBeenCalledWith('p1');
+    expect(tree.root.findAllByProps({ testID: 'qa-deploy-environment' })).toHaveLength(0);
+    await act(async () => {
+      tree.root.findByProps({ testID: 'qa-auto-rerun-branch-release' }).props.onPress();
+    });
+    await flush();
+    expect(updateQaPlan).toHaveBeenCalledWith('p1', 'plan-1', { autoRerunBranch: 'release' });
+    await act(async () => {
+      tree.root.findByProps({ testID: 'qa-auto-rerun-delay-15' }).props.onPress();
+    });
+    await flush();
+    expect(updateQaPlan).toHaveBeenCalledWith('p1', 'plan-1', { autoRerunDelayMinutes: 15 });
+    planOverrides = {};
     tree.unmount();
   });
 });

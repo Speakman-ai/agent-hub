@@ -62,9 +62,29 @@ export interface QaPlan {
   signedOffAt: string | null;
   signedOffBy: string | null;
   autoRerun: boolean;
+  /** What auto-rerun waits on once every fix is Done. */
+  autoRerunTrigger: QaAutoRerunTrigger;
+  /** Branch the merge trigger waits on. */
+  autoRerunBranch: string | null;
+  /** Minutes the merge trigger waits after the merge; 0 = none. */
+  autoRerunDelayMinutes: number;
   maxIterations: number;
   authoringSessionId: string | null;
 }
+
+export type QaAutoRerunTrigger = 'deployment' | 'merge';
+
+export interface QaPlanPatch {
+  deployEnvironment?: string | null;
+  autoRerun?: boolean;
+  autoRerunTrigger?: QaAutoRerunTrigger;
+  autoRerunBranch?: string | null;
+  autoRerunDelayMinutes?: number;
+  maxIterations?: number;
+}
+
+/** Merge-trigger delay choices in minutes; the server accepts 0 or 5-60. */
+export const QA_RERUN_DELAY_OPTIONS = [0, 5, 10, 15, 30, 45, 60];
 
 export interface QaCase {
   id: string;
@@ -344,8 +364,26 @@ export function orderRunResults(
 }
 
 /** Copy under the rerun settings explaining what auto-rerun will do. */
-export function autoRerunDescription(plan: Pick<QaPlan, 'autoRerun' | 'deployEnvironment'>) {
+export function autoRerunDescription(
+  plan: Pick<
+    QaPlan,
+    | 'autoRerun'
+    | 'deployEnvironment'
+    | 'autoRerunTrigger'
+    | 'autoRerunBranch'
+    | 'autoRerunDelayMinutes'
+  >,
+) {
   if (!plan.autoRerun) return 'Auto-rerun is off. Rerun by hand.';
+  if (plan.autoRerunTrigger === 'merge') {
+    if (!plan.autoRerunBranch) {
+      return 'With no branch chosen, you get an inbox notice when every finding card is Done, and rerun by hand.';
+    }
+    const delay = plan.autoRerunDelayMinutes
+      ? ` and ${plan.autoRerunDelayMinutes} more minutes pass`
+      : '';
+    return `After a failed run, the failed cases rerun once every finding card is Done, a pull request is merged into ${plan.autoRerunBranch}${delay}.`;
+  }
   return plan.deployEnvironment
     ? `After a failed run, the failed cases rerun once every finding card is Done and a deployment to ${plan.deployEnvironment} succeeds after the last one.`
     : 'With no deploy environment linked, you get an inbox notice when every finding card is Done, and rerun by hand.';

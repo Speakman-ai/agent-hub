@@ -15201,7 +15201,7 @@ components:
         deployEnvironment:
           type: string
           nullable: true
-          description: Deployment environment auto-rerun waits on. Null disables auto-rerun.
+          description: Deployment environment the deployment trigger waits on. Null means an inbox notice instead of a rerun.
         status:
           type: string
           enum:
@@ -15227,6 +15227,19 @@ components:
           nullable: true
         autoRerun:
           type: boolean
+        autoRerunTrigger:
+          type: string
+          enum:
+            - deployment
+            - merge
+          description: "What auto-rerun waits on once every finding card is Done: a successful deployment to deployEnvironment, or a pull request merged into autoRerunBranch."
+        autoRerunBranch:
+          type: string
+          nullable: true
+          description: Branch the merge trigger waits on. Null means an inbox notice instead of a rerun.
+        autoRerunDelayMinutes:
+          type: integer
+          description: Minutes the merge trigger waits after the merge before rerunning. 0 = none.
         maxIterations:
           type: integer
         createdBy:
@@ -15257,6 +15270,9 @@ components:
         - signedOffAt
         - signedOffBy
         - autoRerun
+        - autoRerunTrigger
+        - autoRerunBranch
+        - autoRerunDelayMinutes
         - maxIterations
         - createdBy
         - authoringSessionId
@@ -58193,6 +58209,18 @@ paths:
                   minLength: 1
                 autoRerun:
                   type: boolean
+                autoRerunTrigger:
+                  type: string
+                  enum:
+                    - deployment
+                    - merge
+                  description: "What auto-rerun waits on once every finding card is Done: a successful deployment to deployEnvironment, or a pull request merged into autoRerunBranch."
+                autoRerunBranch:
+                  type: string
+                  nullable: true
+                  minLength: 1
+                autoRerunDelayMinutes:
+                  type: integer
                 maxIterations:
                   type: integer
                   minimum: 1
@@ -58312,7 +58340,7 @@ paths:
                     properties:
                       kind:
                         type: string
-                        description: wait_fixes, wait_deploy, notify_manual, cap_reached, rerun, or rerun_failed.
+                        description: wait_fixes, wait_deploy, wait_merge, wait_delay, notify_manual, cap_reached, rerun, or rerun_failed.
                       message:
                         type: string
                     required:
@@ -58374,6 +58402,18 @@ paths:
                   minLength: 1
                 autoRerun:
                   type: boolean
+                autoRerunTrigger:
+                  type: string
+                  enum:
+                    - deployment
+                    - merge
+                  description: "What auto-rerun waits on once every finding card is Done: a successful deployment to deployEnvironment, or a pull request merged into autoRerunBranch."
+                autoRerunBranch:
+                  type: string
+                  nullable: true
+                  minLength: 1
+                autoRerunDelayMinutes:
+                  type: integer
                 maxIterations:
                   type: integer
                   minimum: 1

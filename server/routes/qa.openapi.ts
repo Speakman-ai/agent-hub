@@ -5,7 +5,33 @@
  */
 
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
-import { QA_PLAN_STATUSES, QA_RUN_SCOPES, QA_RUN_STATUSES, QA_VERDICTS } from '../qa-schema.js';
+import {
+  QA_AUTO_RERUN_DELAY_MAX,
+  QA_AUTO_RERUN_DELAY_MIN,
+  QA_AUTO_RERUN_TRIGGERS,
+  QA_PLAN_STATUSES,
+  QA_RUN_SCOPES,
+  QA_RUN_STATUSES,
+  QA_VERDICTS,
+} from '../qa-schema.js';
+
+const AutoRerunTrigger = z.enum(QA_AUTO_RERUN_TRIGGERS).openapi({
+  description:
+    'What auto-rerun waits on once every finding card is Done: a successful deployment to deployEnvironment, or a pull request merged into autoRerunBranch.',
+});
+
+const AutoRerunDelay = z
+  .number()
+  .int()
+  .refine((n) => n === 0 || (n >= QA_AUTO_RERUN_DELAY_MIN && n <= QA_AUTO_RERUN_DELAY_MAX), {
+    message: `autoRerunDelayMinutes must be 0 or ${QA_AUTO_RERUN_DELAY_MIN}-${QA_AUTO_RERUN_DELAY_MAX}`,
+  });
+
+const AutoRerunFields = {
+  autoRerunTrigger: AutoRerunTrigger.optional(),
+  autoRerunBranch: z.string().trim().min(1).nullable().optional(),
+  autoRerunDelayMinutes: AutoRerunDelay.optional(),
+};
 
 const ErrorResponse = registerComponent(
   'QaErrorResponse',
@@ -48,7 +74,8 @@ export const QaPlanComponent = registerComponent(
       epicId: z.string().nullable(),
       cardId: z.string().nullable(),
       deployEnvironment: z.string().nullable().openapi({
-        description: 'Deployment environment auto-rerun waits on. Null disables auto-rerun.',
+        description:
+          'Deployment environment the deployment trigger waits on. Null means an inbox notice instead of a rerun.',
       }),
       status: PlanStatus.openapi({
         description: 'Derived by the server: new (never run), in_progress, done (signed off).',
@@ -60,6 +87,14 @@ export const QaPlanComponent = registerComponent(
       signedOffAt: z.string().nullable(),
       signedOffBy: z.string().nullable(),
       autoRerun: z.boolean(),
+      autoRerunTrigger: AutoRerunTrigger,
+      autoRerunBranch: z.string().nullable().openapi({
+        description:
+          'Branch the merge trigger waits on. Null means an inbox notice instead of a rerun.',
+      }),
+      autoRerunDelayMinutes: z.number().int().openapi({
+        description: 'Minutes the merge trigger waits after the merge before rerunning. 0 = none.',
+      }),
       maxIterations: z.number().int(),
       createdBy: z.string().nullable(),
       authoringSessionId: z.string().nullable().openapi({
@@ -175,6 +210,7 @@ export const CreateQaPlanRequestSchema = z.object({
   cardId: nullableId,
   deployEnvironment: z.string().min(1).nullable().optional(),
   autoRerun: z.boolean().optional(),
+  ...AutoRerunFields,
   maxIterations: z.number().int().min(1).max(100).optional(),
 });
 
@@ -188,6 +224,7 @@ export const UpdateQaPlanRequestSchema = z.object({
   cardId: nullableId,
   deployEnvironment: z.string().min(1).nullable().optional(),
   autoRerun: z.boolean().optional(),
+  ...AutoRerunFields,
   maxIterations: z.number().int().min(1).max(100).optional(),
 });
 
@@ -367,7 +404,7 @@ registerPath({
           .object({
             kind: z.string().openapi({
               description:
-                'wait_fixes, wait_deploy, notify_manual, cap_reached, rerun, or rerun_failed.',
+                'wait_fixes, wait_deploy, wait_merge, wait_delay, notify_manual, cap_reached, rerun, or rerun_failed.',
             }),
             message: z.string(),
           })

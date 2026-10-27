@@ -23,6 +23,7 @@ import {
   moveCaseIds,
   parseMaxIterations,
   qaEventMatches,
+  QA_RERUN_DELAY_OPTIONS,
   QA_STATUS_LABELS,
   rerunButtonStates,
   runDuration,
@@ -30,7 +31,9 @@ import {
   VERDICT_COLORS,
   type QaCase,
   type QaCaseDraft,
+  type QaAutoRerunTrigger,
   type QaPlanDetail,
+  type QaPlanPatch,
   type QaRun,
   type QaRunScope,
 } from '../utils/qa';
@@ -296,6 +299,78 @@ function RunRow({
   );
 }
 
+const namesFrom = (list: unknown): string[] =>
+  (Array.isArray(list) ? list : [])
+    .map((e: any) => e?.name)
+    .filter((n: unknown): n is string => typeof n === 'string' && n.length > 0);
+
+/**
+ * Picker options loaded once per `key` (null skips the load). A failed load
+ * leaves only the saved value selectable.
+ */
+function useNames(key: string | null, load: (key: string) => Promise<string[]>) {
+  const [names, setNames] = useState<string[]>([]);
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  useEffect(() => {
+    if (key === null) return;
+    let live = true;
+    Promise.resolve()
+      .then(() => loadRef.current(key))
+      .then((next) => {
+        if (live) setNames(next);
+      })
+      .catch(() => {
+        if (live) setNames([]);
+      });
+    return () => {
+      live = false;
+    };
+  }, [key]);
+  return names;
+}
+
+function withCurrent(names: string[], current: string | null): string[] {
+  return current && !names.includes(current) ? [current, ...names] : names;
+}
+
+function ChipRow<T extends string | number | null>({
+  testID,
+  options,
+  value,
+  busy,
+  label,
+  onPick,
+}: {
+  testID: string;
+  options: T[];
+  value: T;
+  busy: boolean;
+  label: (option: T) => string;
+  onPick: (option: T) => void;
+}) {
+  return (
+    <View style={styles.chips} testID={testID}>
+      {options.map((option) => {
+        const selected = value === option;
+        return (
+          <TouchableOpacity
+            key={String(option ?? '__none')}
+            testID={`${testID}-${String(option ?? 'none')}`}
+            disabled={busy || selected}
+            onPress={() => onPick(option)}
+            style={[styles.chip, selected && styles.chipSelected]}
+          >
+            <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
+              {label(option)}
+            </Text>
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
+}
+
 function RerunSettings({
   projectId,
   detail,
@@ -305,38 +380,24 @@ function RerunSettings({
   projectId: string;
   detail: QaPlanDetail;
   busy: boolean;
-  onSave: (patch: {
-    deployEnvironment?: string | null;
-    autoRerun?: boolean;
-    maxIterations?: number;
-  }) => void;
+  onSave: (patch: QaPlanPatch) => void;
 }) {
   const { plan } = detail;
-  const [environments, setEnvironments] = useState<string[]>([]);
+  const trigger: QaAutoRerunTrigger = plan.autoRerunTrigger ?? 'deployment';
   const [maxDraft, setMaxDraft] = useState(String(plan.maxIterations));
   useEffect(() => setMaxDraft(String(plan.maxIterations)), [plan.maxIterations]);
-  useEffect(() => {
-    let live = true;
-    Promise.resolve()
-      .then(() => api.getDeployEnvironments(projectId))
-      .then((res: any) => {
-        if (!live) return;
-        const names = (res?.environments ?? [])
-          .map((e: any) => e?.name)
-          .filter((n: unknown): n is string => typeof n === 'string' && n.length > 0);
-        setEnvironments(names);
-      })
-      .catch(() => {
-        if (live) setEnvironments([]);
-      });
-    return () => {
-      live = false;
-    };
-  }, [projectId]);
-  const envOptions =
-    plan.deployEnvironment && !environments.includes(plan.deployEnvironment)
-      ? [plan.deployEnvironment, ...environments]
-      : environments;
+  const environments = useNames(projectId, async (id) =>
+    namesFrom(((await api.getDeployEnvironments(id)) as any)?.environments),
+  );
+  const branches = useNames(trigger === 'merge' ? projectId : null, async (id) =>
+    namesFrom(((await api.getProjectBranches(id)) as any)?.branches),
+  );
+  const envOptions = withCurrent(environments, plan.deployEnvironment);
+  const branchOptions = withCurrent(branches, plan.autoRerunBranch ?? null);
+  const delay = plan.autoRerunDelayMinutes ?? 0;
+  const delayOptions = QA_RERUN_DELAY_OPTIONS.includes(delay)
+    ? QA_RERUN_DELAY_OPTIONS
+    : [...QA_RERUN_DELAY_OPTIONS, delay].sort((a, b) => a - b);
   const saveMax = () => {
     const n = parseMaxIterations(maxDraft);
     if (n === null) {
@@ -356,24 +417,49 @@ function RerunSettings({
           onValueChange={(v) => onSave({ autoRerun: v })}
         />
       </View>
-      <Text style={styles.settingLabel}>Deploy environment</Text>
-      <View style={styles.chips}>
-        {[null, ...envOptions].map((name) => {
-          const selected = (plan.deployEnvironment ?? null) === name;
-          return (
-            <TouchableOpacity
-              key={name ?? '__none'}
-              disabled={busy || selected}
-              onPress={() => onSave({ deployEnvironment: name })}
-              style={[styles.chip, selected && styles.chipSelected]}
-            >
-              <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
-                {name ?? 'None (rerun by hand)'}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
+      <Text style={styles.settingLabel}>Trigger</Text>
+      <ChipRow<QaAutoRerunTrigger>
+        testID="qa-auto-rerun-trigger"
+        options={['deployment', 'merge']}
+        value={trigger}
+        busy={busy}
+        label={(t) => (t === 'merge' ? 'Merge to branch' : 'Deployment')}
+        onPick={(t) => onSave({ autoRerunTrigger: t })}
+      />
+      {trigger === 'deployment' ? (
+        <>
+          <Text style={styles.settingLabel}>Deploy environment</Text>
+          <ChipRow<string | null>
+            testID="qa-deploy-environment"
+            options={[null, ...envOptions]}
+            value={plan.deployEnvironment ?? null}
+            busy={busy}
+            label={(name) => name ?? 'None (rerun by hand)'}
+            onPick={(name) => onSave({ deployEnvironment: name })}
+          />
+        </>
+      ) : (
+        <>
+          <Text style={styles.settingLabel}>Branch</Text>
+          <ChipRow<string | null>
+            testID="qa-auto-rerun-branch"
+            options={[null, ...branchOptions]}
+            value={plan.autoRerunBranch ?? null}
+            busy={busy}
+            label={(name) => name ?? 'None (rerun by hand)'}
+            onPick={(name) => onSave({ autoRerunBranch: name })}
+          />
+          <Text style={styles.settingLabel}>Delay</Text>
+          <ChipRow<number>
+            testID="qa-auto-rerun-delay"
+            options={delayOptions}
+            value={delay}
+            busy={busy}
+            label={(m) => (m === 0 ? 'None' : `${m} min`)}
+            onPick={(m) => onSave({ autoRerunDelayMinutes: m })}
+          />
+        </>
+      )}
       <View style={styles.settingRow}>
         <Text style={styles.settingLabel}>Max runs</Text>
         <TextInput

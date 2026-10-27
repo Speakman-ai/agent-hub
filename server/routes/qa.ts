@@ -94,6 +94,9 @@ export function serializeQaPlan(p: QaPlanRow) {
     signedOffAt: p.signed_off_at,
     signedOffBy: p.signed_off_by,
     autoRerun: p.auto_rerun === 1,
+    autoRerunTrigger: p.auto_rerun_trigger,
+    autoRerunBranch: p.auto_rerun_branch,
+    autoRerunDelayMinutes: p.auto_rerun_delay_minutes,
     maxIterations: p.max_iterations,
     createdBy: p.created_by,
     authoringSessionId: p.authoring_session_id ?? null,
@@ -471,20 +474,26 @@ export default function createQaRoutes(deps: RouteDeps): Router {
       if (!body) return;
       if (!checkLinks(res, projectId, body)) return;
       const id = randomUUID();
-      getStmts().insertQaPlan.run(
-        id,
-        projectId,
-        body.title,
-        body.goal ?? '',
-        body.targetUrl,
-        body.epicId ?? null,
-        body.cardId ?? null,
-        body.deployEnvironment ?? null,
-        body.autoRerun === false ? 0 : 1,
-        body.maxIterations ?? 5,
-        userId(req),
-      );
-      const plan = getStmts().getQaPlan.get(id)!;
+      const plan = getDb().transaction(() => {
+        getStmts().insertQaPlan.run(
+          id,
+          projectId,
+          body.title,
+          body.goal ?? '',
+          body.targetUrl,
+          body.epicId ?? null,
+          body.cardId ?? null,
+          body.deployEnvironment ?? null,
+          body.autoRerun === false ? 0 : 1,
+          body.maxIterations ?? 5,
+          userId(req),
+        );
+        return updateQaPlan(id, {
+          autoRerunTrigger: body.autoRerunTrigger,
+          autoRerunBranch: body.autoRerunBranch,
+          autoRerunDelayMinutes: body.autoRerunDelayMinutes,
+        });
+      })();
       emit(projectId, id, { action: 'plan_created' });
       res.status(201).json({ plan: serializeQaPlan(plan) });
     }),

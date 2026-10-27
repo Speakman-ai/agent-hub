@@ -157,6 +157,12 @@ export interface QaPlanWire {
   signedOffAt: string | null;
   signedOffBy: string | null;
   autoRerun: boolean;
+  /** What auto-rerun waits on once every fix is Done. */
+  autoRerunTrigger: QaAutoRerunTrigger;
+  /** Branch the merge trigger waits on. */
+  autoRerunBranch: string | null;
+  /** Minutes the merge trigger waits after the merge; 0 = none. */
+  autoRerunDelayMinutes: number;
   maxIterations: number;
   createdBy: string | null;
   /** QA session where the cases were drafted. Null until one is opened. */
@@ -258,9 +264,14 @@ export interface QaPlanDetailWire {
   autoRerun?: { kind: string; message: string } | null;
 }
 
+export type QaAutoRerunTrigger = 'deployment' | 'merge';
+
 export interface QaPlanPatch {
   deployEnvironment?: string | null;
   autoRerun?: boolean;
+  autoRerunTrigger?: QaAutoRerunTrigger;
+  autoRerunBranch?: string | null;
+  autoRerunDelayMinutes?: number;
   maxIterations?: number;
 }
 

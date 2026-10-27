@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('../theme/colors', () => ({ colors: new Proxy({}, { get: (_t, k) => String(k) }) }));
 
 import {
+  autoRerunDescription,
   caseEditPatch,
   caseListLockReason,
   createQaUpdateHub,
@@ -223,5 +224,32 @@ describe('createQaUpdateHub', () => {
     off();
     hub.emit({ projectId: 'p1', planId: 'c' });
     expect(seen).toHaveLength(3);
+  });
+});
+
+describe('autoRerunDescription', () => {
+  const base = {
+    autoRerun: true,
+    deployEnvironment: null,
+    autoRerunTrigger: 'deployment' as const,
+    autoRerunBranch: null,
+    autoRerunDelayMinutes: 0,
+  };
+  it('describes each trigger', () => {
+    expect(autoRerunDescription({ ...base, autoRerun: false })).toMatch(/off/);
+    expect(autoRerunDescription({ ...base, deployEnvironment: 'staging' })).toMatch(
+      /deployment to staging/,
+    );
+    expect(
+      autoRerunDescription({
+        ...base,
+        autoRerunTrigger: 'merge',
+        autoRerunBranch: 'main',
+        autoRerunDelayMinutes: 30,
+      }),
+    ).toMatch(/merged into main and 30 more minutes pass/);
+    expect(autoRerunDescription({ ...base, autoRerunTrigger: 'merge' })).toMatch(
+      /no branch chosen/,
+    );
   });
 });

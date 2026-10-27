@@ -7,8 +7,12 @@
  *   in_progress  any run started (also a reopened Done plan)
  *   done         latest run all-pass AND a human signed off
  * `approved_at` NULL means draft. `approval_seq` increments on every approval;
- * each run copies it, so a run from before a re-approval cannot back a sign-off. `deploy_environment` names a
- * `deployments.environment` the auto-rerun waits on; NULL means no auto-rerun.
+ * each run copies it, so a run from before a re-approval cannot back a sign-off.
+ * `auto_rerun_trigger` picks what the auto-rerun waits on once every fix is
+ * Done: `deployment` waits for a successful deploy to `deploy_environment`;
+ * `merge` waits for a pull request merged into `auto_rerun_branch`, then
+ * `auto_rerun_delay_minutes` more. A trigger with no environment or branch
+ * set sends an inbox notice instead of rerunning.
  *
  * qa_cases: the ordered case list. `version` bumps when an approved case is
  * edited, which also clears plan approval.
@@ -35,6 +39,10 @@ export const QA_PLAN_STATUSES = ['new', 'in_progress', 'done'] as const;
 export const QA_RUN_SCOPES = ['full', 'failed_only'] as const;
 export const QA_RUN_STATUSES = ['queued', 'running', 'passed', 'failed', 'cancelled'] as const;
 export const QA_VERDICTS = ['pass', 'fail', 'needs_change', 'blocked'] as const;
+export const QA_AUTO_RERUN_TRIGGERS = ['deployment', 'merge'] as const;
+/** Merge-trigger delay bounds in minutes; 0 means rerun as soon as the merge lands. */
+export const QA_AUTO_RERUN_DELAY_MIN = 5;
+export const QA_AUTO_RERUN_DELAY_MAX = 60;
 
 const inList = (values: readonly string[]) => values.map((v) => `'${v}'`).join(', ');
 
@@ -57,6 +65,11 @@ export const QA_SCHEMA = `
     signed_off_by      TEXT,
     auto_rerun         INTEGER NOT NULL DEFAULT 1 CHECK (auto_rerun IN (0, 1)),
     max_iterations     INTEGER NOT NULL DEFAULT 5 CHECK (max_iterations >= 1),
+    auto_rerun_trigger TEXT NOT NULL DEFAULT 'deployment'
+                       CHECK (auto_rerun_trigger IN (${inList(QA_AUTO_RERUN_TRIGGERS)})),
+    auto_rerun_branch  TEXT,
+    auto_rerun_delay_minutes INTEGER NOT NULL DEFAULT 0
+                       CHECK (auto_rerun_delay_minutes BETWEEN 0 AND 60),
     created_by         TEXT,
     authoring_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
     created_at         TEXT NOT NULL DEFAULT (datetime('now')),

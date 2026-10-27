@@ -21,7 +21,14 @@ import type { SessionContextUsage } from '@shared/utils/contextUsage';
 import type { InboxNotification } from '@shared/utils/notificationInbox';
 import type { BrowserDomainPolicy, BrowserProfileWire } from '@shared/utils/browserProfiles';
 import type { ApprovalDecision, ApprovalRuleWire, ApprovalWire } from '@shared/utils/approvals';
-import type { QaCaseDraft, QaPlan, QaPlanDetail, QaPlanListResponse, QaRunScope } from './qa';
+import type {
+  QaCaseDraft,
+  QaPlan,
+  QaPlanDetail,
+  QaPlanListResponse,
+  QaPlanPatch,
+  QaRunScope,
+} from './qa';
 /** A machine error code (`no_pushable_commits`) rather than human copy. */
 const ERROR_CODE_RE = /^[a-z][a-z0-9]*(_[a-z0-9]+)*$/;
 /**
@@ -891,11 +898,8 @@ export const api = {
     fetchJSON(`${qaPlanPath(projectId, planId)}/approve`, { method: 'POST' }),
   revokeQaPlanApproval: (projectId: string, planId: string) =>
     fetchJSON(`${qaPlanPath(projectId, planId)}/revoke-approval`, { method: 'POST' }),
-  updateQaPlan: (
-    projectId: string,
-    planId: string,
-    patch: { deployEnvironment?: string | null; autoRerun?: boolean; maxIterations?: number },
-  ) => fetchJSON(qaPlanPath(projectId, planId), { method: 'PATCH', body: JSON.stringify(patch) }),
+  updateQaPlan: (projectId: string, planId: string, patch: QaPlanPatch) =>
+    fetchJSON(qaPlanPath(projectId, planId), { method: 'PATCH', body: JSON.stringify(patch) }),
   startQaRun: (
     projectId: string,
     planId: string,

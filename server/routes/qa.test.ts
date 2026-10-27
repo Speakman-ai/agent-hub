@@ -126,6 +126,9 @@ describe('plans', () => {
       status: 'new',
       approved: false,
       autoRerun: true,
+      autoRerunTrigger: 'deployment',
+      autoRerunBranch: null,
+      autoRerunDelayMinutes: 0,
       maxIterations: 5,
       createdBy: 'user-1',
     });
@@ -280,6 +283,33 @@ describe('plans', () => {
     expect(target.body.plan).toMatchObject({
       targetUrl: 'https://staging.example.com',
       approved: false,
+    });
+  });
+
+  it('sets the merge trigger, branch, and delay; the delay is 0 or 5-60 minutes', async () => {
+    const created = await createPlan({
+      autoRerunTrigger: 'merge',
+      autoRerunBranch: 'main',
+      autoRerunDelayMinutes: 10,
+    });
+    expect(created).toMatchObject({
+      autoRerunTrigger: 'merge',
+      autoRerunBranch: 'main',
+      autoRerunDelayMinutes: 10,
+    });
+    const url = `${base}/${created.id}`;
+    for (const autoRerunDelayMinutes of [3, 61, 7.5]) {
+      await request(app).patch(url).send({ autoRerunDelayMinutes }).expect(400);
+    }
+    await request(app).patch(url).send({ autoRerunTrigger: 'push' }).expect(400);
+    const updated = await request(app)
+      .patch(url)
+      .send({ autoRerunTrigger: 'deployment', autoRerunBranch: null, autoRerunDelayMinutes: 0 })
+      .expect(200);
+    expect(updated.body.plan).toMatchObject({
+      autoRerunTrigger: 'deployment',
+      autoRerunBranch: null,
+      autoRerunDelayMinutes: 0,
     });
   });
 

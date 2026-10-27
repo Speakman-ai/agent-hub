@@ -20,6 +20,7 @@ import {
   type QaCaseWire,
   type QaPlanDetailWire,
   type QaPlanPatch,
+  type QaPlanWire,
   type QaRunWire,
 } from '../utils/api';
 import {
@@ -29,6 +30,7 @@ import {
   VERDICT_LABELS,
 } from '../utils/qaLabels';
 import { formatDateTime, parseDate } from '../utils/time';
+import Checkbox from './Checkbox';
 import { LinkChips, type LinkProps } from './QaLinkChips';
 import QaRunResults from './QaRunResults';
 
@@ -598,6 +600,73 @@ function RunButtons({
   );
 }
 
+/** Merge-trigger delay choices in minutes; the server accepts 0 or 5-60. */
+export const QA_RERUN_DELAY_OPTIONS = [0, 5, 10, 15, 30, 45, 60];
+
+const selectClass =
+  'rounded-md border border-gray-700 bg-gray-950 px-1.5 py-0.5 text-xs text-gray-100';
+
+/** Option names for a picker, keeping the saved value selectable when the list lacks it. */
+function withCurrent(names: string[], current: string | null): string[] {
+  return current && !names.includes(current) ? [current, ...names] : names;
+}
+
+/**
+ * Picker options loaded once per `key` (null skips the load). A failed load
+ * leaves only the saved value selectable.
+ */
+function useNames(key: string | null, load: (key: string) => Promise<string[]>) {
+  const [names, setNames] = useState<string[]>([]);
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  useEffect(() => {
+    if (key === null) return;
+    let live = true;
+    Promise.resolve()
+      .then(() => loadRef.current(key))
+      .then((next) => {
+        if (live) setNames(next);
+      })
+      .catch(() => {
+        if (live) setNames([]);
+      });
+    return () => {
+      live = false;
+    };
+  }, [key]);
+  return names;
+}
+
+const namesFrom = (list: unknown): string[] =>
+  (Array.isArray(list) ? list : [])
+    .map((e: { name?: unknown } | null) => e?.name)
+    .filter((n): n is string => typeof n === 'string' && n.length > 0);
+
+export function autoRerunSummary(
+  plan: Pick<
+    QaPlanWire,
+    | 'autoRerun'
+    | 'autoRerunTrigger'
+    | 'autoRerunBranch'
+    | 'autoRerunDelayMinutes'
+    | 'deployEnvironment'
+  >,
+): string {
+  if (!plan.autoRerun) return 'Auto-rerun is off. Rerun by hand.';
+  if (plan.autoRerunTrigger === 'merge') {
+    if (!plan.autoRerunBranch) {
+      return 'With no branch chosen, you get an inbox notice when every finding card is Done, and rerun by hand.';
+    }
+    const delay = plan.autoRerunDelayMinutes
+      ? ` and ${plan.autoRerunDelayMinutes} more minutes pass`
+      : '';
+    return `After a failed run, the failed cases rerun once every finding card is Done, a pull request is merged into ${plan.autoRerunBranch}${delay}.`;
+  }
+  return plan.deployEnvironment
+    ? `After a failed run, the failed cases rerun once every finding card is Done and a deployment to ${plan.deployEnvironment} succeeds after the last one.`
+    : 'With no deploy environment linked, you get an inbox notice when every finding card is Done, and rerun by hand.';
+}
+
 function RerunSettings({
   projectId,
   detail,
@@ -610,33 +679,23 @@ function RerunSettings({
   onSave: (patch: QaPlanPatch) => void;
 }) {
   const { plan } = detail;
-  const [environments, setEnvironments] = useState<string[]>([]);
+  const trigger = plan.autoRerunTrigger ?? 'deployment';
   const [maxDraft, setMaxDraft] = useState(String(plan.maxIterations));
   useEffect(() => setMaxDraft(String(plan.maxIterations)), [plan.maxIterations]);
-  useEffect(() => {
-    let live = true;
-    // Environment names are only the picker's options; a failed load leaves
-    // the current value selectable.
-    Promise.resolve()
-      .then(() => api.getDeployEnvironments(projectId))
-      .then((res: { environments?: Array<{ name?: unknown }> } | null) => {
-        if (!live) return;
-        const names = (res?.environments ?? [])
-          .map((e) => e.name)
-          .filter((n): n is string => typeof n === 'string' && n.length > 0);
-        setEnvironments(names);
-      })
-      .catch(() => {
-        if (live) setEnvironments([]);
-      });
-    return () => {
-      live = false;
-    };
-  }, [projectId]);
-  const envOptions =
-    plan.deployEnvironment && !environments.includes(plan.deployEnvironment)
-      ? [plan.deployEnvironment, ...environments]
-      : environments;
+  const environments = useNames(projectId, async (id) =>
+    namesFrom(
+      ((await api.getDeployEnvironments(id)) as { environments?: unknown } | null)?.environments,
+    ),
+  );
+  const branches = useNames(trigger === 'merge' ? projectId : null, async (id) =>
+    namesFrom(((await api.getProjectBranches(id)) as { branches?: unknown } | null)?.branches),
+  );
+  const envOptions = withCurrent(environments, plan.deployEnvironment);
+  const branchOptions = withCurrent(branches, plan.autoRerunBranch ?? null);
+  const delay = plan.autoRerunDelayMinutes ?? 0;
+  const delayOptions = QA_RERUN_DELAY_OPTIONS.includes(delay)
+    ? QA_RERUN_DELAY_OPTIONS
+    : [...QA_RERUN_DELAY_OPTIONS, delay].sort((a, b) => a - b);
   const saveMax = () => {
     const n = Number.parseInt(maxDraft, 10);
     if (!Number.isInteger(n) || n < 1 || n > 100) {
@@ -649,8 +708,7 @@ function RerunSettings({
     <div className="flex flex-col gap-2" data-testid="qa-rerun-settings">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-gray-400">
         <label className="inline-flex items-center gap-1.5">
-          <input
-            type="checkbox"
+          <Checkbox
             data-testid="qa-auto-rerun-toggle"
             checked={plan.autoRerun}
             disabled={busy}
@@ -659,22 +717,75 @@ function RerunSettings({
           Auto-rerun when fixes land
         </label>
         <label className="inline-flex items-center gap-1.5">
-          Deploy environment
+          Trigger
           <select
-            data-testid="qa-deploy-environment"
-            value={plan.deployEnvironment ?? ''}
+            data-testid="qa-auto-rerun-trigger"
+            value={trigger}
             disabled={busy}
-            onChange={(e) => onSave({ deployEnvironment: e.target.value || null })}
-            className="rounded-md border border-gray-700 bg-gray-950 px-1.5 py-0.5 text-xs text-gray-100"
+            onChange={(e) =>
+              onSave({ autoRerunTrigger: e.target.value === 'merge' ? 'merge' : 'deployment' })
+            }
+            className={selectClass}
           >
-            <option value="">None (rerun by hand)</option>
-            {envOptions.map((name) => (
-              <option key={name} value={name}>
-                {name}
-              </option>
-            ))}
+            <option value="deployment">Deployment</option>
+            <option value="merge">Merge to branch</option>
           </select>
         </label>
+        {trigger === 'deployment' ? (
+          <label className="inline-flex items-center gap-1.5">
+            Deploy environment
+            <select
+              data-testid="qa-deploy-environment"
+              value={plan.deployEnvironment ?? ''}
+              disabled={busy}
+              onChange={(e) => onSave({ deployEnvironment: e.target.value || null })}
+              className={selectClass}
+            >
+              <option value="">None (rerun by hand)</option>
+              {envOptions.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : (
+          <>
+            <label className="inline-flex items-center gap-1.5">
+              Branch
+              <select
+                data-testid="qa-auto-rerun-branch"
+                value={plan.autoRerunBranch ?? ''}
+                disabled={busy}
+                onChange={(e) => onSave({ autoRerunBranch: e.target.value || null })}
+                className={selectClass}
+              >
+                <option value="">None (rerun by hand)</option>
+                {branchOptions.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="inline-flex items-center gap-1.5">
+              Delay
+              <select
+                data-testid="qa-auto-rerun-delay"
+                value={String(delay)}
+                disabled={busy}
+                onChange={(e) => onSave({ autoRerunDelayMinutes: Number(e.target.value) })}
+                className={selectClass}
+              >
+                {delayOptions.map((m) => (
+                  <option key={m} value={String(m)}>
+                    {m === 0 ? 'None' : `${m} min`}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </>
+        )}
         <label className="inline-flex items-center gap-1.5">
           Max runs
           <input
@@ -693,13 +804,7 @@ function RerunSettings({
           />
         </label>
       </div>
-      <div className="text-xs text-gray-500">
-        {plan.autoRerun
-          ? plan.deployEnvironment
-            ? `After a failed run, the failed cases rerun once every finding card is Done and a deployment to ${plan.deployEnvironment} succeeds after the last one.`
-            : 'With no deploy environment linked, you get an inbox notice when every finding card is Done, and rerun by hand.'
-          : 'Auto-rerun is off. Rerun by hand.'}
-      </div>
+      <div className="text-xs text-gray-500">{autoRerunSummary(plan)}</div>
       {detail.autoRerun && (
         <div
           data-testid="qa-auto-rerun-status"

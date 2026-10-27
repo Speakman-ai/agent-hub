@@ -163,6 +163,9 @@ export interface QaPlanPatch {
   deployEnvironment?: string | null;
   autoRerun?: boolean;
   maxIterations?: number;
+  autoRerunTrigger?: 'deployment' | 'merge';
+  autoRerunBranch?: string | null;
+  autoRerunDelayMinutes?: number;
 }
 
 /**
@@ -188,6 +191,10 @@ export function updateQaPlan(planId: string, patch: QaPlanPatch): QaPlanRow {
         patch.deployEnvironment !== undefined ? patch.deployEnvironment : plan.deploy_environment,
       auto_rerun: patch.autoRerun !== undefined ? (patch.autoRerun ? 1 : 0) : plan.auto_rerun,
       max_iterations: patch.maxIterations ?? plan.max_iterations,
+      auto_rerun_trigger: patch.autoRerunTrigger ?? plan.auto_rerun_trigger,
+      auto_rerun_branch:
+        patch.autoRerunBranch !== undefined ? patch.autoRerunBranch : plan.auto_rerun_branch,
+      auto_rerun_delay_minutes: patch.autoRerunDelayMinutes ?? plan.auto_rerun_delay_minutes,
     });
     if (targetChanged) s.clearQaPlanApproval.run(planId);
     return requirePlan(planId);

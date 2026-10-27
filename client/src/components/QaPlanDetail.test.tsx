@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent, within, act } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within, act, cleanup } from '@testing-library/react';
 import type { QaCaseWire, QaPlanDetailWire, QaRunWire } from '../utils/api';
 
 const getQaPlan = vi.fn<(projectId: string, planId: string) => Promise<QaPlanDetailWire>>();
@@ -15,6 +15,7 @@ const mutations = {
   startQaRun: vi.fn(),
   updateQaPlan: vi.fn(),
   getDeployEnvironments: vi.fn(),
+  getProjectBranches: vi.fn(),
 };
 vi.mock('../utils/api', () => ({
   api: {
@@ -30,11 +31,13 @@ vi.mock('../utils/api', () => ({
     startQaRun: (...a: unknown[]) => mutations.startQaRun(...a),
     updateQaPlan: (...a: unknown[]) => mutations.updateQaPlan(...a),
     getDeployEnvironments: (...a: unknown[]) => mutations.getDeployEnvironments(...a),
+    getProjectBranches: (...a: unknown[]) => mutations.getProjectBranches(...a),
   },
 }));
 
 import QaPlanDetail, {
   VerdictCell,
+  autoRerunSummary,
   applyCaseFieldEdit,
   caseEditExpectedBase,
   editConflictCase,
@@ -100,6 +103,9 @@ function detail(over: Partial<QaPlanDetailWire> & { approved?: boolean } = {}): 
       signedOffAt: null,
       signedOffBy: null,
       autoRerun: true,
+      autoRerunTrigger: 'deployment',
+      autoRerunBranch: null,
+      autoRerunDelayMinutes: 0,
       maxIterations: 5,
       createdBy: 'u1',
       authoringSessionId: null,
@@ -941,6 +947,63 @@ describe('QaPlanDetail reruns', () => {
     await waitFor(() =>
       expect(mutations.updateQaPlan).toHaveBeenCalledWith('proj', 'p1', { maxIterations: 8 }),
     );
+  });
+
+  it('switches to the merge trigger and saves the branch and delay', async () => {
+    mutations.getDeployEnvironments.mockResolvedValue({ environments: [] });
+    mutations.getProjectBranches.mockResolvedValue({
+      branches: [{ name: 'main' }, { name: 'release' }],
+    });
+    const base = detail({ cases: [qaCase('c1')] });
+    renderDetail(base);
+    fireEvent.change(await screen.findByTestId('qa-auto-rerun-trigger'), {
+      target: { value: 'merge' },
+    });
+    await waitFor(() =>
+      expect(mutations.updateQaPlan).toHaveBeenCalledWith('proj', 'p1', {
+        autoRerunTrigger: 'merge',
+      }),
+    );
+    expect(screen.queryByTestId('qa-auto-rerun-branch')).toBeNull();
+
+    cleanup();
+    const merge = detail({ cases: [qaCase('c1')] });
+    merge.plan = { ...merge.plan, autoRerunTrigger: 'merge' };
+    renderDetail(merge);
+    expect(await screen.findByRole('option', { name: 'release' })).toBeInTheDocument();
+    expect(mutations.getProjectBranches).toHaveBeenCalledWith('proj');
+    expect(screen.queryByTestId('qa-deploy-environment')).toBeNull();
+    await waitFor(() => expect(screen.getByTestId('qa-auto-rerun-branch')).toBeEnabled());
+    fireEvent.change(screen.getByTestId('qa-auto-rerun-branch'), { target: { value: 'release' } });
+    await waitFor(() =>
+      expect(mutations.updateQaPlan).toHaveBeenCalledWith('proj', 'p1', {
+        autoRerunBranch: 'release',
+      }),
+    );
+    await waitFor(() => expect(screen.getByTestId('qa-auto-rerun-delay')).toBeEnabled());
+    fireEvent.change(screen.getByTestId('qa-auto-rerun-delay'), { target: { value: '15' } });
+    await waitFor(() =>
+      expect(mutations.updateQaPlan).toHaveBeenCalledWith('proj', 'p1', {
+        autoRerunDelayMinutes: 15,
+      }),
+    );
+  });
+
+  it('summarizes each trigger', () => {
+    const plan = detail({}).plan;
+    expect(autoRerunSummary({ ...plan, autoRerun: false })).toMatch(/off/);
+    expect(autoRerunSummary({ ...plan, deployEnvironment: 'staging' })).toMatch(
+      /deployment to staging/,
+    );
+    expect(
+      autoRerunSummary({
+        ...plan,
+        autoRerunTrigger: 'merge',
+        autoRerunBranch: 'main',
+        autoRerunDelayMinutes: 10,
+      }),
+    ).toMatch(/merged into main and 10 more minutes pass/);
+    expect(autoRerunSummary({ ...plan, autoRerunTrigger: 'merge' })).toMatch(/no branch chosen/);
   });
 
   it('shows where the auto-rerun loop stands', async () => {

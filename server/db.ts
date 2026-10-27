@@ -3933,6 +3933,20 @@ function initDb(dataDir: string): void {
   } catch (_e) {
     /* column already present */
   }
+  // What the auto-rerun waits on: a deployment, or a merge into a branch.
+  for (const ddl of [
+    `ALTER TABLE qa_plans ADD COLUMN auto_rerun_trigger TEXT NOT NULL DEFAULT 'deployment'
+       CHECK (auto_rerun_trigger IN ('deployment', 'merge'))`,
+    'ALTER TABLE qa_plans ADD COLUMN auto_rerun_branch TEXT',
+    `ALTER TABLE qa_plans ADD COLUMN auto_rerun_delay_minutes INTEGER NOT NULL DEFAULT 0
+       CHECK (auto_rerun_delay_minutes BETWEEN 0 AND 60)`,
+  ]) {
+    try {
+      db.exec(ddl);
+    } catch (_e) {
+      /* column already present */
+    }
+  }
   try {
     db.exec('ALTER TABLE release_notification_outbox ADD COLUMN next_attempt_at TEXT');
   } catch (_e) {
@@ -4373,7 +4387,9 @@ function initDb(dataDir: string): void {
     updateQaPlan: db.prepare(
       `UPDATE qa_plans SET title = @title, goal = @goal, target_url = @target_url,
          epic_id = @epic_id, card_id = @card_id, deploy_environment = @deploy_environment,
-         auto_rerun = @auto_rerun, max_iterations = @max_iterations, updated_at = datetime('now')
+         auto_rerun = @auto_rerun, max_iterations = @max_iterations,
+         auto_rerun_trigger = @auto_rerun_trigger, auto_rerun_branch = @auto_rerun_branch,
+         auto_rerun_delay_minutes = @auto_rerun_delay_minutes, updated_at = datetime('now')
        WHERE id = @id`,
     ),
     deleteQaPlan: db.prepare('DELETE FROM qa_plans WHERE id = ?'),
