@@ -18,6 +18,7 @@
 #   result post <planId> <runId> --case <caseId> --verdict pass|fail|needs_change|blocked
 #                        [--actual A] [--notes N] [--screenshot <artifactId>]...
 #                        [--finding-card <cardId>]
+#   env list                    (servers under test + test accounts; passwords masked)
 #
 # --steps / --expected / --actual / --notes / --goal accept "@path" to read the
 # value from a file, or "-" to read it from stdin.
@@ -31,7 +32,7 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/../../agent-hub/scripts/ah-api.sh"
 
 usage() {
-  sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 die() {
@@ -292,6 +293,10 @@ case "$group" in
   case) cmd_case "$@" ;;
   run) cmd_run "$@" ;;
   result) cmd_result "$@" ;;
+  env)
+    [[ "${1:-}" == list ]] || die "usage: qa.sh env list"
+    ah_api GET "/api/projects/$PROJECT_ID/qa/environments"
+    ;;
   help | -h | --help) usage ;;
   *) die "unknown command '$group' (try qa.sh help)" ;;
 esac

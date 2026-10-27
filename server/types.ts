@@ -2239,6 +2239,7 @@ export interface Stmts {
   >;
   deleteQaPlan: Stmt<[string]>;
   deleteQaPlansByProject: Stmt<[string]>;
+  deleteQaEnvironmentsByProject: Stmt<[string]>;
   setQaPlanStatus: Stmt<[QaPlanStatus, string]>;
   setQaPlanApproval: Stmt<[string | null, string]>;
   clearQaPlanApproval: Stmt<[string]>;

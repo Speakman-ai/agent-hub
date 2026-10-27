@@ -93,7 +93,13 @@ describe('QA schema migration', () => {
         .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'qa_%'")
         .all() as { name: string }[]
     ).map((r) => r.name);
-    expect(tables.sort()).toEqual(['qa_cases', 'qa_plans', 'qa_results', 'qa_runs']);
+    expect(tables.sort()).toEqual([
+      'qa_cases',
+      'qa_environments',
+      'qa_plans',
+      'qa_results',
+      'qa_runs',
+    ]);
 
     const indexedColumns = (table: string) =>
       (db.prepare(`PRAGMA index_list(${table})`).all() as { name: string }[]).map(

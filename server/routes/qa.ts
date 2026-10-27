@@ -24,6 +24,7 @@ import {
   loadQaAuthoringContext,
 } from '../qa-authoring.js';
 import { launchQaRun } from '../qa-run-launch.js';
+import { listQaEnvironments } from '../qa-environments.js';
 import { maybeArchiveQaRunSession } from '../qa-run-session-archive.js';
 import { describeQaAutoRerun, processQaAutoRerun } from '../qa-auto-rerun.js';
 import { abandonUnseededSession, kickoffSeededTurn } from '../seeded-session-kickoff.js';
@@ -654,7 +655,12 @@ export default function createQaRoutes(deps: RouteDeps): Router {
     if (!deps.handleChat) {
       return { status: 503, body: { error: 'Chat is unavailable on this server' } };
     }
-    const seed = buildQaAuthoringSeed({ project, plan, context: loadQaAuthoringContext(plan) });
+    const seed = buildQaAuthoringSeed({
+      project,
+      plan,
+      context: loadQaAuthoringContext(plan),
+      environments: listQaEnvironments(project.id),
+    });
     const sessionId = randomUUID();
     try {
       const { engine, model } = resolveAgentSpawnEngineAndModel(deps.config, agent, ownerUserId);

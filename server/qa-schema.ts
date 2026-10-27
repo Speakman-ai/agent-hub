@@ -31,6 +31,12 @@
  * array of artifact ids. `finding_card_id` is the kanban card filed for a
  * failing verdict.
  *
+ * qa_environments: project-level servers QA tests against (base URL plus
+ * free-form notes about the server) and the test accounts for each. `accounts`
+ * is a JSON array of { id, label, username, password_enc, notes }; passwords
+ * are AES-GCM blobs from secret-crypto.ts and never leave the server except
+ * through the `{{qa-password:<accountId>}}` substitution in QA sessions.
+ *
  * Kanban / session links are ON DELETE SET NULL: deleting a card or session
  * must not erase QA history. Timestamps use `datetime('now')` like the kanban
  * tables so deploy/merge comparisons stay in one format.
@@ -128,4 +134,18 @@ export const QA_SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_qa_results_case ON qa_results(case_id);
   CREATE INDEX IF NOT EXISTS idx_qa_results_finding_card
     ON qa_results(finding_card_id) WHERE finding_card_id IS NOT NULL;
+
+  CREATE TABLE IF NOT EXISTS qa_environments (
+    id         TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    name       TEXT NOT NULL,
+    base_url   TEXT NOT NULL DEFAULT '',
+    notes      TEXT NOT NULL DEFAULT '',
+    accounts   TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(accounts)),
+    position   INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_qa_environments_project
+    ON qa_environments(project_id, position, id);
 `;

@@ -13,6 +13,7 @@ import { randomUUID } from 'crypto';
 import { getStmts } from './db.js';
 import { resolveAgentSpawnEngineAndModel } from './effective-model.js';
 import { findProjectQaAgent } from './qa-authoring.js';
+import { listQaEnvironments } from './qa-environments.js';
 import { buildQaRunSeed, resolveQaTarget } from './qa-run-kickoff.js';
 import { cancelQaRun, markQaRunRunning, qaRunCaseIds, startQaRun } from './qa-status.js';
 import { abandonUnseededSession, kickoffSeededTurn } from './seeded-session-kickoff.js';
@@ -98,6 +99,7 @@ export async function launchQaRun(
     run,
     cases: s.listQaCasesByPlan.all(plan.id).filter((c) => inScope.has(c.id)),
     routing,
+    environments: listQaEnvironments(project.id),
   });
   const sessionId = randomUUID();
   try {

@@ -4394,6 +4394,7 @@ function initDb(dataDir: string): void {
     ),
     deleteQaPlan: db.prepare('DELETE FROM qa_plans WHERE id = ?'),
     deleteQaPlansByProject: db.prepare('DELETE FROM qa_plans WHERE project_id = ?'),
+    deleteQaEnvironmentsByProject: db.prepare('DELETE FROM qa_environments WHERE project_id = ?'),
     setQaPlanStatus: db.prepare(
       "UPDATE qa_plans SET status = ?, updated_at = datetime('now') WHERE id = ?",
     ),

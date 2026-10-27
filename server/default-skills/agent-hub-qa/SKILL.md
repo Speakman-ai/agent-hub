@@ -103,8 +103,13 @@ tool to drive the target with. The server has already marked the run
      In a run session the preview tool drives the preview of the session that
      hosts the target (named in the seed). Navigate by route, and do not try
      to start it: if it is down, the cases are `blocked`.
-3. Logins: use skill credentials from the environment, or an
-   `agenthub:credential-request` card. Never put a secret in chat.
+3. Logins: use the test accounts listed under **Environments** in the seed
+   (also `qa.sh env list`). Type a password by putting its placeholder,
+   e.g. `{{qa-password:acc_1a2b3c4d5e6f}}`, verbatim in the `text` of a
+   `browser` / `preview` `type` action; the host substitutes the real value
+   and you never see it. With no matching account, fall back to skill
+   credentials or an `agenthub:credential-request` card. Never put a secret
+   in chat.
 4. Before any destructive action on the target (deleting data, sending a
    message, a purchase), request the `approval` tool and wait for the answer.
 5. For each case in scope, in order: follow the steps, take **at least one**

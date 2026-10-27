@@ -12,6 +12,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../context/AppContext';
 import ProjectScreenHeader from '../components/ProjectScreenHeader';
 import NewQaPlanModal from '../components/NewQaPlanModal';
+import QaEnvironmentsSettings from '../components/QaEnvironmentsSettings';
 import QaPlanDetailView, { QaLinkChips, type QaLinkHandlers } from '../components/QaPlanDetailView';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
@@ -119,6 +120,7 @@ export default function QaScreen({ route, navigation }: any) {
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<QaPlanStatus>('new');
   const [viewMode, setViewMode] = useState<ViewMode>('list');
+  const [showSettings, setShowSettings] = useState(false);
   const [creating, setCreating] = useState(false);
   const [detailNotice, setDetailNotice] = useState<string | null>(null);
   const requestSeq = useRef(0);
@@ -212,6 +214,19 @@ export default function QaScreen({ route, navigation }: any) {
     }
   };
 
+  if (showSettings && !selectedPlanId) {
+    return (
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <ProjectScreenHeader
+          title="QA settings"
+          project={project}
+          onBack={() => setShowSettings(false)}
+        />
+        <QaEnvironmentsSettings projectId={projectId} />
+      </SafeAreaView>
+    );
+  }
+
   if (selectedPlanId) {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
@@ -244,6 +259,13 @@ export default function QaScreen({ route, navigation }: any) {
         style={styles.newButton}
       >
         <Text style={styles.newButtonText}>+ New QA plan</Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        testID="qa-settings-open"
+        onPress={() => setShowSettings(true)}
+        style={styles.settingsButton}
+      >
+        <Text style={styles.settingsText}>Settings</Text>
       </TouchableOpacity>
       <View style={styles.toggle}>
         {(['list', 'board'] as const).map((mode) => (
@@ -353,6 +375,16 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   newButtonText: { fontSize: 13, color: colors.white },
+  settingsButton: {
+    marginLeft: 'auto',
+    marginRight: 8,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  settingsText: { fontSize: 13, color: colors.gray300 },
   toggle: {
     flexDirection: 'row',
     borderWidth: 1,

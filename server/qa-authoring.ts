@@ -8,6 +8,7 @@
  */
 import { getDb } from './db.js';
 import { QA_AGENT_ROLE } from './qa-agent-prompt.js';
+import { buildQaEnvironmentsBlock, type QaEnvironmentView } from './qa-environments.js';
 import type { Agent, Project, QaPlanRow } from './types.js';
 
 /** Long epic / card descriptions are cut so the seed stays a reasonable size. */
@@ -47,6 +48,8 @@ export function buildQaAuthoringSeed(args: {
   project: Pick<Project, 'id' | 'name'>;
   plan: Pick<QaPlanRow, 'id' | 'title' | 'goal' | 'target_url'>;
   context: QaAuthoringContext;
+  /** The project's QA environments (server notes + test accounts). */
+  environments?: readonly QaEnvironmentView[];
 }): string {
   const { project, plan, context } = args;
   const lines = [
@@ -74,12 +77,14 @@ export function buildQaAuthoringSeed(args: {
       descriptionBlock(context.card.description),
     );
   }
+  const envBlock = buildQaEnvironmentsBlock(args.environments ?? [], plan.target_url);
+  if (envBlock) lines.push('', envBlock);
   lines.push(
     '',
     '### What to do',
     '',
     `1. Run \`qa.sh plan get ${plan.id}\` to see any cases that already exist.`,
-    `2. Propose cases grounded in the goal${context.epic || context.card ? ' and the acceptance criteria above' : ''}, and add them with \`qa.sh case add ${plan.id}\` in run order. One behavior per case, numbered steps, an observable expected result.`,
+    `2. Propose cases grounded in the goal${context.epic || context.card ? ' and the acceptance criteria above' : ''}, and add them with \`qa.sh case add ${plan.id}\` in run order. One behavior per case, numbered steps, an observable expected result. When a step logs in, name the test account by its label from Environments.`,
     '3. Summarize the list here and ask what to change. Apply my edits with `qa.sh case update` / `case delete` / `case reorder`; I may also edit cases directly on the plan page.',
     '4. When the list looks right, tell me it is ready and that I approve it with **Approve** on the plan page. Do not start a run.',
   );

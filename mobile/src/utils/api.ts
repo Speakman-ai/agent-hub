@@ -9,6 +9,7 @@ import type {
 } from '@shared/utils/reminders';
 import type { UploadedAttachment } from '@shared/types/uploads';
 import type { ChatDigestSaveRequest } from '@shared/utils/chatDigest';
+import type { QaEnvironmentInput, QaEnvironmentWire } from '@shared/utils/qaEnvironments';
 import type { RoutineDraftWire } from '@shared/utils/routineFromRecording';
 import { getApiBaseUrl, getAuthHeaders } from './config';
 import { buildNotesListUrl, buildNoteUrl } from './notesUrl';
@@ -846,6 +847,30 @@ export const api = {
   revertDeploySettings: (projectId: string) =>
     fetchJSON(`/projects/${projectId}/deploy/settings`, { method: 'DELETE' }),
   // QA Validation (mirrors client/src/utils/api.ts)
+  listQaEnvironments: (projectId: string): Promise<{ environments: QaEnvironmentWire[] }> =>
+    fetchJSON(`/projects/${encodeURIComponent(projectId)}/qa/environments`),
+  createQaEnvironment: (
+    projectId: string,
+    input: QaEnvironmentInput,
+  ): Promise<{ environment: QaEnvironmentWire }> =>
+    fetchJSON(`/projects/${encodeURIComponent(projectId)}/qa/environments`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  updateQaEnvironment: (
+    projectId: string,
+    environmentId: string,
+    input: QaEnvironmentInput,
+  ): Promise<{ environment: QaEnvironmentWire }> =>
+    fetchJSON(
+      `/projects/${encodeURIComponent(projectId)}/qa/environments/${encodeURIComponent(environmentId)}`,
+      { method: 'PATCH', body: JSON.stringify(input) },
+    ),
+  deleteQaEnvironment: (projectId: string, environmentId: string): Promise<{ ok: true }> =>
+    fetchJSON(
+      `/projects/${encodeURIComponent(projectId)}/qa/environments/${encodeURIComponent(environmentId)}`,
+      { method: 'DELETE' },
+    ),
   listQaPlans: (projectId: string): Promise<QaPlanListResponse> =>
     fetchJSON(`/projects/${encodeURIComponent(projectId)}/qa/plans`),
   getQaPlan: (projectId: string, planId: string): Promise<QaPlanDetail> =>

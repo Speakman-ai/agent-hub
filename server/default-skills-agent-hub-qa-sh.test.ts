@@ -212,6 +212,13 @@ describe('qa.sh @file reads', () => {
 });
 
 describe('qa.sh requests', () => {
+  it('env list', async () => {
+    expect(await capture(['env', 'list'])).toMatchObject({
+      method: 'GET',
+      url: PLANS.replace(/plans$/, 'environments'),
+    });
+  });
+
   it('plan list / get', async () => {
     expect(await capture(['plan', 'list', '--status', 'in_progress'])).toMatchObject({
       method: 'GET',

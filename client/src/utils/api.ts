@@ -9,6 +9,7 @@ import {
   type RoutineDraftWire,
 } from '@shared/utils/routineFromRecording';
 import type { ChatDigestSaveRequest } from '@shared/utils/chatDigest';
+import type { QaEnvironmentInput, QaEnvironmentWire } from '@shared/utils/qaEnvironments';
 import { getApiBase, getAuthHeaders } from './connection';
 import { getToken as getJwt, clearToken, isLocalBundledDeployment } from './auth';
 import { normalizeSessionMessagesResponse } from '@shared/utils/sessionMessagesResponse';
@@ -139,6 +140,12 @@ export interface QaPlanListItemWire {
     card: { id: string; title: string } | null;
   };
 }
+
+export type {
+  QaEnvironmentAccountWire,
+  QaEnvironmentInput,
+  QaEnvironmentWire,
+} from '@shared/utils/qaEnvironments';
 
 export interface QaPlanWire {
   id: string;
@@ -2696,6 +2703,25 @@ export const api = {
     fetchJSON(`/projects/${projectId}/ci-runs/${runId}`),
   getDefaultBranchHealth: (projectId: any) =>
     fetchJSON(`/projects/${encodeURIComponent(projectId)}/finalize/default-branch-health`),
+  listQaEnvironments: (projectId: string) =>
+    fetchJSON<{ environments: QaEnvironmentWire[] }>(
+      `/projects/${encodeURIComponent(projectId)}/qa/environments`,
+    ),
+  createQaEnvironment: (projectId: string, input: QaEnvironmentInput) =>
+    fetchJSON<{ environment: QaEnvironmentWire }>(
+      `/projects/${encodeURIComponent(projectId)}/qa/environments`,
+      { method: 'POST', body: JSON.stringify(input) },
+    ),
+  updateQaEnvironment: (projectId: string, environmentId: string, input: QaEnvironmentInput) =>
+    fetchJSON<{ environment: QaEnvironmentWire }>(
+      `/projects/${encodeURIComponent(projectId)}/qa/environments/${encodeURIComponent(environmentId)}`,
+      { method: 'PATCH', body: JSON.stringify(input) },
+    ),
+  deleteQaEnvironment: (projectId: string, environmentId: string) =>
+    fetchJSON<{ ok: true }>(
+      `/projects/${encodeURIComponent(projectId)}/qa/environments/${encodeURIComponent(environmentId)}`,
+      { method: 'DELETE' },
+    ),
   listQaPlans: (projectId: string) =>
     fetchJSON<QaPlanListWire>(`/projects/${encodeURIComponent(projectId)}/qa/plans`),
   getQaPlan: (projectId: string, planId: string) =>

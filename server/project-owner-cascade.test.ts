@@ -61,6 +61,7 @@ function makeStmts(
     deleteWikiPagesByProject: noop,
     deleteBoardsByProject: noop,
     deleteQaPlansByProject: noop,
+    deleteQaEnvironmentsByProject: noop,
     deleteWorkflowsByProject: noop,
     deleteRoomsByProject: noop,
     deleteCronsByProject: noop,

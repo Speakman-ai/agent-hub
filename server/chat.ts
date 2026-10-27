@@ -199,6 +199,7 @@ import { buildSkillBuilderModePreamble } from './skill-builder-mode-prompt.js';
 import { buildConsultModePreamble } from './consult-mode-prompt.js';
 import { buildQaModePreamble } from './qa-mode-prompt.js';
 import { qaBorrowedPreviewStartRefusal, qaRunPreviewOwnerSessionId } from './qa-run-kickoff.js';
+import { qaStepGuard } from './qa-environments.js';
 import {
   claudeSidebarForkArgs,
   isSidebarSession,
@@ -6399,6 +6400,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             let hostDetail: string | undefined;
             let hostActionThrew = false;
             let hostActionErr: unknown;
+            let actionText = action.text;
+            let redactQa = <R>(r: R): R => r;
             try {
               if (action.tool === 'skill') {
                 const injection = loadSkillByName({
@@ -6686,6 +6689,33 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                 continue;
               }
 
+              if (action.tool === 'browser' || action.tool === 'preview') {
+                // QA test-account passwords arrive as placeholders and are
+                // swapped in here; every step's result is scrubbed of the
+                // project's test passwords, so plaintext never enters the
+                // transcript even if the page echoes one later.
+                const qaGuard = qaStepGuard({
+                  sessionMode: session!.session_mode,
+                  projectId: project?.id,
+                  op: action.op,
+                  text: action.text,
+                });
+                if (!qaGuard.ok) {
+                  const md = `**${action.tool}(type) refused:** ${qaGuard.error}`;
+                  assistantContextToAppend = assistantContextToAppend
+                    ? `${assistantContextToAppend}\n\n${md}`
+                    : md;
+                  reactObservations.push(
+                    `- ${action.tool}(type) refused: QA password placeholder.`,
+                  );
+                  hostExit = 1;
+                  hostDetail = 'qa_password_placeholder';
+                  continue;
+                }
+                actionText = qaGuard.text;
+                redactQa = qaGuard.redact;
+              }
+
               if (action.tool === 'browser') {
                 const actionId = uuidv4();
                 const browserInput = {
@@ -6713,48 +6743,51 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                 const browserOpStartMs = Date.now();
                 let b: Awaited<ReturnType<typeof runBrowserReActStep>>;
                 try {
-                  b = await runBrowserReActStep(
-                    sessionId,
-                    {
-                      op: browserInput.op,
-                      url: browserInput.url,
-                      target: browserInput.target,
-                      text: browserInput.text,
-                      instruction: browserInput.instruction,
-                      schema: browserInput.schema,
-                      direction: browserInput.direction,
-                      condition: browserInput.condition,
-                      domain: browserInput.domain,
-                      reason: browserInput.reason,
-                    },
-                    withBrowserProfile(browserLaunchOpts, {
-                      ownerUserId: session!.owner_user_id ?? null,
-                      agentId: agent.id,
-                      projectId: project?.id ?? null,
-                    }),
-                    undefined,
-                    browserLoginHandoffDeps({
-                      broadcast,
+                  b = redactQa(
+                    await runBrowserReActStep(
                       sessionId,
-                      agentId: agent.id,
-                      agentName: agent.name,
-                      projectId: project?.id ?? null,
-                      sessionName: session!.name ?? null,
-                      ownerUserId: session!.owner_user_id ?? null,
-                    }),
-                    createBrowserDomainGate(
                       {
-                        sessionId,
+                        op: browserInput.op,
+                        url: browserInput.url,
+                        target: browserInput.target,
+                        text: actionText,
+                        instruction: browserInput.instruction,
+                        schema: browserInput.schema,
+                        direction: browserInput.direction,
+                        condition: browserInput.condition,
+                        domain: browserInput.domain,
+                        reason: browserInput.reason,
+                      },
+                      withBrowserProfile(browserLaunchOpts, {
                         ownerUserId: session!.owner_user_id ?? null,
+                        agentId: agent.id,
+                        projectId: project?.id ?? null,
+                      }),
+                      undefined,
+                      browserLoginHandoffDeps({
+                        broadcast,
+                        sessionId,
                         agentId: agent.id,
                         agentName: agent.name,
                         projectId: project?.id ?? null,
                         sessionName: session!.name ?? null,
-                      },
-                      { broadcast, isCancelled: () => isReactChainCancelRequested(sessionId) },
+                        ownerUserId: session!.owner_user_id ?? null,
+                      }),
+                      createBrowserDomainGate(
+                        {
+                          sessionId,
+                          ownerUserId: session!.owner_user_id ?? null,
+                          agentId: agent.id,
+                          agentName: agent.name,
+                          projectId: project?.id ?? null,
+                          sessionName: session!.name ?? null,
+                        },
+                        { broadcast, isCancelled: () => isReactChainCancelRequested(sessionId) },
+                      ),
                     ),
                   );
                 } catch (err: unknown) {
+                  if (err instanceof Error) err.message = redactQa(err.message);
                   emitBrowserActivityEvent(
                     buildBrowserActivityEndedThrowEvent({
                       actionId,
@@ -6817,45 +6850,48 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                 const previewOwner = qaRunPreviewOwnerSessionId(stmts, sessionId);
                 let p: Awaited<ReturnType<typeof runPreviewReActStep>>;
                 try {
-                  p = await runPreviewReActStep(
-                    sessionId,
-                    {
-                      op: opName,
-                      route: action.route,
-                      reason: action.reason,
-                      tail: action.tail,
-                      target: action.target,
-                      text: action.text,
-                      instruction: action.instruction,
-                      schema: action.schema,
-                      direction: action.direction,
-                      condition: action.condition,
-                    },
-                    {
-                      runtime: resolvePreviewReactRuntime(previewOwner ?? sessionId, [
-                        getDevServerRuntime?.(),
-                      ]),
-                      launchOpts: browserLaunchOpts,
-                      ...(previewOwner ? { previewOwnerSessionId: previewOwner } : {}),
-                      startPreview: async ({ route, reason }) =>
-                        previewOwner
-                          ? qaBorrowedPreviewStartRefusal(previewOwner)
-                          : startSessionPreview({
-                              sessionId,
-                              body: { route, reason },
-                              broadcast,
-                              findAgent,
-                              getDevServerRuntime,
-                              getSession: (id) =>
-                                stmts.getSession.get(id) as SessionRow | undefined,
-                              routing: {
-                                publicUrl: config.publicUrl,
-                                subdomainBase: config.previewSubdomainBase,
-                              },
-                            }),
-                    },
+                  p = redactQa(
+                    await runPreviewReActStep(
+                      sessionId,
+                      {
+                        op: opName,
+                        route: action.route,
+                        reason: action.reason,
+                        tail: action.tail,
+                        target: action.target,
+                        text: actionText,
+                        instruction: action.instruction,
+                        schema: action.schema,
+                        direction: action.direction,
+                        condition: action.condition,
+                      },
+                      {
+                        runtime: resolvePreviewReactRuntime(previewOwner ?? sessionId, [
+                          getDevServerRuntime?.(),
+                        ]),
+                        launchOpts: browserLaunchOpts,
+                        ...(previewOwner ? { previewOwnerSessionId: previewOwner } : {}),
+                        startPreview: async ({ route, reason }) =>
+                          previewOwner
+                            ? qaBorrowedPreviewStartRefusal(previewOwner)
+                            : startSessionPreview({
+                                sessionId,
+                                body: { route, reason },
+                                broadcast,
+                                findAgent,
+                                getDevServerRuntime,
+                                getSession: (id) =>
+                                  stmts.getSession.get(id) as SessionRow | undefined,
+                                routing: {
+                                  publicUrl: config.publicUrl,
+                                  subdomainBase: config.previewSubdomainBase,
+                                },
+                              }),
+                      },
+                    ),
                   );
                 } catch (err: unknown) {
+                  if (err instanceof Error) err.message = redactQa(err.message);
                   emitBrowserActivityEvent(
                     buildBrowserActivityEndedThrowEvent({
                       actionId,

@@ -77,6 +77,7 @@ export function deleteProjectScopedRows(stmts: Stmts, project: Project): void {
   }
   // qa_plans has no FK to the project; a reused id must not inherit plans.
   stmts.deleteQaPlansByProject.run(project.id);
+  stmts.deleteQaEnvironmentsByProject.run(project.id);
   stmts.deleteBoardsByProject.run(project.id);
   stmts.deleteWorkflowsByProject.run(project.id);
   stmts.deleteCronsByProject.run(project.id);

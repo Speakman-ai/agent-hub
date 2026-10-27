@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ClipboardCheck, List, Plus, SquareKanban } from 'lucide-react';
+import { ClipboardCheck, List, Plus, Settings, SquareKanban } from 'lucide-react';
 import { api, type QaPlanListItemWire, type QaPlanStatus, type QaVerdict } from '../utils/api';
 import { QA_STATUSES, VERDICT_CLASS, VERDICT_LABELS } from '../utils/qaLabels';
 import { LinkChips, type LinkProps } from './QaLinkChips';
 import NewQaPlanDialog from './NewQaPlanDialog';
+import QaEnvironmentsSettings from './QaEnvironmentsSettings';
 import QaPlanDetail from './QaPlanDetail';
 
 export { QA_STATUSES };
@@ -150,6 +151,7 @@ export default function QaPage({
   const [tab, setTab] = useState<QaPlanStatus>('new');
   const [viewMode, setViewModeState] = useState<ViewMode>(readViewMode);
   const [creating, setCreating] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [detailNotice, setDetailNotice] = useState<string | null>(null);
 
   /**
@@ -235,6 +237,10 @@ export default function QaPage({
 
   const grouped = useMemo(() => groupPlansByStatus(plans), [plans]);
 
+  if (showSettings && !selectedPlanId) {
+    return <QaEnvironmentsSettings projectId={projectId} onBack={() => setShowSettings(false)} />;
+  }
+
   if (selectedPlanId) {
     return (
       <QaPlanDetail
@@ -262,9 +268,19 @@ export default function QaPage({
         </h1>
         <button
           type="button"
+          data-testid="qa-settings-open"
+          onClick={() => setShowSettings(true)}
+          title="Environments and test accounts"
+          className="ml-auto inline-flex items-center gap-1 rounded-md border border-gray-700 px-2.5 py-1 text-xs text-gray-300 hover:bg-gray-800"
+        >
+          <Settings size={12} />
+          Settings
+        </button>
+        <button
+          type="button"
           data-testid="qa-new-plan"
           onClick={() => setCreating(true)}
-          className="ml-auto inline-flex items-center gap-1 rounded-md bg-blue-600 px-2.5 py-1 text-xs text-white hover:bg-blue-500"
+          className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-2.5 py-1 text-xs text-white hover:bg-blue-500"
         >
           <Plus size={12} />
           New QA plan

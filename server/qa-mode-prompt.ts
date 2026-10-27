@@ -38,7 +38,7 @@ export function buildQaModePreamble(args: {
     browserLine,
     "- This project's session preview or a loopback / private host: use the `preview` tool, because browser egress policy blocks private targets.",
     '- Per case: follow the steps, capture at least one screenshot, upload it with `artifacts.sh`, then post a result with verdict `pass`, `fail`, `needs_change`, or `blocked` plus what actually happened and the artifact ids.',
-    '- Logins: use skill credentials or an `agenthub:credential-request` card. Destructive actions on the target go through the `approval` tool first.',
+    "- Logins: use the project's QA environments (`qa.sh env list`; also listed in the seed). Type a password with its `{{qa-password:<accountId>}}` placeholder in a `type` action; the host fills the real value. Otherwise use skill credentials or an `agenthub:credential-request` card. Destructive actions on the target go through the `approval` tool first.",
     '',
     '### Rules',
     '',

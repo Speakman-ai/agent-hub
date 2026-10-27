@@ -15131,6 +15131,65 @@ components:
       required:
         - error
       description: Error envelope for the project-member routes.
+    QaEnvironmentAccount:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Stable id; QA sessions type `{{qa-password:<id>}}` to enter its password.
+        label:
+          type: string
+        username:
+          type: string
+        password:
+          type: string
+          description: The mask when a password is saved, else "".
+        hasPassword:
+          type: boolean
+        notes:
+          type: string
+      required:
+        - id
+        - label
+        - username
+        - password
+        - hasPassword
+        - notes
+      description: A test account. The password is never returned.
+    QaEnvironment:
+      type: object
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        name:
+          type: string
+        baseUrl:
+          type: string
+        notes:
+          type: string
+        accounts:
+          type: array
+          items:
+            $ref: "#/components/schemas/QaEnvironmentAccount"
+        position:
+          type: integer
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - projectId
+        - name
+        - baseUrl
+        - notes
+        - accounts
+        - position
+        - createdAt
+        - updatedAt
+      description: A server QA plans test against, with its test accounts. Listed in every QA run and authoring seed.
     QaErrorResponse:
       type: object
       properties:
@@ -58113,9 +58172,475 @@ paths:
           description: Missing description or no connected Claude account.
         "502":
           description: Model invocation failed.
-  /api/projects/{projectId}/qa/plans:
+  /api/projects/{projectId}/qa/environments:
     get:
       tags: &a8
+        - QA
+      summary: List the project's QA environments
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Environments in display order.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  environments:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/QaEnvironment"
+                required:
+                  - environments
+        "404":
+          description: Project or environment not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  details:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        path:
+                          type: array
+                          items:
+                            nullable: true
+                        message:
+                          type: string
+                      required:
+                        - path
+                        - message
+                required:
+                  - error
+    post:
+      tags: *a8
+      summary: Create a QA environment
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+                baseUrl:
+                  type: string
+                  maxLength: 2000
+                  description: http(s) URL of the server under test. "" for none.
+                notes:
+                  type: string
+                  maxLength: 10000
+                  description: Free-form notes about the server (version, seed data, quirks, feature flags).
+                accounts:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        description: Existing account id to keep (and its password). Omit for a new account.
+                      label:
+                        type: string
+                        minLength: 1
+                        maxLength: 100
+                      username:
+                        type: string
+                        maxLength: 300
+                      password:
+                        type: string
+                        maxLength: 1000
+                        description: New password. Omit or send the mask (••••••••) to keep it; send "" to clear it.
+                      notes:
+                        type: string
+                        maxLength: 2000
+                    required:
+                      - label
+                  maxItems: 50
+                  description: Full replacement list of test accounts, in display order.
+              required:
+                - name
+      responses:
+        "201":
+          description: Created environment.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  environment:
+                    $ref: "#/components/schemas/QaEnvironment"
+                required:
+                  - environment
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  details:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        path:
+                          type: array
+                          items:
+                            nullable: true
+                        message:
+                          type: string
+                      required:
+                        - path
+                        - message
+                required:
+                  - error
+        "403":
+          description: Requires the Admin role.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  details:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        path:
+                          type: array
+                          items:
+                            nullable: true
+                        message:
+                          type: string
+                      required:
+                        - path
+                        - message
+                required:
+                  - error
+        "404":
+          description: Project or environment not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  details:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        path:
+                          type: array
+                          items:
+                            nullable: true
+                        message:
+                          type: string
+                      required:
+                        - path
+                        - message
+                required:
+                  - error
+        "409":
+          description: Another environment in this project has that name.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  details:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        path:
+                          type: array
+                          items:
+                            nullable: true
+                        message:
+                          type: string
+                      required:
+                        - path
+                        - message
+                required:
+                  - error
+  /api/projects/{projectId}/qa/environments/{environmentId}:
+    patch:
+      tags: *a8
+      summary: Update a QA environment
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: environmentId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+                baseUrl:
+                  type: string
+                  maxLength: 2000
+                  description: http(s) URL of the server under test. "" for none.
+                notes:
+                  type: string
+                  maxLength: 10000
+                  description: Free-form notes about the server (version, seed data, quirks, feature flags).
+                accounts:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        description: Existing account id to keep (and its password). Omit for a new account.
+                      label:
+                        type: string
+                        minLength: 1
+                        maxLength: 100
+                      username:
+                        type: string
+                        maxLength: 300
+                      password:
+                        type: string
+                        maxLength: 1000
+                        description: New password. Omit or send the mask (••••••••) to keep it; send "" to clear it.
+                      notes:
+                        type: string
+                        maxLength: 2000
+                    required:
+                      - label
+                  maxItems: 50
+                  description: Full replacement list of test accounts, in display order.
+      responses:
+        "200":
+          description: Updated environment.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  environment:
+                    $ref: "#/components/schemas/QaEnvironment"
+                required:
+                  - environment
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  details:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        path:
+                          type: array
+                          items:
+                            nullable: true
+                        message:
+                          type: string
+                      required:
+                        - path
+                        - message
+                required:
+                  - error
+        "403":
+          description: Requires the Admin role.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  details:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        path:
+                          type: array
+                          items:
+                            nullable: true
+                        message:
+                          type: string
+                      required:
+                        - path
+                        - message
+                required:
+                  - error
+        "404":
+          description: Project or environment not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  details:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        path:
+                          type: array
+                          items:
+                            nullable: true
+                        message:
+                          type: string
+                      required:
+                        - path
+                        - message
+                required:
+                  - error
+        "409":
+          description: Another environment in this project has that name.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  details:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        path:
+                          type: array
+                          items:
+                            nullable: true
+                        message:
+                          type: string
+                      required:
+                        - path
+                        - message
+                required:
+                  - error
+    delete:
+      tags: *a8
+      summary: Delete a QA environment and its test accounts
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: environmentId
+          in: path
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "403":
+          description: Requires the Admin role.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  details:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        path:
+                          type: array
+                          items:
+                            nullable: true
+                        message:
+                          type: string
+                      required:
+                        - path
+                        - message
+                required:
+                  - error
+        "404":
+          description: Project or environment not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  details:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        path:
+                          type: array
+                          items:
+                            nullable: true
+                        message:
+                          type: string
+                      required:
+                        - path
+                        - message
+                required:
+                  - error
+  /api/projects/{projectId}/qa/plans:
+    get:
+      tags: &a9
         - QA
       summary: List the project's QA plans
       parameters:
@@ -58174,7 +58699,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/QaErrorResponse"
     post:
-      tags: *a8
+      tags: *a9
       summary: Create a draft QA plan
       parameters:
         - schema:
@@ -58254,7 +58779,7 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/qa/plans/{planId}:
     get:
-      tags: *a8
+      tags: *a9
       summary: Get a QA plan with cases, latest verdicts, and runs
       parameters:
         - schema:
@@ -58361,7 +58886,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/QaErrorResponse"
     patch:
-      tags: *a8
+      tags: *a9
       summary: Update a QA plan
       parameters:
         - schema:
@@ -58449,7 +58974,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/QaErrorResponse"
     delete:
-      tags: *a8
+      tags: *a9
       summary: Delete a QA plan and its history
       parameters:
         - schema:
@@ -58488,7 +59013,7 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/qa/plans/{planId}/cases:
     post:
-      tags: *a8
+      tags: *a9
       summary: Append a case (revokes approval)
       parameters:
         - schema:
@@ -58551,7 +59076,7 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/qa/plans/{planId}/cases/{caseId}:
     patch:
-      tags: *a8
+      tags: *a9
       summary: Edit a case (bumps its version, revokes approval)
       parameters:
         - schema:
@@ -58626,7 +59151,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/QaErrorResponse"
     delete:
-      tags: *a8
+      tags: *a9
       summary: Remove a case (revokes approval)
       parameters:
         - schema:
@@ -58673,7 +59198,7 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/qa/plans/{planId}/cases/reorder:
     post:
-      tags: *a8
+      tags: *a9
       summary: Reorder the case list (keeps approval)
       parameters:
         - schema:
@@ -58733,7 +59258,7 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/qa/plans/{planId}/approve:
     post:
-      tags: *a8
+      tags: *a9
       summary: Approve the case list
       parameters:
         - schema:
@@ -58772,7 +59297,7 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/qa/plans/{planId}/authoring-session:
     post:
-      tags: *a8
+      tags: *a9
       summary: Open the plan's authoring session with the project's QA agent
       description: "The first call creates a QA-mode session seeded with the plan id, target URL, goal, and the linked epic / card descriptions, and records it on the plan. Later calls return that session while it is live (200, `created: false`)."
       parameters:
@@ -58841,7 +59366,7 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/qa/plans/{planId}/revoke-approval:
     post:
-      tags: *a8
+      tags: *a9
       summary: Return the plan to draft
       parameters:
         - schema:
@@ -58880,7 +59405,7 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/qa/plans/{planId}/sign-off:
     post:
-      tags: *a8
+      tags: *a9
       summary: "Human sign-off: moves an all-pass plan to done"
       parameters:
         - schema:
@@ -58919,7 +59444,7 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/qa/plans/{planId}/runs:
     post:
-      tags: *a8
+      tags: *a9
       summary: Start a run in a new QA agent session
       description: Queues the run, opens a QA session seeded with the in-scope cases, target URL, and the tool to drive it with (`preview` for loopback, private, or session-preview targets, `browser` otherwise), and marks it running. 409 when unapproved, a run is active, the project has no QA agent (`no_qa_agent`), a preview-routed target is not served by a session preview in this project (`target_unreachable`), or a failed_only run has nothing to rerun (`nothing_to_rerun`). If the session cannot start, the run is cancelled and the route answers 502.
       parameters:
@@ -58998,7 +59523,7 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/qa/plans/{planId}/runs/{runId}:
     get:
-      tags: *a8
+      tags: *a9
       summary: Get a run with its results
       parameters:
         - schema:
@@ -59041,7 +59566,7 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/qa/plans/{planId}/runs/{runId}/begin:
     post:
-      tags: *a8
+      tags: *a9
       summary: Mark a queued run as running (no-op when already running)
       parameters:
         - schema:
@@ -59085,7 +59610,7 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/qa/plans/{planId}/runs/{runId}/finish:
     post:
-      tags: *a8
+      tags: *a9
       summary: Finish a running run; passed/failed is derived from the verdicts
       parameters:
         - schema:
@@ -59129,7 +59654,7 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/qa/plans/{planId}/runs/{runId}/cancel:
     post:
-      tags: *a8
+      tags: *a9
       summary: Cancel a queued or running run and stop its session
       parameters:
         - schema:
@@ -59173,7 +59698,7 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/qa/plans/{planId}/runs/{runId}/results:
     post:
-      tags: *a8
+      tags: *a9
       summary: Record or replace the verdict for one case in a running run
       description: Once every in-scope case has a result the run finishes on its own, passed when all verdicts are `pass`, and the run session gets a chat summary. 409 `out_of_scope` for a case outside the run; 400 `artifact_not_owned` when a screenshot id was not uploaded by the run session.
       parameters:
@@ -59258,7 +59783,7 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/qa/plans/{planId}/runs/{runId}/results/{caseId}/troubleshoot:
     post:
-      tags: *a8
+      tags: *a9
       summary: Open a dev-agent session to troubleshoot one failed or blocked result
       description: Creates a session on the project's main dev agent seeded with the case steps, expected and actual results, QA notes, screenshot artifact ids, the run session to read, and any finding card. Only `fail`, `needs_change`, and `blocked` results qualify. Every call opens a new session.
       parameters:

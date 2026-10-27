@@ -20,6 +20,7 @@
  * Two or more sessions matching is ambiguous and refused.
  */
 import { isLoopbackHost } from './loopback-host.js';
+import { buildQaEnvironmentsBlock, type QaEnvironmentView } from './qa-environments.js';
 import { matchPreviewProxyPath } from './preview-auth.js';
 import { parsePreviewSubdomainHost } from './preview/preview-subdomain-host.js';
 import type { Project, QaCaseRow, QaPlanRow, QaRunRow, Stmts } from './types.js';
@@ -223,8 +224,11 @@ export function buildQaRunSeed(args: {
   /** In-scope cases, in run order. */
   cases: Array<Pick<QaCaseRow, 'id' | 'title' | 'steps' | 'expected'>>;
   routing: Exclude<QaTargetResolution, { tool: 'unreachable' }>;
+  /** The project's QA environments (server notes + test accounts). */
+  environments?: readonly QaEnvironmentView[];
 }): string {
   const { project, plan, run, cases, routing } = args;
+  const envBlock = buildQaEnvironmentsBlock(args.environments ?? [], plan.target_url);
   const toolLine =
     routing.tool === 'preview'
       ? `Drive the target with the \`preview\` ReAct tool, because ${routing.reason}. The \`browser\` tool's egress policy refuses it. In this session the preview tool drives session \`${routing.previewSessionId}\`'s preview, which serves the target: use \`navigate\` with a route (the target is \`${routing.route}\`), never a full URL. You cannot start or stop that preview; if \`state\` says it is not running, mark the cases \`blocked\` and say the preview was down.`
@@ -247,12 +251,13 @@ export function buildQaRunSeed(args: {
     '',
     cases.map((c, i) => caseBlock(c, i + 1)).join('\n\n'),
     '',
+    ...(envBlock ? [envBlock, ''] : []),
     '### What to do',
     '',
     '1. The run is already **running**; do not call `qa.sh run begin`.',
     '2. For each case, in order: follow the steps, take at least one screenshot, upload it with `artifacts.sh put`, then post the verdict before moving on:',
     `   \`qa.sh result post ${plan.id} ${run.id} --case <caseId> --verdict pass|fail|needs_change|blocked --actual "<what you saw>" --screenshot <artifactId>\``,
-    '3. A case you could not reach or execute is `blocked`, never `pass`. Use skill credentials or an `agenthub:credential-request` card for logins, and the `approval` tool before any destructive action on the target.',
+    '3. A case you could not reach or execute is `blocked`, never `pass`. For logins use the test accounts under Environments when there are any, otherwise skill credentials or an `agenthub:credential-request` card, and the `approval` tool before any destructive action on the target.',
     '4. Do not file finding cards. When the run finishes the server files one per `fail` / `needs_change` result and assigns it to a dev agent, so make `--actual` specific.',
     '5. The server finishes the run, derives passed / failed, and posts a verdict summary here once every case above has a result. Screenshot ids must be artifacts you uploaded in this session; any other id is refused. Close with one line noting anything the summary cannot show.',
     '',
