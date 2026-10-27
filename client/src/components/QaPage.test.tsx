@@ -14,6 +14,7 @@ vi.mock('../utils/api', () => ({
     openQaAuthoringSession: (...a: unknown[]) => openQaAuthoringSession(...a),
     getEpics: () => Promise.resolve([]),
     getBoardCards: () => Promise.resolve([]),
+    listQaEnvironments: () => Promise.resolve({ environments: [] }),
   },
 }));
 

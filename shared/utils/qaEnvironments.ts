@@ -131,3 +131,33 @@ export function qaEnvironmentDraftToInput(d: QaEnvironmentDraft): QaEnvironmentI
       })),
   };
 }
+
+/** Environments a new plan can target: those with a base URL. */
+export function selectableQaEnvironments(envs: readonly QaEnvironmentWire[]): QaEnvironmentWire[] {
+  return envs.filter((e) => e.baseUrl.trim());
+}
+
+/**
+ * The environment a target URL points at, or null for a custom URL. Exact
+ * base-URL matches win; otherwise the first environment on the same origin.
+ */
+export function matchQaEnvironment(
+  envs: readonly QaEnvironmentWire[],
+  targetUrl: string,
+): QaEnvironmentWire | null {
+  const url = targetUrl.trim();
+  if (!url) return null;
+  const exact = envs.find((e) => e.baseUrl.trim() && e.baseUrl.trim() === url);
+  if (exact) return exact;
+  const origin = originOf(url);
+  if (!origin) return null;
+  return envs.find((e) => e.baseUrl.trim() && originOf(e.baseUrl) === origin) ?? null;
+}
+
+function originOf(url: string): string | null {
+  try {
+    return new URL(url.trim()).origin;
+  } catch {
+    return null;
+  }
+}

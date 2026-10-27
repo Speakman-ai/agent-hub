@@ -13,6 +13,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import {
+  matchQaEnvironment,
+  selectableQaEnvironments,
+  type QaEnvironmentWire,
+} from '@shared/utils/qaEnvironments';
+import {
   draftToCreateInput,
   filterCardOptions,
   toCardOptions,
@@ -68,6 +73,7 @@ export default function NewQaPlanModal({ projectId, onClose, onCreated }: NewQaP
   const [touched, setTouched] = useState(false);
   const [epics, setEpics] = useState<QaEpicOption[]>([]);
   const [cards, setCards] = useState<QaCardOption[]>([]);
+  const [environments, setEnvironments] = useState<QaEnvironmentWire[]>([]);
   const [cardQuery, setCardQuery] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -77,10 +83,17 @@ export default function NewQaPlanModal({ projectId, onClose, onCreated }: NewQaP
     void Promise.all([
       api.getEpics(projectId).catch(() => []),
       api.getBoardCards(projectId).catch(() => []),
-    ]).then(([e, c]) => {
+      api.listQaEnvironments(projectId).catch(() => ({ environments: [] })),
+    ]).then(([e, c, envRes]) => {
       if (cancelled) return;
       setEpics(toEpicOptions(e));
       setCards(toCardOptions(c));
+      const envs = selectableQaEnvironments(envRes?.environments ?? []);
+      setEnvironments(envs);
+      // Default to the first environment unless the user already typed a URL.
+      if (envs[0]) {
+        setDraft((d) => (d.targetUrl ? d : { ...d, targetUrl: envs[0].baseUrl.trim() }));
+      }
     });
     return () => {
       cancelled = true;
@@ -93,6 +106,7 @@ export default function NewQaPlanModal({ projectId, onClose, onCreated }: NewQaP
     [cards, draft.epicId, cardQuery],
   );
   const selectedCard = cards.find((c) => c.id === draft.cardId);
+  const selectedEnv = matchQaEnvironment(environments, draft.targetUrl);
 
   const set = <K extends keyof QaPlanDraft>(key: K, value: QaPlanDraft[K]) =>
     setDraft((d) => ({ ...d, [key]: value }));
@@ -149,6 +163,29 @@ export default function NewQaPlanModal({ projectId, onClose, onCreated }: NewQaP
             placeholderTextColor={colors.gray600}
           />
           {touched && errors.title ? <Text style={styles.error}>{errors.title}</Text> : null}
+
+          {environments.length > 0 ? (
+            <>
+              <Text style={styles.label}>Environment</Text>
+              <View style={styles.chips}>
+                {environments.map((env) => (
+                  <Chip
+                    key={env.id}
+                    testID={`qa-new-environment-${env.id}`}
+                    label={env.name}
+                    selected={selectedEnv?.id === env.id}
+                    onPress={() => set('targetUrl', env.baseUrl.trim())}
+                  />
+                ))}
+                <Chip
+                  testID="qa-new-environment-custom"
+                  label="Custom URL"
+                  selected={!selectedEnv}
+                  onPress={() => selectedEnv && set('targetUrl', '')}
+                />
+              </View>
+            </>
+          ) : null}
 
           <Text style={styles.label}>Target URL</Text>
           <TextInput

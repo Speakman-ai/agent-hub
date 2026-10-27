@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { X } from 'lucide-react';
 import { api, type QaCreatePlanInput } from '../utils/api';
+import {
+  matchQaEnvironment,
+  selectableQaEnvironments,
+  type QaEnvironmentWire,
+} from '@shared/utils/qaEnvironments';
 
 interface EpicOption {
   id: string;
@@ -120,6 +125,7 @@ export default function NewQaPlanDialog({ projectId, onClose, onCreated }: NewQa
   const [touched, setTouched] = useState(false);
   const [epics, setEpics] = useState<EpicOption[]>([]);
   const [cards, setCards] = useState<CardOption[]>([]);
+  const [environments, setEnvironments] = useState<QaEnvironmentWire[]>([]);
   const [cardQuery, setCardQuery] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -129,10 +135,17 @@ export default function NewQaPlanDialog({ projectId, onClose, onCreated }: NewQa
     void Promise.all([
       api.getEpics(projectId).catch(() => []),
       api.getBoardCards(projectId).catch(() => []),
-    ]).then(([e, c]) => {
+      api.listQaEnvironments(projectId).catch(() => ({ environments: [] })),
+    ]).then(([e, c, envRes]) => {
       if (cancelled) return;
       setEpics(toEpicOptions(e));
       setCards(toCardOptions(c));
+      const envs = selectableQaEnvironments(envRes?.environments ?? []);
+      setEnvironments(envs);
+      // Default to the first environment unless the user already typed a URL.
+      if (envs[0]) {
+        setDraft((d) => (d.targetUrl ? d : { ...d, targetUrl: envs[0].baseUrl.trim() }));
+      }
     });
     return () => {
       cancelled = true;
@@ -153,6 +166,7 @@ export default function NewQaPlanDialog({ projectId, onClose, onCreated }: NewQa
     [cards, draft.epicId, cardQuery],
   );
   const selectedCard = cards.find((c) => c.id === draft.cardId);
+  const selectedEnv = matchQaEnvironment(environments, draft.targetUrl);
 
   const set = <K extends keyof QaPlanDraft>(key: K, value: QaPlanDraft[K]) =>
     setDraft((d) => ({ ...d, [key]: value }));
@@ -221,6 +235,28 @@ export default function NewQaPlanDialog({ projectId, onClose, onCreated }: NewQa
             />
             {touched && errors.title && <span className="text-red-400">{errors.title}</span>}
           </label>
+
+          {environments.length > 0 && (
+            <label className="flex flex-col gap-1 text-xs text-gray-400">
+              Environment
+              <select
+                data-testid="qa-new-environment"
+                className={inputClass}
+                value={selectedEnv?.id ?? ''}
+                onChange={(e) => {
+                  const env = environments.find((x) => x.id === e.target.value);
+                  set('targetUrl', env ? env.baseUrl.trim() : '');
+                }}
+              >
+                {environments.map((env) => (
+                  <option key={env.id} value={env.id}>
+                    {env.name} ({env.baseUrl.trim()})
+                  </option>
+                ))}
+                <option value="">Custom URL</option>
+              </select>
+            </label>
+          )}
 
           <label className="flex flex-col gap-1 text-xs text-gray-400">
             Target URL

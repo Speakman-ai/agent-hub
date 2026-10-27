@@ -3,6 +3,8 @@ import {
   draftFromQaEnvironment,
   emptyQaAccount,
   emptyQaEnvironment,
+  matchQaEnvironment,
+  selectableQaEnvironments,
   QA_PASSWORD_MASK,
   qaEnvironmentDraftToInput,
   validateQaEnvironmentDraft,
@@ -78,5 +80,30 @@ describe('validateQaEnvironmentDraft', () => {
     expect(validateQaEnvironmentDraft(d)).toMatch(/Account 1 needs a label/);
     d.accounts[0].label = 'Admin';
     expect(validateQaEnvironmentDraft(d)).toBeNull();
+  });
+});
+
+describe('matchQaEnvironment', () => {
+  const env = (id: string, baseUrl: string) => ({ ...saved, id, name: id, baseUrl });
+  const envs = [
+    env('none', ''),
+    env('staging', 'https://staging.example.com/app'),
+    env('prod', 'https://example.com'),
+  ];
+
+  it('offers only environments with a base URL', () => {
+    expect(selectableQaEnvironments(envs).map((e) => e.id)).toEqual(['staging', 'prod']);
+  });
+
+  it('matches an exact base URL, then the same origin', () => {
+    expect(matchQaEnvironment(envs, 'https://staging.example.com/app')?.id).toBe('staging');
+    expect(matchQaEnvironment(envs, 'https://staging.example.com/login')?.id).toBe('staging');
+    expect(matchQaEnvironment(envs, 'https://example.com/x')?.id).toBe('prod');
+  });
+
+  it('returns null for a custom or invalid URL', () => {
+    expect(matchQaEnvironment(envs, 'https://other.example.com')).toBeNull();
+    expect(matchQaEnvironment(envs, 'nope')).toBeNull();
+    expect(matchQaEnvironment(envs, '')).toBeNull();
   });
 });

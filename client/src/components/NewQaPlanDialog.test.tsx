@@ -4,11 +4,13 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 const createQaPlan = vi.fn();
 const getEpics = vi.fn();
 const getBoardCards = vi.fn();
+const listQaEnvironments = vi.fn();
 vi.mock('../utils/api', () => ({
   api: {
     createQaPlan: (...a: unknown[]) => createQaPlan(...a),
     getEpics: (...a: unknown[]) => getEpics(...a),
     getBoardCards: (...a: unknown[]) => getBoardCards(...a),
+    listQaEnvironments: (...a: unknown[]) => listQaEnvironments(...a),
   },
 }));
 
@@ -23,6 +25,7 @@ const empty = { title: '', targetUrl: '', goal: '', epicId: '', cardId: '' };
 
 beforeEach(() => {
   createQaPlan.mockReset();
+  listQaEnvironments.mockReset().mockResolvedValue({ environments: [] });
   getEpics.mockReset().mockResolvedValue([
     { id: 'e1', name: 'Payments' },
     { id: 'e2', name: 'Signup' },
@@ -73,7 +76,62 @@ describe('draft validation', () => {
   });
 });
 
+const env = (id: string, name: string, baseUrl: string) => ({
+  id,
+  projectId: 'proj',
+  name,
+  baseUrl,
+  notes: '',
+  accounts: [],
+  position: 0,
+  createdAt: '',
+  updatedAt: '',
+});
+
 describe('NewQaPlanDialog', () => {
+  it('targets a QA environment picked from settings', async () => {
+    listQaEnvironments.mockResolvedValue({
+      environments: [
+        env('dev', 'Dev', 'https://dev.example.com'),
+        env('blank', 'No URL', ''),
+        env('stg', 'Staging', 'https://staging.example.com'),
+      ],
+    });
+    createQaPlan.mockResolvedValue({ plan: { id: 'p1' } });
+    render(<NewQaPlanDialog projectId="proj" onClose={vi.fn()} onCreated={vi.fn()} />);
+    const picker = await screen.findByTestId('qa-new-environment');
+    // Defaults to the first environment; ones without a base URL are not offered.
+    expect(picker).toHaveValue('dev');
+    expect(screen.getByTestId('qa-new-target')).toHaveValue('https://dev.example.com');
+    expect(screen.queryByRole('option', { name: /No URL/ })).toBeNull();
+
+    fireEvent.change(picker, { target: { value: 'stg' } });
+    expect(screen.getByTestId('qa-new-target')).toHaveValue('https://staging.example.com');
+
+    // Typing a URL elsewhere switches the picker to Custom URL.
+    fireEvent.change(screen.getByTestId('qa-new-target'), {
+      target: { value: 'https://other.example.com' },
+    });
+    expect(picker).toHaveValue('');
+
+    fireEvent.change(picker, { target: { value: 'stg' } });
+    fireEvent.change(screen.getByTestId('qa-new-title'), { target: { value: 'Smoke' } });
+    fireEvent.click(screen.getByTestId('qa-new-submit'));
+    await waitFor(() =>
+      expect(createQaPlan).toHaveBeenCalledWith(
+        'proj',
+        expect.objectContaining({ targetUrl: 'https://staging.example.com' }),
+      ),
+    );
+  });
+
+  it('hides the environment picker when none are configured', async () => {
+    render(<NewQaPlanDialog projectId="proj" onClose={vi.fn()} onCreated={vi.fn()} />);
+    await waitFor(() => expect(listQaEnvironments).toHaveBeenCalledWith('proj'));
+    expect(screen.queryByTestId('qa-new-environment')).toBeNull();
+    expect(screen.getByTestId('qa-new-target')).toHaveValue('');
+  });
+
   it('shows validation errors and does not submit an invalid draft', async () => {
     render(<NewQaPlanDialog projectId="proj" onClose={vi.fn()} onCreated={vi.fn()} />);
     fireEvent.change(screen.getByTestId('qa-new-target'), { target: { value: 'nope' } });
