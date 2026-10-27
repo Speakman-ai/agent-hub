@@ -19631,6 +19631,31 @@ components:
         - agentId
         - importedMessages
         - reused
+    GoogleAccountSummary:
+      type: object
+      properties:
+        accountId:
+          type: string
+        email:
+          type: string
+        grantedScopes:
+          type: array
+          items:
+            type: string
+        isDefault:
+          type: boolean
+        connectedAt:
+          type: string
+        tokenExpiresAt:
+          type: string
+          nullable: true
+      required:
+        - accountId
+        - email
+        - grantedScopes
+        - isDefault
+        - connectedAt
+        - tokenExpiresAt
     OrganizationDispatchRequest:
       type: object
       properties:
@@ -38407,6 +38432,7 @@ paths:
       tags:
         - Auth
       summary: Google connection status for the calling user (never returns tokens).
+      description: Top-level `email` / `grantedScopes` / `connectedAt` / `tokenExpiresAt` describe the default account (kept for single-account clients). `accounts` lists every linked account, default first.
       responses:
         "200":
           description: Connection summary.
@@ -38432,6 +38458,13 @@ paths:
                     nullable: true
                   serverConfigured:
                     type: boolean
+                  defaultAccountId:
+                    type: string
+                    nullable: true
+                  accounts:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/GoogleAccountSummary"
                 required:
                   - connected
                   - email
@@ -38439,6 +38472,8 @@ paths:
                   - connectedAt
                   - tokenExpiresAt
                   - serverConfigured
+                  - defaultAccountId
+                  - accounts
         "401":
           description: Not authenticated.
           content:
@@ -38454,7 +38489,8 @@ paths:
     delete:
       tags:
         - Auth
-      summary: Disconnect the calling user from Google (revoke + clear).
+      summary: Disconnect the default Google account (revoke + clear).
+      description: Kept for single-account clients. Removes only the default account; the oldest remaining account becomes the default. Use DELETE /api/auth/google/accounts/{accountId} to remove a specific account.
       responses:
         "200":
           description: Disconnected.
@@ -38471,6 +38507,103 @@ paths:
                   - ok
         "401":
           description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/auth/google/accounts/{accountId}/default:
+    post:
+      tags:
+        - Auth
+      summary: Make one of the calling user's linked Google accounts the default.
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: accountId
+          in: path
+      responses:
+        "200":
+          description: Default moved.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: No linked account with that id for this user.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/auth/google/accounts/{accountId}:
+    delete:
+      tags:
+        - Auth
+      summary: Disconnect one linked Google account (revoke + clear).
+      description: Removing the default account promotes the oldest remaining account to default.
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: accountId
+          in: path
+      responses:
+        "200":
+          description: Disconnected.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: No linked account with that id for this user.
           content:
             application/json:
               schema:
@@ -38498,6 +38631,23 @@ paths:
           description: Optional space- or comma-separated extra OAuth scopes for incremental per-surface consent. Identity scopes (openid email profile) are always included.
           name: scopes
           in: query
+        - schema:
+            type: string
+            enum:
+              - add
+              - reconnect
+            description: "`add` links another Google account and forces the account chooser (`prompt=select_account consent`). `reconnect` (the default when the user already has an account) re-consents an existing account."
+          required: false
+          description: "`add` links another Google account and forces the account chooser (`prompt=select_account consent`). `reconnect` (the default when the user already has an account) re-consents an existing account."
+          name: intent
+          in: query
+        - schema:
+            type: string
+            description: Linked account to re-consent (implies `reconnect`). Its email is sent as `login_hint`. Defaults to the default account.
+          required: false
+          description: Linked account to re-consent (implies `reconnect`). Its email is sent as `login_hint`. Defaults to the default account.
+          name: accountId
+          in: query
       responses:
         "200":
           description: Authorize URL the client should redirect the browser to.
@@ -38510,8 +38660,30 @@ paths:
                     type: string
                 required:
                   - authorizeUrl
+        "400":
+          description: Invalid intent, or `accountId` combined with `intent=add`.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
         "401":
           description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: "`accountId` is not one of the caller's linked accounts."
           content:
             application/json:
               schema:

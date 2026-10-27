@@ -36,7 +36,7 @@ const { createUser } = await import('../users-store.js');
 const { saveAuthRecord, setAuthFilePathForTests, reloadAuthRecord } =
   await import('../auth-store.js');
 const { signJwt, verifyJwt } = await import('../jwt.js');
-const { getGoogleConnection, upsertGoogleConnection } =
+const { getGoogleConnection, upsertGoogleConnection, listGoogleConnections } =
   await import('../google-connections-store.js');
 const googleOAuth = await import('../google-oauth.js');
 const exchangeMock = vi.mocked(googleOAuth.exchangeCodeForGoogleTokens);
@@ -46,12 +46,16 @@ const createGoogleOAuthRoutes = (await import('./google-oauth.js')).default;
 
 const STATE_PURPOSE = 'google-oauth';
 
-function mintState(uid: string, opts: { purpose?: string; returnTo?: string } = {}): string {
+function mintState(
+  uid: string,
+  opts: { purpose?: string; returnTo?: string; intent?: 'add' | 'reconnect' } = {},
+): string {
   return signJwt(uid, JWT_SECRET, {
     expiresInSec: 600,
     claims: {
       purpose: opts.purpose ?? STATE_PURPOSE,
       ...(opts.returnTo && { returnTo: opts.returnTo }),
+      ...(opts.intent && { intent: opts.intent }),
     },
   });
 }
@@ -377,6 +381,8 @@ describe('GET /api/auth/google/status', () => {
       connectedAt: null,
       tokenExpiresAt: null,
       serverConfigured: true,
+      defaultAccountId: null,
+      accounts: [],
     });
     // Defense-in-depth: the status payload exposes only the field names above —
     // no access/refresh token material.
@@ -456,5 +462,222 @@ describe('DELETE /api/auth/google/connect', () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ ok: true });
     expect(revokeMock).not.toHaveBeenCalled();
+  });
+});
+
+function linkAccount(userId: string, sub: string, email: string, refreshToken = `refresh-${sub}`) {
+  return upsertGoogleConnection({
+    userId,
+    googleSub: sub,
+    googleEmail: email,
+    accessToken: `access-${sub}`,
+    tokenExpiresAt: new Date(Date.now() + 3600_000).toISOString(),
+    refreshToken,
+    grantedScopes: ['openid'],
+  });
+}
+
+function stateClaims(authorizeUrl: string) {
+  const state = new URL(authorizeUrl).searchParams.get('state')!;
+  return verifyJwt(state, JWT_SECRET).payload as {
+    intent?: string;
+    accountId?: string;
+  };
+}
+
+describe('multi-account: /start intent', () => {
+  beforeEach(() => freshEnv());
+
+  it('intent=add forces the account chooser and signs add intent with no account', async () => {
+    const user = createUser({ username: 'ma-add', passwordHash: 'x' });
+    linkAccount(user.id, 'sub-a', 'a@example.com');
+    const app = makeApp(buildDeps(), { authUserId: user.id });
+    const res = await request(app).get('/api/auth/google/start').query({ intent: 'add' });
+    expect(res.status).toBe(200);
+    const url = new URL(res.body.authorizeUrl);
+    expect(url.searchParams.get('prompt')).toBe('select_account consent');
+    expect(url.searchParams.get('login_hint')).toBeNull();
+    expect(stateClaims(res.body.authorizeUrl)).toMatchObject({ intent: 'add' });
+    expect(stateClaims(res.body.authorizeUrl).accountId).toBeUndefined();
+  });
+
+  it('accountId re-consents that account: login_hint + reconnect intent', async () => {
+    const user = createUser({ username: 'ma-rc', passwordHash: 'x' });
+    linkAccount(user.id, 'sub-a', 'a@example.com');
+    const second = linkAccount(user.id, 'sub-b', 'b@example.com');
+    const app = makeApp(buildDeps(), { authUserId: user.id });
+    const res = await request(app)
+      .get('/api/auth/google/start')
+      .query({ accountId: second, scopes: 'https://www.googleapis.com/auth/spreadsheets' });
+    expect(res.status).toBe(200);
+    const url = new URL(res.body.authorizeUrl);
+    expect(url.searchParams.get('prompt')).toBe('consent');
+    expect(url.searchParams.get('login_hint')).toBe('b@example.com');
+    expect(stateClaims(res.body.authorizeUrl)).toMatchObject({
+      intent: 'reconnect',
+      accountId: second,
+    });
+  });
+
+  it("404s on another user's accountId and 400s on accountId with intent=add", async () => {
+    const owner = createUser({ username: 'ma-own', passwordHash: 'x' });
+    const other = createUser({ username: 'ma-oth', passwordHash: 'x' });
+    const theirs = linkAccount(owner.id, 'sub-o', 'o@example.com');
+    const app = makeApp(buildDeps(), { authUserId: other.id });
+    const notFound = await request(app).get('/api/auth/google/start').query({ accountId: theirs });
+    expect(notFound.status).toBe(404);
+    const bad = await request(app)
+      .get('/api/auth/google/start')
+      .query({ accountId: theirs, intent: 'add' });
+    expect(bad.status).toBe(400);
+    const badIntent = await request(app).get('/api/auth/google/start').query({ intent: 'nope' });
+    expect(badIntent.status).toBe(400);
+  });
+});
+
+describe('multi-account: callback add vs reconnect', () => {
+  beforeEach(() => {
+    freshEnv();
+    exchangeMock.mockReset();
+    userInfoMock.mockReset();
+  });
+
+  it('add with a new Google account keeps the first and leaves the default alone', async () => {
+    const user = createUser({ username: 'cb-add', passwordHash: 'x' });
+    const first = linkAccount(user.id, 'sub-a', 'a@example.com');
+    exchangeMock.mockResolvedValue({
+      access_token: 'access-b',
+      expires_in: 3600,
+      refresh_token: 'refresh-b',
+      scope: 'openid email',
+      token_type: 'Bearer',
+    });
+    userInfoMock.mockResolvedValue({ sub: 'sub-b', email: 'b@example.com' });
+
+    const app = makeApp(buildDeps());
+    const res = await request(app)
+      .get('/api/auth/google/callback')
+      .query({ code: 'c', state: mintState(user.id, { intent: 'add' }) });
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('Connected as b@example.com');
+
+    const accounts = listGoogleConnections(user.id);
+    expect(accounts.map((a) => a.googleEmail)).toEqual(['a@example.com', 'b@example.com']);
+    expect(getGoogleConnection(user.id)?.accountId).toBe(first);
+    expect(getGoogleConnection(user.id, { email: 'b@example.com' })?.refreshToken).toBe(
+      'refresh-b',
+    );
+  });
+
+  it('reconnect of a linked account refreshes its scopes in place, no new row', async () => {
+    const user = createUser({ username: 'cb-rc', passwordHash: 'x' });
+    linkAccount(user.id, 'sub-a', 'a@example.com');
+    const second = linkAccount(user.id, 'sub-b', 'b@example.com', 'refresh-b-original');
+    exchangeMock.mockResolvedValue({
+      access_token: 'access-b2',
+      expires_in: 3600,
+      // Incremental re-consent with no new refresh token.
+      scope: 'openid email https://www.googleapis.com/auth/spreadsheets',
+      token_type: 'Bearer',
+    });
+    userInfoMock.mockResolvedValue({ sub: 'sub-b', email: 'b@example.com' });
+
+    const app = makeApp(buildDeps());
+    const res = await request(app)
+      .get('/api/auth/google/callback')
+      .query({ code: 'c', state: mintState(user.id, { intent: 'reconnect' }) });
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('Reconnected b@example.com');
+
+    const accounts = listGoogleConnections(user.id);
+    expect(accounts).toHaveLength(2);
+    const b = accounts.find((a) => a.accountId === second)!;
+    expect(b.grantedScopes).toContain('https://www.googleapis.com/auth/spreadsheets');
+    // The fallback refresh token comes from the same Google account, not the default.
+    expect(b.refreshToken).toBe('refresh-b-original');
+    expect(accounts.find((a) => a.googleSub === 'sub-a')?.refreshToken).toBe('refresh-sub-a');
+  });
+});
+
+describe('multi-account: status, default switch, disconnect one', () => {
+  beforeEach(() => {
+    freshEnv();
+    revokeMock.mockReset();
+    revokeMock.mockResolvedValue(true);
+  });
+
+  it('status lists every account with per-account scopes and keeps default fields on top', async () => {
+    const user = createUser({ username: 'st-list', passwordHash: 'x' });
+    const first = linkAccount(user.id, 'sub-a', 'a@example.com');
+    const second = upsertGoogleConnection({
+      userId: user.id,
+      googleSub: 'sub-b',
+      googleEmail: 'b@example.com',
+      accessToken: 'secret-b',
+      tokenExpiresAt: null,
+      refreshToken: 'secret-refresh-b',
+      grantedScopes: ['openid', 'https://www.googleapis.com/auth/calendar.events'],
+    });
+    const app = makeApp(buildDeps(), { authUserId: user.id });
+    const res = await request(app).get('/api/auth/google/status');
+    expect(res.status).toBe(200);
+    expect(res.body.email).toBe('a@example.com');
+    expect(res.body.defaultAccountId).toBe(first);
+    expect(res.body.accounts).toEqual([
+      expect.objectContaining({ accountId: first, email: 'a@example.com', isDefault: true }),
+      expect.objectContaining({
+        accountId: second,
+        email: 'b@example.com',
+        isDefault: false,
+        grantedScopes: ['openid', 'https://www.googleapis.com/auth/calendar.events'],
+      }),
+    ]);
+    expect(JSON.stringify(res.body)).not.toContain('secret-');
+  });
+
+  it('moves the default and 404s for an unknown account', async () => {
+    const user = createUser({ username: 'st-def', passwordHash: 'x' });
+    linkAccount(user.id, 'sub-a', 'a@example.com');
+    const second = linkAccount(user.id, 'sub-b', 'b@example.com');
+    const app = makeApp(buildDeps(), { authUserId: user.id });
+
+    const ok = await request(app).post(`/api/auth/google/accounts/${second}/default`);
+    expect(ok.status).toBe(200);
+    expect(getGoogleConnection(user.id)?.accountId).toBe(second);
+    const status = await request(app).get('/api/auth/google/status');
+    expect(status.body.email).toBe('b@example.com');
+
+    const missing = await request(app).post('/api/auth/google/accounts/nope/default');
+    expect(missing.status).toBe(404);
+    const anon = await request(makeApp(buildDeps())).post(
+      `/api/auth/google/accounts/${second}/default`,
+    );
+    expect(anon.status).toBe(401);
+  });
+
+  it('disconnects one account: revokes only its token, promotes a new default', async () => {
+    const user = createUser({ username: 'st-del', passwordHash: 'x' });
+    const first = linkAccount(user.id, 'sub-a', 'a@example.com');
+    const second = linkAccount(user.id, 'sub-b', 'b@example.com');
+    const app = makeApp(buildDeps(), { authUserId: user.id });
+
+    const res = await request(app).delete(`/api/auth/google/accounts/${first}`);
+    expect(res.status).toBe(200);
+    expect(revokeMock).toHaveBeenCalledTimes(1);
+    expect(revokeMock).toHaveBeenCalledWith({ token: 'refresh-sub-a' });
+    const remaining = listGoogleConnections(user.id);
+    expect(remaining.map((a) => a.accountId)).toEqual([second]);
+    expect(remaining[0].isDefault).toBe(true);
+  });
+
+  it("404s (and revokes nothing) when the account isn't the caller's", async () => {
+    const owner = createUser({ username: 'st-own', passwordHash: 'x' });
+    const other = createUser({ username: 'st-oth', passwordHash: 'x' });
+    const theirs = linkAccount(owner.id, 'sub-o', 'o@example.com');
+    const app = makeApp(buildDeps(), { authUserId: other.id });
+    const res = await request(app).delete(`/api/auth/google/accounts/${theirs}`);
+    expect(res.status).toBe(404);
+    expect(revokeMock).not.toHaveBeenCalled();
+    expect(listGoogleConnections(owner.id)).toHaveLength(1);
   });
 });

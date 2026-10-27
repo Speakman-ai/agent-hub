@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Loader2, ExternalLink, CheckCircle2, AlertCircle, Mail } from 'lucide-react';
+import { Loader2, ExternalLink, CheckCircle2, AlertCircle, Mail, Plus, Star } from 'lucide-react';
 import { api } from '../utils/api';
 import { formatDate } from '../utils/time';
 
@@ -10,17 +10,21 @@ import { formatDate } from '../utils/time';
  * CLI creds), NOT a top-level tab and NOT project settings — the connection is
  * per-USER (mirrors GitHub).
  *
+ * A user can link several Google accounts; one is the default that agents and
+ * the Workspace views use when no account is named. Each account row shows its
+ * own granted scopes, one button per surface it hasn't granted yet, Make default,
+ * and Disconnect.
+ *
  * Calls (via the api helper):
- *   GET    /api/auth/google/status   — { connected, email, grantedScopes, serverConfigured, … }
- *   GET    /api/auth/google/start    — { authorizeUrl } → full-page redirect
- *   DELETE /api/auth/google/connect  — disconnect
+ *   GET    /api/auth/google/status                        — { accounts, serverConfigured, … }
+ *   GET    /api/auth/google/start?intent=add              — link another account (chooser forced)
+ *   GET    /api/auth/google/start?accountId=…&scopes=…    — incremental consent for one account
+ *   POST   /api/auth/google/accounts/:accountId/default   — make default
+ *   DELETE /api/auth/google/accounts/:accountId           — disconnect one account
  *
  * Scopes are requested incrementally per surface (Calendar / Gmail / Sheets /
- * Drive / Docs) per the epic's sensitive-scope tiering. The connect button requests
- * identity-only; the "re-consent / upgrade access" button requests the full
- * surface set in one consent round (Google keeps already-granted scopes via
- * include_granted_scopes). The individual surface views own their own inline
- * "Enable <surface>" affordances.
+ * Drive / Docs) per the epic's sensitive-scope tiering. Google keeps
+ * already-granted scopes via include_granted_scopes.
  *
  * Degrades to a "not configured" message when the server has no Google OAuth
  * app credentials (status.serverConfigured === false). The Admin-only OAuth
@@ -61,8 +65,8 @@ export const GOOGLE_SURFACES: GoogleSurface[] = [
   },
 ];
 
-// Union of every surface scope — requested in one round by the upgrade button.
-// Exported so the test can assert the upgrade button passes exactly this set.
+// Union of every surface scope. The consent contract test asserts the proxy
+// routes' required scopes are all offered here.
 export const ALL_SURFACE_SCOPES: string[] = GOOGLE_SURFACES.flatMap((s) => s.scopes);
 
 /** Strip the long Google scope URL prefix to a readable suffix for display. */
@@ -70,8 +74,19 @@ export function scopeLabel(scope: string): string {
   return scope.replace(/^https:\/\/www\.googleapis\.com\/auth\//, '');
 }
 
+/** One linked Google account, as listed by GET /api/auth/google/status. */
+export interface GoogleAccountSummary {
+  accountId: string;
+  email: string;
+  grantedScopes: string[];
+  isDefault: boolean;
+  connectedAt: string | null;
+  tokenExpiresAt?: string | null;
+}
+
 /**
- * Shape returned by GET /api/auth/google/status (never includes tokens).
+ * Shape returned by GET /api/auth/google/status (never includes tokens). The
+ * top-level email/scopes describe the default account.
  * Mirrors the route's Zod response schema in server/routes/google-oauth.ts.
  */
 export interface GoogleStatus {
@@ -81,7 +96,37 @@ export interface GoogleStatus {
   connectedAt: string | null;
   tokenExpiresAt: string | null;
   serverConfigured: boolean;
+  defaultAccountId?: string | null;
+  accounts?: GoogleAccountSummary[];
 }
+
+/**
+ * Accounts from a status payload. A server without multi-account support only
+ * sends the top-level fields, which become a single default account with no id.
+ */
+export function accountsFromStatus(status: GoogleStatus | null): GoogleAccountSummary[] {
+  if (!status) return [];
+  if (Array.isArray(status.accounts)) return status.accounts;
+  if (!status.connected) return [];
+  return [
+    {
+      accountId: '',
+      email: status.email || 'Google account',
+      grantedScopes: Array.isArray(status.grantedScopes) ? status.grantedScopes : [],
+      isDefault: true,
+      connectedAt: status.connectedAt,
+    },
+  ];
+}
+
+/** Surfaces whose scopes this account hasn't fully granted. */
+export function missingSurfaces(grantedScopes: string[]): GoogleSurface[] {
+  const granted = new Set(grantedScopes);
+  return GOOGLE_SURFACES.filter((s) => !s.scopes.every((scope) => granted.has(scope)));
+}
+
+const SMALL_BTN =
+  'flex items-center gap-1.5 text-xs bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white px-2.5 py-1 rounded-lg transition-colors';
 
 export default function GoogleConnectionSection({ bare = false }: { bare?: boolean } = {}) {
   const [status, setStatus] = useState<GoogleStatus | null>(null);
@@ -111,7 +156,7 @@ export default function GoogleConnectionSection({ bare = false }: { bare?: boole
   }, [load]);
 
   // The OAuth callback opens in this same tab and redirects back here, so refetch
-  // status on window focus to flip "Connect" → "Connected as …" without a manual
+  // status on window focus to pick up a newly linked account without a manual
   // reload. Silent so we don't flash the loading spinner on every tab focus.
   useEffect(() => {
     const onFocus = () => load({ silent: true });
@@ -119,12 +164,19 @@ export default function GoogleConnectionSection({ bare = false }: { bare?: boole
     return () => window.removeEventListener('focus', onFocus);
   }, [load]);
 
-  const startOAuth = async (scopes?: string[]) => {
+  const startOAuth = async (
+    opts: { scopes?: string[]; intent?: 'add'; accountId?: string } = {},
+  ) => {
     setBusy(true);
     setError(null);
     try {
       const returnTo = window.location.pathname + window.location.search + window.location.hash;
-      const body = await api.startGoogleOAuth({ returnTo, scopes });
+      const body = await api.startGoogleOAuth({
+        returnTo,
+        ...(opts.scopes && { scopes: opts.scopes }),
+        ...(opts.intent && { intent: opts.intent }),
+        ...(opts.accountId && { accountId: opts.accountId }),
+      });
       window.location.href = body.authorizeUrl;
     } catch (err: any) {
       setError(err.message || String(err));
@@ -134,12 +186,11 @@ export default function GoogleConnectionSection({ bare = false }: { bare?: boole
     // set — the redirect tears down the component.
   };
 
-  const handleDisconnect = async () => {
-    if (!window.confirm('Disconnect your Google account from Agent Hub?')) return;
+  const runAction = async (action: () => Promise<unknown>) => {
     setBusy(true);
     setError(null);
     try {
-      await api.disconnectGoogle();
+      await action();
       await load({ silent: true });
     } catch (err: any) {
       setError(err.message || String(err));
@@ -147,6 +198,16 @@ export default function GoogleConnectionSection({ bare = false }: { bare?: boole
       setBusy(false);
     }
   };
+
+  const handleDisconnect = (account: GoogleAccountSummary) => {
+    if (!window.confirm(`Disconnect ${account.email} from Agent Hub?`)) return;
+    return runAction(() =>
+      account.accountId ? api.disconnectGoogleAccount(account.accountId) : api.disconnectGoogle(),
+    );
+  };
+
+  const handleMakeDefault = (account: GoogleAccountSummary) =>
+    runAction(() => api.setDefaultGoogleAccount(account.accountId));
 
   if (loading) {
     return (
@@ -159,14 +220,15 @@ export default function GoogleConnectionSection({ bare = false }: { bare?: boole
     );
   }
 
-  const connected = !!status?.connected;
+  const accounts = accountsFromStatus(status);
+  const connected = accounts.length > 0;
   const serverConfigured = status?.serverConfigured !== false;
-  const grantedScopes: string[] = Array.isArray(status?.grantedScopes) ? status.grantedScopes : [];
+  const multi = accounts.length > 1;
 
   return (
     <div className={shellClass}>
       <h4 className="text-sm font-medium text-gray-300 mb-3 flex items-center gap-2">
-        <Mail size={14} /> Google Account
+        <Mail size={14} /> {multi ? 'Google Accounts' : 'Google Account'}
       </h4>
 
       {!serverConfigured && !connected && (
@@ -182,63 +244,113 @@ export default function GoogleConnectionSection({ bare = false }: { bare?: boole
 
       {connected ? (
         <div className="space-y-3">
-          <div className="flex items-center gap-3">
-            <CheckCircle2 size={16} className="text-emerald-400" />
-            <div>
-              <div className="text-sm text-white">
-                Connected as{' '}
-                <span className="font-mono text-emerald-300">
-                  {status.email || 'Google account'}
-                </span>
-              </div>
-              {status.connectedAt && (
-                <div className="text-[11px] text-gray-500">
-                  Connected {formatDate(status.connectedAt)}
-                </div>
-              )}
-            </div>
-          </div>
+          <ul className="space-y-3">
+            {accounts.map((account) => {
+              const missing = missingSurfaces(account.grantedScopes);
+              return (
+                <li
+                  key={account.accountId || account.email}
+                  data-testid="google-account-row"
+                  className={
+                    multi ? 'border border-gray-700 rounded-lg p-3 space-y-3' : 'space-y-3'
+                  }
+                >
+                  <div className="flex items-center gap-3">
+                    <CheckCircle2 size={16} className="text-emerald-400 flex-shrink-0" />
+                    <div className="min-w-0">
+                      <div className="text-sm text-white flex items-center gap-2 flex-wrap">
+                        {!multi && <span>Connected as</span>}
+                        <span className="font-mono text-emerald-300 truncate">{account.email}</span>
+                        {multi && account.isDefault && (
+                          <span className="text-[10px] uppercase tracking-wide bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 rounded px-1.5 py-0.5">
+                            Default
+                          </span>
+                        )}
+                      </div>
+                      {account.connectedAt && (
+                        <div className="text-[11px] text-gray-500">
+                          Connected {formatDate(account.connectedAt)}
+                        </div>
+                      )}
+                    </div>
+                  </div>
 
-          <div>
-            <div className="text-[11px] text-gray-400 mb-1">Granted access</div>
-            {grantedScopes.length ? (
-              <div className="flex flex-wrap gap-1.5">
-                {grantedScopes.map((scope: string) => (
-                  <span
-                    key={scope}
-                    className="text-[10px] font-mono bg-gray-900 border border-gray-700 rounded px-1.5 py-0.5 text-gray-300"
-                  >
-                    {scopeLabel(scope)}
-                  </span>
-                ))}
-              </div>
-            ) : (
-              <p className="text-[11px] text-gray-500">
-                Identity only (no data scopes granted yet).
-              </p>
-            )}
-          </div>
+                  <div>
+                    <div className="text-[11px] text-gray-400 mb-1">Granted access</div>
+                    {account.grantedScopes.length ? (
+                      <div className="flex flex-wrap gap-1.5">
+                        {account.grantedScopes.map((scope: string) => (
+                          <span
+                            key={scope}
+                            className="text-[10px] font-mono bg-gray-900 border border-gray-700 rounded px-1.5 py-0.5 text-gray-300"
+                          >
+                            {scopeLabel(scope)}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-[11px] text-gray-500">
+                        Identity only (no data scopes granted yet).
+                      </p>
+                    )}
+                  </div>
 
-          <div className="flex flex-wrap gap-2">
-            {serverConfigured && (
-              <button
-                onClick={() => startOAuth(ALL_SURFACE_SCOPES)}
-                disabled={busy}
-                className="flex items-center gap-2 text-xs bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white px-3 py-1.5 rounded-lg transition-colors"
-              >
-                {busy ? <Loader2 size={12} className="animate-spin" /> : <ExternalLink size={12} />}
-                Re-consent / upgrade access
-              </button>
-            )}
+                  <div className="flex flex-wrap gap-2">
+                    {serverConfigured &&
+                      missing.map((surface) => (
+                        <button
+                          key={surface.key}
+                          onClick={() =>
+                            startOAuth({
+                              scopes: surface.scopes,
+                              ...(account.accountId && { accountId: account.accountId }),
+                            })
+                          }
+                          disabled={busy}
+                          aria-label={`Enable ${surface.label} for ${account.email}`}
+                          className={SMALL_BTN}
+                        >
+                          <Plus size={12} />
+                          {surface.label}
+                        </button>
+                      ))}
+                    {multi && !account.isDefault && account.accountId && (
+                      <button
+                        onClick={() => handleMakeDefault(account)}
+                        disabled={busy}
+                        aria-label={`Make ${account.email} the default`}
+                        className={SMALL_BTN}
+                      >
+                        <Star size={12} />
+                        Make default
+                      </button>
+                    )}
+                    <button
+                      onClick={() => handleDisconnect(account)}
+                      disabled={busy}
+                      aria-label={`Disconnect ${account.email}`}
+                      className={SMALL_BTN}
+                    >
+                      {busy && <Loader2 size={12} className="animate-spin" />}
+                      Disconnect
+                    </button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+
+          {serverConfigured && (
             <button
-              onClick={handleDisconnect}
+              onClick={() => startOAuth({ intent: 'add' })}
               disabled={busy}
               className="flex items-center gap-2 text-xs bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white px-3 py-1.5 rounded-lg transition-colors"
             >
-              {busy && <Loader2 size={12} className="animate-spin" />}
-              Disconnect
+              {busy ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
+              Add another account
+              <ExternalLink size={12} className="opacity-60" />
             </button>
-          </div>
+          )}
         </div>
       ) : (
         <div className="space-y-3">

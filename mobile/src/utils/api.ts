@@ -1676,14 +1676,24 @@ export const api = {
   // Returns { authorizeUrl }; the caller opens it in the system browser.
   // `scopes` (string or string[]) requests extra per-surface scopes for
   // incremental consent; identity scopes are always added server-side.
-  startGoogleOAuth: ({ returnTo, scopes }: any = {}) => {
+  // `intent: 'add'` links another account (forces Google's account chooser);
+  // `accountId` re-consents that specific account.
+  startGoogleOAuth: ({ returnTo, scopes, intent, accountId }: any = {}) => {
     const params = new URLSearchParams();
     if (returnTo) params.set('returnTo', returnTo);
+    if (intent) params.set('intent', intent);
+    if (accountId) params.set('accountId', accountId);
     if (scopes) params.set('scopes', Array.isArray(scopes) ? scopes.join(' ') : scopes);
     const qs = params.toString();
     return fetchJSON(`/auth/google/start${qs ? `?${qs}` : ''}`);
   },
   disconnectGoogle: () => fetchJSON('/auth/google/connect', { method: 'DELETE' }),
+  setDefaultGoogleAccount: (accountId: string) =>
+    fetchJSON(`/auth/google/accounts/${encodeURIComponent(accountId)}/default`, {
+      method: 'POST',
+    }),
+  disconnectGoogleAccount: (accountId: string) =>
+    fetchJSON(`/auth/google/accounts/${encodeURIComponent(accountId)}`, { method: 'DELETE' }),
   listGoogleCalendarEvents: ({
     calendarId,
     timeMin,

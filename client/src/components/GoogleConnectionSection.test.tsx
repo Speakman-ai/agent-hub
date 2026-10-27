@@ -8,6 +8,8 @@ vi.mock('../utils/api', () => ({
     getGoogleStatus: vi.fn(),
     startGoogleOAuth: vi.fn(),
     disconnectGoogle: vi.fn(),
+    disconnectGoogleAccount: vi.fn(),
+    setDefaultGoogleAccount: vi.fn(),
   },
 }));
 
@@ -22,6 +24,8 @@ const mockApi = api as unknown as {
   getGoogleStatus: ReturnType<typeof vi.fn>;
   startGoogleOAuth: ReturnType<typeof vi.fn>;
   disconnectGoogle: ReturnType<typeof vi.fn>;
+  disconnectGoogleAccount: ReturnType<typeof vi.fn>;
+  setDefaultGoogleAccount: ReturnType<typeof vi.fn>;
 };
 
 function mockWindowLocation(pathname = '/settings', search = '', hash = '') {
@@ -53,6 +57,8 @@ beforeEach(() => {
   mockApi.getGoogleStatus.mockReset();
   mockApi.startGoogleOAuth.mockReset();
   mockApi.disconnectGoogle.mockReset();
+  mockApi.disconnectGoogleAccount.mockReset();
+  mockApi.setDefaultGoogleAccount.mockReset();
 });
 
 afterEach(() => {
@@ -123,10 +129,11 @@ describe('GoogleConnectionSection', () => {
       expect(screen.getByText('user@example.com')).toBeInTheDocument();
     });
     expect(screen.getByText('calendar.events')).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: /Re-consent \/ upgrade access/i }),
-    ).toBeInTheDocument();
+    // Calendar is granted, so only the other surfaces get an enable button.
+    expect(screen.queryByRole('button', { name: /Enable Calendar/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Enable Sheets/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Disconnect/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Add another account/i })).toBeInTheDocument();
     // No connect button while connected.
     expect(screen.queryByRole('button', { name: /^Connect Google/i })).not.toBeInTheDocument();
   });
@@ -173,40 +180,6 @@ describe('GoogleConnectionSection', () => {
     });
     expect(mockApi.startGoogleOAuth).toHaveBeenCalledWith(
       expect.objectContaining({ returnTo: '/settings' }),
-    );
-
-    locationMock.restore();
-  });
-
-  it('requests every surface scope when upgrading access', async () => {
-    mockApi.getGoogleStatus.mockResolvedValueOnce({
-      connected: true,
-      email: 'user@example.com',
-      grantedScopes: ['openid', 'email'],
-      connectedAt: '2026-06-01T00:00:00.000Z',
-      serverConfigured: true,
-    });
-    mockApi.startGoogleOAuth.mockResolvedValueOnce({
-      authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth?upgrade=1',
-    });
-    const locationMock = mockWindowLocation('/settings', '?tab=account', '#google');
-
-    render(<GoogleConnectionSection />);
-    await waitFor(() => {
-      expect(
-        screen.getByRole('button', { name: /Re-consent \/ upgrade access/i }),
-      ).toBeInTheDocument();
-    });
-    fireEvent.click(screen.getByRole('button', { name: /Re-consent \/ upgrade access/i }));
-
-    await waitFor(() => {
-      expect(mockApi.startGoogleOAuth).toHaveBeenCalledWith({
-        returnTo: '/settings?tab=account#google',
-        scopes: ALL_SURFACE_SCOPES,
-      });
-    });
-    expect(locationMock.hrefSetter).toHaveBeenCalledWith(
-      'https://accounts.google.com/o/oauth2/v2/auth?upgrade=1',
     );
 
     locationMock.restore();
@@ -265,5 +238,110 @@ describe('GoogleConnectionSection', () => {
       expect(screen.getByText('late@example.com')).toBeInTheDocument();
     });
     expect(mockApi.getGoogleStatus).toHaveBeenCalledTimes(2);
+  });
+
+  const MULTI = {
+    connected: true,
+    email: 'work@example.com',
+    grantedScopes: ['openid'],
+    connectedAt: '2026-06-01T00:00:00.000Z',
+    tokenExpiresAt: null,
+    serverConfigured: true,
+    defaultAccountId: 'acc-work',
+    accounts: [
+      {
+        accountId: 'acc-work',
+        email: 'work@example.com',
+        grantedScopes: ['openid'],
+        isDefault: true,
+        connectedAt: '2026-06-01T00:00:00.000Z',
+      },
+      {
+        accountId: 'acc-home',
+        email: 'home@example.com',
+        grantedScopes: ['openid', 'https://www.googleapis.com/auth/calendar.events'],
+        isDefault: false,
+        connectedAt: '2026-06-02T00:00:00.000Z',
+      },
+    ],
+  };
+
+  it('lists every linked account with its own scopes and a default badge', async () => {
+    mockApi.getGoogleStatus.mockResolvedValueOnce(MULTI);
+    render(<GoogleConnectionSection />);
+    await waitFor(() => {
+      expect(screen.getAllByTestId('google-account-row')).toHaveLength(2);
+    });
+    expect(screen.getByText('work@example.com')).toBeInTheDocument();
+    expect(screen.getByText('home@example.com')).toBeInTheDocument();
+    expect(screen.getByText('Default')).toBeInTheDocument();
+    // Only the non-default account offers Make default.
+    expect(
+      screen.getByRole('button', { name: 'Make home@example.com the default' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Make work@example.com the default' }),
+    ).not.toBeInTheDocument();
+    // Per-account incremental buttons: home already has Calendar, work doesn't.
+    expect(
+      screen.getByRole('button', { name: 'Enable Calendar for work@example.com' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Enable Calendar for home@example.com' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('starts add-account OAuth with intent=add', async () => {
+    mockApi.getGoogleStatus.mockResolvedValueOnce(MULTI);
+    mockApi.startGoogleOAuth.mockResolvedValueOnce({ authorizeUrl: 'https://g/add' });
+    const locationMock = mockWindowLocation('/settings');
+    render(<GoogleConnectionSection />);
+    await waitFor(() => screen.getByRole('button', { name: /Add another account/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Add another account/i }));
+    await waitFor(() => expect(locationMock.hrefSetter).toHaveBeenCalledWith('https://g/add'));
+    expect(mockApi.startGoogleOAuth).toHaveBeenCalledWith({ returnTo: '/settings', intent: 'add' });
+    locationMock.restore();
+  });
+
+  it('requests one surface for one account', async () => {
+    mockApi.getGoogleStatus.mockResolvedValueOnce(MULTI);
+    mockApi.startGoogleOAuth.mockResolvedValueOnce({ authorizeUrl: 'https://g/sheets' });
+    const locationMock = mockWindowLocation('/settings', '?tab=account', '#google');
+    render(<GoogleConnectionSection />);
+    const btn = await screen.findByRole('button', { name: 'Enable Sheets for home@example.com' });
+    fireEvent.click(btn);
+    await waitFor(() => {
+      expect(mockApi.startGoogleOAuth).toHaveBeenCalledWith({
+        returnTo: '/settings?tab=account#google',
+        scopes: GOOGLE_SURFACES.find((s) => s.key === 'sheets')!.scopes,
+        accountId: 'acc-home',
+      });
+    });
+    locationMock.restore();
+  });
+
+  it('makes an account the default and refetches', async () => {
+    mockApi.getGoogleStatus.mockResolvedValue(MULTI);
+    mockApi.setDefaultGoogleAccount.mockResolvedValueOnce({ ok: true });
+    render(<GoogleConnectionSection />);
+    const btn = await screen.findByRole('button', { name: 'Make home@example.com the default' });
+    fireEvent.click(btn);
+    await waitFor(() => {
+      expect(mockApi.setDefaultGoogleAccount).toHaveBeenCalledWith('acc-home');
+      expect(mockApi.getGoogleStatus).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('disconnects only the chosen account', async () => {
+    mockApi.getGoogleStatus.mockResolvedValue(MULTI);
+    mockApi.disconnectGoogleAccount.mockResolvedValueOnce({ ok: true });
+    vi.spyOn(window, 'confirm').mockReturnValueOnce(true);
+    render(<GoogleConnectionSection />);
+    const btn = await screen.findByRole('button', { name: 'Disconnect home@example.com' });
+    fireEvent.click(btn);
+    await waitFor(() => {
+      expect(mockApi.disconnectGoogleAccount).toHaveBeenCalledWith('acc-home');
+    });
+    expect(mockApi.disconnectGoogle).not.toHaveBeenCalled();
   });
 });

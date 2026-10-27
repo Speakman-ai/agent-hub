@@ -82,6 +82,12 @@ export function buildAuthorizeUrl(opts: {
   scopes?: readonly string[];
   /** Optional `login_hint` to pre-fill the account chooser. */
   loginHint?: string;
+  /**
+   * Force Google's account chooser before consent. Used when adding another
+   * account, so the browser's signed-in session doesn't silently pick the
+   * account that's already linked.
+   */
+  selectAccount?: boolean;
 }): string {
   const requested = opts.scopes && opts.scopes.length > 0 ? opts.scopes : GOOGLE_IDENTITY_SCOPES;
   const merged = Array.from(
@@ -95,7 +101,7 @@ export function buildAuthorizeUrl(opts: {
     response_type: 'code',
     scope: merged.join(' '),
     access_type: 'offline',
-    prompt: 'consent',
+    prompt: opts.selectAccount ? 'select_account consent' : 'consent',
     include_granted_scopes: 'true',
     state: opts.state,
   });

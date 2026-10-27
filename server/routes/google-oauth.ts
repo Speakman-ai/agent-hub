@@ -4,10 +4,17 @@
  *   GET    /api/auth/google/start    — returns { authorizeUrl }; client redirects the browser.
  *   GET    /api/auth/google/callback — public; verifies state, exchanges code, stores the
  *                                      encrypted per-user connection, redirects back to the UI.
- *   GET    /api/auth/google/status   — { connected, email, grantedScopes, … } (never tokens).
- *   DELETE /api/auth/google/connect  — best-effort revoke at Google, then clear the row.
+ *   GET    /api/auth/google/status   — { connected, email, grantedScopes, accounts, … } (never tokens).
+ *   POST   /api/auth/google/accounts/:accountId/default — make one linked account the default.
+ *   DELETE /api/auth/google/accounts/:accountId          — revoke + remove one linked account.
+ *   DELETE /api/auth/google/connect  — revoke + remove the default account (older clients).
  *
- * The connection is per-USER (mirrors GitHub), surfaced in Account settings. Tokens
+ * Connections are per-USER (mirrors GitHub), surfaced in Account settings. A user
+ * can link several Google accounts; one is the default that callers get when they
+ * don't name an account. `/start?intent=add` forces Google's account chooser;
+ * `/start?accountId=…` re-consents a specific account (incremental scopes). The
+ * callback always upserts by (user, google_sub), so re-linking an account refreshes
+ * its row and a new Google account adds one. Tokens
  * are encrypted at rest by `google-connections-store.ts`; this file never returns them.
  *
  * Config requirement:
@@ -43,6 +50,8 @@ import {
   getGoogleConnectionStatus,
   deleteGoogleConnection,
   listGoogleConnections,
+  setDefaultGoogleConnection,
+  type GoogleConnectionRow,
 } from '../google-connections-store.js';
 import { registerPath, z } from '../openapi/registry.js';
 
@@ -78,11 +87,27 @@ registerPath({
   },
 });
 
+const GoogleAccountSummarySchema = z
+  .object({
+    accountId: z.string(),
+    email: z.string(),
+    grantedScopes: z.array(z.string()),
+    isDefault: z.boolean(),
+    connectedAt: z.string(),
+    tokenExpiresAt: z.string().nullable(),
+  })
+  .openapi('GoogleAccountSummary');
+
+const ErrorBodySchema = z.object({ error: z.string() });
+const AccountIdParamsSchema = z.object({ accountId: z.string().min(1) });
+
 registerPath({
   method: 'get',
   path: '/api/auth/google/status',
   tags: ['Auth'],
   summary: 'Google connection status for the calling user (never returns tokens).',
+  description:
+    'Top-level `email` / `grantedScopes` / `connectedAt` / `tokenExpiresAt` describe the default account (kept for single-account clients). `accounts` lists every linked account, default first.',
   responses: {
     200: {
       description: 'Connection summary.',
@@ -95,6 +120,8 @@ registerPath({
             connectedAt: z.string().nullable(),
             tokenExpiresAt: z.string().nullable(),
             serverConfigured: z.boolean(),
+            defaultAccountId: z.string().nullable(),
+            accounts: z.array(GoogleAccountSummarySchema),
           }),
         },
       },
@@ -110,7 +137,9 @@ registerPath({
   method: 'delete',
   path: '/api/auth/google/connect',
   tags: ['Auth'],
-  summary: 'Disconnect the calling user from Google (revoke + clear).',
+  summary: 'Disconnect the default Google account (revoke + clear).',
+  description:
+    'Kept for single-account clients. Removes only the default account; the oldest remaining account becomes the default. Use DELETE /api/auth/google/accounts/{accountId} to remove a specific account.',
   responses: {
     200: {
       description: 'Disconnected.',
@@ -123,6 +152,51 @@ registerPath({
   },
 });
 
+registerPath({
+  method: 'post',
+  path: '/api/auth/google/accounts/{accountId}/default',
+  tags: ['Auth'],
+  summary: "Make one of the calling user's linked Google accounts the default.",
+  request: { params: AccountIdParamsSchema },
+  responses: {
+    200: {
+      description: 'Default moved.',
+      content: { 'application/json': { schema: z.object({ ok: z.literal(true) }) } },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorBodySchema } },
+    },
+    404: {
+      description: 'No linked account with that id for this user.',
+      content: { 'application/json': { schema: ErrorBodySchema } },
+    },
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/auth/google/accounts/{accountId}',
+  tags: ['Auth'],
+  summary: 'Disconnect one linked Google account (revoke + clear).',
+  description: 'Removing the default account promotes the oldest remaining account to default.',
+  request: { params: AccountIdParamsSchema },
+  responses: {
+    200: {
+      description: 'Disconnected.',
+      content: { 'application/json': { schema: z.object({ ok: z.literal(true) }) } },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorBodySchema } },
+    },
+    404: {
+      description: 'No linked account with that id for this user.',
+      content: { 'application/json': { schema: ErrorBodySchema } },
+    },
+  },
+});
+
 const STATE_TOKEN_TTL_SEC = 10 * 60; // 10 min — plenty for the redirect round-trip
 const STATE_PURPOSE = 'google-oauth';
 
@@ -131,7 +205,18 @@ interface GoogleOAuthState {
   sub: string;
   purpose: string;
   returnTo?: string;
+  /**
+   * `add` links another Google account (the chooser was forced); `reconnect`
+   * re-consents an already-linked account. Either way the callback upserts by
+   * google_sub, so the intent only changes the result page copy and lets the
+   * callback notice the user picked a different account than requested.
+   */
+  intent?: GoogleOAuthIntent;
+  /** Account being re-consented (reconnect intent only). */
+  accountId?: string;
 }
+
+type GoogleOAuthIntent = 'add' | 'reconnect';
 
 /** Replace HTML-special characters with their entity equivalents. */
 function escapeHtml(s: string): string {
@@ -221,6 +306,14 @@ registerPath({
         description:
           'Optional space- or comma-separated extra OAuth scopes for incremental per-surface consent. Identity scopes (openid email profile) are always included.',
       }),
+      intent: z.enum(['add', 'reconnect']).optional().openapi({
+        description:
+          '`add` links another Google account and forces the account chooser (`prompt=select_account consent`). `reconnect` (the default when the user already has an account) re-consents an existing account.',
+      }),
+      accountId: z.string().optional().openapi({
+        description:
+          'Linked account to re-consent (implies `reconnect`). Its email is sent as `login_hint`. Defaults to the default account.',
+      }),
     }),
   },
   responses: {
@@ -228,9 +321,17 @@ registerPath({
       description: 'Authorize URL the client should redirect the browser to.',
       content: { 'application/json': { schema: z.object({ authorizeUrl: z.string() }) } },
     },
+    400: {
+      description: 'Invalid intent, or `accountId` combined with `intent=add`.',
+      content: { 'application/json': { schema: ErrorBodySchema } },
+    },
     401: {
       description: 'Not authenticated.',
       content: { 'application/json': { schema: z.object({ error: z.string() }) } },
+    },
+    404: {
+      description: "`accountId` is not one of the caller's linked accounts.",
+      content: { 'application/json': { schema: ErrorBodySchema } },
     },
     503: {
       description: 'Google OAuth not configured on the server.',
@@ -259,6 +360,30 @@ function parseScopesParam(raw: unknown): string[] {
     .split(/[\s,]+/)
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+function callbackSuccessTitle(opts: {
+  email: string;
+  alreadyLinked: boolean;
+  intent: GoogleOAuthIntent | undefined;
+}): string {
+  if (!opts.email) return 'Google connected';
+  if (opts.intent === 'add' && opts.alreadyLinked) return `${opts.email} is already linked`;
+  if (opts.alreadyLinked) return `Reconnected ${opts.email}`;
+  return `Connected as ${opts.email}`;
+}
+
+/**
+ * Best-effort revoke at Google, then remove the local row. Revoking the refresh
+ * token drops the grant for that Google account only. revokeGoogleToken never
+ * throws, so a failed revoke can't strand the local connection.
+ */
+async function revokeAndDelete(userId: string, conn: GoogleConnectionRow): Promise<void> {
+  const tokenToRevoke = conn.refreshToken || conn.accessToken;
+  if (tokenToRevoke) {
+    await revokeGoogleToken({ token: tokenToRevoke });
+  }
+  deleteGoogleConnection(userId, { accountId: conn.accountId });
 }
 
 export default function createGoogleOAuthRoutes(deps: RouteDeps): Router {
@@ -293,9 +418,37 @@ export default function createGoogleOAuthRoutes(deps: RouteDeps): Router {
     // open-redirect before this value is signed into the state JWT.
     const returnTo = sanitizeReturnToPath(req.query.returnTo);
 
+    const rawIntent = req.query.intent;
+    if (rawIntent !== undefined && rawIntent !== 'add' && rawIntent !== 'reconnect') {
+      return res.status(400).json({ error: 'intent must be "add" or "reconnect"' });
+    }
+    const accountIdParam =
+      typeof req.query.accountId === 'string' && req.query.accountId ? req.query.accountId : null;
+    if (rawIntent === 'add' && accountIdParam) {
+      return res.status(400).json({ error: 'accountId cannot be combined with intent=add' });
+    }
+
+    let intent: GoogleOAuthIntent;
+    let target: GoogleConnectionRow | null = null;
+    if (rawIntent === 'add') {
+      intent = 'add';
+    } else {
+      target = getGoogleConnection(uid, accountIdParam ? { accountId: accountIdParam } : undefined);
+      if (accountIdParam && !target) {
+        return res.status(404).json({ error: 'Google account not found' });
+      }
+      // With nothing linked yet, a plain connect is the first add.
+      intent = target ? 'reconnect' : 'add';
+    }
+
     const stateToken = signJwt(uid, record.jwtSecret, {
       expiresInSec: STATE_TOKEN_TTL_SEC,
-      claims: { purpose: STATE_PURPOSE, ...(returnTo && { returnTo }) },
+      claims: {
+        purpose: STATE_PURPOSE,
+        intent,
+        ...(target && { accountId: target.accountId }),
+        ...(returnTo && { returnTo }),
+      },
     });
 
     const authorizeUrl = buildAuthorizeUrl({
@@ -303,6 +456,8 @@ export default function createGoogleOAuthRoutes(deps: RouteDeps): Router {
       redirectUri: getRedirectUri(config, req),
       state: stateToken,
       scopes: parseScopesParam(req.query.scopes),
+      ...(target?.googleEmail && { loginHint: target.googleEmail }),
+      selectAccount: rawIntent === 'add',
     });
 
     return res.json({ authorizeUrl });
@@ -418,6 +573,9 @@ export default function createGoogleOAuthRoutes(deps: RouteDeps): Router {
         listGoogleConnections(callerUserId).find((c) => c.googleSub === userInfo.sub)
           ?.refreshToken ||
         null;
+      const alreadyLinked = listGoogleConnections(callerUserId).some(
+        (c) => c.googleSub === userInfo.sub,
+      );
       upsertGoogleConnection({
         userId: callerUserId,
         googleSub: userInfo.sub,
@@ -426,9 +584,11 @@ export default function createGoogleOAuthRoutes(deps: RouteDeps): Router {
         tokenExpiresAt,
         refreshToken,
         grantedScopes: parseGrantedScopes(tokens.scope),
-        // Connect still means "this is my Google account": linking a different
-        // one replaces the previous link rather than adding a second.
-        exclusive: true,
+      });
+      const resultTitle = callbackSuccessTitle({
+        email: userInfo.email,
+        alreadyLinked,
+        intent: payload.intent,
       });
 
       // Defense-in-depth: re-validate at render time even though /start already
@@ -440,7 +600,7 @@ export default function createGoogleOAuthRoutes(deps: RouteDeps): Router {
         .type('html')
         .send(
           renderCallbackPage({
-            title: userInfo.email ? `Connected as ${userInfo.email}` : 'Google connected',
+            title: resultTitle,
             message: 'Returning you to Agent Hub…',
             redirectTo: returnTo,
             isError: false,
@@ -469,10 +629,20 @@ export default function createGoogleOAuthRoutes(deps: RouteDeps): Router {
       return res.status(401).json({ error: 'Not authenticated' });
     }
     const status = getGoogleConnectionStatus(uid);
+    const accounts = listGoogleConnections(uid).map((c) => ({
+      accountId: c.accountId,
+      email: c.googleEmail,
+      grantedScopes: c.grantedScopes,
+      isDefault: c.isDefault,
+      connectedAt: c.connectedAt,
+      tokenExpiresAt: c.tokenExpiresAt,
+    }));
     const creds = config.googleOAuth;
     return res.json({
       ...status,
       serverConfigured: !!(creds?.clientId && creds?.clientSecret),
+      defaultAccountId: accounts.find((a) => a.isDefault)?.accountId ?? null,
+      accounts,
     });
   });
 
@@ -482,15 +652,36 @@ export default function createGoogleOAuthRoutes(deps: RouteDeps): Router {
     if (!uid) {
       return res.status(401).json({ error: 'Not authenticated' });
     }
-    // Best-effort revoke so the grant is dropped on Google's side too. Revoking
-    // the refresh token cascades to its access tokens. revokeGoogleToken never
-    // throws — a failed revoke must not block clearing the local connection.
     const conn = getGoogleConnection(uid);
-    const tokenToRevoke = conn?.refreshToken || conn?.accessToken;
-    if (tokenToRevoke) {
-      await revokeGoogleToken({ token: tokenToRevoke });
+    if (conn) await revokeAndDelete(uid, conn);
+    return res.json({ ok: true });
+  });
+
+  router.post('/api/auth/google/accounts/:accountId/default', (req: Request, res: Response) => {
+    const uid = resolveOAuthConnectionUserId(req);
+    if (!uid) {
+      return res.status(401).json({ error: 'Not authenticated' });
     }
-    deleteGoogleConnection(uid);
+    const params = AccountIdParamsSchema.safeParse(req.params);
+    if (!params.success || !setDefaultGoogleConnection(uid, params.data.accountId)) {
+      return res.status(404).json({ error: 'Google account not found' });
+    }
+    return res.json({ ok: true });
+  });
+
+  router.delete('/api/auth/google/accounts/:accountId', async (req: Request, res: Response) => {
+    const uid = resolveOAuthConnectionUserId(req);
+    if (!uid) {
+      return res.status(401).json({ error: 'Not authenticated' });
+    }
+    const params = AccountIdParamsSchema.safeParse(req.params);
+    const conn = params.success
+      ? getGoogleConnection(uid, { accountId: params.data.accountId })
+      : null;
+    if (!conn) {
+      return res.status(404).json({ error: 'Google account not found' });
+    }
+    await revokeAndDelete(uid, conn);
     return res.json({ ok: true });
   });
 

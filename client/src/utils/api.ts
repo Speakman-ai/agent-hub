@@ -1192,17 +1192,34 @@ export const api = {
   // Returns { authorizeUrl }; the caller does a full-page redirect to it.
   // `scopes` (string or string[]) requests extra per-surface scopes for
   // incremental consent; identity scopes are always added server-side.
+  // `intent: 'add'` links another account (forces Google's account chooser);
+  // `accountId` re-consents that specific account.
   startGoogleOAuth: ({
     returnTo,
     scopes,
-  }: { returnTo?: string; scopes?: string | string[] } = {}) => {
+    intent,
+    accountId,
+  }: {
+    returnTo?: string;
+    scopes?: string | string[];
+    intent?: 'add' | 'reconnect';
+    accountId?: string;
+  } = {}) => {
     const params = new URLSearchParams();
     if (returnTo) params.set('returnTo', returnTo);
+    if (intent) params.set('intent', intent);
+    if (accountId) params.set('accountId', accountId);
     if (scopes) params.set('scopes', Array.isArray(scopes) ? scopes.join(' ') : scopes);
     const qs = params.toString();
     return fetchJSON<{ authorizeUrl: string }>(`/auth/google/start${qs ? `?${qs}` : ''}`);
   },
   disconnectGoogle: () => fetchJSON('/auth/google/connect', { method: 'DELETE' }),
+  setDefaultGoogleAccount: (accountId: string) =>
+    fetchJSON(`/auth/google/accounts/${encodeURIComponent(accountId)}/default`, {
+      method: 'POST',
+    }),
+  disconnectGoogleAccount: (accountId: string) =>
+    fetchJSON(`/auth/google/accounts/${encodeURIComponent(accountId)}`, { method: 'DELETE' }),
   // Personal reminders. Scoped to the caller; writes broadcast `reminder_update`.
   listReminders: (status?: ReminderStatus[] | 'all') => {
     const qs = status ? `?status=${status === 'all' ? 'all' : status.join(',')}` : '';

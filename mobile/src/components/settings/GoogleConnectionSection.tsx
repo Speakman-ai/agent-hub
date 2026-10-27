@@ -19,6 +19,17 @@ interface GoogleSurface {
   scopes: string[];
 }
 
+/** One linked Google account, as listed by GET /api/auth/google/status. */
+export interface GoogleAccountSummary {
+  accountId: string;
+  email: string;
+  grantedScopes: string[];
+  isDefault: boolean;
+  connectedAt: string | null;
+  tokenExpiresAt?: string | null;
+}
+
+/** Top-level email/scopes describe the default account; `accounts` lists all. */
 export interface GoogleStatus {
   connected: boolean;
   email: string | null;
@@ -26,6 +37,8 @@ export interface GoogleStatus {
   connectedAt: string | null;
   tokenExpiresAt: string | null;
   serverConfigured: boolean;
+  defaultAccountId?: string | null;
+  accounts?: GoogleAccountSummary[];
 }
 
 export const GOOGLE_SURFACES: GoogleSurface[] = [
@@ -60,18 +73,51 @@ export function scopeLabel(scope: string): string {
   return scope.replace(/^https:\/\/www\.googleapis\.com\/auth\//, '');
 }
 
+/**
+ * Accounts from a status payload. A server without multi-account support only
+ * sends the top-level fields, which become a single default account with no id.
+ */
+export function accountsFromStatus(status: GoogleStatus | null): GoogleAccountSummary[] {
+  if (!status) return [];
+  if (Array.isArray(status.accounts)) return status.accounts;
+  if (!status.connected) return [];
+  return [
+    {
+      accountId: '',
+      email: status.email || 'Google account',
+      grantedScopes: Array.isArray(status.grantedScopes) ? status.grantedScopes : [],
+      isDefault: true,
+      connectedAt: status.connectedAt,
+    },
+  ];
+}
+
+/** Surfaces whose scopes this account hasn't fully granted. */
+export function missingSurfaces(grantedScopes: string[]): GoogleSurface[] {
+  const granted = new Set(grantedScopes);
+  return GOOGLE_SURFACES.filter((s) => !s.scopes.every((scope) => granted.has(scope)));
+}
+
 export async function openGoogleOAuth({
   apiClient,
   openURL,
   scopes,
+  intent,
+  accountId,
 }: {
   apiClient: { startGoogleOAuth: (opts?: any) => Promise<{ authorizeUrl: string }> };
   openURL: (url: string) => Promise<unknown>;
   scopes?: string[];
+  /** `add` links another account and forces Google's account chooser. */
+  intent?: 'add';
+  /** Re-consent this linked account (incremental scopes). */
+  accountId?: string;
 }): Promise<string> {
   const body = await apiClient.startGoogleOAuth({
     returnTo: '/settings?tab=account',
     ...(scopes?.length ? { scopes } : {}),
+    ...(intent ? { intent } : {}),
+    ...(accountId ? { accountId } : {}),
   });
   await openURL(body.authorizeUrl);
   return body.authorizeUrl;
@@ -83,7 +129,9 @@ export function GoogleConnectionContent({
   error,
   busy,
   onConnect,
-  onUpgrade,
+  onAddAccount,
+  onEnableSurface,
+  onMakeDefault,
   onDisconnect,
 }: {
   status: GoogleStatus | null;
@@ -91,8 +139,10 @@ export function GoogleConnectionContent({
   error: string | null;
   busy: boolean;
   onConnect: () => void;
-  onUpgrade: () => void;
-  onDisconnect: () => void;
+  onAddAccount: () => void;
+  onEnableSurface: (account: GoogleAccountSummary, surface: GoogleSurface) => void;
+  onMakeDefault: (account: GoogleAccountSummary) => void;
+  onDisconnect: (account: GoogleAccountSummary) => void;
 }) {
   if (loading) {
     return (
@@ -105,21 +155,24 @@ export function GoogleConnectionContent({
     );
   }
 
-  const connected = !!status?.connected;
+  const accounts = accountsFromStatus(status);
+  const connected = accounts.length > 0;
+  const multi = accounts.length > 1;
   const serverConfigured = status?.serverConfigured !== false;
-  const grantedScopes = Array.isArray(status?.grantedScopes) ? status.grantedScopes : [];
 
   return (
     <View style={styles.card} testID="google-connection-section">
       <View style={styles.headerRow}>
-        <View>
-          <Text style={styles.title}>Google Account</Text>
+        <View style={styles.headerText}>
+          <Text style={styles.title}>{multi ? 'Google Accounts' : 'Google Account'}</Text>
           <Text style={styles.hint}>
             Connect Calendar, Gmail, Sheets, Drive, and Docs access to your account.
           </Text>
         </View>
         {connected ? (
-          <Text style={[styles.badge, styles.badgeConnected]}>Connected</Text>
+          <Text style={[styles.badge, styles.badgeConnected]}>
+            {multi ? `${accounts.length} connected` : 'Connected'}
+          </Text>
         ) : (
           <Text style={styles.badge}>Not connected</Text>
         )}
@@ -136,51 +189,93 @@ export function GoogleConnectionContent({
 
       {connected ? (
         <View style={styles.connectedBody}>
-          <View style={styles.statusPanel}>
-            <Text style={styles.statusLabel}>Connected as</Text>
-            <Text style={styles.emailText}>{status?.email || 'Google account'}</Text>
-            {status?.connectedAt ? (
-              <Text style={styles.connectedAt}>Connected {relativeTime(status.connectedAt)}</Text>
-            ) : null}
-          </View>
-
-          <View>
-            <Text style={styles.statusLabel}>Granted access</Text>
-            {grantedScopes.length ? (
-              <View style={styles.scopeList}>
-                {grantedScopes.map((scope) => (
-                  <Text key={scope} style={styles.scopeChip}>
-                    {scopeLabel(scope)}
+          {accounts.map((account) => (
+            <View
+              key={account.accountId || account.email}
+              style={styles.accountBlock}
+              testID="google-account-row"
+            >
+              <View style={styles.statusPanel}>
+                <View style={styles.emailRow}>
+                  <Text style={styles.statusLabel}>{multi ? 'Account' : 'Connected as'}</Text>
+                  {multi && account.isDefault ? (
+                    <Text style={[styles.badge, styles.badgeConnected]}>Default</Text>
+                  ) : null}
+                </View>
+                <Text style={styles.emailText}>{account.email}</Text>
+                {account.connectedAt ? (
+                  <Text style={styles.connectedAt}>
+                    Connected {relativeTime(account.connectedAt)}
                   </Text>
-                ))}
+                ) : null}
               </View>
-            ) : (
-              <Text style={styles.muted}>Identity only (no data scopes granted yet).</Text>
-            )}
-          </View>
 
-          <View style={styles.actionRow}>
-            {serverConfigured ? (
-              <TouchableOpacity
-                style={[styles.secondaryButton, busy && styles.buttonDisabled]}
-                onPress={onUpgrade}
-                disabled={busy}
-                accessibilityRole="button"
-              >
-                <Text style={styles.secondaryButtonText}>
-                  {busy ? 'Opening...' : 'Re-consent / upgrade access'}
-                </Text>
-              </TouchableOpacity>
-            ) : null}
+              <View>
+                <Text style={styles.statusLabel}>Granted access</Text>
+                {account.grantedScopes.length ? (
+                  <View style={styles.scopeList}>
+                    {account.grantedScopes.map((scope) => (
+                      <Text key={scope} style={styles.scopeChip}>
+                        {scopeLabel(scope)}
+                      </Text>
+                    ))}
+                  </View>
+                ) : (
+                  <Text style={styles.muted}>Identity only (no data scopes granted yet).</Text>
+                )}
+              </View>
+
+              <View style={styles.actionRow}>
+                {serverConfigured
+                  ? missingSurfaces(account.grantedScopes).map((surface) => (
+                      <TouchableOpacity
+                        key={surface.key}
+                        style={[styles.secondaryButton, busy && styles.buttonDisabled]}
+                        onPress={() => onEnableSurface(account, surface)}
+                        disabled={busy}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Enable ${surface.label} for ${account.email}`}
+                      >
+                        <Text style={styles.secondaryButtonText}>+ {surface.label}</Text>
+                      </TouchableOpacity>
+                    ))
+                  : null}
+                {multi && !account.isDefault && account.accountId ? (
+                  <TouchableOpacity
+                    style={[styles.secondaryButton, busy && styles.buttonDisabled]}
+                    onPress={() => onMakeDefault(account)}
+                    disabled={busy}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Make ${account.email} the default`}
+                  >
+                    <Text style={styles.secondaryButtonText}>Make default</Text>
+                  </TouchableOpacity>
+                ) : null}
+                <TouchableOpacity
+                  style={[styles.dangerButton, busy && styles.buttonDisabled]}
+                  onPress={() => onDisconnect(account)}
+                  disabled={busy}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Disconnect ${account.email}`}
+                >
+                  <Text style={styles.dangerButtonText}>{busy ? 'Working...' : 'Disconnect'}</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          ))}
+
+          {serverConfigured ? (
             <TouchableOpacity
-              style={[styles.dangerButton, busy && styles.buttonDisabled]}
-              onPress={onDisconnect}
+              style={[styles.secondaryButton, busy && styles.buttonDisabled]}
+              onPress={onAddAccount}
               disabled={busy}
               accessibilityRole="button"
             >
-              <Text style={styles.dangerButtonText}>{busy ? 'Working...' : 'Disconnect'}</Text>
+              <Text style={styles.secondaryButtonText}>
+                {busy ? 'Opening...' : 'Add another account'}
+              </Text>
             </TouchableOpacity>
-          </View>
+          ) : null}
         </View>
       ) : (
         <View style={styles.connectedBody}>
@@ -241,14 +336,16 @@ export default function GoogleConnectionSection() {
     return () => sub.remove();
   }, [load]);
 
-  const startOAuth = async (scopes?: string[]) => {
+  const startOAuth = async (
+    opts: { scopes?: string[]; intent?: 'add'; accountId?: string } = {},
+  ) => {
     setBusy(true);
     setError(null);
     try {
       await openGoogleOAuth({
         apiClient: api,
         openURL: (url) => Linking.openURL(url),
-        scopes,
+        ...opts,
       });
     } catch (err: any) {
       setError(err?.message || String(err));
@@ -257,26 +354,37 @@ export default function GoogleConnectionSection() {
     }
   };
 
-  const disconnect = () => {
-    Alert.alert('Disconnect Google?', 'Agents will lose Google API access until reconnected.', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Disconnect',
-        style: 'destructive',
-        onPress: async () => {
-          setBusy(true);
-          setError(null);
-          try {
-            await api.disconnectGoogle();
-            await load({ silent: true });
-          } catch (err: any) {
-            setError(err?.message || String(err));
-          } finally {
-            setBusy(false);
-          }
+  const runAction = async (action: () => Promise<unknown>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await action();
+      await load({ silent: true });
+    } catch (err: any) {
+      setError(err?.message || String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const disconnect = (account: GoogleAccountSummary) => {
+    Alert.alert(
+      `Disconnect ${account.email}?`,
+      'Agents will lose Google API access for this account until it is reconnected.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Disconnect',
+          style: 'destructive',
+          onPress: () =>
+            void runAction(() =>
+              account.accountId
+                ? api.disconnectGoogleAccount(account.accountId)
+                : api.disconnectGoogle(),
+            ),
         },
-      },
-    ]);
+      ],
+    );
   };
 
   return (
@@ -286,7 +394,16 @@ export default function GoogleConnectionSection() {
       error={error}
       busy={busy}
       onConnect={() => void startOAuth()}
-      onUpgrade={() => void startOAuth(ALL_SURFACE_SCOPES)}
+      onAddAccount={() => void startOAuth({ intent: 'add' })}
+      onEnableSurface={(account, surface) =>
+        void startOAuth({
+          scopes: surface.scopes,
+          ...(account.accountId ? { accountId: account.accountId } : {}),
+        })
+      }
+      onMakeDefault={(account) =>
+        void runAction(() => api.setDefaultGoogleAccount(account.accountId))
+      }
       onDisconnect={disconnect}
     />
   );
@@ -304,6 +421,17 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     justifyContent: 'space-between',
     gap: 10,
+  },
+  headerText: {
+    flexShrink: 1,
+  },
+  accountBlock: {
+    gap: 10,
+  },
+  emailRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
   title: {
     fontSize: 16,
