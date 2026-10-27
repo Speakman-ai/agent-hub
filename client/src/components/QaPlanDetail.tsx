@@ -824,12 +824,14 @@ function RunHistory({
   approved,
   onOpenSession,
   onOpenCard,
+  onTroubleshoot,
 }: {
   runs: QaRunWire[];
   cases: QaCaseWire[];
   approved: boolean;
   onOpenSession?: (agentId: string | null, sessionId: string) => void;
   onOpenCard?: (cardId: string) => void;
+  onTroubleshoot?: (runId: string, caseId: string) => Promise<void>;
 }) {
   // Newest run open by default; the user's toggles win afterwards.
   const [toggled, setToggled] = useState<Record<string, boolean>>({});
@@ -894,7 +896,14 @@ function RunHistory({
             </div>
             {expanded && (
               <div className="border-t border-gray-800 bg-gray-950/40">
-                <QaRunResults run={r} cases={cases} onOpenCard={onOpenCard} />
+                <QaRunResults
+                  run={r}
+                  cases={cases}
+                  onOpenCard={onOpenCard}
+                  onTroubleshoot={
+                    onTroubleshoot ? (caseId) => onTroubleshoot(r.id, caseId) : undefined
+                  }
+                />
               </div>
             )}
           </li>
@@ -994,6 +1003,11 @@ export default function QaPlanDetail({
     } finally {
       setBusy(false);
     }
+  };
+
+  const troubleshoot = async (runId: string, caseId: string) => {
+    const { agentId, sessionId } = await api.troubleshootQaResult(projectId, planId, runId, caseId);
+    onOpenSession?.(agentId, sessionId);
   };
 
   const confirmApprovalLoss = (): boolean =>
@@ -1263,6 +1277,7 @@ export default function QaPlanDetail({
               approved={plan.approved}
               onOpenSession={onOpenSession}
               onOpenCard={onOpenCard}
+              onTroubleshoot={onOpenSession ? troubleshoot : undefined}
             />
           </section>
         </>

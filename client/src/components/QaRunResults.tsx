@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ImageIcon, X } from 'lucide-react';
+import { ImageIcon, Stethoscope, X } from 'lucide-react';
 import { artifactRenderKind, isGenericArtifactType } from '@shared/utils/artifactView';
 import type { QaCaseWire, QaResultWire, QaRunWire, QaScreenshotWire } from '../utils/api';
 import { fetchArtifactBlob } from '../utils/artifactContent';
@@ -176,16 +176,43 @@ function Field({ label, text }: { label: string; text: string }) {
   );
 }
 
+/** Verdicts that get a Troubleshoot button; matches the server's rule. */
+export const TROUBLESHOOT_VERDICTS: ReadonlySet<QaResultWire['verdict']> = new Set([
+  'fail',
+  'needs_change',
+  'blocked',
+]);
+
 export default function QaRunResults({
   run,
   cases,
   onOpenCard,
+  onTroubleshoot,
 }: {
   run: Pick<QaRunWire, 'id' | 'sessionId' | 'results'>;
   cases: Pick<QaCaseWire, 'id' | 'title' | 'expected' | 'version'>[];
   onOpenCard?: (cardId: string) => void;
+  /** Opens a dev session seeded with this result; rejects with the error to show. */
+  onTroubleshoot?: (caseId: string) => Promise<void>;
 }) {
+  const [pending, setPending] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const rows = orderRunResults(run.results ?? [], cases);
+
+  const troubleshoot = async (caseId: string) => {
+    if (!onTroubleshoot || pending) return;
+    setPending(caseId);
+    setErrors(({ [caseId]: _drop, ...rest }) => rest);
+    try {
+      await onTroubleshoot(caseId);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : 'Failed to open a troubleshoot session';
+      setErrors((cur) => ({ ...cur, [caseId]: message }));
+    } finally {
+      setPending(null);
+    }
+  };
+
   if (rows.length === 0) {
     return (
       <div className="px-3 py-2 text-xs text-gray-500" data-testid="qa-run-results-empty">
@@ -195,47 +222,69 @@ export default function QaRunResults({
   }
   return (
     <ul className="flex flex-col divide-y divide-gray-800" data-testid={`qa-run-results-${run.id}`}>
-      {rows.map(({ result, qaCase }) => (
-        <li
-          key={result.id}
-          className="flex flex-col gap-2 px-3 py-2"
-          data-testid={`qa-result-${result.caseId}`}
-        >
-          <div className="flex flex-wrap items-center gap-2 text-sm">
-            <span className="text-gray-100">
-              {qaCase?.title ?? `Deleted case ${result.caseId}`}
-            </span>
-            <span
-              className={`text-xs ${VERDICT_CLASS[result.verdict]}`}
-              data-testid="qa-result-verdict"
-            >
-              {VERDICT_LABELS[result.verdict]}
-            </span>
-            {qaCase && result.caseVersion !== qaCase.version && (
-              <span className="text-[11px] text-gray-500">
-                recorded against v{result.caseVersion}
+      {rows.map(({ result, qaCase }) => {
+        const canTroubleshoot =
+          !!onTroubleshoot && !!qaCase && TROUBLESHOOT_VERDICTS.has(result.verdict);
+        return (
+          <li
+            key={result.id}
+            className="flex flex-col gap-2 px-3 py-2"
+            data-testid={`qa-result-${result.caseId}`}
+          >
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <span className="text-gray-100">
+                {qaCase?.title ?? `Deleted case ${result.caseId}`}
               </span>
-            )}
-            {result.findingCardId && (
-              <button
-                type="button"
-                data-testid="qa-result-finding"
-                disabled={!onOpenCard}
-                onClick={() => onOpenCard?.(result.findingCardId!)}
-                className="ml-auto rounded-full border border-red-900 px-2 py-0.5 text-[11px] text-red-300 hover:bg-red-950 disabled:opacity-60"
+              <span
+                className={`text-xs ${VERDICT_CLASS[result.verdict]}`}
+                data-testid="qa-result-verdict"
               >
-                Finding card
-              </button>
+                {VERDICT_LABELS[result.verdict]}
+              </span>
+              {qaCase && result.caseVersion !== qaCase.version && (
+                <span className="text-[11px] text-gray-500">
+                  recorded against v{result.caseVersion}
+                </span>
+              )}
+              {canTroubleshoot && (
+                <button
+                  type="button"
+                  data-testid="qa-result-troubleshoot"
+                  title="Open a dev agent session with this result's context"
+                  disabled={pending !== null}
+                  onClick={() => void troubleshoot(result.caseId)}
+                  className="ml-auto inline-flex items-center gap-1 rounded-full border border-blue-900 px-2 py-0.5 text-[11px] text-blue-300 hover:bg-blue-950 disabled:opacity-60"
+                >
+                  <Stethoscope size={11} />
+                  {pending === result.caseId ? 'Opening…' : 'Troubleshoot'}
+                </button>
+              )}
+              {result.findingCardId && (
+                <button
+                  type="button"
+                  data-testid="qa-result-finding"
+                  disabled={!onOpenCard}
+                  onClick={() => onOpenCard?.(result.findingCardId!)}
+                  className={`${canTroubleshoot ? '' : 'ml-auto '}rounded-full border border-red-900 px-2 py-0.5 text-[11px] text-red-300 hover:bg-red-950 disabled:opacity-60`}
+                >
+                  Finding card
+                </button>
+              )}
+            </div>
+            {errors[result.caseId] && (
+              <div className="text-xs text-red-400" data-testid="qa-result-troubleshoot-error">
+                {errors[result.caseId]}
+              </div>
             )}
-          </div>
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <Field label="Expected" text={qaCase?.expected ?? ''} />
-            <Field label="Actual" text={result.actual} />
-          </div>
-          {result.notes.trim() && <Field label="Notes" text={result.notes} />}
-          <QaScreenshotGallery sessionId={run.sessionId} screenshots={result.screenshots} />
-        </li>
-      ))}
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Field label="Expected" text={qaCase?.expected ?? ''} />
+              <Field label="Actual" text={result.actual} />
+            </div>
+            {result.notes.trim() && <Field label="Notes" text={result.notes} />}
+            <QaScreenshotGallery sessionId={run.sessionId} screenshots={result.screenshots} />
+          </li>
+        );
+      })}
     </ul>
   );
 }

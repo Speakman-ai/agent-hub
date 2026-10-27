@@ -257,6 +257,7 @@ function RunRow({
   onToggle,
   onOpenSession,
   onOpenCard,
+  onTroubleshoot,
 }: {
   run: QaRun;
   cases: QaCase[];
@@ -264,6 +265,7 @@ function RunRow({
   onToggle: () => void;
   onOpenSession?: (agentId: string | null, sessionId: string) => void;
   onOpenCard?: (cardId: string) => void;
+  onTroubleshoot?: (runId: string, caseId: string) => Promise<void>;
 }) {
   const duration = runDuration(run);
   const resultCount = run.results?.length ?? 0;
@@ -294,7 +296,14 @@ function RunRow({
           </TouchableOpacity>
         ) : null}
       </View>
-      {expanded ? <QaRunResults run={run} cases={cases} onOpenCard={onOpenCard} /> : null}
+      {expanded ? (
+        <QaRunResults
+          run={run}
+          cases={cases}
+          onOpenCard={onOpenCard}
+          onTroubleshoot={onTroubleshoot ? (caseId) => onTroubleshoot(run.id, caseId) : undefined}
+        />
+      ) : null}
     </View>
   );
 }
@@ -568,6 +577,11 @@ export default function QaPlanDetailView({
     } finally {
       setBusy(false);
     }
+  };
+
+  const troubleshoot = async (runId: string, caseId: string) => {
+    const { agentId, sessionId } = await api.troubleshootQaResult(projectId, planId, runId, caseId);
+    onOpenSession?.(agentId, sessionId);
   };
 
   const plan = detail?.plan;
@@ -879,6 +893,7 @@ export default function QaPlanDetailView({
                 onToggle={() => setToggledRuns((cur) => ({ ...cur, [r.id]: !expanded }))}
                 onOpenSession={onOpenSession}
                 onOpenCard={onOpenCard}
+                onTroubleshoot={onOpenSession ? troubleshoot : undefined}
               />
             );
           })}

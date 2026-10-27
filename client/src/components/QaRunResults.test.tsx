@@ -174,3 +174,43 @@ describe('QaRunResults', () => {
     expect(screen.getByTestId('qa-run-results-empty')).toBeTruthy();
   });
 });
+
+describe('QaRunResults troubleshoot', () => {
+  const run = {
+    id: 'r1',
+    sessionId: 's1',
+    results: [
+      result('a', { verdict: 'pass' }),
+      result('b', { verdict: 'blocked' }),
+      result('gone', { verdict: 'fail' }),
+    ],
+  };
+
+  it('offers Troubleshoot only on failed or blocked results for cases still on the plan', () => {
+    render(<QaRunResults run={run} cases={cases} onTroubleshoot={vi.fn()} />);
+    expect(
+      within(screen.getByTestId('qa-result-a')).queryByTestId('qa-result-troubleshoot'),
+    ).toBeNull();
+    expect(
+      within(screen.getByTestId('qa-result-b')).getByTestId('qa-result-troubleshoot'),
+    ).toBeTruthy();
+    expect(
+      within(screen.getByTestId('qa-result-gone')).queryByTestId('qa-result-troubleshoot'),
+    ).toBeNull();
+  });
+
+  it('hides the button when no handler is given', () => {
+    render(<QaRunResults run={run} cases={cases} />);
+    expect(screen.queryByTestId('qa-result-troubleshoot')).toBeNull();
+  });
+
+  it('calls the handler with the case id and shows a failure inline', async () => {
+    const onTroubleshoot = vi.fn().mockRejectedValue(new Error('No dev agent'));
+    render(<QaRunResults run={run} cases={cases} onTroubleshoot={onTroubleshoot} />);
+    fireEvent.click(screen.getByTestId('qa-result-troubleshoot'));
+    expect(onTroubleshoot).toHaveBeenCalledWith('b');
+    await waitFor(() =>
+      expect(screen.getByTestId('qa-result-troubleshoot-error').textContent).toBe('No dev agent'),
+    );
+  });
+});

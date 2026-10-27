@@ -869,6 +869,16 @@ export const api = {
     planId: string,
   ): Promise<{ sessionId: string; agentId: string; created: boolean }> =>
     fetchJSON(`${qaPlanPath(projectId, planId)}/authoring-session`, { method: 'POST' }),
+  troubleshootQaResult: (
+    projectId: string,
+    planId: string,
+    runId: string,
+    caseId: string,
+  ): Promise<{ sessionId: string; agentId: string }> =>
+    fetchJSON(
+      `${qaPlanPath(projectId, planId)}/runs/${encodeURIComponent(runId)}/results/${encodeURIComponent(caseId)}/troubleshoot`,
+      { method: 'POST' },
+    ),
   addQaCase: (projectId: string, planId: string, input: QaCaseDraft) =>
     fetchJSON(`${qaPlanPath(projectId, planId)}/cases`, {
       method: 'POST',

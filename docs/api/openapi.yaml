@@ -59256,6 +59256,65 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/QaErrorResponse"
+  /api/projects/{projectId}/qa/plans/{planId}/runs/{runId}/results/{caseId}/troubleshoot:
+    post:
+      tags: *a8
+      summary: Open a dev-agent session to troubleshoot one failed or blocked result
+      description: Creates a session on the project's main dev agent seeded with the case steps, expected and actual results, QA notes, screenshot artifact ids, the run session to read, and any finding card. Only `fail`, `needs_change`, and `blocked` results qualify. Every call opens a new session.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: planId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: runId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: caseId
+          in: path
+      responses:
+        "201":
+          description: New seeded troubleshoot session.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId:
+                    type: string
+                  agentId:
+                    type: string
+                required:
+                  - sessionId
+                  - agentId
+        "404":
+          description: Project, plan, case, or run not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+        "409":
+          description: "The result is not troubleshootable (`code: not_troubleshootable`) or the project has no dev agent (`code: no_dev_agent`)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
+        "502":
+          description: The seeded first turn was not accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/release-notification-settings:
     get:
       tags:

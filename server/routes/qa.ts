@@ -31,6 +31,7 @@ import { broadcastSessionCreated } from '../session-checkpoint-rewind.js';
 import { resolveOwnerUserId, setSessionOwner } from '../session-ownership.js';
 import { QA_VERDICTS } from '../qa-schema.js';
 import { fileQaFindingCards } from '../qa-findings.js';
+import { startQaTroubleshootSession } from '../qa-troubleshoot.js';
 import {
   parseQaArtifactIds,
   postQaRunSummary,
@@ -860,6 +861,45 @@ export default function createQaRoutes(deps: RouteDeps): Router {
         run: serializeQaRun(finished ?? getStmts().getQaRun.get(run.id)!),
       });
     }),
+  );
+
+  /**
+   * Open a dev-agent session seeded with one failed / blocked result so a
+   * human can troubleshoot it. Each call opens a new session.
+   */
+  router.post(
+    `${BASE}/:planId/runs/:runId/results/:caseId/troubleshoot`,
+    async (req: Request, res: Response) => {
+      try {
+        const plan = loadPlan(req, res);
+        if (!plan) return;
+        const run = loadRun(req, res, plan);
+        if (!run) return;
+        const qaCase = loadCase(req, res, plan);
+        if (!qaCase) return;
+        const result = getStmts()
+          .listQaResultsByRun.all(run.id)
+          .find((r) => r.case_id === qaCase.id);
+        if (!result) return void notFound(res, 'QA result');
+        const outcome = await startQaTroubleshootSession(deps, {
+          project: findProject(plan.project_id)!,
+          plan,
+          run,
+          qaCase,
+          result,
+          ownerUserId: resolveOwnerUserId(req as AuthenticatedRequest),
+        });
+        if (!outcome.ok) {
+          const { status, error, code } = outcome;
+          res.status(status).json(code ? { error, code } : { error });
+          return;
+        }
+        res.status(201).json({ sessionId: outcome.sessionId, agentId: outcome.agentId });
+      } catch (e) {
+        console.error('[qa] route error:', e);
+        if (!res.headersSent) res.status(500).json({ error: 'Internal error' });
+      }
+    },
   );
 
   return router;

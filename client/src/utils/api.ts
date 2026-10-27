@@ -2705,6 +2705,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(input),
     }),
+  troubleshootQaResult: (projectId: string, planId: string, runId: string, caseId: string) =>
+    fetchJSON<{ sessionId: string; agentId: string }>(
+      `${qaPlanPath(projectId, planId)}/runs/${encodeURIComponent(runId)}/results/${encodeURIComponent(caseId)}/troubleshoot`,
+      { method: 'POST' },
+    ),
   openQaAuthoringSession: (projectId: string, planId: string) =>
     fetchJSON<QaAuthoringSessionWire>(`${qaPlanPath(projectId, planId)}/authoring-session`, {
       method: 'POST',

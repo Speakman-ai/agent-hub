@@ -636,3 +636,28 @@ registerPath({
     409: conflict,
   },
 });
+
+const TroubleshootSessionResponse = z.object({
+  sessionId: z.string(),
+  agentId: z.string(),
+});
+
+registerPath({
+  method: 'post',
+  path: `${BASE}/{planId}/runs/{runId}/results/{caseId}/troubleshoot`,
+  tags: TAGS,
+  summary: 'Open a dev-agent session to troubleshoot one failed or blocked result',
+  description:
+    "Creates a session on the project's main dev agent seeded with the case steps, expected and " +
+    'actual results, QA notes, screenshot artifact ids, the run session to read, and any finding ' +
+    'card. Only `fail`, `needs_change`, and `blocked` results qualify. Every call opens a new session.',
+  request: { params: runParams.extend({ caseId: z.string() }) },
+  responses: {
+    201: ok('New seeded troubleshoot session.', TroubleshootSessionResponse),
+    404: notFound,
+    409: err(
+      'The result is not troubleshootable (`code: not_troubleshootable`) or the project has no dev agent (`code: no_dev_agent`).',
+    ),
+    502: err('The seeded first turn was not accepted.'),
+  },
+});

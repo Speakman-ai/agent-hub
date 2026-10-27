@@ -35,6 +35,8 @@ let savedCase = { ...original };
 const updateQaCase = vi.fn(async () => ({}));
 const getQaPlanCalls: string[] = [];
 let planOverrides: Record<string, unknown> = {};
+let runs: unknown[] = [];
+const troubleshootQaResult = vi.fn(async () => ({ sessionId: 's7', agentId: 'p1-dev' }));
 const updateQaPlan = vi.fn(async () => ({}));
 const getProjectBranches = vi.fn(async () => ({
   branches: [{ name: 'main' }, { name: 'release' }],
@@ -69,7 +71,7 @@ vi.mock('../utils/api', () => ({
         },
         links: { epic: null, card: null },
         cases: [{ id: 'c1', planId: 'plan-1', position: 0, version: 1, ...savedCase }],
-        runs: [],
+        runs,
         signOffBlocker: null,
         autoRerun: null,
       };
@@ -78,6 +80,7 @@ vi.mock('../utils/api', () => ({
     getProjectBranches,
     updateQaPlan,
     updateQaCase,
+    troubleshootQaResult,
   },
 }));
 
@@ -189,6 +192,52 @@ describe('QaPlanDetailView rerun triggers', () => {
     await flush();
     expect(updateQaPlan).toHaveBeenCalledWith('p1', 'plan-1', { autoRerunDelayMinutes: 15 });
     planOverrides = {};
+    tree.unmount();
+  });
+});
+
+describe('QaPlanDetailView troubleshoot', () => {
+  it('opens a dev session from a failed result', async () => {
+    runs = [
+      {
+        id: 'r1',
+        planId: 'plan-1',
+        iteration: 1,
+        scope: 'full',
+        status: 'failed',
+        sessionId: null,
+        sessionAgentId: null,
+        results: [
+          {
+            id: 'res-1',
+            runId: 'r1',
+            caseId: 'c1',
+            caseVersion: 1,
+            verdict: 'fail',
+            actual: 'Blank page',
+            notes: '',
+            screenshotArtifactIds: [],
+            screenshots: [],
+            findingCardId: null,
+          },
+        ],
+      },
+    ];
+    const onOpenSession = vi.fn();
+    let tree: any;
+    await act(async () => {
+      tree = TestRenderer.create(
+        <QaPlanDetailView projectId="p1" planId="plan-1" onOpenSession={onOpenSession} />,
+      );
+    });
+    await flush();
+    await act(async () => {
+      tree.root.findByProps({ testID: 'qa-result-troubleshoot' }).props.onPress();
+    });
+    await flush();
+    expect(troubleshootQaResult).toHaveBeenCalledWith('p1', 'plan-1', 'r1', 'c1');
+    expect(onOpenSession).toHaveBeenCalledWith('p1-dev', 's7');
+    runs = [];
     tree.unmount();
   });
 });
