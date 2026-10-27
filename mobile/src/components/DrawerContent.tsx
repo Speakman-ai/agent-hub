@@ -21,6 +21,7 @@ import { getApiBaseUrl, getWsUrl } from '../utils/config';
 import { colors } from '../theme/colors';
 import { daysUntilPurge, parseDate } from '../utils/time';
 import humanCron from '@shared/utils/humanCron';
+import { isSidebarHiddenAgent } from '@shared/utils/sidebarAgents';
 import { isWorkflowProject } from '../utils/project-mode';
 import { projectNavGroups } from '../utils/projectMenu';
 import {
@@ -524,7 +525,7 @@ export default function DrawerContent({ navigation }: any) {
     );
   };
   const renderAgentRow = (agent: any, project: any) => {
-    if (agent.role === 'reviewer' || agent.role === 'skill-builder') return null;
+    if (isSidebarHiddenAgent(agent)) return null;
     const isExpanded = !!expandedAgents[agent.id];
     const agentSessions = sessionsForAgent(agent.id);
     const agentArchived = archivedForAgent(agent.id);

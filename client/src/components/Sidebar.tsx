@@ -54,6 +54,7 @@ import { useClientBuildVersion } from '../hooks/useClientBuildVersion';
 import OrgSwitcher from './OrgSwitcher';
 import { isElectron } from '../utils/isElectron';
 import humanCron from '@shared/utils/humanCron';
+import { isSidebarHiddenAgent } from '@shared/utils/sidebarAgents';
 import { inferPrUrlFromSessionTitle, isResolvePrSessionTitle } from '@shared/utils/sessionTitlePr';
 import { parseNativePrUrl } from '../utils/prFormatting';
 import AgentAvatar from './AgentAvatar';
@@ -1593,9 +1594,9 @@ export default function Sidebar({
                     data-testid={`sidebar-project-agents-${project.id}`}
                   >
                     {(() => {
-                      // Hide the reviewer agent row; it's edited via the per-project Reviewer page below.
+                      // Reviewer, Skill Builder, and QA agents live on their own pages.
                       const visibleAgents = activeAgents.filter(
-                        (a: any) => a.role !== 'reviewer' && a.role !== 'skill-builder',
+                        (a: any) => !isSidebarHiddenAgent(a),
                       );
 
                       const renderAgent = (agent: any) => {
