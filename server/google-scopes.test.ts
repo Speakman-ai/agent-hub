@@ -2,12 +2,16 @@ import { describe, it, expect } from 'vitest';
 import {
   CALENDAR_EVENTS_SCOPE,
   CALENDAR_FULL_SCOPE,
+  CALENDAR_LIST_READONLY_SCOPE,
+  CALENDAR_LIST_SCOPE,
+  CALENDAR_READONLY_SCOPE,
   GMAIL_READONLY_SCOPE,
   GMAIL_MODIFY_SCOPE,
   GMAIL_SEND_SCOPE,
   GMAIL_FULL_SCOPE,
   SHEETS_SCOPE,
   SHEETS_READONLY_SCOPE,
+  hasCalendarListScope,
   hasCalendarReadScope,
   hasGmailReadScope,
   hasGmailModifyScope,
@@ -22,6 +26,15 @@ describe('google-scopes read gates', () => {
     expect(hasCalendarReadScope([CALENDAR_FULL_SCOPE])).toBe(true);
     expect(hasCalendarReadScope([GMAIL_READONLY_SCOPE])).toBe(false);
     expect(hasCalendarReadScope([])).toBe(false);
+  });
+
+  it('calendar list accepts the calendarlist scopes, calendar.readonly, or full', () => {
+    expect(hasCalendarListScope([CALENDAR_LIST_READONLY_SCOPE])).toBe(true);
+    expect(hasCalendarListScope([CALENDAR_LIST_SCOPE])).toBe(true);
+    expect(hasCalendarListScope([CALENDAR_READONLY_SCOPE])).toBe(true);
+    expect(hasCalendarListScope([CALENDAR_FULL_SCOPE])).toBe(true);
+    // calendar.events reads events on any calendar but cannot list them.
+    expect(hasCalendarListScope([CALENDAR_EVENTS_SCOPE])).toBe(false);
   });
 
   it('gmail read accepts readonly, modify, or full', () => {

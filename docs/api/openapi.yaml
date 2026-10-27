@@ -7420,6 +7420,10 @@ components:
         hangoutLink:
           type: string
           nullable: true
+        visibility:
+          type: string
+          nullable: true
+          description: "`default`, `public`, `private`, or `confidential`. Callers with `writerWithoutPrivateAccess` must not edit `private`/`confidential` events."
       required:
         - id
         - status
@@ -7436,6 +7440,50 @@ components:
         - etag
         - recurringEventId
         - hangoutLink
+        - visibility
+    GoogleCalendarListEntry:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Calendar id; pass as `calendarId` to the events routes.
+        summary:
+          type: string
+          description: "Display name: the user's override if set, else the calendar's own title."
+        primary:
+          type: boolean
+        selected:
+          type: boolean
+          description: Whether the calendar is checked (shown) in the Google Calendar UI.
+        accessRole:
+          type: string
+          nullable: true
+          enum:
+            - freeBusyReader
+            - reader
+            - writerWithoutPrivateAccess
+            - writer
+            - owner
+            - null
+          description: "`owner`, `writer`, and `writerWithoutPrivateAccess` can create and edit events; `writerWithoutPrivateAccess` sees private events without details and must not edit them."
+        backgroundColor:
+          type: string
+          nullable: true
+        foregroundColor:
+          type: string
+          nullable: true
+        timeZone:
+          type: string
+          nullable: true
+      required:
+        - id
+        - summary
+        - primary
+        - selected
+        - accessRole
+        - backgroundColor
+        - foregroundColor
+        - timeZone
     GoogleChatErrorResponse:
       type: object
       properties:
@@ -36250,6 +36298,160 @@ paths:
                 $ref: "#/components/schemas/GoogleCalendarErrorResponse"
         "403":
           description: Required Calendar scope has not been granted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+        "404":
+          description: Google account not linked (`google_account_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+        "429":
+          description: Google Calendar rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+        "502":
+          description: Google Calendar request failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+        "503":
+          description: Google OAuth is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+  /api/google/calendars:
+    get:
+      tags:
+        - Google
+      summary: List the calling user's Google calendars (own, shared, and subscribed)
+      description: Hidden calendar-list entries are omitted. Needs a calendar-list scope (`calendar.calendarlist.readonly` is the one requested); without it the route returns 403 `google_calendar_list_scope_required` and callers should fall back to `primary`.
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 320
+            description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+            example: work@example.com
+          required: false
+          description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+          name: account
+          in: query
+      responses:
+        "200":
+          description: Calendars, primary first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  calendars:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/GoogleCalendarListEntry"
+                  truncated:
+                    type: boolean
+                    description: True when the list hit the 1000-calendar cap and later pages were not read.
+                required:
+                  - calendars
+                  - truncated
+        "400":
+          description: Invalid query.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+        "401":
+          description: Not authenticated or Google not connected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+        "403":
+          description: Calendar-list scope has not been granted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+        "404":
+          description: Google account not linked (`google_account_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+        "429":
+          description: Google Calendar rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+        "502":
+          description: Google Calendar request failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+        "503":
+          description: Google OAuth is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+  /api/google/calendar/calendars:
+    get:
+      tags:
+        - Google
+      summary: Alias of GET /api/google/calendars
+      description: Hidden calendar-list entries are omitted. Needs a calendar-list scope (`calendar.calendarlist.readonly` is the one requested); without it the route returns 403 `google_calendar_list_scope_required` and callers should fall back to `primary`.
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            maxLength: 320
+            description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+            example: work@example.com
+          required: false
+          description: "Linked Google account to act as: its account id or email. Omit to use the default account. An account that is not linked returns 404 `google_account_not_found`."
+          name: account
+          in: query
+      responses:
+        "200":
+          description: Calendars, primary first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  calendars:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/GoogleCalendarListEntry"
+                  truncated:
+                    type: boolean
+                    description: True when the list hit the 1000-calendar cap and later pages were not read.
+                required:
+                  - calendars
+                  - truncated
+        "400":
+          description: Invalid query.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+        "401":
+          description: Not authenticated or Google not connected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+        "403":
+          description: Calendar-list scope has not been granted.
           content:
             application/json:
               schema:

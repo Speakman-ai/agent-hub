@@ -4,6 +4,8 @@ import request from 'supertest';
 import type { RouteDeps } from '../types.js';
 
 const CALENDAR_EVENTS_SCOPE = 'https://www.googleapis.com/auth/calendar.events';
+const CALENDAR_LIST_READONLY_SCOPE =
+  'https://www.googleapis.com/auth/calendar.calendarlist.readonly';
 
 const googleMock = vi.hoisted(() => {
   const events = {
@@ -11,11 +13,13 @@ const googleMock = vi.hoisted(() => {
     insert: vi.fn(),
     patch: vi.fn(),
   };
+  const calendarList = { list: vi.fn() };
   const setCredentials = vi.fn();
   return {
     events,
+    calendarList,
     setCredentials,
-    calendar: vi.fn(() => ({ events })),
+    calendar: vi.fn(() => ({ events, calendarList })),
     OAuth2: vi.fn(function OAuth2() {
       return { setCredentials };
     }),
@@ -450,5 +454,164 @@ describe('Google Calendar proxy routes', () => {
     expect(res.status).toBe(401);
     expect(res.body.code).toBe('authentication_required');
     expect(connectionStoreMock.getActiveAccessToken).not.toHaveBeenCalled();
+  });
+
+  describe('GET /api/google/calendars', () => {
+    it('lists visible calendars primary first with display names and access roles', async () => {
+      connectionStoreMock.getGoogleConnectionStatus.mockReturnValue(
+        connectedStatus([CALENDAR_EVENTS_SCOPE, CALENDAR_LIST_READONLY_SCOPE]),
+      );
+      googleMock.calendarList.list.mockResolvedValue({
+        data: {
+          items: [
+            {
+              id: 'family@group.calendar.google.com',
+              summary: 'Family',
+              selected: true,
+              accessRole: 'writer',
+              backgroundColor: '#a47ae2',
+            },
+            {
+              id: 'user@example.com',
+              summary: 'user@example.com',
+              summaryOverride: 'Ryan',
+              primary: true,
+              selected: true,
+              accessRole: 'owner',
+              backgroundColor: '#9fe1e7',
+              foregroundColor: '#000000',
+              timeZone: 'America/New_York',
+            },
+            { id: 'spouse@gmail.com', summary: 'spouse@gmail.com', accessRole: 'reader' },
+            { id: 'old@group.calendar.google.com', summary: 'Old', hidden: true },
+            { id: 'gone@group.calendar.google.com', summary: 'Gone', deleted: true },
+          ],
+        },
+      });
+      const app = makeApp(buildDeps(), { authUserId: 'user-1' });
+
+      const res = await request(app).get('/api/google/calendars');
+
+      expect(res.status).toBe(200);
+      expect(res.body.calendars.map((c: { id: string }) => c.id)).toEqual([
+        'user@example.com',
+        'family@group.calendar.google.com',
+        'spouse@gmail.com',
+      ]);
+      expect(res.body.calendars[0]).toEqual({
+        id: 'user@example.com',
+        summary: 'Ryan',
+        primary: true,
+        selected: true,
+        accessRole: 'owner',
+        backgroundColor: '#9fe1e7',
+        foregroundColor: '#000000',
+        timeZone: 'America/New_York',
+      });
+      expect(res.body.calendars[2]).toMatchObject({ selected: false, accessRole: 'reader' });
+      expect(JSON.stringify(res.body)).not.toContain('fresh-access-token');
+    });
+
+    it('keeps writerWithoutPrivateAccess and flags a list cut off at the page cap', async () => {
+      connectionStoreMock.getGoogleConnectionStatus.mockReturnValue(
+        connectedStatus([CALENDAR_EVENTS_SCOPE, CALENDAR_LIST_READONLY_SCOPE]),
+      );
+      googleMock.calendarList.list.mockImplementation(async () => ({
+        data: {
+          items: [{ id: 'shared', summary: 'Shared', accessRole: 'writerWithoutPrivateAccess' }],
+          nextPageToken: 'more',
+        },
+      }));
+      const app = makeApp(buildDeps(), { authUserId: 'user-1' });
+
+      const res = await request(app).get('/api/google/calendars');
+
+      expect(res.status).toBe(200);
+      expect(res.body.calendars[0].accessRole).toBe('writerWithoutPrivateAccess');
+      expect(res.body.truncated).toBe(true);
+      expect(googleMock.calendarList.list).toHaveBeenCalledTimes(4);
+    });
+
+    it('passes event visibility through so private events can be protected', async () => {
+      googleMock.events.list.mockResolvedValue({
+        data: { items: [{ id: 'p1', summary: 'Busy', visibility: 'private' }] },
+      });
+      const app = makeApp(buildDeps(), { authUserId: 'user-1' });
+
+      const res = await request(app).get('/api/google/calendar/events').query({
+        calendarId: 'shared',
+        timeMin: '2026-06-30T00:00:00Z',
+        timeMax: '2026-07-01T00:00:00Z',
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.body.events[0].visibility).toBe('private');
+    });
+
+    it('follows nextPageToken', async () => {
+      connectionStoreMock.getGoogleConnectionStatus.mockReturnValue(
+        connectedStatus([CALENDAR_EVENTS_SCOPE, CALENDAR_LIST_READONLY_SCOPE]),
+      );
+      googleMock.calendarList.list
+        .mockResolvedValueOnce({
+          data: { items: [{ id: 'a', summary: 'A', primary: true }], nextPageToken: 'p2' },
+        })
+        .mockResolvedValueOnce({ data: { items: [{ id: 'b', summary: 'B' }] } });
+      const app = makeApp(buildDeps(), { authUserId: 'user-1' });
+
+      const res = await request(app).get('/api/google/calendars');
+
+      expect(res.status).toBe(200);
+      expect(res.body.calendars.map((c: { id: string }) => c.id)).toEqual(['a', 'b']);
+      expect(res.body.truncated).toBe(false);
+      expect(googleMock.calendarList.list).toHaveBeenLastCalledWith({
+        maxResults: 250,
+        pageToken: 'p2',
+      });
+    });
+
+    it('serves the nested alias and honors ?account= for the scope check', async () => {
+      connectionStoreMock.getGoogleConnectionStatus.mockImplementation(
+        (_uid: string, selector?: { email?: string }) =>
+          selector?.email === 'home@example.com'
+            ? {
+                ...connectedStatus([CALENDAR_EVENTS_SCOPE, CALENDAR_LIST_READONLY_SCOPE]),
+                email: 'home@example.com',
+                accountId: 'acc-home',
+              }
+            : connectedStatus(),
+      );
+      googleMock.calendarList.list.mockResolvedValue({
+        data: { items: [{ id: 'home@example.com', summary: 'Home', primary: true }] },
+      });
+      const app = makeApp(buildDeps(), { authUserId: 'user-1' });
+
+      // The default account only has calendar.events; the home account has the list scope.
+      const denied = await request(app).get('/api/google/calendars');
+      expect(denied.status).toBe(403);
+      expect(denied.body.code).toBe('google_calendar_list_scope_required');
+
+      const home = await request(app)
+        .get('/api/google/calendar/calendars')
+        .query({ account: 'home@example.com' });
+      expect(home.status).toBe(200);
+      expect(home.body.calendars.map((c: { id: string }) => c.id)).toEqual(['home@example.com']);
+      expect(connectionStoreMock.getActiveAccessToken).toHaveBeenCalledWith(
+        'user-1',
+        expect.anything(),
+        { account: { accountId: 'acc-home' } },
+      );
+    });
+
+    it('returns 403 with the list scope to request when only calendar.events was granted', async () => {
+      const app = makeApp(buildDeps(), { authUserId: 'user-1' });
+
+      const res = await request(app).get('/api/google/calendars');
+
+      expect(res.status).toBe(403);
+      expect(res.body.code).toBe('google_calendar_list_scope_required');
+      expect(res.body.requiredScopes).toEqual([CALENDAR_LIST_READONLY_SCOPE]);
+      expect(googleMock.calendarList.list).not.toHaveBeenCalled();
+    });
   });
 });

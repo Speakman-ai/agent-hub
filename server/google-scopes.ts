@@ -18,6 +18,11 @@ export const CALENDAR_EVENTS_SCOPE = 'https://www.googleapis.com/auth/calendar.e
 export const CALENDAR_FULL_SCOPE = 'https://www.googleapis.com/auth/calendar';
 /** Events on calendars the user owns (primary included). Write-capable. */
 export const CALENDAR_EVENTS_OWNED_SCOPE = 'https://www.googleapis.com/auth/calendar.events.owned';
+/** The user's calendar list (own, shared, subscribed). Read-only. */
+export const CALENDAR_LIST_READONLY_SCOPE =
+  'https://www.googleapis.com/auth/calendar.calendarlist.readonly';
+export const CALENDAR_LIST_SCOPE = 'https://www.googleapis.com/auth/calendar.calendarlist';
+export const CALENDAR_READONLY_SCOPE = 'https://www.googleapis.com/auth/calendar.readonly';
 
 // Gmail (sensitive Tier 2: readonly is narrowest read; modify/full also read)
 export const GMAIL_READONLY_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
@@ -33,6 +38,16 @@ export const SHEETS_READONLY_SCOPE = 'https://www.googleapis.com/auth/spreadshee
 
 export function hasCalendarReadScope(scopes: string[]): boolean {
   return scopes.includes(CALENDAR_EVENTS_SCOPE) || scopes.includes(CALENDAR_FULL_SCOPE);
+}
+
+/** Can we list the user's calendars? Per the calendarList.list authorization list. */
+export function hasCalendarListScope(scopes: string[]): boolean {
+  return (
+    scopes.includes(CALENDAR_LIST_READONLY_SCOPE) ||
+    scopes.includes(CALENDAR_LIST_SCOPE) ||
+    scopes.includes(CALENDAR_READONLY_SCOPE) ||
+    scopes.includes(CALENDAR_FULL_SCOPE)
+  );
 }
 
 /**

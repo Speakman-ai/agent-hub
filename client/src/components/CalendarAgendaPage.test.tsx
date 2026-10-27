@@ -5,6 +5,7 @@ vi.mock('../utils/api', () => ({
   api: {
     getGoogleStatus: vi.fn(),
     listGoogleCalendarEvents: vi.fn(),
+    listGoogleCalendars: vi.fn(),
     startGoogleOAuth: vi.fn(),
     createGoogleCalendarEvent: vi.fn(),
     updateGoogleCalendarEvent: vi.fn(),
@@ -477,5 +478,258 @@ describe('CalendarAgendaPage', () => {
     render(<CalendarAgendaPage />);
     expect(await screen.findByText('Still visible')).toBeInTheDocument();
     expect(screen.queryByText('All accounts hidden')).not.toBeInTheDocument();
+  });
+});
+
+describe('CalendarAgendaPage: several calendars', () => {
+  const LIST_SCOPE = 'https://www.googleapis.com/auth/calendar.calendarlist.readonly';
+  const WITH_LIST = { ...CONNECTED, grantedScopes: [CALENDAR_EVENTS_SCOPE, LIST_SCOPE] };
+  const CALENDARS = [
+    {
+      id: 'person@example.com',
+      summary: 'Ryan',
+      primary: true,
+      selected: true,
+      accessRole: 'owner',
+      backgroundColor: '#9fe1e7',
+    },
+    {
+      id: 'spouse@gmail.com',
+      summary: 'Sepideh',
+      primary: false,
+      selected: true,
+      accessRole: 'reader',
+      backgroundColor: '#16a765',
+    },
+    {
+      id: 'holidays@group.v.calendar.google.com',
+      summary: 'Holidays',
+      primary: false,
+      selected: false,
+      accessRole: 'reader',
+      backgroundColor: '#cccccc',
+    },
+  ];
+  const EVENTS: Record<string, any[]> = {
+    'person@example.com': [
+      {
+        id: 'mine',
+        summary: 'My meeting',
+        start: { dateTime: '2026-07-01T10:00:00Z' },
+        end: { dateTime: '2026-07-01T11:00:00Z' },
+      },
+    ],
+    'spouse@gmail.com': [
+      {
+        id: 'hers',
+        summary: 'Pure Barre',
+        start: { dateTime: '2026-07-01T12:00:00Z' },
+        end: { dateTime: '2026-07-01T13:00:00Z' },
+      },
+    ],
+    'holidays@group.v.calendar.google.com': [
+      {
+        id: 'holiday',
+        summary: 'Some holiday',
+        start: { date: '2026-07-02' },
+        end: { date: '2026-07-03' },
+      },
+    ],
+  };
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    mockApi.getGoogleStatus.mockResolvedValue(WITH_LIST);
+    mockApi.listGoogleCalendars.mockResolvedValue({ calendars: CALENDARS });
+    mockApi.listGoogleCalendarEvents.mockImplementation(async (params: any) => {
+      if (params.maxResults === MONTH_MAX_RESULTS) return { events: [] };
+      return { events: EVENTS[params.calendarId] ?? [] };
+    });
+  });
+
+  it('shows events from calendars checked in Google and hides unchecked ones', async () => {
+    render(<CalendarAgendaPage />);
+
+    expect(await screen.findByText('Pure Barre')).toBeInTheDocument();
+    expect(screen.getByText('My meeting')).toBeInTheDocument();
+    expect(screen.queryByText('Some holiday')).not.toBeInTheDocument();
+    // The primary is read by id from the list; nothing falls back to 'primary'.
+    expect(mockApi.listGoogleCalendarEvents).toHaveBeenCalledWith(
+      expect.objectContaining({ calendarId: 'spouse@gmail.com' }),
+    );
+    expect(screen.getByLabelText('Show calendar Sepideh')).toBeChecked();
+    expect(screen.getByLabelText('Show calendar Holidays')).not.toBeChecked();
+  });
+
+  it('toggles a calendar locally and remembers the choice', async () => {
+    render(<CalendarAgendaPage />);
+    await screen.findByText('Pure Barre');
+
+    fireEvent.click(screen.getByLabelText('Show calendar Sepideh'));
+    expect(screen.queryByText('Pure Barre')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('Show calendar Holidays'));
+    expect(screen.getByText('Some holiday')).toBeInTheDocument();
+    expect(
+      JSON.parse(window.localStorage.getItem('agent-hub.calendar.calendarVisibility') || '{}'),
+    ).toEqual({
+      '|spouse@gmail.com': false,
+      '|holidays@group.v.calendar.google.com': true,
+    });
+  });
+
+  it('offers no Edit on read-only calendars and saves edits to the calendar they came from', async () => {
+    mockApi.listGoogleCalendars.mockResolvedValue({
+      calendars: [{ ...CALENDARS[0] }, { ...CALENDARS[1], accessRole: 'writer' }],
+    });
+    mockApi.updateGoogleCalendarEvent.mockResolvedValue({ event: { id: 'hers' } });
+    const { unmount } = render(<CalendarAgendaPage />);
+    await screen.findByText('Pure Barre');
+    expect(screen.getAllByRole('button', { name: /^Edit$/ })).toHaveLength(2);
+
+    fireEvent.click(screen.getAllByRole('button', { name: /^Edit$/ })[1]);
+    fireEvent.click(screen.getByRole('button', { name: /Save changes/i }));
+    await waitFor(() =>
+      expect(mockApi.updateGoogleCalendarEvent).toHaveBeenCalledWith(
+        'hers',
+        expect.objectContaining({ calendarId: 'spouse@gmail.com' }),
+        expect.anything(),
+      ),
+    );
+    unmount();
+
+    mockApi.listGoogleCalendars.mockResolvedValue({ calendars: CALENDARS });
+    render(<CalendarAgendaPage />);
+    await screen.findByText('Pure Barre');
+    expect(screen.getAllByRole('button', { name: /^Edit$/ })).toHaveLength(1);
+  });
+
+  it('shows the sole remaining calendar even if it was hidden while there were two', async () => {
+    window.localStorage.setItem(
+      'agent-hub.calendar.calendarVisibility',
+      JSON.stringify({ '|person@example.com': false }),
+    );
+    // The other calendar was unsubscribed; only the (hidden) primary is left.
+    mockApi.listGoogleCalendars.mockResolvedValue({ calendars: [CALENDARS[0]] });
+    render(<CalendarAgendaPage />);
+
+    expect(await screen.findByText('My meeting')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Show calendar Ryan')).not.toBeInTheDocument();
+    expect(screen.queryByText('All calendars hidden')).not.toBeInTheDocument();
+  });
+
+  it('hides a primary calendar the user unchecked in Google', async () => {
+    mockApi.listGoogleCalendars.mockResolvedValue({
+      calendars: [{ ...CALENDARS[0], selected: false }, CALENDARS[1]],
+    });
+    render(<CalendarAgendaPage />);
+
+    expect(await screen.findByText('Pure Barre')).toBeInTheDocument();
+    expect(screen.queryByText('My meeting')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Show calendar Ryan')).not.toBeChecked();
+  });
+
+  it('month events follow calendar changes after Refresh when the ids stay the same', async () => {
+    // An event inside the current month so the grid renders it.
+    const now = new Date();
+    const start = new Date(now.getFullYear(), now.getMonth(), 15, 12).toISOString();
+    const end = new Date(now.getFullYear(), now.getMonth(), 15, 13).toISOString();
+    const hers = {
+      id: 'hers',
+      summary: 'Pure Barre',
+      start: { dateTime: start },
+      end: { dateTime: end },
+    };
+    mockApi.listGoogleCalendarEvents.mockImplementation(async (params: any) => ({
+      events: params.calendarId === 'spouse@gmail.com' ? [hers] : [],
+    }));
+    mockApi.listGoogleCalendars
+      .mockResolvedValueOnce({ calendars: [CALENDARS[0], CALENDARS[1]] })
+      .mockResolvedValue({
+        calendars: [CALENDARS[0], { ...CALENDARS[1], summary: 'Sepi', accessRole: 'writer' }],
+      });
+    render(<CalendarAgendaPage />);
+
+    // Read-only at first: the month entry opens without Save.
+    fireEvent.click(await screen.findByTitle('Pure Barre'));
+    expect(screen.getByText(/read-only/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+
+    fireEvent.click(screen.getByRole('button', { name: /Refresh/ }));
+    expect(await screen.findByLabelText('Show calendar Sepi')).toBeInTheDocument();
+
+    // Same calendar id, now writable and renamed: the month entry reflects it.
+    fireEvent.click(screen.getByTitle('Pure Barre'));
+    expect(screen.getByRole('button', { name: /Save changes/i })).toBeInTheDocument();
+    expect(screen.getByText(/^Sepi · person@example.com/)).toBeInTheDocument();
+  });
+
+  it('warns when the calendar list fails but the primary still loads', async () => {
+    mockApi.listGoogleCalendars.mockRejectedValue(
+      Object.assign(new Error('Google Calendar rate limit exceeded'), {
+        code: 'google_calendar_rate_limited',
+      }),
+    );
+    mockApi.listGoogleCalendarEvents.mockImplementation(async (params: any) => {
+      if (params.maxResults === MONTH_MAX_RESULTS) return { events: [] };
+      return { events: params.calendarId ? [] : EVENTS['person@example.com'] };
+    });
+    render(<CalendarAgendaPage />);
+
+    expect(await screen.findByText('My meeting')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent(
+      "Couldn't list calendars for person@example.com (Google Calendar rate limit exceeded); showing its primary calendar only.",
+    );
+    // Not a scope problem, so no re-consent prompt.
+    expect(screen.queryByRole('button', { name: 'Show your other calendars' })).toBeNull();
+  });
+
+  it('edits public events on a writerWithoutPrivateAccess calendar but not private ones', async () => {
+    mockApi.listGoogleCalendars.mockResolvedValue({
+      calendars: [
+        { ...CALENDARS[0], accessRole: 'reader' },
+        { ...CALENDARS[1], accessRole: 'writerWithoutPrivateAccess' },
+      ],
+    });
+    mockApi.listGoogleCalendarEvents.mockImplementation(async (params: any) => {
+      if (params.maxResults === MONTH_MAX_RESULTS) return { events: [] };
+      if (params.calendarId !== 'spouse@gmail.com') return { events: [] };
+      return {
+        events: [
+          { ...EVENTS['spouse@gmail.com'][0], visibility: 'default' },
+          {
+            id: 'secret',
+            summary: 'Private thing',
+            visibility: 'private',
+            start: { dateTime: '2026-07-01T14:00:00Z' },
+            end: { dateTime: '2026-07-01T15:00:00Z' },
+          },
+        ],
+      };
+    });
+    render(<CalendarAgendaPage />);
+
+    await screen.findByText('Pure Barre');
+    expect(screen.getByText('Private thing')).toBeInTheDocument();
+    // Only the non-private event is editable.
+    expect(screen.getAllByRole('button', { name: /^Edit$/ })).toHaveLength(1);
+  });
+
+  it('keeps showing the primary and offers to list calendars when the scope is missing', async () => {
+    mockApi.getGoogleStatus.mockResolvedValue(CONNECTED);
+    mockApi.listGoogleCalendarEvents.mockImplementation(async (params: any) => {
+      if (params.maxResults === MONTH_MAX_RESULTS) return { events: [] };
+      return { events: params.calendarId ? [] : EVENTS['person@example.com'] };
+    });
+    mockApi.startGoogleOAuth.mockResolvedValue({ authorizeUrl: 'about:blank' });
+    render(<CalendarAgendaPage />);
+
+    expect(await screen.findByText('My meeting')).toBeInTheDocument();
+    expect(mockApi.listGoogleCalendars).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Show your other calendars' }));
+    await waitFor(() =>
+      expect(mockApi.startGoogleOAuth).toHaveBeenCalledWith(
+        expect.objectContaining({ scopes: [CALENDAR_EVENTS_SCOPE, LIST_SCOPE] }),
+      ),
+    );
   });
 });

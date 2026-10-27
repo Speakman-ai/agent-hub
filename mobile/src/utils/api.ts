@@ -1700,6 +1700,8 @@ export const api = {
     }),
   disconnectGoogleAccount: (accountId: string) =>
     fetchJSON(`/auth/google/accounts/${encodeURIComponent(accountId)}`, { method: 'DELETE' }),
+  listGoogleCalendars: ({ account }: { account?: string } = {}) =>
+    fetchJSON(`/google/calendars${googleAccountQuery(account)}`),
   listGoogleCalendarEvents: ({
     calendarId,
     timeMin,

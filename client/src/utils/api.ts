@@ -1443,6 +1443,8 @@ export const api = {
       timeout: 400_000,
       signal: opts.signal,
     }),
+  listGoogleCalendars: ({ account }: { account?: string } = {}) =>
+    fetchJSON(`/google/calendars${googleAccountQuery(account)}`),
   listGoogleCalendarEvents: ({
     calendarId,
     timeMin,

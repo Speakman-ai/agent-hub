@@ -35,7 +35,6 @@ import {
   CALENDAR_HIDDEN_ACCOUNTS_KEY,
   defaultGoogleAccount,
   effectiveHiddenAccounts,
-  fetchAcrossGoogleAccounts,
   googleAccountColor,
   googleAccountParam,
   linkedGoogleAccounts,
@@ -48,6 +47,25 @@ import {
   type GoogleStatusWithAccounts,
   type LinkedGoogleAccount,
 } from '@shared/utils/googleAccounts';
+import {
+  CALENDAR_LIST_READONLY_SCOPE,
+  CALENDAR_VISIBILITY_KEY,
+  calendarCount,
+  calendarFailureText,
+  calendarLoadWarning,
+  calendarSourcesKey,
+  fetchAcrossCalendars,
+  isCalendarVisible,
+  loadAccountCalendars,
+  parseCalendarVisibility,
+  toggleCalendarVisibility,
+  withCalendarMeta,
+  withoutHiddenCalendars,
+  type AccountCalendars,
+  type CalendarTag,
+  type CalendarVisibility,
+  type GoogleCalendarEntry,
+} from '@shared/utils/googleCalendars';
 
 export { CALENDAR_EVENTS_SCOPE, defaultCalendarRange };
 
@@ -57,7 +75,8 @@ export const MONTH_MAX_RESULTS = 500;
 
 type GoogleStatus = NonNullable<GoogleStatusLike> & GoogleStatusWithAccounts;
 
-type CalendarEvent = AccountTagged<CalendarEventLike & { id: string | null }>;
+type CalendarEvent = AccountTagged<CalendarEventLike & { id: string | null }> &
+  Partial<CalendarTag>;
 
 function readHiddenAccounts(): string[] {
   try {
@@ -75,26 +94,51 @@ function writeHiddenAccounts(ids: string[]) {
   }
 }
 
-/** Read one account's events and tag them with that account. */
-async function listEventsAcrossAccounts(
-  accounts: LinkedGoogleAccount[],
+function readCalendarVisibility(): CalendarVisibility {
+  try {
+    return parseCalendarVisibility(window.localStorage.getItem(CALENDAR_VISIBILITY_KEY));
+  } catch {
+    return {};
+  }
+}
+
+function writeCalendarVisibility(visibility: CalendarVisibility) {
+  try {
+    window.localStorage.setItem(CALENDAR_VISIBILITY_KEY, JSON.stringify(visibility));
+  } catch {
+    // Storage unavailable (private mode): the toggle still applies for this visit.
+  }
+}
+
+/** Each account's calendars, or its primary alone when they can't be listed. */
+function listCalendarsAcrossAccounts(accounts: LinkedGoogleAccount[]) {
+  return loadAccountCalendars(accounts, (account) =>
+    api.listGoogleCalendars({ account: googleAccountParam(account) }),
+  );
+}
+
+/** Read every calendar's events and tag them with their account and calendar. */
+async function listEventsAcrossCalendars(
+  sources: AccountCalendars[],
   query: { timeMin: string; timeMax: string; maxResults: number },
 ) {
-  return fetchAcrossGoogleAccounts<CalendarEventLike & { id: string | null }>(
-    accounts,
-    async (account) => {
+  return fetchAcrossCalendars<CalendarEventLike & { id: string | null }>(
+    sources,
+    async (account, calendar) => {
       const body = await api.listGoogleCalendarEvents({
         ...query,
         timeZone: localTimeZone(),
         account: googleAccountParam(account),
+        calendarId: calendar.id === 'primary' ? undefined : calendar.id,
       });
       return body?.events || [];
     },
   );
 }
 
-function failureText(failures: GoogleAccountFetchFailure[]) {
-  return failures.map((f) => `${f.account.email || 'Google account'}: ${f.error}`).join('; ');
+/** Where an event is written: the calendar it came from, else the primary. */
+function eventCalendarId(event: CalendarEvent | null | undefined) {
+  return event?.calendarId || 'primary';
 }
 
 type EventFormState = {
@@ -217,6 +261,9 @@ export function CalendarEventModal({
   );
   const accountEmail =
     accounts.find((a) => a.accountId === accountId)?.email || event?.accountEmail || '';
+  // Events from calendars shared with read access can be viewed, not saved.
+  const readOnly = !!event && event.calendarWritable === false;
+  const calendarLabel = event?.calendarName || 'Primary calendar';
 
   const setField = (field: keyof EventFormState, value: string | boolean) => {
     setForm((current) => ({ ...current, [field]: value }));
@@ -232,10 +279,12 @@ export function CalendarEventModal({
         <div className="flex items-center justify-between border-b border-gray-800 px-4 py-3">
           <div>
             <h3 className="text-sm font-semibold text-white">
-              {event ? 'Edit event' : 'Create event'}
+              {readOnly ? 'Event' : event ? 'Edit event' : 'Create event'}
             </h3>
             <p className="text-xs text-gray-500">
-              Primary calendar{accountEmail ? ` · ${accountEmail}` : ''}
+              {calendarLabel}
+              {accountEmail ? ` · ${accountEmail}` : ''}
+              {readOnly ? ' · read-only' : ''}
             </p>
           </div>
           <button
@@ -251,116 +300,118 @@ export function CalendarEventModal({
           className="space-y-4 p-4"
           onSubmit={(e) => {
             e.preventDefault();
-            if (valid) onSubmit(form, accountId);
+            if (valid && !readOnly) onSubmit(form, accountId);
           }}
         >
-          {!event && accounts.length > 1 && (
+          <fieldset disabled={readOnly} className="space-y-4">
+            {!event && accounts.length > 1 && (
+              <label className="block">
+                <span className="text-xs text-gray-400">Account</span>
+                <select
+                  value={accountId}
+                  onChange={(e) => setAccountId(e.target.value)}
+                  aria-label="Account"
+                  className="mt-1 w-full rounded border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
+                >
+                  {accounts.map((a) => (
+                    <option key={a.accountId} value={a.accountId}>
+                      {a.email}
+                      {a.isDefault ? ' (default)' : ''}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <label className="block">
-              <span className="text-xs text-gray-400">Account</span>
-              <select
-                value={accountId}
-                onChange={(e) => setAccountId(e.target.value)}
-                aria-label="Account"
+              <span className="text-xs text-gray-400">Title</span>
+              <input
+                value={form.summary}
+                onChange={(e) => setField('summary', e.target.value)}
                 className="mt-1 w-full rounded border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
-              >
-                {accounts.map((a) => (
-                  <option key={a.accountId} value={a.accountId}>
-                    {a.email}
-                    {a.isDefault ? ' (default)' : ''}
-                  </option>
-                ))}
-              </select>
+                autoFocus
+              />
             </label>
-          )}
-          <label className="block">
-            <span className="text-xs text-gray-400">Title</span>
-            <input
-              value={form.summary}
-              onChange={(e) => setField('summary', e.target.value)}
-              className="mt-1 w-full rounded border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
-              autoFocus
-            />
-          </label>
-          <div className="flex items-center gap-2">
-            <input
-              id="calendar-all-day"
-              type="checkbox"
-              checked={form.allDay}
-              onChange={(e) => setField('allDay', e.target.checked)}
-              className="h-4 w-4 rounded border-gray-700 bg-gray-950"
-            />
-            <label htmlFor="calendar-all-day" className="text-sm text-gray-300">
-              All day
-            </label>
-          </div>
-          {form.allDay ? (
-            <div className="grid gap-3 sm:grid-cols-2">
-              <label className="block">
-                <span className="text-xs text-gray-400">Start date</span>
-                <input
-                  type="date"
-                  value={form.startDate}
-                  onChange={(e) => setField('startDate', e.target.value)}
-                  className="mt-1 w-full rounded border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
-                />
-              </label>
-              <label className="block">
-                <span className="text-xs text-gray-400">End date</span>
-                <input
-                  type="date"
-                  value={form.endDate}
-                  onChange={(e) => setField('endDate', e.target.value)}
-                  className="mt-1 w-full rounded border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
-                />
+            <div className="flex items-center gap-2">
+              <input
+                id="calendar-all-day"
+                type="checkbox"
+                checked={form.allDay}
+                onChange={(e) => setField('allDay', e.target.checked)}
+                className="h-4 w-4 rounded border-gray-700 bg-gray-950"
+              />
+              <label htmlFor="calendar-all-day" className="text-sm text-gray-300">
+                All day
               </label>
             </div>
-          ) : (
-            <div className="grid gap-3 sm:grid-cols-2">
-              <label className="block">
-                <span className="text-xs text-gray-400">Starts</span>
-                <input
-                  type="datetime-local"
-                  value={form.startDateTime}
-                  onChange={(e) => setField('startDateTime', e.target.value)}
-                  className="mt-1 w-full rounded border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
-                />
-              </label>
-              <label className="block">
-                <span className="text-xs text-gray-400">Ends</span>
-                <input
-                  type="datetime-local"
-                  value={form.endDateTime}
-                  onChange={(e) => setField('endDateTime', e.target.value)}
-                  className="mt-1 w-full rounded border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
-                />
-              </label>
-              <label className="block sm:col-span-2">
-                <span className="text-xs text-gray-400">Time zone</span>
-                <input
-                  value={form.timeZone}
-                  onChange={(e) => setField('timeZone', e.target.value)}
-                  className="mt-1 w-full rounded border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
-                />
-              </label>
-            </div>
-          )}
-          <label className="block">
-            <span className="text-xs text-gray-400">Location</span>
-            <input
-              value={form.location}
-              onChange={(e) => setField('location', e.target.value)}
-              className="mt-1 w-full rounded border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
-            />
-          </label>
-          <label className="block">
-            <span className="text-xs text-gray-400">Description</span>
-            <textarea
-              value={form.description}
-              onChange={(e) => setField('description', e.target.value)}
-              rows={4}
-              className="mt-1 w-full resize-none rounded border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
-            />
-          </label>
+            {form.allDay ? (
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block">
+                  <span className="text-xs text-gray-400">Start date</span>
+                  <input
+                    type="date"
+                    value={form.startDate}
+                    onChange={(e) => setField('startDate', e.target.value)}
+                    className="mt-1 w-full rounded border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs text-gray-400">End date</span>
+                  <input
+                    type="date"
+                    value={form.endDate}
+                    onChange={(e) => setField('endDate', e.target.value)}
+                    className="mt-1 w-full rounded border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
+                  />
+                </label>
+              </div>
+            ) : (
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block">
+                  <span className="text-xs text-gray-400">Starts</span>
+                  <input
+                    type="datetime-local"
+                    value={form.startDateTime}
+                    onChange={(e) => setField('startDateTime', e.target.value)}
+                    className="mt-1 w-full rounded border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs text-gray-400">Ends</span>
+                  <input
+                    type="datetime-local"
+                    value={form.endDateTime}
+                    onChange={(e) => setField('endDateTime', e.target.value)}
+                    className="mt-1 w-full rounded border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
+                  />
+                </label>
+                <label className="block sm:col-span-2">
+                  <span className="text-xs text-gray-400">Time zone</span>
+                  <input
+                    value={form.timeZone}
+                    onChange={(e) => setField('timeZone', e.target.value)}
+                    className="mt-1 w-full rounded border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
+                  />
+                </label>
+              </div>
+            )}
+            <label className="block">
+              <span className="text-xs text-gray-400">Location</span>
+              <input
+                value={form.location}
+                onChange={(e) => setField('location', e.target.value)}
+                className="mt-1 w-full rounded border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs text-gray-400">Description</span>
+              <textarea
+                value={form.description}
+                onChange={(e) => setField('description', e.target.value)}
+                rows={4}
+                className="mt-1 w-full resize-none rounded border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
+              />
+            </label>
+          </fieldset>
           {error && (
             <div className="rounded border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-300">
               {error}
@@ -372,16 +423,18 @@ export function CalendarEventModal({
               onClick={onCancel}
               className="rounded border border-gray-700 px-3 py-2 text-sm text-gray-300 hover:bg-gray-800"
             >
-              Cancel
+              {readOnly ? 'Close' : 'Cancel'}
             </button>
-            <button
-              type="submit"
-              disabled={!valid || saving}
-              className="inline-flex items-center gap-2 rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {saving ? <Loader2 size={14} className="animate-spin" /> : null}
-              {event ? 'Save changes' : 'Create event'}
-            </button>
+            {!readOnly && (
+              <button
+                type="submit"
+                disabled={!valid || saving}
+                className="inline-flex items-center gap-2 rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {saving ? <Loader2 size={14} className="animate-spin" /> : null}
+                {event ? 'Save changes' : 'Create event'}
+              </button>
+            )}
           </div>
         </form>
       </div>
@@ -399,6 +452,8 @@ export default function CalendarAgendaPage({
   const [loading, setLoading] = useState(true);
   const [eventsLoading, setEventsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Partial load: some calendars (or a whole calendar list) are missing.
+  const [warning, setWarning] = useState<string | null>(null);
   const [oauthBusy, setOauthBusy] = useState(false);
   const [modalEvent, setModalEvent] = useState<CalendarEvent | null | undefined>(undefined);
   const [modalError, setModalError] = useState<string | null>(null);
@@ -417,13 +472,19 @@ export default function CalendarAgendaPage({
   const [monthError, setMonthError] = useState<string | null>(null);
   const [monthReload, setMonthReload] = useState(0);
   // Accounts whose events failed to load; the others still render.
-  const [accountFailures, setAccountFailures] = useState<GoogleAccountFetchFailure[]>([]);
+  const [accountFailures, setAccountFailures] = useState<
+    Array<GoogleAccountFetchFailure & { calendar?: GoogleCalendarEntry }>
+  >([]);
   const [hiddenAccounts, setHiddenAccounts] = useState<string[]>(readHiddenAccounts);
+  // Every readable account's calendars; the month grid reads the same set.
+  const [calendarSources, setCalendarSources] = useState<AccountCalendars[]>([]);
+  const [calendarVisibility, setCalendarVisibility] =
+    useState<CalendarVisibility>(readCalendarVisibility);
 
   const accounts = useMemo(() => linkedGoogleAccounts(status), [status]);
   const calendarAccounts = useMemo(() => accounts.filter((a) => hasCalendarScope(a)), [accounts]);
   // Stable dependency for the month fetch: re-read only when the set changes.
-  const calendarAccountKey = calendarAccounts.map((a) => a.accountId).join(',');
+  const calendarSourceKey = calendarSourcesKey(calendarSources);
 
   // Only the newest agenda load and the modal session a save started in may
   // commit state; an overlapping refresh or a reopened modal must not be
@@ -448,15 +509,25 @@ export default function CalendarAgendaPage({
       setStatus(nextStatus);
       const readable = linkedGoogleAccounts(nextStatus).filter((a) => hasCalendarScope(a));
       if (nextStatus.connected && readable.length) {
-        const { items, failures } = await listEventsAcrossAccounts(readable, {
+        const sources = await listCalendarsAcrossAccounts(readable);
+        if (!current()) return;
+        setCalendarSources(sources);
+        const { items, failures } = await listEventsAcrossCalendars(sources, {
           ...range,
           maxResults: AGENDA_MAX_RESULTS,
         });
         if (!current()) return;
         setEvents(mergeAccountEvents(items));
         setAccountFailures(failures);
-        if (failures.length === readable.length) setError(failureText(failures));
+        if (failures.length && failures.length === calendarCount(sources)) {
+          setError(calendarFailureText(failures));
+          setWarning(null);
+        } else {
+          setWarning(calendarLoadWarning(sources, failures));
+        }
       } else {
+        setWarning(null);
+        setCalendarSources([]);
         setEvents([]);
         setAccountFailures([]);
       }
@@ -479,7 +550,7 @@ export default function CalendarAgendaPage({
   const calendarReady = !!status?.connected && calendarAccounts.length > 0;
 
   useEffect(() => {
-    if (!calendarReady) {
+    if (!calendarReady || !calendarSources.length) {
       setMonthEvents([]);
       setMonthError(null);
       return;
@@ -487,7 +558,7 @@ export default function CalendarAgendaPage({
     let cancelled = false;
     setMonthLoading(true);
     setMonthError(null);
-    listEventsAcrossAccounts(calendarAccounts, {
+    listEventsAcrossCalendars(calendarSources, {
       ...monthGridRange(month),
       maxResults: MONTH_MAX_RESULTS,
     })
@@ -496,7 +567,7 @@ export default function CalendarAgendaPage({
         setMonthEvents(mergeAccountEvents(items));
         // Keep the error on the grid itself: month navigation only fires this
         // request, so the agenda banner above never sees the failure.
-        setMonthError(failures.length ? failureText(failures) : null);
+        setMonthError(failures.length ? calendarFailureText(failures) : null);
       })
       .finally(() => {
         if (!cancelled) setMonthLoading(false);
@@ -504,9 +575,9 @@ export default function CalendarAgendaPage({
     return () => {
       cancelled = true;
     };
-    // calendarAccountKey tracks calendarAccounts by value.
+    // calendarSourceKey tracks calendarSources by value.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [calendarReady, calendarAccountKey, month, monthReload]);
+  }, [calendarReady, calendarSourceKey, month, monthReload]);
 
   const toggleAccount = (accountId: string) => {
     setHiddenAccounts((current) => {
@@ -515,12 +586,43 @@ export default function CalendarAgendaPage({
       return next;
     });
   };
+  const toggleCalendar = (accountId: string, calendar: GoogleCalendarEntry) => {
+    setCalendarVisibility((current) => {
+      const next = toggleCalendarVisibility(current, accountId, calendar);
+      writeCalendarVisibility(next);
+      return next;
+    });
+  };
   const multiAccount = accounts.length > 1;
+  const multiCalendar = calendarCount(calendarSources) > 1;
+  // Accounts that can only show their primary until the list scope is granted.
+  const needsListScope = calendarSources.filter((s) => !s.listGranted);
   // With one account left the toggles are gone, so a stored hide must not apply.
   const hidden = effectiveHiddenAccounts(hiddenAccounts, accounts);
-  const visibleEvents = withoutHiddenAccounts(events, hidden);
-  const visibleMonthEvents = withoutHiddenAccounts(monthEvents, hidden);
+  // Calendar name, color and edit rights come from the current list, so the
+  // agenda and the month grid always agree, whichever was fetched last.
+  const visibleEvents = withCalendarMeta(
+    withoutHiddenCalendars(
+      withoutHiddenAccounts(events, hidden),
+      calendarSources,
+      calendarVisibility,
+    ),
+    calendarSources,
+  );
+  const visibleMonthEvents = withCalendarMeta(
+    withoutHiddenCalendars(
+      withoutHiddenAccounts(monthEvents, hidden),
+      calendarSources,
+      calendarVisibility,
+    ),
+    calendarSources,
+  );
   const colorFor = (accountId: string) => googleAccountColor(accounts, accountId);
+  // Google's own calendar color when there are several calendars, so the page
+  // matches Google Calendar; otherwise the per-account color.
+  const eventAccent = (event: CalendarEvent) =>
+    (multiCalendar && event.calendarColor) || colorFor(event.accountId);
+  const showAccents = multiAccount || multiCalendar;
 
   const refresh = () => {
     setMonthReload((n) => n + 1);
@@ -534,7 +636,7 @@ export default function CalendarAgendaPage({
       const returnTo = window.location.pathname + window.location.search + window.location.hash;
       const body = await api.startGoogleOAuth({
         returnTo,
-        scopes: [CALENDAR_EVENTS_SCOPE],
+        scopes: [CALENDAR_EVENTS_SCOPE, CALENDAR_LIST_READONLY_SCOPE],
         ...(accountId ? { accountId } : {}),
       });
       window.location.href = body.authorizeUrl;
@@ -557,7 +659,7 @@ export default function CalendarAgendaPage({
       if (modalEvent?.id) {
         await api.updateGoogleCalendarEvent(
           modalEvent.id,
-          { calendarId: 'primary', event },
+          { calendarId: eventCalendarId(modalEvent), event },
           { account },
         );
       } else {
@@ -618,8 +720,10 @@ export default function CalendarAgendaPage({
     };
   } else if (events.length && !visibleEvents.length && !eventsLoading) {
     emptyState = {
-      title: 'All accounts hidden',
-      body: 'Turn an account back on above to see its events.',
+      title: multiCalendar ? 'All calendars hidden' : 'All accounts hidden',
+      body: multiCalendar
+        ? 'Turn a calendar back on above to see its events.'
+        : 'Turn an account back on above to see its events.',
       action: null,
       onAction: undefined,
     };
@@ -643,9 +747,11 @@ export default function CalendarAgendaPage({
             </div>
             <h2 className="mt-1 text-2xl font-semibold text-white">Agenda</h2>
             <p className="mt-1 text-sm text-gray-400">
-              {multiAccount
-                ? 'Upcoming events from the primary calendar of each linked Google account.'
-                : 'Upcoming events from your primary Google Calendar.'}
+              {multiCalendar
+                ? 'Upcoming events from the calendars you have checked in Google Calendar.'
+                : multiAccount
+                  ? 'Upcoming events from the primary calendar of each linked Google account.'
+                  : 'Upcoming events from your primary Google Calendar.'}
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -675,6 +781,15 @@ export default function CalendarAgendaPage({
           <div className="mb-4 flex items-start gap-2 rounded border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">
             <AlertCircle size={16} className="mt-0.5 flex-shrink-0" />
             {error}
+          </div>
+        )}
+        {!error && warning && (
+          <div
+            role="status"
+            className="mb-4 flex items-start gap-2 rounded border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200"
+          >
+            <AlertCircle size={16} className="mt-0.5 flex-shrink-0" />
+            {warning}
           </div>
         )}
 
@@ -725,6 +840,63 @@ export default function CalendarAgendaPage({
           </div>
         )}
 
+        {!loading && connected && (multiCalendar || needsListScope.length > 0) && (
+          <div className="mb-4 flex flex-wrap items-center gap-2" aria-label="Calendars">
+            {/* A lone calendar gets no toggle; withoutHiddenCalendars never hides it. */}
+            {(multiCalendar ? calendarSources : []).map((source) =>
+              source.calendars.map((calendar) => {
+                const accountId = source.account.accountId;
+                const visible = isCalendarVisible(accountId, calendar, calendarVisibility);
+                const failed = accountFailures.find(
+                  (f) => f.account.accountId === accountId && f.calendar?.id === calendar.id,
+                );
+                return (
+                  <label
+                    key={`${accountId}|${calendar.id}`}
+                    className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-gray-700 bg-gray-900 px-3 py-1 text-xs text-gray-300"
+                    title={
+                      failed
+                        ? failed.error
+                        : multiAccount
+                          ? `${calendar.summary} · ${source.account.email}`
+                          : calendar.summary
+                    }
+                  >
+                    <input
+                      type="checkbox"
+                      checked={visible}
+                      onChange={() => toggleCalendar(accountId, calendar)}
+                      aria-label={`Show calendar ${calendar.summary}`}
+                      className="h-3 w-3"
+                      style={{ accentColor: calendar.backgroundColor || colorFor(accountId) }}
+                    />
+                    <span
+                      className="h-2.5 w-2.5 rounded-full"
+                      style={{ backgroundColor: calendar.backgroundColor || colorFor(accountId) }}
+                    />
+                    {calendar.summary}
+                    {failed && <AlertCircle size={12} className="text-red-400" />}
+                  </label>
+                );
+              }),
+            )}
+            {needsListScope.map((source) => (
+              <button
+                key={`list-scope-${source.account.accountId}`}
+                type="button"
+                onClick={() => startOAuth(source.account.accountId || undefined)}
+                disabled={oauthBusy}
+                className="inline-flex items-center gap-1 rounded-full border border-blue-500/40 px-3 py-1 text-xs text-blue-300 hover:bg-blue-500/10 disabled:opacity-50"
+              >
+                <ExternalLink size={12} />
+                {multiAccount
+                  ? `Show other calendars for ${source.account.email}`
+                  : 'Show your other calendars'}
+              </button>
+            ))}
+          </div>
+        )}
+
         {loading ? (
           <div className="flex items-center gap-2 rounded-lg border border-gray-800 bg-gray-900 p-4 text-sm text-gray-400">
             <Loader2 size={16} className="animate-spin" />
@@ -754,18 +926,22 @@ export default function CalendarAgendaPage({
           <div className="overflow-hidden rounded-lg border border-gray-800 bg-gray-900">
             {visibleEvents.map((event) => (
               <div
-                key={`${event.accountId}:${event.id || `${event.summary}-${eventTimeLabel(event)}`}`}
+                key={`${event.accountId}:${eventCalendarId(event)}:${event.id || `${event.summary}-${eventTimeLabel(event)}`}`}
                 className="flex gap-4 border-b border-gray-800 p-4 last:border-b-0"
                 style={
-                  multiAccount
-                    ? { boxShadow: `inset 3px 0 0 ${colorFor(event.accountId)}` }
-                    : undefined
+                  showAccents ? { boxShadow: `inset 3px 0 0 ${eventAccent(event)}` } : undefined
                 }
               >
                 <div className="w-36 flex-shrink-0 text-sm text-gray-400">
                   {eventTimeLabel(event)}
-                  {multiAccount && (
-                    <div className="mt-1 truncate text-xs text-gray-500">{event.accountEmail}</div>
+                  {multiCalendar && event.calendarName ? (
+                    <div className="mt-1 truncate text-xs text-gray-500">{event.calendarName}</div>
+                  ) : (
+                    multiAccount && (
+                      <div className="mt-1 truncate text-xs text-gray-500">
+                        {event.accountEmail}
+                      </div>
+                    )
                   )}
                 </div>
                 <div className="min-w-0 flex-1">
@@ -810,14 +986,16 @@ export default function CalendarAgendaPage({
                         <Ticket size={12} />
                         Ticket
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => showModal(event)}
-                        className="inline-flex items-center gap-1 rounded border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:bg-gray-800"
-                      >
-                        <Pencil size={12} />
-                        Edit
-                      </button>
+                      {event.calendarWritable !== false && (
+                        <button
+                          type="button"
+                          onClick={() => showModal(event)}
+                          className="inline-flex items-center gap-1 rounded border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:bg-gray-800"
+                        >
+                          <Pencil size={12} />
+                          Edit
+                        </button>
+                      )}
                     </div>
                   </div>
                   {event.description && (
@@ -834,7 +1012,7 @@ export default function CalendarAgendaPage({
           <CalendarMonthView
             month={month}
             events={visibleMonthEvents}
-            eventColor={multiAccount ? (event) => colorFor(event.accountId) : undefined}
+            eventColor={showAccents ? eventAccent : undefined}
             loading={monthLoading}
             error={monthError}
             onRetry={() => setMonthReload((n) => n + 1)}

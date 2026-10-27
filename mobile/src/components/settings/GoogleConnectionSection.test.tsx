@@ -65,6 +65,7 @@ describe('GoogleConnectionSection mobile rendering', () => {
           email: 'person@example.com',
           grantedScopes: [
             'https://www.googleapis.com/auth/calendar.events',
+            'https://www.googleapis.com/auth/calendar.calendarlist.readonly',
             'https://www.googleapis.com/auth/gmail.modify',
           ],
           connectedAt: '2026-06-30T17:00:00.000Z',

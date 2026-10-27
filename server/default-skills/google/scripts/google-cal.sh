@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 # google-cal.sh — Google Calendar via the Hub proxy (scoped to the session owner).
 #
+#   google-cal.sh calendars
 #   google-cal.sh list   --from <ISO> --to <ISO> [--q TEXT] [--max N] [--calendar ID]
 #   google-cal.sh create --summary TEXT --start <ISO> --end <ISO> \
 #                        [--description TEXT] [--location TEXT] [--timezone TZ] \
 #                        [--calendar ID] [--attendee email]… [--send-updates all|externalOnly|none]
 #   google-cal.sh update <eventId> [--summary TEXT] [--start ISO] [--end ISO] \
 #                        [--description TEXT] [--location TEXT] [--timezone TZ] [--calendar ID]
+#
+# `calendars` lists the account's calendars (own, shared with the owner, and
+# subscribed) with the ids to pass as --calendar; `selected` is whether the
+# owner has it checked in Google Calendar. Without --calendar, list reads the
+# primary calendar only.
 #
 # ISO timestamps are RFC3339, e.g. 2026-06-30T09:00:00-07:00 (or pass --timezone
 # for offset-less local times). Read ops need no extra tooling; create/update
@@ -60,6 +66,16 @@ cmd_list() {
   [[ -n "$q" ]] && qs+="&q=$(urlenc "$q")"
   [[ -n "$max" ]] && qs+="&maxResults=$(urlenc "$max")"
   google_api GET "/api/google/calendar/events?${qs}"
+}
+
+cmd_calendars() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h | --help) usage; exit 0 ;;
+      *) google_usage_die "google-cal calendars: unknown arg: $1" ;;
+    esac
+  done
+  google_api GET "/api/google/calendars"
 }
 
 build_event_json() {
@@ -135,6 +151,7 @@ main() {
   local sub="${1:-}"
   [[ $# -gt 0 ]] && shift || true
   case "$sub" in
+    calendars) cmd_calendars "$@" ;;
     list) cmd_list "$@" ;;
     create) cmd_create "$@" ;;
     update) cmd_update "$@" ;;

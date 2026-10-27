@@ -45,7 +45,11 @@ export const GOOGLE_SURFACES: GoogleSurface[] = [
   {
     key: 'calendar',
     label: 'Calendar',
-    scopes: ['https://www.googleapis.com/auth/calendar.events'],
+    // calendarlist.readonly lists shared and subscribed calendars, not just the primary.
+    scopes: [
+      'https://www.googleapis.com/auth/calendar.events',
+      'https://www.googleapis.com/auth/calendar.calendarlist.readonly',
+    ],
   },
   {
     key: 'gmail',

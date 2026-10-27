@@ -114,11 +114,32 @@ describe('GoogleConnectionSection', () => {
     expect(mockApi.getGoogleStatus).toHaveBeenCalled();
   });
 
-  it('renders the connected state with email and granted scopes', async () => {
+  it('still offers Enable Calendar when only calendar.events was granted', async () => {
+    // Without the calendar-list scope only the primary calendar shows, so the
+    // surface is not fully enabled and the button asks for the missing scope.
     mockApi.getGoogleStatus.mockResolvedValueOnce({
       connected: true,
       email: 'user@example.com',
       grantedScopes: ['openid', 'email', 'https://www.googleapis.com/auth/calendar.events'],
+      connectedAt: '2026-06-01T00:00:00.000Z',
+      serverConfigured: true,
+    });
+
+    render(<GoogleConnectionSection />);
+
+    expect(await screen.findByRole('button', { name: /Enable Calendar/i })).toBeInTheDocument();
+  });
+
+  it('renders the connected state with email and granted scopes', async () => {
+    mockApi.getGoogleStatus.mockResolvedValueOnce({
+      connected: true,
+      email: 'user@example.com',
+      grantedScopes: [
+        'openid',
+        'email',
+        'https://www.googleapis.com/auth/calendar.events',
+        'https://www.googleapis.com/auth/calendar.calendarlist.readonly',
+      ],
       connectedAt: '2026-06-01T00:00:00.000Z',
       serverConfigured: true,
     });
@@ -259,7 +280,11 @@ describe('GoogleConnectionSection', () => {
       {
         accountId: 'acc-home',
         email: 'home@example.com',
-        grantedScopes: ['openid', 'https://www.googleapis.com/auth/calendar.events'],
+        grantedScopes: [
+          'openid',
+          'https://www.googleapis.com/auth/calendar.events',
+          'https://www.googleapis.com/auth/calendar.calendarlist.readonly',
+        ],
         isDefault: false,
         connectedAt: '2026-06-02T00:00:00.000Z',
       },

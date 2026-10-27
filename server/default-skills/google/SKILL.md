@@ -33,7 +33,10 @@ and returns shaped JSON. **Agents never receive a Google token.**
 
 Only **non-sensitive + sensitive** scopes, requested incrementally per surface:
 
-- **Calendar** — read/create/update events (`calendar.events`).
+- **Calendar** — read/create/update events (`calendar.events`); list the
+  owner's calendars, including ones shared with them (`calendar.calendarlist.readonly`).
+  To answer about someone else's calendar ("my wife's calendar"), run
+  `google-cal.sh calendars`, pick the matching entry, and pass its id as `--calendar`.
 - **Gmail** — read threads, send mail, add/remove labels (`gmail.modify` +
   `gmail.send`). No permanent delete, no `gmail.readonly`.
 - **Chat** — list spaces/DMs, read messages, post or reply in a thread
@@ -83,7 +86,9 @@ scripts/google-accounts.sh [--emails]
 
 # Any command below (except google-chat.sh) also takes --account <email|accountId>.
 
-# Calendar
+# Calendar (`calendars` lists own, shared, and subscribed calendars with their ids;
+# `list` reads the primary unless --calendar names one of those ids)
+scripts/google-cal.sh calendars
 scripts/google-cal.sh list   --from 2026-06-30T00:00:00Z --to 2026-07-01T00:00:00Z [--q TEXT] [--max N] [--calendar ID]
 scripts/google-cal.sh create --summary "Launch review" --start 2026-06-30T10:00:00Z --end 2026-06-30T11:00:00Z \
                              [--description T] [--location T] [--timezone TZ] [--attendee a@x.com]… [--calendar ID]

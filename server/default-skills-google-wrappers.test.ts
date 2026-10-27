@@ -289,6 +289,28 @@ describe('google-accounts.sh', () => {
 });
 
 describe('google-cal.sh', () => {
+  it('calendars → GET /api/google/calendars, honoring --account', () => {
+    const r = run(CAL, ['calendars', '--account', 'home@example.com']);
+    expect(r.status).toBe(0);
+    expect(r.log).toContain('METHOD=GET');
+    expect(r.log).toContain('URL=http://hub.test/api/google/calendars');
+    expect(queryParams(r.log).get('account')).toBe('home@example.com');
+  });
+
+  it('list --calendar reads a shared calendar by id', () => {
+    const r = run(CAL, [
+      'list',
+      '--from',
+      '2026-06-30T00:00:00Z',
+      '--to',
+      '2026-07-01T00:00:00Z',
+      '--calendar',
+      'spouse@gmail.com',
+    ]);
+    expect(r.status).toBe(0);
+    expect(queryParams(r.log).get('calendarId')).toBe('spouse@gmail.com');
+  });
+
   it('list → GET /calendar/events with required time window + auth/session headers', () => {
     const r = run(CAL, [
       'list',

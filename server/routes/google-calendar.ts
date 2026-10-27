@@ -8,7 +8,12 @@ import {
   resolveGoogleProxyToken,
   type GoogleProxyAccess,
 } from '../google-proxy-account.js';
-import { CALENDAR_EVENTS_SCOPE, hasCalendarReadScope } from '../google-scopes.js';
+import {
+  CALENDAR_EVENTS_SCOPE,
+  CALENDAR_LIST_READONLY_SCOPE,
+  hasCalendarListScope,
+  hasCalendarReadScope,
+} from '../google-scopes.js';
 import { registerComponent, registerPath, z } from '../openapi/registry.js';
 
 const DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -183,6 +188,14 @@ const GoogleCalendarEventSchema = registerComponent(
     etag: z.string().nullable(),
     recurringEventId: z.string().nullable(),
     hangoutLink: z.string().nullable(),
+    visibility: z
+      .string()
+      .nullable()
+      .openapi({
+        description:
+          '`default`, `public`, `private`, or `confidential`. Callers with ' +
+          '`writerWithoutPrivateAccess` must not edit `private`/`confidential` events.',
+      }),
   }),
 );
 
@@ -230,6 +243,43 @@ const ListGoogleCalendarEventsQuerySchema = z
       });
     }
   });
+
+/** Every documented CalendarList accessRole; an unknown value maps to null. */
+const CALENDAR_ACCESS_ROLES = [
+  'freeBusyReader',
+  'reader',
+  'writerWithoutPrivateAccess',
+  'writer',
+  'owner',
+] as const;
+type CalendarAccessRole = (typeof CALENDAR_ACCESS_ROLES)[number];
+
+const GoogleCalendarListEntrySchema = registerComponent(
+  'GoogleCalendarListEntry',
+  z.object({
+    id: z
+      .string()
+      .openapi({ description: 'Calendar id; pass as `calendarId` to the events routes.' }),
+    summary: z.string().openapi({
+      description: "Display name: the user's override if set, else the calendar's own title.",
+    }),
+    primary: z.boolean(),
+    selected: z.boolean().openapi({
+      description: 'Whether the calendar is checked (shown) in the Google Calendar UI.',
+    }),
+    accessRole: z
+      .enum(CALENDAR_ACCESS_ROLES)
+      .nullable()
+      .openapi({
+        description:
+          '`owner`, `writer`, and `writerWithoutPrivateAccess` can create and edit events; ' +
+          '`writerWithoutPrivateAccess` sees private events without details and must not edit them.',
+      }),
+    backgroundColor: z.string().nullable(),
+    foregroundColor: z.string().nullable(),
+    timeZone: z.string().nullable(),
+  }),
+);
 
 const CreateGoogleCalendarEventBodySchema = z
   .object({
@@ -289,6 +339,53 @@ registerPath({
     502: errorResponse('Google Calendar request failed.'),
     503: errorResponse('Google OAuth is not configured.'),
   },
+});
+
+const listCalendarsResponses = {
+  200: {
+    description: 'Calendars, primary first.',
+    content: jsonContent(
+      z.object({
+        calendars: z.array(GoogleCalendarListEntrySchema),
+        truncated: z.boolean().openapi({
+          description:
+            'True when the list hit the 1000-calendar cap and later pages were not read.',
+        }),
+      }),
+    ),
+  },
+  400: errorResponse('Invalid query.'),
+  401: errorResponse('Not authenticated or Google not connected.'),
+  403: errorResponse('Calendar-list scope has not been granted.'),
+  404: errorResponse('Google account not linked (`google_account_not_found`).'),
+  429: errorResponse('Google Calendar rate limit exceeded.'),
+  502: errorResponse('Google Calendar request failed.'),
+  503: errorResponse('Google OAuth is not configured.'),
+};
+
+const LIST_CALENDARS_DESCRIPTION =
+  'Hidden calendar-list entries are omitted. Needs a calendar-list scope ' +
+  '(`calendar.calendarlist.readonly` is the one requested); without it the route returns 403 ' +
+  '`google_calendar_list_scope_required` and callers should fall back to `primary`.';
+
+registerPath({
+  method: 'get',
+  path: '/api/google/calendars',
+  tags: ['Google'],
+  summary: "List the calling user's Google calendars (own, shared, and subscribed)",
+  description: LIST_CALENDARS_DESCRIPTION,
+  request: { query: GoogleAccountQuerySchema },
+  responses: listCalendarsResponses,
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/google/calendar/calendars',
+  tags: ['Google'],
+  summary: 'Alias of GET /api/google/calendars',
+  description: LIST_CALENDARS_DESCRIPTION,
+  request: { query: GoogleAccountQuerySchema },
+  responses: listCalendarsResponses,
 });
 
 registerPath({
@@ -385,6 +482,38 @@ function requireCalendarAccess(
   });
 }
 
+function requireCalendarListAccess(
+  req: Request,
+  res: Response,
+  deps: RouteDeps,
+): GoogleProxyAccess | null {
+  return requireGoogleProxyAccess(req, res, deps, {
+    surface: 'Google Calendar list',
+    check: hasCalendarListScope,
+    requiredScopes: [CALENDAR_LIST_READONLY_SCOPE],
+    scopeCode: 'google_calendar_list_scope_required',
+  });
+}
+
+/** Most users have a handful of calendars; this caps a runaway list at 1000. */
+const CALENDAR_LIST_MAX_PAGES = 4;
+
+const ACCESS_ROLES = new Set<string>(CALENDAR_ACCESS_ROLES);
+
+export function shapeCalendarListEntry(entry: calendar_v3.Schema$CalendarListEntry) {
+  const role = entry.accessRole ?? null;
+  return {
+    id: entry.id ?? '',
+    summary: entry.summaryOverride || entry.summary || entry.id || '',
+    primary: !!entry.primary,
+    selected: !!entry.selected,
+    accessRole: (role && ACCESS_ROLES.has(role) ? role : null) as CalendarAccessRole | null,
+    backgroundColor: entry.backgroundColor ?? null,
+    foregroundColor: entry.foregroundColor ?? null,
+    timeZone: entry.timeZone ?? null,
+  };
+}
+
 function resolveCalendarToken(
   access: GoogleProxyAccess,
   deps: RouteDeps,
@@ -441,6 +570,7 @@ function shapeEvent(event: calendar_v3.Schema$Event) {
     etag: event.etag ?? null,
     recurringEventId: event.recurringEventId ?? null,
     hangoutLink: event.hangoutLink ?? null,
+    visibility: event.visibility ?? null,
   };
 }
 
@@ -569,6 +699,38 @@ export default function createGoogleCalendarRoutes(deps: RouteDeps): Router {
       return sendGoogleError(res, err);
     }
   });
+
+  const listCalendars = async (req: Request, res: Response) => {
+    const access = requireCalendarListAccess(req, res, deps);
+    if (!access) return;
+    const token = await resolveCalendarToken(access, deps, res);
+    if (!token) return;
+
+    try {
+      const calendar = createCalendarClient(token);
+      const entries: calendar_v3.Schema$CalendarListEntry[] = [];
+      let pageToken: string | undefined;
+      for (let page = 0; page < CALENDAR_LIST_MAX_PAGES; page++) {
+        const result = await calendar.calendarList.list({ maxResults: 250, pageToken });
+        entries.push(...(result.data.items ?? []));
+        pageToken = result.data.nextPageToken ?? undefined;
+        if (!pageToken) break;
+      }
+      const calendars = entries
+        .filter((entry) => entry.id && !entry.deleted && !entry.hidden)
+        .map(shapeCalendarListEntry);
+      // Primary first, then Google's order.
+      calendars.sort((a, b) => Number(b.primary) - Number(a.primary));
+      // Hitting the page cap leaves calendars unread; say so instead of
+      // returning a list that looks complete.
+      return res.json({ calendars, truncated: !!pageToken });
+    } catch (err: unknown) {
+      return sendGoogleError(res, err);
+    }
+  };
+  router.get('/api/google/calendars', listCalendars);
+  // Alias that sits beside /api/google/calendar/events.
+  router.get('/api/google/calendar/calendars', listCalendars);
 
   router.post('/api/google/calendar/events', async (req: Request, res: Response) => {
     const parsed = CreateGoogleCalendarEventBodySchema.safeParse(req.body);
