@@ -345,3 +345,53 @@ describe('QaPlanDetailView verdict override', () => {
     tree.unmount();
   });
 });
+
+describe('QaPlanDetailView plan details', () => {
+  const findSave = (form: any) => form.findByProps({ testID: 'qa-plan-details-save' });
+
+  it('renames an approved plan without asking about approval', async () => {
+    planOverrides = { approved: true, approvedAt: '2026-10-26 09:00:00', status: 'in_progress' };
+    runs = [];
+    updateQaPlan.mockClear();
+    const { Alert } = await import('react-native');
+    (Alert.alert as any).mockClear();
+    let tree: any;
+    await act(async () => {
+      tree = TestRenderer.create(<QaPlanDetailView projectId="p1" planId="plan-1" />);
+    });
+    await flush();
+    await act(async () => {
+      tree.root.findByProps({ testID: 'qa-plan-edit-details' }).props.onPress();
+    });
+    const form = tree.root.findByProps({ testID: 'qa-plan-details-form' });
+    await act(async () => {
+      form.findByProps({ testID: 'qa-plan-details-title' }).props.onChangeText('Plan v2');
+      form.findByProps({ testID: 'qa-plan-details-goal' }).props.onChangeText('Log in');
+    });
+    await act(async () => {
+      findSave(form).props.onPress();
+    });
+    await flush();
+    expect(Alert.alert).not.toHaveBeenCalled();
+    expect(updateQaPlan).toHaveBeenCalledWith('p1', 'plan-1', { title: 'Plan v2', goal: 'Log in' });
+    tree.unmount();
+    planOverrides = {};
+  });
+
+  it('locks the target URL on a signed-off plan', async () => {
+    planOverrides = { approved: true, status: 'done', signedOffAt: '2026-10-26 12:00:00' };
+    runs = [];
+    let tree: any;
+    await act(async () => {
+      tree = TestRenderer.create(<QaPlanDetailView projectId="p1" planId="plan-1" />);
+    });
+    await flush();
+    await act(async () => {
+      tree.root.findByProps({ testID: 'qa-plan-edit-details' }).props.onPress();
+    });
+    expect(tree.root.findByProps({ testID: 'qa-plan-details-target' }).props.editable).toBe(false);
+    expect(tree.root.findByProps({ testID: 'qa-plan-details-title' }).props.editable).toBe(true);
+    tree.unmount();
+    planOverrides = {};
+  });
+});

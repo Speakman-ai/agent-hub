@@ -22,6 +22,7 @@ import {
   caseVerdictLabel,
   moveCaseIds,
   parseMaxIterations,
+  planDetailsPatch,
   qaEventMatches,
   QA_RERUN_DELAY_OPTIONS,
   QA_STATUS_LABELS,
@@ -33,6 +34,7 @@ import {
   type QaCaseDraft,
   type QaAutoRerunTrigger,
   type QaPlanDetail,
+  type QaPlanDetailsDraft,
   type QaPlanPatch,
   type QaRun,
   type QaRunScope,
@@ -178,6 +180,82 @@ function CaseForm({
           tone="primary"
           disabled={busy || !values.title.trim()}
           onPress={() => void onSubmit(values, base)}
+        />
+        <Button label="Cancel" onPress={onCancel} />
+      </View>
+    </View>
+  );
+}
+
+/**
+ * Edit a plan's title, goal, and target URL. Title and goal stay editable at
+ * any time; the target URL is read-only while `targetLockReason` is set.
+ */
+function PlanDetailsForm({
+  initial,
+  approved,
+  targetLockReason,
+  busy,
+  onSubmit,
+  onCancel,
+}: {
+  initial: QaPlanDetailsDraft;
+  approved: boolean;
+  targetLockReason: string | null;
+  busy: boolean;
+  onSubmit: (values: QaPlanDetailsDraft) => void;
+  onCancel: () => void;
+}) {
+  const [values, setValues] = useState<QaPlanDetailsDraft>(initial);
+  const set = (field: keyof QaPlanDetailsDraft, v: string) =>
+    setValues((cur) => ({ ...cur, [field]: v }));
+  return (
+    <View style={styles.caseForm} testID="qa-plan-details-form">
+      <TextInput
+        style={styles.input}
+        placeholder="Plan title"
+        placeholderTextColor={colors.gray600}
+        value={values.title}
+        editable={!busy}
+        onChangeText={(v) => set('title', v)}
+        testID="qa-plan-details-title"
+      />
+      <TextInput
+        style={[styles.input, targetLockReason !== null && styles.disabled]}
+        placeholder="https://…"
+        placeholderTextColor={colors.gray600}
+        autoCapitalize="none"
+        autoCorrect={false}
+        keyboardType="url"
+        value={values.targetUrl}
+        editable={!busy && targetLockReason === null}
+        onChangeText={(v) => set('targetUrl', v)}
+        testID="qa-plan-details-target"
+      />
+      {targetLockReason ? (
+        <Text style={styles.muted}>Target URL is read-only. {targetLockReason}</Text>
+      ) : approved ? (
+        <Text style={styles.muted}>
+          Changing the target URL revokes approval. Title and goal do not.
+        </Text>
+      ) : null}
+      <TextInput
+        style={[styles.input, styles.multiline]}
+        placeholder="What this plan validates"
+        placeholderTextColor={colors.gray600}
+        multiline
+        value={values.goal}
+        editable={!busy}
+        onChangeText={(v) => set('goal', v)}
+        testID="qa-plan-details-goal"
+      />
+      <View style={styles.row}>
+        <Button
+          label="Save"
+          tone="primary"
+          testID="qa-plan-details-save"
+          disabled={busy || !values.title.trim() || !values.targetUrl.trim()}
+          onPress={() => onSubmit(values)}
         />
         <Button label="Cancel" onPress={onCancel} />
       </View>
@@ -542,6 +620,7 @@ export default function QaPlanDetailView({
   const [busy, setBusy] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [editingDetails, setEditingDetails] = useState(false);
   const [toggledRuns, setToggledRuns] = useState<Record<string, boolean>>({});
   const requestSeq = useRef(0);
 
@@ -643,6 +722,25 @@ export default function QaPlanDetailView({
     !plan.approved ||
     confirm('Revoke approval?', 'This plan is approved. Changing its cases revokes approval.');
 
+  const saveDetails = async (values: QaPlanDetailsDraft) => {
+    const patch = planDetailsPatch(plan, values);
+    if (!patch) {
+      setEditingDetails(false);
+      return;
+    }
+    if (
+      patch.targetUrl !== undefined &&
+      plan.approved &&
+      !(await confirm(
+        'Revoke approval?',
+        'This plan is approved. Changing the target URL revokes approval.',
+      ))
+    ) {
+      return;
+    }
+    if (await act(() => api.updateQaPlan(projectId, planId, patch))) setEditingDetails(false);
+  };
+
   const addCase = async (values: QaCaseDraft) => {
     if (!(await confirmApprovalLoss())) return;
     const ok = await act(() =>
@@ -725,7 +823,17 @@ export default function QaPlanDetailView({
         </Text>
       ))}
 
-      <Text style={styles.planTitle}>{plan.title}</Text>
+      <View style={styles.row}>
+        <Text style={styles.planTitle}>{plan.title}</Text>
+        {!editingDetails ? (
+          <Button
+            label="Edit"
+            testID="qa-plan-edit-details"
+            disabled={busy}
+            onPress={() => setEditingDetails(true)}
+          />
+        ) : null}
+      </View>
       <View style={styles.badges}>
         <Text style={styles.badge} testID="qa-detail-status">
           {QA_STATUS_LABELS[plan.status]}
@@ -779,21 +887,34 @@ export default function QaPlanDetailView({
         ) : null}
       </View>
 
-      <TouchableOpacity
-        onPress={() => void Linking.openURL(plan.targetUrl).catch(() => undefined)}
-        testID="qa-detail-target"
-      >
-        <Text style={styles.link} numberOfLines={1}>
-          {plan.targetUrl} {'↗'}
-        </Text>
-      </TouchableOpacity>
-      <QaLinkChips
-        epic={detail.links.epic}
-        card={detail.links.card}
-        onOpenEpic={onOpenEpic}
-        onOpenCard={onOpenCard}
-      />
-      {plan.goal ? <Text style={styles.goal}>{plan.goal}</Text> : null}
+      {editingDetails ? (
+        <PlanDetailsForm
+          initial={{ title: plan.title, goal: plan.goal, targetUrl: plan.targetUrl }}
+          approved={plan.approved}
+          targetLockReason={lockReason}
+          busy={busy}
+          onSubmit={(values) => void saveDetails(values)}
+          onCancel={() => setEditingDetails(false)}
+        />
+      ) : (
+        <>
+          <TouchableOpacity
+            onPress={() => void Linking.openURL(plan.targetUrl).catch(() => undefined)}
+            testID="qa-detail-target"
+          >
+            <Text style={styles.link} numberOfLines={1}>
+              {plan.targetUrl} {'↗'}
+            </Text>
+          </TouchableOpacity>
+          <QaLinkChips
+            epic={detail.links.epic}
+            card={detail.links.card}
+            onOpenEpic={onOpenEpic}
+            onOpenCard={onOpenCard}
+          />
+          {plan.goal ? <Text style={styles.goal}>{plan.goal}</Text> : null}
+        </>
+      )}
 
       {!plan.approved ? (
         <Text style={styles.warnBox} testID="qa-detail-unapproved">
@@ -942,7 +1063,7 @@ export default function QaPlanDetailView({
 const styles = StyleSheet.create({
   container: { padding: 14, gap: 10, paddingBottom: 40 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 16, gap: 10 },
-  planTitle: { fontSize: 18, fontWeight: '600', color: colors.gray100 },
+  planTitle: { flexShrink: 1, fontSize: 18, fontWeight: '600', color: colors.gray100 },
   badges: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   badge: {
     fontSize: 11,

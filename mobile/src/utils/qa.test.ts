@@ -13,6 +13,7 @@ import {
   moveCaseIds,
   orderRunResults,
   parseMaxIterations,
+  planDetailsPatch,
   planCounts,
   qaEventMatches,
   rerunButtonStates,
@@ -164,6 +165,15 @@ describe('QA plan detail rules', () => {
     expect(caseEditPatch(base, { ...base, expected: 'e2' })).toEqual({
       patch: { expected: 'e2' },
       expectedBase: { expected: 'e' },
+    });
+  });
+
+  it('sends only changed plan details, trimming title and target', () => {
+    const plan = { title: 'T', goal: 'G', targetUrl: 'https://a.example.com' };
+    expect(planDetailsPatch(plan, { ...plan, title: ' T ' })).toBeNull();
+    expect(planDetailsPatch(plan, { ...plan, goal: 'G2' })).toEqual({ goal: 'G2' });
+    expect(planDetailsPatch(plan, { ...plan, targetUrl: ' https://b.example.com ' })).toEqual({
+      targetUrl: 'https://b.example.com',
     });
   });
 

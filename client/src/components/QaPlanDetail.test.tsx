@@ -46,6 +46,7 @@ import QaPlanDetail, {
   caseEditExpectedBase,
   editConflictCase,
   planCaseSave,
+  planDetailsPatch,
   rebaseCaseFieldEdits,
   caseListLockReason,
   caseVerdictLabel,
@@ -1132,6 +1133,82 @@ describe('QaPlanDetail reruns', () => {
     );
     expect(await screen.findByTestId('qa-auto-rerun-status')).toHaveTextContent(
       'Auto-rerun waits for staging.',
+    );
+  });
+});
+
+describe('QaPlanDetail plan details', () => {
+  const renderDetail = (d: QaPlanDetailWire) => {
+    getQaPlan.mockResolvedValue(d);
+    render(<QaPlanDetail projectId="proj" planId="p1" onBack={() => {}} />);
+  };
+
+  it('planDetailsPatch sends only changed fields, trimming title and target', () => {
+    const plan = { title: 'T', goal: 'G', targetUrl: 'https://a.example.com' };
+    expect(planDetailsPatch(plan, { ...plan, title: ' T ' })).toBeNull();
+    expect(planDetailsPatch(plan, { ...plan, goal: 'G2', title: ' New ' })).toEqual({
+      title: 'New',
+      goal: 'G2',
+    });
+    expect(planDetailsPatch(plan, { ...plan, targetUrl: ' https://b.example.com ' })).toEqual({
+      targetUrl: 'https://b.example.com',
+    });
+  });
+
+  it('edits title and goal on an approved plan without an approval warning', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderDetail(detail({ cases: [qaCase('c1')] }));
+    fireEvent.click(await screen.findByTestId('qa-plan-edit-details'));
+    fireEvent.change(screen.getByTestId('qa-plan-details-title'), {
+      target: { value: 'Checkout v2' },
+    });
+    fireEvent.change(screen.getByTestId('qa-plan-details-goal'), {
+      target: { value: 'Buy two things' },
+    });
+    fireEvent.click(screen.getByTestId('qa-plan-details-save'));
+    await waitFor(() =>
+      expect(mutations.updateQaPlan).toHaveBeenCalledWith('proj', 'p1', {
+        title: 'Checkout v2',
+        goal: 'Buy two things',
+      }),
+    );
+    expect(confirm).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(screen.queryByTestId('qa-plan-details-form')).not.toBeInTheDocument(),
+    );
+    confirm.mockRestore();
+  });
+
+  it('confirms before a target URL change revokes approval', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    renderDetail(detail({ cases: [qaCase('c1')] }));
+    fireEvent.click(await screen.findByTestId('qa-plan-edit-details'));
+    fireEvent.change(screen.getByTestId('qa-plan-details-target'), {
+      target: { value: 'https://staging.example.com/cart' },
+    });
+    fireEvent.click(screen.getByTestId('qa-plan-details-save'));
+    expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/revokes approval/));
+    expect(mutations.updateQaPlan).not.toHaveBeenCalled();
+
+    confirm.mockReturnValue(true);
+    fireEvent.click(screen.getByTestId('qa-plan-details-save'));
+    await waitFor(() =>
+      expect(mutations.updateQaPlan).toHaveBeenCalledWith('proj', 'p1', {
+        targetUrl: 'https://staging.example.com/cart',
+      }),
+    );
+    confirm.mockRestore();
+  });
+
+  it('keeps the target URL read-only on a signed-off plan but allows the title', async () => {
+    renderDetail(detail({ plan: { ...detail().plan, status: 'done' } }));
+    fireEvent.click(await screen.findByTestId('qa-plan-edit-details'));
+    expect(screen.getByTestId('qa-plan-details-target')).toBeDisabled();
+    expect(screen.getByTestId('qa-plan-details-title')).not.toBeDisabled();
+    fireEvent.change(screen.getByTestId('qa-plan-details-title'), { target: { value: 'Renamed' } });
+    fireEvent.click(screen.getByTestId('qa-plan-details-save'));
+    await waitFor(() =>
+      expect(mutations.updateQaPlan).toHaveBeenCalledWith('proj', 'p1', { title: 'Renamed' }),
     );
   });
 });

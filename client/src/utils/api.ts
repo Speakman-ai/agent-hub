@@ -278,6 +278,10 @@ export interface QaPlanDetailWire {
 export type QaAutoRerunTrigger = 'deployment' | 'merge' | 'fixes_merged';
 
 export interface QaPlanPatch {
+  title?: string;
+  goal?: string;
+  /** Changing it revokes approval; refused while signed off or a run is active. */
+  targetUrl?: string;
   deployEnvironment?: string | null;
   autoRerun?: boolean;
   autoFix?: boolean;

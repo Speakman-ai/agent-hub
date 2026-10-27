@@ -77,6 +77,10 @@ export interface QaPlan {
 export type QaAutoRerunTrigger = 'deployment' | 'merge' | 'fixes_merged';
 
 export interface QaPlanPatch {
+  title?: string;
+  goal?: string;
+  /** Changing it revokes approval; refused while signed off or a run is active. */
+  targetUrl?: string;
   deployEnvironment?: string | null;
   autoRerun?: boolean;
   autoFix?: boolean;
@@ -275,6 +279,29 @@ export function caseListLockReason(detail: Pick<QaPlanDetail, 'plan' | 'runs'>):
     return `Run ${latest.iteration} is ${latest.status}. Cancel it to edit cases.`;
   }
   return null;
+}
+
+export interface QaPlanDetailsDraft {
+  title: string;
+  goal: string;
+  targetUrl: string;
+}
+
+/**
+ * The fields of a plan-details edit that actually changed, or null when
+ * nothing did. Title and target URL are trimmed; the goal is kept as typed.
+ */
+export function planDetailsPatch(
+  plan: QaPlanDetailsDraft,
+  values: QaPlanDetailsDraft,
+): Pick<QaPlanPatch, 'title' | 'goal' | 'targetUrl'> | null {
+  const patch: Pick<QaPlanPatch, 'title' | 'goal' | 'targetUrl'> = {};
+  const title = values.title.trim();
+  const targetUrl = values.targetUrl.trim();
+  if (title !== plan.title) patch.title = title;
+  if (values.goal !== plan.goal) patch.goal = values.goal;
+  if (targetUrl !== plan.targetUrl) patch.targetUrl = targetUrl;
+  return Object.keys(patch).length > 0 ? patch : null;
 }
 
 export interface RerunButtonState {

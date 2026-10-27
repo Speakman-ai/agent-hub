@@ -107,6 +107,29 @@ export function caseListLockReason(detail: Pick<QaPlanDetailWire, 'plan' | 'runs
   return null;
 }
 
+export interface QaPlanDetailsDraft {
+  title: string;
+  goal: string;
+  targetUrl: string;
+}
+
+/**
+ * The fields of a plan-details edit that actually changed, or null when
+ * nothing did. Title and target URL are trimmed; the goal is kept as typed.
+ */
+export function planDetailsPatch(
+  plan: QaPlanDetailsDraft,
+  values: QaPlanDetailsDraft,
+): Pick<QaPlanPatch, 'title' | 'goal' | 'targetUrl'> | null {
+  const patch: Pick<QaPlanPatch, 'title' | 'goal' | 'targetUrl'> = {};
+  const title = values.title.trim();
+  const targetUrl = values.targetUrl.trim();
+  if (title !== plan.title) patch.title = title;
+  if (values.goal !== plan.goal) patch.goal = values.goal;
+  if (targetUrl !== plan.targetUrl) patch.targetUrl = targetUrl;
+  return Object.keys(patch).length > 0 ? patch : null;
+}
+
 export interface RerunButtonState {
   enabled: boolean;
   /** Tooltip: why the button is disabled, or what it does. */
@@ -350,6 +373,96 @@ function CaseForm({
           </button>
         </div>
       </fieldset>
+    </form>
+  );
+}
+
+/**
+ * Edit a plan's title, goal, and target URL. Title and goal are labels and
+ * stay editable at any time; the target URL follows the case-list rules, so it
+ * is read-only while `targetLockReason` is set.
+ */
+function PlanDetailsForm({
+  plan,
+  targetLockReason,
+  busy,
+  onSave,
+  onCancel,
+}: {
+  plan: QaPlanWire;
+  targetLockReason: string | null;
+  busy: boolean;
+  onSave: (values: QaPlanDetailsDraft) => void;
+  onCancel: () => void;
+}) {
+  const [values, setValues] = useState<QaPlanDetailsDraft>({
+    title: plan.title,
+    goal: plan.goal,
+    targetUrl: plan.targetUrl,
+  });
+  const set = (field: keyof QaPlanDetailsDraft, value: string) =>
+    setValues((v) => ({ ...v, [field]: value }));
+  const canSave = !busy && values.title.trim() !== '' && values.targetUrl.trim() !== '';
+  return (
+    <form
+      data-testid="qa-plan-details-form"
+      className="flex flex-col gap-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (canSave) onSave(values);
+      }}
+    >
+      <input
+        aria-label="Plan title"
+        data-testid="qa-plan-details-title"
+        className={fieldClass}
+        value={values.title}
+        onChange={(e) => set('title', e.target.value)}
+        autoFocus
+      />
+      <input
+        aria-label="Target URL"
+        data-testid="qa-plan-details-target"
+        className={`${fieldClass} disabled:opacity-60`}
+        value={values.targetUrl}
+        disabled={targetLockReason !== null}
+        title={targetLockReason ?? undefined}
+        onChange={(e) => set('targetUrl', e.target.value)}
+      />
+      {targetLockReason ? (
+        <div className="text-xs text-gray-500">Target URL is read-only. {targetLockReason}</div>
+      ) : (
+        plan.approved && (
+          <div className="text-xs text-gray-500">
+            Changing the target URL revokes approval. Title and goal do not.
+          </div>
+        )
+      )}
+      <textarea
+        aria-label="Goal"
+        data-testid="qa-plan-details-goal"
+        className={`${fieldClass} min-h-[60px]`}
+        placeholder="What this plan validates"
+        value={values.goal}
+        onChange={(e) => set('goal', e.target.value)}
+      />
+      <div className="flex gap-2">
+        <button
+          type="submit"
+          data-testid="qa-plan-details-save"
+          disabled={!canSave}
+          className="rounded-md bg-blue-600 px-2.5 py-1 text-xs text-white hover:bg-blue-500 disabled:opacity-60"
+        >
+          Save
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="rounded-md px-2.5 py-1 text-xs text-gray-400 hover:text-gray-200"
+        >
+          Cancel
+        </button>
+      </div>
     </form>
   );
 }
@@ -1003,6 +1116,7 @@ export default function QaPlanDetail({
 
   const plan = detail?.plan;
   const lockReason = detail ? caseListLockReason(detail) : null;
+  const [editingDetails, setEditingDetails] = useState(false);
 
   /** Run one mutation, then refresh. Returns false (with the error shown) on failure. */
   const act = async (fn: () => Promise<unknown>): Promise<boolean> => {
@@ -1047,6 +1161,23 @@ export default function QaPlanDetail({
     }
   };
 
+  const saveDetails = async (values: QaPlanDetailsDraft) => {
+    if (!plan) return;
+    const patch = planDetailsPatch(plan, values);
+    if (!patch) {
+      setEditingDetails(false);
+      return;
+    }
+    if (
+      patch.targetUrl !== undefined &&
+      plan.approved &&
+      !window.confirm('This plan is approved. Changing the target URL revokes approval. Continue?')
+    ) {
+      return;
+    }
+    if (await act(() => api.updateQaPlan(projectId, planId, patch))) setEditingDetails(false);
+  };
+
   const confirmApprovalLoss = (): boolean =>
     !plan?.approved ||
     window.confirm('This plan is approved. Changing its cases revokes approval. Continue?');
@@ -1082,6 +1213,19 @@ export default function QaPlanDetail({
           <header className="flex flex-col gap-2">
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-lg font-semibold text-gray-100">{plan.title}</h1>
+              {!editingDetails && (
+                <button
+                  type="button"
+                  data-testid="qa-plan-edit-details"
+                  aria-label="Edit plan details"
+                  title="Edit title, goal, and target URL"
+                  disabled={busy}
+                  onClick={() => setEditingDetails(true)}
+                  className={iconButton}
+                >
+                  <Pencil size={12} />
+                </button>
+              )}
               <span
                 data-testid="qa-detail-status"
                 className="rounded-full bg-gray-800 px-2 py-0.5 text-[11px] text-gray-300"
@@ -1166,23 +1310,37 @@ export default function QaPlanDetail({
                   ))}
               </div>
             </div>
-            <a
-              href={plan.targetUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              data-testid="qa-detail-target"
-              className="inline-flex w-fit max-w-full items-center gap-1 truncate text-sm text-blue-400 hover:text-blue-300"
-            >
-              <span className="truncate">{plan.targetUrl}</span>
-              <ExternalLink size={12} className="flex-shrink-0" />
-            </a>
-            <LinkChips
-              epic={detail.links.epic}
-              card={detail.links.card}
-              onOpenEpic={onOpenEpic}
-              onOpenCard={onOpenCard}
-            />
-            {plan.goal && <p className="whitespace-pre-wrap text-sm text-gray-400">{plan.goal}</p>}
+            {editingDetails ? (
+              <PlanDetailsForm
+                plan={plan}
+                targetLockReason={lockReason}
+                busy={busy}
+                onSave={(values) => void saveDetails(values)}
+                onCancel={() => setEditingDetails(false)}
+              />
+            ) : (
+              <>
+                <a
+                  href={plan.targetUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  data-testid="qa-detail-target"
+                  className="inline-flex w-fit max-w-full items-center gap-1 truncate text-sm text-blue-400 hover:text-blue-300"
+                >
+                  <span className="truncate">{plan.targetUrl}</span>
+                  <ExternalLink size={12} className="flex-shrink-0" />
+                </a>
+                <LinkChips
+                  epic={detail.links.epic}
+                  card={detail.links.card}
+                  onOpenEpic={onOpenEpic}
+                  onOpenCard={onOpenCard}
+                />
+                {plan.goal && (
+                  <p className="whitespace-pre-wrap text-sm text-gray-400">{plan.goal}</p>
+                )}
+              </>
+            )}
           </header>
 
           {!plan.approved && (
