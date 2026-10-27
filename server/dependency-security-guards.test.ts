@@ -274,15 +274,40 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // clipboard deprecation, in-WebContents PDFs, cookie change causes, Linux
     // showHiddenFiles) touch nothing in electron/main.ts or preload.cjs, and
     // better-sqlite3 12.x supports the Node 24 ABI that Electron 41 embeds.
+    //
+    // Eight more advisories have no 41.x backport (41 is out of support); the
+    // oldest patched line is 42, and 42.11.16 subsumes every 42.x fix:
+    //   GHSA-98mx-cjp9-gchm  extension tabs.query leaks URLs/titles (42.11.1)
+    //   GHSA-fw47-9c62-h3vw  HID/USB permission checks attributed to wrong origin (42.11.3)
+    //   GHSA-2p8c-gr87-2676  SameSite not applied to windows opened from links (42.11.3)
+    //   GHSA-997q-gvvc-jwmx  openExternal permission attributed to wrong origin (42.11.3)
+    //   GHSA-h3v5-h239-pg29  macOS OSR trusts GPU-supplied frame geometry (42.11.6)
+    //   GHSA-3qxv-5xgr-q7w9  frame subscription trusts GPU frame geometry (42.11.6)
+    //   GHSA-x562-297c-g43g  pointer lock attributed to wrong frame (42.11.9)
+    //   GHSA-jr5w-w6x2-84p9  compromised eMudhra intermediate certificates (42.11.16)
+    // So the shell moved 41 -> 42. Electron 42 still embeds Node 24 (ABI 146,
+    // which better-sqlite3 12.11.1 ships prebuilds for). Its breaking changes
+    // (macOS UNNotification needs a signed app, OSR scale factor default,
+    // binary downloaded on first run instead of postinstall, clearStorageData
+    // quotas removed) touch no API electron/ calls; the notification change
+    // only matters for unsigned local builds.
     {
       pkg: 'electron',
-      min: '41.10.6',
+      min: '42.11.16',
       advisory: [
         'GHSA-f3pv-wv63-48x8',
         'GHSA-hq2x-r82h-9wj4',
         'GHSA-j84w-jfhq-vhvj',
         'GHSA-gr2m-v5gq-v685',
         'GHSA-9qh4-3jw8-366w',
+        'GHSA-98mx-cjp9-gchm',
+        'GHSA-fw47-9c62-h3vw',
+        'GHSA-2p8c-gr87-2676',
+        'GHSA-997q-gvvc-jwmx',
+        'GHSA-h3v5-h239-pg29',
+        'GHSA-3qxv-5xgr-q7w9',
+        'GHSA-x562-297c-g43g',
+        'GHSA-jr5w-w6x2-84p9',
       ],
     },
     // GHSA-w5hq-g745-h8pq: missing buffer bounds check in v3/v5/v6. Patched only
@@ -297,10 +322,12 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // `^6.14.1` and re-resolves in range, but server's express@4 / body-parser
     // pin `qs ~6.15.1` (`< 6.16.0`), so 6.16.0 is reachable there only through
     // the server `qs` override asserted in OVERRIDE_FLOORS below.
+    // GHSA-6pq8-jhm2-2vcw (6.16.1) is a further comma-format stringify crash, on
+    // elements with a non-callable own toString; 6.16.1 subsumes the rest.
     {
       pkg: 'qs',
-      min: '6.16.0',
-      advisory: ['GHSA-4mjr-xmp4-gh2g', 'GHSA-x5fp-wj9c-mxmx'],
+      min: '6.16.1',
+      advisory: ['GHSA-4mjr-xmp4-gh2g', 'GHSA-x5fp-wj9c-mxmx', 'GHSA-6pq8-jhm2-2vcw'],
     },
     // GHSA-f38q-mgvj-vph7 (7.6.3) property shadowing + GHSA-j3f2-48v5-ccww
     // (7.6.5) infinite loop in .proto option parsing.
@@ -781,6 +808,17 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // contained by the zod 3.x guard further down, so this floor is scoped to
     // the 4.x line.
     { pkg: 'zod', min: '4.6.6', advisory: 'GHSA-mrhx-c7xc-m3w5', line: '4.x', only: ['server'] },
+
+    // GHSA-rj75-hqrm-r3gf: quadratic flat-selector parsing. Originally patched
+    // only on 7.x; 6.1.5 is the 6.x backport. tailwindcss 3 and postcss-nested
+    // declare `^6.1.x`, but @tailwindcss/typography pins exactly 6.0.10, so the
+    // client `postcss-selector-parser` override is what lifts that copy.
+    {
+      pkg: 'postcss-selector-parser',
+      min: '6.1.5',
+      advisory: 'GHSA-rj75-hqrm-r3gf',
+      only: ['client'],
+    },
   ];
 
   for (const { pkg, min, advisory, line, only } of FLOORS) {
@@ -1443,8 +1481,8 @@ describe('override-backed advisory floors', () => {
     {
       manifest: 'server',
       pkg: 'qs',
-      min: '6.16.0',
-      advisory: 'GHSA-x5fp-wj9c-mxmx',
+      min: '6.16.1',
+      advisory: 'GHSA-6pq8-jhm2-2vcw',
       // express@4 and its body-parser pin `qs ~6.15.1` (`< 6.16.0`), so without
       // the override npm re-resolves the top-level copy back to 6.15.x, inside
       // the GHSA-4mjr-xmp4-gh2g / GHSA-x5fp-wj9c-mxmx range.
@@ -1470,6 +1508,16 @@ describe('override-backed advisory floors', () => {
       // default) is a hardening get-uri never relies on; it only calls
       // access/lastMod/list/downloadTo/close, whose typings are unchanged.
       parentRange: '^5.0.2',
+    },
+    {
+      manifest: 'client',
+      pkg: 'postcss-selector-parser',
+      min: '6.1.5',
+      advisory: 'GHSA-rj75-hqrm-r3gf',
+      // @tailwindcss/typography pins `postcss-selector-parser: 6.0.10` exactly,
+      // even in its newest release, so without the override that copy stays
+      // inside the vulnerable `< 6.1.5` range.
+      parentRange: '6.0.10',
     },
   ];
 
@@ -1643,21 +1691,6 @@ describe('unpatched advisories (containment guards)', () => {
       dependents: ['roarr'],
       flags: { dev: true, optional: true },
       why: 'no sprintf-js release fixes it; the roarr logger formats its own log templates during Electron packaging, and the copy is dev-only and optional',
-    },
-    // Quadratic flat-selector parsing (CPU exhaustion). Patched only on the 7.x
-    // line (7.1.6); 6.1.4 is the newest 6.x and gets no backport. Every parent
-    // pins 6.x: tailwindcss 3 (`^6.1.2`), postcss-nested 6 (`^6.1.1`), and
-    // @tailwindcss/typography at exactly 6.0.10 even in its newest release.
-    // An override across a major on all three is not a change to make
-    // unreviewed. The selectors it parses are this repo's own CSS at build time.
-    {
-      workspace: 'client',
-      pkg: 'postcss-selector-parser',
-      advisory: ['GHSA-rj75-hqrm-r3gf'],
-      vulnerableRange: '< 7.1.6',
-      dependents: ['@tailwindcss/typography', 'postcss-nested', 'tailwindcss'],
-      flags: { dev: true },
-      why: 'the fix exists only on 7.x and every parent (tailwindcss 3, postcss-nested 6, @tailwindcss/typography which pins 6.0.10 exactly) declares 6.x; the escape is a Tailwind 4 migration. Input is first-party CSS at build time and the copy is dev-only',
     },
     // Low severity: an *existing* prototype pollution elsewhere can bypass
     // KaTeX's `trust` restrictions. Patched in 0.18.2. Mermaid 11 declares
