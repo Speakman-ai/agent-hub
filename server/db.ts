@@ -5674,6 +5674,9 @@ function initDb(dataDir: string): void {
       "UPDATE active_tasks SET streamed_output = ?, updated_at = datetime('now') WHERE session_id = ?",
     ),
     deleteActiveTask: db.prepare('DELETE FROM active_tasks WHERE session_id = ?'),
+    deleteActiveTaskForMessage: db.prepare(
+      'DELETE FROM active_tasks WHERE session_id = ? AND message_id = ?',
+    ),
     deleteAllActiveTasks: db.prepare('DELETE FROM active_tasks'),
 
     // Messages

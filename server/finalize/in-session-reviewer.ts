@@ -31,7 +31,12 @@
 import type { ChildProcess } from 'child_process';
 import { spawn } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
-import { wrapHostChildProcess, type ActiveChatProcess } from '../active-chat-process.js';
+import {
+  wrapHostChildProcess,
+  claimSessionProcessSlot,
+  releaseSessionProcessSlot,
+  type ActiveChatProcess,
+} from '../active-chat-process.js';
 import { trackChild, killProcessGroup } from '../process-groups.js';
 import { endChildStdin } from '../child-stdin.js';
 import { resolveSessionCliSpawnEnv } from '../per-user-cli-spawn.js';
@@ -1090,9 +1095,16 @@ async function runOneTurn(args: OneTurnArgs): Promise<string> {
         detached: true,
       }) as ChildProcess;
 
+      // Key by sessionId so handleMultiAgentCancel can SIGTERM us, but never
+      // over a chat turn that is still running in this session.
+      const processHandle = wrapHostChildProcess(proc);
+      const releaseProcessSlot = (): void => {
+        if (args.activeProcesses) {
+          releaseSessionProcessSlot(args.activeProcesses, args.sessionId, processHandle);
+        }
+      };
       if (args.activeProcesses) {
-        // Key by sessionId so handleMultiAgentCancel can SIGTERM us.
-        args.activeProcesses.set(args.sessionId, wrapHostChildProcess(proc));
+        claimSessionProcessSlot(args.activeProcesses, args.sessionId, processHandle);
       }
       trackChild(proc);
 
@@ -1172,7 +1184,7 @@ async function runOneTurn(args: OneTurnArgs): Promise<string> {
             /* best-effort */
           }
         }
-        if (args.activeProcesses) args.activeProcesses.delete(args.sessionId);
+        releaseProcessSlot();
         if (cancelled) {
           reject(new Error('cancelled'));
           return;
@@ -1208,7 +1220,7 @@ async function runOneTurn(args: OneTurnArgs): Promise<string> {
         if (plan.systemPromptFileCleanup) {
           plan.systemPromptFileCleanup();
         }
-        if (args.activeProcesses) args.activeProcesses.delete(args.sessionId);
+        releaseProcessSlot();
         reject(err);
       });
     };

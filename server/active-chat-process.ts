@@ -34,3 +34,29 @@ export function wrapGuestChatProcess(kill: (signal?: NodeJS.Signals) => void): A
     },
   };
 }
+
+/**
+ * Register `handle` as the session's active process only when the slot is
+ * free. A side process (the in-session Finalize reviewer) must not displace a
+ * chat turn that is still running: the turn's close handler treats a
+ * displaced handle as superseded and skips its cleanup, which strands its
+ * `active_tasks` row and leaves the session reading as `working` forever.
+ */
+export function claimSessionProcessSlot(
+  map: Map<string, ActiveChatProcess>,
+  sessionId: string,
+  handle: ActiveChatProcess,
+): boolean {
+  if (map.has(sessionId)) return false;
+  map.set(sessionId, handle);
+  return true;
+}
+
+/** Remove the session's entry only if it is still `handle`. */
+export function releaseSessionProcessSlot(
+  map: Map<string, ActiveChatProcess>,
+  sessionId: string,
+  handle: ActiveChatProcess,
+): void {
+  if (map.get(sessionId) === handle) map.delete(sessionId);
+}

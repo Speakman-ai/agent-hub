@@ -2516,6 +2516,8 @@ export interface Stmts {
   updateActiveTaskPid: Stmt;
   appendActiveTaskOutput: Stmt;
   deleteActiveTask: Stmt;
+  /** Delete the session's task row only when it still belongs to this turn. */
+  deleteActiveTaskForMessage: Stmt;
   deleteAllActiveTasks: Stmt;
 
   // Messages

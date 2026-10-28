@@ -1537,3 +1537,47 @@ describe('restrictToSpawnableEngines', () => {
     expect(restricted['grok-cli'].available).toBe(false);
   });
 });
+
+describe('runReviewerTurn — shares the session process slot with a live chat turn', () => {
+  const verdictText = `Looks fine.
+
+<agenthub:review-verdict>
+{"verdict":"approved","threads":[]}
+</agenthub:review-verdict>`;
+
+  it('leaves a running chat turn registered instead of displacing or deleting it', async () => {
+    const chatTurn = { kill: vi.fn() };
+    const activeProcesses = new Map<string, unknown>([['sess-1', chatTurn]]);
+    const { spawnFn } = makeSpawnFake(verdictText);
+    const { deps } = makeDeps(spawnFn, { activeProcesses });
+
+    const result = await runReviewerTurn(deps as never, {
+      runId: 'run-1',
+      worktreePath: '/tmp/wt',
+      card: fakeCard,
+      project: fakeProject,
+      inputs: fakeInputs,
+      sessionId: 'sess-1',
+    });
+
+    expect(result.verdict).toBe('approved');
+    expect(activeProcesses.get('sess-1')).toBe(chatTurn);
+  });
+
+  it('registers and releases its own handle when the slot is free', async () => {
+    const activeProcesses = new Map<string, unknown>();
+    const { spawnFn } = makeSpawnFake(verdictText);
+    const { deps } = makeDeps(spawnFn, { activeProcesses });
+
+    await runReviewerTurn(deps as never, {
+      runId: 'run-1',
+      worktreePath: '/tmp/wt',
+      card: fakeCard,
+      project: fakeProject,
+      inputs: fakeInputs,
+      sessionId: 'sess-1',
+    });
+
+    expect(activeProcesses.has('sess-1')).toBe(false);
+  });
+});

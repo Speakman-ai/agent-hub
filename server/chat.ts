@@ -280,6 +280,7 @@ import { shouldResetResumeAttemptsOnTurnStart } from './resume-attempts.js';
 import { broadcastAwaitingInputForSession } from './awaiting-input.js';
 import { textRequestsUserInput } from '../shared/utils/userInputRequest.js';
 import { recomputeSessionState } from './session-state.js';
+import { clearOwnActiveTaskAfterDisplacedClose } from './displaced-turn-cleanup.js';
 import { billSessionTurnDurationIfTaggedToFinalize } from './finalize/budget.js';
 import {
   notifyFinalizeSessionTurnEnd,
@@ -5647,6 +5648,13 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           // delete the new turn's active_task, broadcast interrupted, or drain.
           // Termination markers are session-scoped and belong to the current
           // turn, so a stale callback must leave them for that turn's close.
+          // This turn's own row still goes: if nothing replaced it, it would
+          // otherwise pin the session at `working` and get auto-resumed on
+          // the next Hub restart.
+          clearOwnActiveTaskAfterDisplacedClose(S, sessionId, assistantMsgId, {
+            agentId: agent.id,
+            broadcast,
+          });
           return;
         }
         try {
