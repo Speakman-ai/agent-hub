@@ -738,6 +738,12 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // Memory leak on premature response close. Mobile only, via @expo/cli's
     // dev server (`^1.7.4`).
     { pkg: 'compression', min: '1.8.2', advisory: 'GHSA-vc2v-76pw-4v95', only: ['mobile'] },
+    // RSA PKCS#1 v1.5 verification accepted extra nested DigestAlgorithm
+    // elements (signature forgery). The advisory still records `<= 1.4.0` with
+    // `first_patched_version: null`, but 1.4.1 re-encodes the DigestInfo as
+    // canonical DER and rejects anything else, which closes that path. Mobile
+    // only, via @expo/cli -> @expo/code-signing-certificates (`^1.3.3`).
+    { pkg: 'node-forge', min: '1.4.1', advisory: 'GHSA-86w9-cpqp-85rv', only: ['mobile'] },
     // Event-loop DoS through indexed source-map section offsets. postcss and
     // css-tree consume it (`^1.2.1`) in every workspace.
     { pkg: 'source-map-js', min: '1.2.2', advisory: 'GHSA-68fv-2mgg-jv7q' },
@@ -1597,16 +1603,6 @@ describe('unpatched advisories (containment guards)', () => {
       flags: { optional: true },
       why: 'puppeteer-core pins @puppeteer/browsers at exactly 2.3.0 (an override to the 3.x line that drops extract-zip breaks that pin), 22.15.0 is the top of the 22.x line stagehand accepts, and the only clean escape is stagehand 3 -> 4, which replaces the whole browser backend',
     },
-    // RSA PKCS#1 v1.5 verification accepts extra nested DigestAlgorithm
-    // elements (signature forgery). Vulnerable `<= 1.4.0`; 1.4.0 is the newest
-    // node-forge release and `first_patched_version` is null.
-    //
-    // Reached only through @expo/cli -> @expo/code-signing-certificates, which
-    // the dev server uses to generate keys and sign manifests for Expo Go. Its
-    // `verify` calls check material it just produced itself (self-signed cert,
-    // CSR, sign-then-verify), not attacker-supplied signatures, and none of it
-    // ships in the app bundle. Even the newest @expo/cli (57.x) and
-    // code-signing-certificates (0.0.7) still depend on node-forge `^1.4.0`.
     // Memory exhaustion validating oversized constrained collections. Patched
     // only on zod 4.6.6 with no 3.x backport. @expo/cli declares `zod ^3.25.76`
     // and imports the 3.x API, so an override across the major would break the
@@ -1619,14 +1615,6 @@ describe('unpatched advisories (containment guards)', () => {
       vulnerableRange: '< 4.6.6',
       dependents: ['@expo/cli'],
       why: 'the fix is only on zod 4 and @expo/cli declares ^3.25.76; the only consumer is the local Expo dev CLI validating first-party config',
-    },
-    {
-      workspace: 'mobile',
-      pkg: 'node-forge',
-      advisory: ['GHSA-86w9-cpqp-85rv'],
-      vulnerableRange: '<= 1.4.0',
-      dependents: ['@expo/cli', '@expo/code-signing-certificates'],
-      why: 'no node-forge release fixes it and no Expo CLI release drops it; the only consumer is the local dev-server manifest signer, which verifies only signatures it generated itself',
     },
     // Stack exhaustion on deeply nested brace patterns. Vulnerable `<= 3.0.3`;
     // 3.0.3 is the newest braces release and `first_patched_version` is null.
