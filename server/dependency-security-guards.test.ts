@@ -368,7 +368,10 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // affected. Its sole consumer, @modelcontextprotocol/sdk, declares
     // `^1.19.9` even at its newest release, so 2.x is reachable only through
     // the server `@hono/node-server` override asserted below.
-    { pkg: '@hono/node-server', min: '2.0.5', advisory: 'GHSA-frvp-7c67-39w9' },
+    // GHSA-rmxm-3fg6-px4f (2.1.3): serveStatic decoded the request path a
+    // second time, so an encoded path could skip middleware mounted on the
+    // static route. Range `>= 1.19.10, < 2.1.3`; it subsumes the 2.0.5 fix.
+    { pkg: '@hono/node-server', min: '2.1.3', advisory: 'GHSA-rmxm-3fg6-px4f' },
     // GHSA-r4q5-vmmm-2653 (1.16.0): Authorization header leaked across a
     // cross-domain redirect. 1.16.1 closed two more stripping gaps: array-form
     // headers skipped the cross-origin strip (GHSA-q3jh-wrc6-jgq8), and an
@@ -1478,8 +1481,8 @@ describe('override-backed advisory floors', () => {
     {
       manifest: 'server',
       pkg: '@hono/node-server',
-      min: '2.0.5',
-      advisory: 'GHSA-frvp-7c67-39w9',
+      min: '2.1.3',
+      advisory: 'GHSA-rmxm-3fg6-px4f',
       // @modelcontextprotocol/sdk declares `^1.19.9 || ^2.0.5` (>= 1.31), which
       // still admits a vulnerable 1.x; the override keeps the 2.x floor explicit.
       parentRange: '^1.19.9 || ^2.0.5',
@@ -1693,6 +1696,32 @@ describe('unpatched advisories (containment guards)', () => {
       vulnerableRange: '< 0.18.2',
       dependents: ['mermaid'],
       why: 'the fix is on katex 0.18 and mermaid 11 declares ^0.16.x (only the mermaid 12 major reaches 0.18); the advisory is low severity and needs a pre-existing prototype pollution to matter, so forcing 0.18 under mermaid is the riskier change',
+    },
+    // Low severity: mergeObject() can return an object whose prototype is
+    // poisoned by a `__proto__` key in the source. Vulnerable `>= 4.2.0,
+    // <= 4.3.1`; 4.3.1 (2023) is the newest release and
+    // `first_patched_version` is null. Only reachable by merging attacker
+    // JSON, and neither consumer below does that.
+    {
+      workspace: 'server',
+      pkg: 'deepmerge',
+      advisory: ['GHSA-gcqx-w48m-w2h4'],
+      vulnerableRange: '>= 4.2.0, <= 4.3.1',
+      // The server imports stagehand for types only (the zod guard below
+      // fails if that changes), so this copy is never loaded.
+      dependents: ['@browserbasehq/stagehand'],
+      why: 'no deepmerge release fixes it; stagehand is a types-only import on the server, so its option merging never runs',
+    },
+    {
+      workspace: 'mobile',
+      pkg: 'deepmerge',
+      advisory: ['GHSA-gcqx-w48m-w2h4'],
+      vulnerableRange: '>= 4.2.0, <= 4.3.1',
+      // @expo/config merges app.json / app.config.* from this repo when the
+      // Expo CLI or prebuild reads the project config; nothing ships in the
+      // app bundle.
+      dependents: ['@expo/config'],
+      why: 'no deepmerge release fixes it; @expo/config only merges the app config committed to this repo, at dev/build time',
     },
   ];
 
