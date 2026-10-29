@@ -11,10 +11,10 @@
  *   The host config setting is authoritative — there is no per-request override.
  *     - `xai` (default) — xAI Grok speech-to-text (`POST https://api.x.ai/v1/stt`,
  *       multipart) with `config.xaiApiKey`. xAI documents WAV / MP3 / OGG /
- *       Opus / FLAC / AAC / MP4 / M4A / MKV but NOT WebM — exactly what Chrome
- *       and Electron record. For an unsupported container the route falls back
- *       to Whisper when `config.openaiApiKey` is set, else returns an
- *       actionable 415.
+ *       Opus / FLAC / AAC / MP4 / M4A / MKV. WebM (what Chrome and Electron
+ *       record) is a Matroska subset, so it is sent to xAI labelled as MKV.
+ *       Only AIFF falls back to Whisper when `config.openaiApiKey` is set,
+ *       else returns an actionable 415.
  *     - `openai` — OpenAI Whisper (`/v1/audio/transcriptions`) with
  *       `config.openaiApiKey`. Accepts every format the composer records.
  * • No persistence: the audio buffer is held in memory long enough to POST to
@@ -106,11 +106,15 @@ export function extensionForAudioType(contentType: string): string {
 //     `video/x-matroska`). The composer never produces those containers and the
 //     route's ALLOWED_AUDIO_TYPES gate rejects them up front, so listing them
 //     here would be dead entries — they are intentionally omitted.
-//   • WebM and AIFF ARE accepted by this route but are NOT supported by xAI
-//     (WebM is exactly what Chrome / Electron's MediaRecorder emits), so they
-//     are absent here and take the fallback path below.
+//   • WebM (what Chrome / Electron's MediaRecorder emits) is not named in the
+//     docs, but it is a Matroska subset and xAI decodes it; it is uploaded as
+//     MKV (see xaiUploadType). Sending it to Whisper instead made every Chrome
+//     take depend on a second provider's key and billing.
+//   • AIFF is accepted by this route but not by xAI, so it takes the Whisper
+//     fallback path below.
 // See https://docs.x.ai/developers/model-capabilities/audio/speech-to-text.
 const XAI_SUPPORTED_AUDIO_TYPES: ReadonlySet<string> = new Set([
+  'audio/webm',
   'audio/wav',
   'audio/x-wav',
   'audio/wave',
@@ -128,6 +132,7 @@ const XAI_SUPPORTED_AUDIO_TYPES: ReadonlySet<string> = new Set([
 // Distinct user-facing container labels surfaced in the 415 `accepted` response.
 // Mirrors XAI_SUPPORTED_AUDIO_TYPES (the containers this route sends to xAI).
 const XAI_ACCEPTED_MIMES: readonly string[] = [
+  'audio/webm',
   'audio/wav',
   'audio/mp3',
   'audio/ogg',
@@ -140,10 +145,16 @@ const XAI_ACCEPTED_MIMES: readonly string[] = [
 /**
  * Whether this route forwards `contentType` to xAI directly. True only for the
  * intersection of xAI's documented containers and ALLOWED_AUDIO_TYPES — see
- * XAI_SUPPORTED_AUDIO_TYPES for why Opus/MKV and WebM/AIFF are each excluded.
+ * XAI_SUPPORTED_AUDIO_TYPES for why Opus/MKV and AIFF are each excluded.
  */
 export function isXaiSupportedAudioType(contentType: string): boolean {
   return XAI_SUPPORTED_AUDIO_TYPES.has(contentType);
+}
+
+/** Content-type and filename extension used for the multipart part sent to xAI. */
+export function xaiUploadType(contentType: string): { contentType: string; ext: string } {
+  if (contentType === 'audio/webm') return { contentType: 'audio/x-matroska', ext: 'mkv' };
+  return { contentType, ext: extensionForAudioType(contentType) };
 }
 
 /**
@@ -188,7 +199,8 @@ export async function transcribeWithXai(opts: {
   const { apiKey, audio, contentType, language } = opts;
   const fetchFn = opts.fetchImpl ?? fetch;
 
-  const filename = `audio.${extensionForAudioType(contentType)}`;
+  const upload = xaiUploadType(contentType);
+  const filename = `audio.${upload.ext}`;
   const form = new FormData();
   // xAI requires the `file` part to be appended AFTER every other field, so all
   // optional fields go first. Copy into a fresh Uint8Array so the underlying
@@ -197,7 +209,7 @@ export async function transcribeWithXai(opts: {
   if (language) form.append('language', language);
   const bytes = new Uint8Array(audio.byteLength);
   bytes.set(audio);
-  form.append('file', new Blob([bytes], { type: contentType }), filename);
+  form.append('file', new Blob([bytes], { type: upload.contentType }), filename);
 
   const res = await fetchFn('https://api.x.ai/v1/stt', {
     method: 'POST',
@@ -343,9 +355,8 @@ export default function createTranscribeRoutes(deps: RouteDeps): Router {
             return res.json({ transcript, provider: 'xai' });
           }
 
-          // xAI can't serve this — either the container is one it doesn't
-          // document (canonically the `audio/webm` Chrome / Electron record) or
-          // no xAI key is configured. Whisper accepts every format the composer
+          // xAI can't serve this: either the container is one it doesn't
+          // accept (AIFF) or no xAI key is configured. Whisper accepts every format the composer
           // records, so when an OpenAI key is present we transparently fall back
           // rather than fail the default provider's happy path (this also keeps
           // installs that only ever configured OpenAI working unchanged). The

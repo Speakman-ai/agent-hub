@@ -8,6 +8,7 @@ import createTranscribeRoutes, {
   transcribeWithWhisper,
   transcribeWithXai,
   isXaiSupportedAudioType,
+  xaiUploadType,
   resolveTranscriptionProvider,
   WHISPER_MAX_AUDIO_BYTES,
   XAI_MAX_AUDIO_BYTES,
@@ -239,8 +240,13 @@ describe('isXaiSupportedAudioType', () => {
     }
   });
 
-  it('rejects WebM (the Chrome/Electron recorder default) and AIFF', () => {
-    expect(isXaiSupportedAudioType('audio/webm')).toBe(false);
+  it('accepts WebM (the Chrome/Electron recorder default) and uploads it as MKV', () => {
+    expect(isXaiSupportedAudioType('audio/webm')).toBe(true);
+    expect(xaiUploadType('audio/webm')).toEqual({ contentType: 'audio/x-matroska', ext: 'mkv' });
+    expect(xaiUploadType('audio/mp4')).toEqual({ contentType: 'audio/mp4', ext: 'mp4' });
+  });
+
+  it('rejects AIFF', () => {
     expect(isXaiSupportedAudioType('audio/aiff')).toBe(false);
     expect(isXaiSupportedAudioType('audio/x-aiff')).toBe(false);
   });
@@ -351,17 +357,41 @@ describe('POST /api/transcribe — xAI provider (default)', () => {
     expect(String(fetchSpy.mock.calls[0][0])).toBe('https://api.x.ai/v1/stt');
   });
 
-  it('falls back to Whisper for WebM (an xAI-unsupported container) when an OpenAI key is set', async () => {
+  it('regression: sends Chrome WebM to xAI as MKV, never to Whisper, when both keys are set', async () => {
+    const fetchSpy = vi.fn(async (_url: unknown, _init?: unknown) =>
+      jsonResponse({ text: 'via grok' }),
+    );
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    // The OpenAI account behind the fallback can be out of credits (429); a
+    // Chrome take must not depend on it when xAI is the selected provider.
+    const app = makeApp('sk-openai-present', { xaiApiKey: 'xai-x' });
+    const res = await supertest(app)
+      .post('/api/transcribe')
+      .set('content-type', 'audio/webm;codecs=opus')
+      .send(Buffer.from('clip'));
+
+    expect(res.status).toBe(200);
+    expect(res.body.provider).toBe('xai');
+    expect(res.body.fallbackFrom).toBeUndefined();
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    expect(String(fetchSpy.mock.calls[0][0])).toBe('https://api.x.ai/v1/stt');
+    const file = ((fetchSpy.mock.calls[0][1] as RequestInit).body as FormData).get('file') as File;
+    expect(file.name).toBe('audio.mkv');
+    expect(file.type).toBe('audio/x-matroska');
+  });
+
+  it('falls back to Whisper for AIFF (an xAI-unsupported container) when an OpenAI key is set', async () => {
     const fetchSpy = vi.fn(async (_url: unknown, _init?: unknown) =>
       jsonResponse({ text: 'via whisper fallback' }),
     );
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
 
-    // Default provider xai + the Chrome/Electron recorder default (webm).
+    // Default provider xai with a container xAI cannot decode.
     const app = makeApp('sk-openai-present', { xaiApiKey: 'xai-x' });
     const res = await supertest(app)
       .post('/api/transcribe')
-      .set('content-type', 'audio/webm')
+      .set('content-type', 'audio/aiff')
       .send(Buffer.from('clip'));
 
     expect(res.status).toBe(200);
@@ -376,14 +406,14 @@ describe('POST /api/transcribe — xAI provider (default)', () => {
     expect(headers.Authorization).toBe('Bearer sk-openai-present');
   });
 
-  it('returns 415 (no network) for WebM when xAI is default and no OpenAI fallback key is set', async () => {
+  it('returns 415 (no network) for AIFF when xAI is default and no OpenAI fallback key is set', async () => {
     const fetchSpy = vi.fn();
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
 
     const app = makeApp(null, { xaiApiKey: 'xai-x' });
     const res = await supertest(app)
       .post('/api/transcribe')
-      .set('content-type', 'audio/webm')
+      .set('content-type', 'audio/aiff')
       .send(Buffer.from('clip'));
 
     expect(res.status).toBe(415);
@@ -475,14 +505,14 @@ describe('POST /api/transcribe — upload limits follow the provider', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it('returns 413 when an over-25 MB WebM would fall back from xAI to Whisper', async () => {
+  it('returns 413 when an over-25 MB AIFF would fall back from xAI to Whisper', async () => {
     const fetchSpy = vi.fn();
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
 
     const app = makeApp('sk-openai', { xaiApiKey: 'xai-x' });
     const res = await supertest(app)
       .post('/api/transcribe')
-      .set('content-type', 'audio/webm')
+      .set('content-type', 'audio/aiff')
       .send(overWhisper());
 
     expect(res.status).toBe(413);

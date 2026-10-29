@@ -38,6 +38,16 @@ describe('parseTranscribeUploadResult', () => {
     expect(result.ok).toBe(false);
     expect(result.message).toBe('Set xAI key');
   });
+  it('shows the provider detail instead of the generic error on upstream failures', () => {
+    const result = parseTranscribeUploadResult(
+      429,
+      JSON.stringify({ error: 'Transcription failed', detail: 'You have no credits remaining.' }),
+    );
+    expect(result).toEqual({
+      ok: false,
+      message: 'Transcription failed (HTTP 429): You have no credits remaining. Tap mic to retry.',
+    });
+  });
   it('maps empty transcript to retry message', () => {
     const result = parseTranscribeUploadResult(200, JSON.stringify({ transcript: '  ' }));
     expect(result).toEqual({ ok: false, message: "Couldn't hear anything — try again." });

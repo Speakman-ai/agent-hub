@@ -37,7 +37,7 @@ export function parseTranscribeUploadResult(status: any, bodyText: any) {
     };
   }
   if (status < 200 || status >= 300) {
-    const detail = body.error || body.detail || '';
+    const detail = String(body.detail || body.error || '').replace(/\.\s*$/, '');
     return {
       ok: false,
       message: `Transcription failed (HTTP ${status})${detail ? ': ' + detail : ''}. Tap mic to retry.`,

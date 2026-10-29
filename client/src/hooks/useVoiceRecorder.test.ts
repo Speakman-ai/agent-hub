@@ -107,6 +107,20 @@ describe('transcribeSegment', () => {
     expect(init.headers['X-Language']).toBe('uk');
     expect(init.headers['Content-Type']).toBe('audio/webm');
   });
+
+  it('shows the provider detail instead of the generic error on upstream failures', async () => {
+    const pending = transcribeSegment(new Blob(['a']), 'audio/webm', new AbortController().signal);
+    fetchResolvers[0](
+      new Response(
+        JSON.stringify({ error: 'Transcription failed', detail: 'You have no credits remaining.' }),
+        { status: 429 },
+      ),
+    );
+    expect(await pending).toEqual({
+      ok: false,
+      message: 'Transcription failed (HTTP 429): You have no credits remaining. Tap mic to retry.',
+    });
+  });
 });
 
 describe('joinSegmentTranscripts', () => {

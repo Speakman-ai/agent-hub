@@ -142,7 +142,7 @@ export async function transcribeSegment(
     }
     if (!res.ok) {
       const body = await readJson(res);
-      const detail = body.error || body.detail || '';
+      const detail = String(body.detail || body.error || '').replace(/\.\s*$/, '');
       return {
         ok: false,
         message: `Transcription failed (HTTP ${res.status})${detail ? ': ' + detail : ''}. Tap mic to retry.`,
