@@ -11,7 +11,7 @@ import {
 } from './release-notification-settings.js';
 import { deriveSupportTicketReleaseState } from './support-tickets-store.js';
 import { getDeployment, listDeploymentReleaseItemsWithContext } from './deploy/deployment-store.js';
-import { runModelOnlyReleaseDigest } from './release-digest-model.js';
+import { runReleaseDigestModel } from './release-digest-model.js';
 import { clipUtf8StringToMaxBytes } from './utf8-clip.js';
 
 export const RELEASE_DIGEST_ITEM_LIMIT = 100;
@@ -108,11 +108,10 @@ export type ReleaseDigestRunner = (input: {
   prompt: string;
   cfg: AppConfig;
   userId?: string | null;
-  fetchImpl?: typeof fetch;
 }) => Promise<string>;
 
-const defaultRunner: ReleaseDigestRunner = ({ prompt, cfg, fetchImpl }) =>
-  runModelOnlyReleaseDigest({ prompt, cfg, fetchImpl });
+const defaultRunner: ReleaseDigestRunner = ({ prompt, cfg, userId }) =>
+  runReleaseDigestModel({ prompt, cfg, userId: userId ?? null });
 
 function parseCardLabels(raw: string | null): string[] {
   if (!raw) return [];
@@ -274,7 +273,6 @@ export async function generateDeploymentReleaseDigest(args: {
   cfg: AppConfig;
   userId?: string | null;
   runner?: ReleaseDigestRunner;
-  fetchImpl?: typeof fetch;
 }): Promise<ReleaseDigestGenerationPrompt & { digestMarkdown: string }> {
   const deployment = getDeployment(args.deploymentId);
   if (!deployment || deployment.project_id !== args.projectId) {
@@ -293,8 +291,13 @@ export async function generateDeploymentReleaseDigest(args: {
     await runner({
       prompt: generation.prompt,
       cfg: args.cfg,
-      userId: args.userId ?? null,
-      fetchImpl: args.fetchImpl,
+      // Runs on a person's Claude login: the requester, else whoever triggered
+      // the deploy, else whoever last edited the project's digest prompt.
+      userId:
+        args.userId ??
+        deployment.triggered_by ??
+        getReleaseNotificationSettings(args.projectId).updatedBy ??
+        null,
     }),
   );
   if (!digestMarkdown) {

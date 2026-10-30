@@ -2435,7 +2435,9 @@ environments:
     expect(outboxRows.find((row) => row.notification_type === 'release_digest')).toMatchObject({
       recipient_email: 'digest@example.com',
       support_ticket_id: null,
-      status: 'pending',
+      // No digest model in this test, so the digest is held rather than sent as a raw list.
+      status: 'error',
+      last_error: 'digest_generation_failed',
       attempts: 0,
     });
     const releaseBroadcasts = broadcast.mock.calls

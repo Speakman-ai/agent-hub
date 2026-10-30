@@ -179,58 +179,45 @@ function renderTicketReleaseBody(
   return lines.join('\n');
 }
 
-function renderReleaseDigestBody(
-  deployment: Pick<DeploymentRow, 'environment' | 'ref' | 'meta' | 'completed_at'>,
-  items: DeploymentReleaseItemDetailRow[],
-): string {
-  const lines = [
-    `Release digest for ${deployment.environment} (${deploymentReleaseLabel(deployment).label})`,
-    '',
-    ...items.map((item, index) => {
-      const ticket = item.support_ticket_subject ? `, ticket: ${item.support_ticket_subject}` : '';
-      return `${index + 1}. ${item.card_title}${ticket}`;
-    }),
-  ];
-  if (deployment.completed_at) {
-    lines.push('', `Completed at: ${deployment.completed_at}`);
-  }
-  return lines.join('\n');
-}
-
 function releaseDigestIdempotencyKey(deploymentId: string, recipientEmail: string): string {
   return `deployment:${deploymentId}:release-digest:${normalizeRecipientEmail(recipientEmail)}`;
 }
 
-async function renderReleaseDigestBodyForOutbox(
-  deployment: Pick<
-    DeploymentRow,
-    'id' | 'project_id' | 'environment' | 'ref' | 'meta' | 'status' | 'completed_at'
-  >,
-  items: DeploymentReleaseItemDetailRow[],
-  options: EnqueueReleaseNotificationsOptions,
-): Promise<string> {
-  const canGenerateDigest =
-    options.cfg &&
-    (options.releaseDigestRunner || typeof options.cfg.openaiApiKey === 'string') &&
-    (options.releaseDigestRunner || options.cfg.openaiApiKey?.trim());
-  if (canGenerateDigest && options.cfg) {
-    try {
-      const digest = await generateDeploymentReleaseDigest({
-        projectId: deployment.project_id,
-        deploymentId: deployment.id,
-        cfg: options.cfg,
-        runner: options.releaseDigestRunner,
-      });
-      return digest.digestMarkdown;
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      console.error(
-        `[release-notification-outbox] release digest generation failed ` +
-          `deployment=${deployment.id} project=${deployment.project_id}: ${detail}`,
-      );
-    }
+/**
+ * Last-error marker for a digest row whose body could not be generated. The row
+ * is held (empty body, never sent) and delivery regenerates it on each retry.
+ * A plain list of card titles is not an acceptable stand-in for the digest.
+ */
+export const RELEASE_DIGEST_GENERATION_FAILED = 'digest_generation_failed';
+
+async function generateReleaseDigestBody(
+  deployment: Pick<DeploymentRow, 'id' | 'project_id'>,
+  options: { cfg?: AppConfig; releaseDigestRunner?: ReleaseDigestRunner },
+): Promise<string | null> {
+  const cfg = options.cfg;
+  if (!cfg) {
+    console.error(
+      `[release-notification-outbox] release digest held: no server config to run the digest model ` +
+        `deployment=${deployment.id} project=${deployment.project_id}`,
+    );
+    return null;
   }
-  return renderReleaseDigestBody(deployment, items);
+  try {
+    const digest = await generateDeploymentReleaseDigest({
+      projectId: deployment.project_id,
+      deploymentId: deployment.id,
+      cfg,
+      runner: options.releaseDigestRunner,
+    });
+    return digest.digestMarkdown.trim() || null;
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error(
+      `[release-notification-outbox] release digest generation failed, digest held ` +
+        `deployment=${deployment.id} project=${deployment.project_id}: ${detail}`,
+    );
+    return null;
+  }
 }
 
 export function enqueueReleaseNotificationOutbox(
@@ -278,6 +265,9 @@ export function safeReleaseNotificationErrorSummary(error: string | null): strin
   if (normalized === 'send_failed') return 'Email send failed.';
   if (normalized === 'recipient_missing') return 'Recipient address is missing.';
   if (normalized === 'invalid_recipient') return 'Recipient address is invalid.';
+  if (normalized === RELEASE_DIGEST_GENERATION_FAILED) {
+    return 'Release digest could not be generated, so it was not sent.';
+  }
   return 'Email delivery failed.';
 }
 
@@ -445,25 +435,28 @@ export async function enqueueReleaseNotificationsForDeployment(
     }`;
     const bodyText =
       missingDigestRecipients.length > 0
-        ? await renderReleaseDigestBodyForOutbox(deployment, items, options)
+        ? await generateReleaseDigestBody(deployment, options)
         : null;
     for (const { recipient, idempotencyKey, existing } of digestRecipients) {
       if (existing) {
         queued.push(existing);
         continue;
       }
+      const row = enqueueReleaseNotificationOutbox({
+        projectId: deployment.project_id,
+        deploymentId: deployment.id,
+        releaseItemId: null,
+        supportTicketId: null,
+        notificationType: 'release_digest',
+        idempotencyKey,
+        recipientEmail: recipient.email,
+        subject,
+        bodyText: bodyText ?? '',
+      });
       queued.push(
-        enqueueReleaseNotificationOutbox({
-          projectId: deployment.project_id,
-          deploymentId: deployment.id,
-          releaseItemId: null,
-          supportTicketId: null,
-          notificationType: 'release_digest',
-          idempotencyKey,
-          recipientEmail: recipient.email,
-          subject,
-          bodyText: bodyText ?? renderReleaseDigestBody(deployment, items),
-        }),
+        bodyText
+          ? row
+          : (markReleaseNotificationOutboxError(row.id, RELEASE_DIGEST_GENERATION_FAILED) ?? row),
       );
     }
   }
@@ -490,6 +483,18 @@ export interface DeliverReleaseNotificationOutboxOptions {
    * Deployments UI reflects sent/failed transitions without a manual refresh.
    */
   broadcast?: BroadcastFn;
+  /** Used to regenerate digest rows held after a failed generation. */
+  cfg?: AppConfig;
+  releaseDigestRunner?: ReleaseDigestRunner;
+}
+
+function markClaimedDeliveryError(row: ReleaseNotificationOutboxRow, reason: string): void {
+  getStmts().markReleaseNotificationOutboxDeliveryError.run(
+    nextReleaseNotificationAttemptAt(row.attempts),
+    reason,
+    row.id,
+    row.attempts,
+  );
 }
 
 export async function deliverReleaseNotificationOutboxBatch(
@@ -497,9 +502,36 @@ export async function deliverReleaseNotificationOutboxBatch(
   options: DeliverReleaseNotificationOutboxOptions = {},
 ): Promise<ReleaseNotificationOutboxRow[]> {
   const deliveredOrFailed: ReleaseNotificationOutboxRow[] = [];
+  // One generation per deployment per batch, shared by every held recipient row.
+  const regenerated = new Map<string, Promise<string | null>>();
   for (const candidate of listRetryEligibleReleaseNotificationOutbox(limit)) {
-    const claimed = claimReleaseNotificationOutboxForDelivery(candidate);
+    let claimed = claimReleaseNotificationOutboxForDelivery(candidate);
     if (!claimed) continue;
+    if (!claimed.body_text.trim()) {
+      let pending = regenerated.get(claimed.deployment_id);
+      if (!pending) {
+        pending =
+          claimed.notification_type === 'release_digest'
+            ? generateReleaseDigestBody(
+                { id: claimed.deployment_id, project_id: claimed.project_id },
+                options,
+              )
+            : Promise.resolve(null);
+        regenerated.set(claimed.deployment_id, pending);
+      }
+      const body = await pending;
+      if (!body) {
+        markClaimedDeliveryError(claimed, RELEASE_DIGEST_GENERATION_FAILED);
+        deliveredOrFailed.push(
+          getStmts().getReleaseNotificationOutboxById.get(
+            claimed.id,
+          ) as ReleaseNotificationOutboxRow,
+        );
+        continue;
+      }
+      getStmts().setReleaseNotificationOutboxBody.run(body, claimed.id);
+      claimed = { ...claimed, body_text: body };
+    }
     try {
       const project = findProject(claimed.project_id);
       const projectLogo = project?.emailLogo
@@ -516,20 +548,10 @@ export async function deliverReleaseNotificationOutboxBatch(
       if (result.sent) {
         getStmts().markReleaseNotificationOutboxSent.run(claimed.id, claimed.attempts);
       } else {
-        getStmts().markReleaseNotificationOutboxDeliveryError.run(
-          nextReleaseNotificationAttemptAt(claimed.attempts),
-          result.reason ?? 'send_failed',
-          claimed.id,
-          claimed.attempts,
-        );
+        markClaimedDeliveryError(claimed, result.reason ?? 'send_failed');
       }
     } catch {
-      getStmts().markReleaseNotificationOutboxDeliveryError.run(
-        nextReleaseNotificationAttemptAt(claimed.attempts),
-        'send_failed',
-        claimed.id,
-        claimed.attempts,
-      );
+      markClaimedDeliveryError(claimed, 'send_failed');
     }
     deliveredOrFailed.push(
       getStmts().getReleaseNotificationOutboxById.get(claimed.id) as ReleaseNotificationOutboxRow,

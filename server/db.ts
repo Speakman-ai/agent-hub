@@ -5377,6 +5377,13 @@ function initDb(dataDir: string): void {
           AND sent_at IS NULL
           AND status != 'sent'`,
     ),
+    setReleaseNotificationOutboxBody: db.prepare(
+      `UPDATE release_notification_outbox
+          SET body_text = ?,
+              updated_at = datetime('now')
+        WHERE id = ?
+          AND sent_at IS NULL`,
+    ),
     markReleaseNotificationOutboxDeliveryError: db.prepare(
       `UPDATE release_notification_outbox
           SET status = 'error',

@@ -2318,11 +2318,11 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
     { name: 'infra-retention-reaper' },
   );
 
-  void runReleaseNotificationOutboxWorker({ broadcast });
+  void runReleaseNotificationOutboxWorker({ broadcast, cfg: config });
   cron.schedule(
     RELEASE_NOTIFICATION_OUTBOX_WORKER_CRON,
     () => {
-      void runReleaseNotificationOutboxWorker({ broadcast });
+      void runReleaseNotificationOutboxWorker({ broadcast, cfg: config });
     },
     { name: 'release-notification-outbox-worker', noOverlap: true },
   );

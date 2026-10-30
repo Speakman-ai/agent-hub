@@ -42,6 +42,12 @@ import {
 
 const P = 'release-outbox-test';
 
+const digestOptions = {
+  cfg: {} as AppConfig,
+  releaseDigestRunner: (async () =>
+    '## Release digest\n\nGenerated digest.') as ReleaseDigestRunner,
+};
+
 beforeEach(() => {
   // wipeTables refuses to run against a non-scratch (non-tmpdir) database —
   // see server/test/destructive-db.ts and the 2026-07-01 prod wipe incident.
@@ -115,8 +121,8 @@ describe('release notification outbox', () => {
     ensureDeploymentReleaseItem({ deploymentId: deployment.id, cardId });
     addReleaseDigestRecipient({ projectId: P, email: 'Ops@Example.COM' });
 
-    const first = await enqueueReleaseNotificationsForDeployment(deployment);
-    const second = await enqueueReleaseNotificationsForDeployment(deployment);
+    const first = await enqueueReleaseNotificationsForDeployment(deployment, digestOptions);
+    const second = await enqueueReleaseNotificationsForDeployment(deployment, digestOptions);
     const rows = listReleaseNotificationOutboxByDeployment(deployment.id);
 
     expect(first).toHaveLength(2);
@@ -159,11 +165,11 @@ describe('release notification outbox', () => {
     });
 
     const rows = await enqueueReleaseNotificationsForDeployment(deployment, {
-      cfg: { openaiApiKey: 'sk-test' } as AppConfig,
+      cfg: {} as AppConfig,
       releaseDigestRunner,
     });
     const duplicateRows = await enqueueReleaseNotificationsForDeployment(deployment, {
-      cfg: { openaiApiKey: 'sk-test' } as AppConfig,
+      cfg: {} as AppConfig,
       releaseDigestRunner,
     });
 
@@ -470,7 +476,7 @@ describe('release notification outbox', () => {
     const cardId = insertReleaseCard({ cardId: 'card-delivery-1', supportTicketId: ticket.id });
     ensureDeploymentReleaseItem({ deploymentId: deployment.id, cardId });
     addReleaseDigestRecipient({ projectId: P, email: 'Ops@Example.COM' });
-    await enqueueReleaseNotificationsForDeployment(deployment);
+    await enqueueReleaseNotificationsForDeployment(deployment, digestOptions);
 
     const first = await deliverReleaseNotificationOutboxBatch();
     const second = await deliverReleaseNotificationOutboxBatch();
@@ -491,7 +497,7 @@ describe('release notification outbox', () => {
       expect.objectContaining({
         to: 'ops@example.com',
         subject: 'Release digest for production abc123',
-        text: expect.stringContaining('Release digest for production (abc123)'),
+        text: '## Release digest\n\nGenerated digest.',
       }),
     );
   });
@@ -502,7 +508,7 @@ describe('release notification outbox', () => {
     const cardId = insertReleaseCard({ cardId: 'card-branding-1' });
     ensureDeploymentReleaseItem({ deploymentId: deployment.id, cardId });
     addReleaseDigestRecipient({ projectId: P, email: 'brand@example.com' });
-    await enqueueReleaseNotificationsForDeployment(deployment);
+    await enqueueReleaseNotificationsForDeployment(deployment, digestOptions);
 
     await deliverReleaseNotificationOutboxBatch();
 
@@ -512,7 +518,7 @@ describe('release notification outbox', () => {
     expect(message?.html).toContain(`cid:${BRAND_LOGO_CID}`);
     expect(message?.html).toContain('<html>');
     // Plain-text part is unchanged so image-blocking clients still get the body.
-    expect(message?.text).toEqual(expect.stringContaining('Release digest for production'));
+    expect(message?.text).toEqual('## Release digest\n\nGenerated digest.');
     // Logo travels as an inline attachment, not a hosted URL.
     expect(message?.attachments).toEqual([
       expect.objectContaining({ cid: BRAND_LOGO_CID, contentType: 'image/png' }),
@@ -538,7 +544,7 @@ describe('release notification outbox', () => {
     const cardId = insertReleaseCard({ cardId: 'card-versioned', supportTicketId: ticket.id });
     ensureDeploymentReleaseItem({ deploymentId: deployment.id, cardId });
     addReleaseDigestRecipient({ projectId: P, email: 'Ops@Example.COM' });
-    await enqueueReleaseNotificationsForDeployment(deployment);
+    await enqueueReleaseNotificationsForDeployment(deployment, digestOptions);
 
     await deliverReleaseNotificationOutboxBatch();
 
@@ -546,7 +552,6 @@ describe('release notification outbox', () => {
       expect.objectContaining({
         to: 'ops@example.com',
         subject: 'Release digest for production v2.31.18',
-        text: expect.stringContaining('Release digest for production (v2.31.18)'),
       }),
     );
     expect(sendEmailMock).toHaveBeenCalledWith(
@@ -814,5 +819,87 @@ describe('release notification per-environment routing', () => {
     const queued = await enqueueReleaseNotificationsForDeployment(deployment);
 
     expect(queued.map((row) => row.notification_type)).toEqual(['ticket_release']);
+  });
+});
+
+describe('release digest generation failure', () => {
+  function seedDigestDeployment(cardId: string) {
+    const deployment = successfulProductionDeployment();
+    insertReleaseCard({ cardId, title: 'Raw card title that must not be emailed' });
+    ensureDeploymentReleaseItem({ deploymentId: deployment.id, cardId });
+    addReleaseDigestRecipient({ projectId: P, email: 'ops@example.com' });
+    return deployment;
+  }
+
+  const cfg = {} as AppConfig;
+
+  it('holds the digest instead of sending a list of card titles', async () => {
+    const deployment = seedDigestDeployment('card-digest-held');
+    const failingRunner: ReleaseDigestRunner = vi.fn(async () => {
+      throw new Error('OpenAI release digest generation failed with status 429.');
+    });
+
+    const [row] = await enqueueReleaseNotificationsForDeployment(deployment, {
+      cfg,
+      releaseDigestRunner: failingRunner,
+    });
+
+    expect(row).toMatchObject({
+      notification_type: 'release_digest',
+      status: 'error',
+      body_text: '',
+      last_error: 'digest_generation_failed',
+    });
+    expect(row.body_text).not.toContain('Raw card title');
+    expect(releaseNotificationRecipientItem(row).error_summary).toBe(
+      'Release digest could not be generated, so it was not sent.',
+    );
+
+    // Even once due, delivery without a working model still sends nothing.
+    getDb()
+      .prepare('UPDATE release_notification_outbox SET next_attempt_at = NULL WHERE id = ?')
+      .run(row.id);
+    await deliverReleaseNotificationOutboxBatch(undefined, {
+      cfg,
+      releaseDigestRunner: failingRunner,
+    });
+    expect(sendEmailMock).not.toHaveBeenCalled();
+    expect(listReleaseNotificationOutboxByDeployment(deployment.id)[0]).toMatchObject({
+      status: 'error',
+      attempts: 1,
+      last_error: 'digest_generation_failed',
+    });
+  });
+
+  it('holds the digest when no server config is available', async () => {
+    const deployment = seedDigestDeployment('card-digest-no-model');
+
+    const [row] = await enqueueReleaseNotificationsForDeployment(deployment);
+
+    expect(row).toMatchObject({ status: 'error', body_text: '' });
+  });
+
+  it('regenerates a held digest on retry and sends the generated body', async () => {
+    const deployment = seedDigestDeployment('card-digest-regenerated');
+    const [held] = await enqueueReleaseNotificationsForDeployment(deployment, {
+      cfg,
+      releaseDigestRunner: vi.fn(async () => {
+        throw new Error('quota');
+      }),
+    });
+    retryReleaseNotificationOutbox(held.id);
+    sendEmailMock.mockResolvedValue({ sent: true });
+
+    await deliverReleaseNotificationOutboxBatch(undefined, {
+      cfg,
+      releaseDigestRunner: vi.fn(async () => '### Field\n\nCrews see pay rates again.'),
+    });
+
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    expect(sendEmailMock.mock.calls[0][0].text).toBe('### Field\n\nCrews see pay rates again.');
+    expect(listReleaseNotificationOutboxByDeployment(deployment.id)[0]).toMatchObject({
+      status: 'sent',
+      body_text: '### Field\n\nCrews see pay rates again.',
+    });
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { RELEASE_DIGEST_MODEL_ONLY_SYSTEM_PROMPT } from './release-digest-model.js';
+import { RELEASE_DIGEST_SYSTEM_PROMPT } from './release-digest-model.js';
 import { RELEASE_DIGEST_GROUPING_AND_COVERAGE_RULES } from './release-digest-prompt.js';
 
 describe('release digest grouping and coverage rules', () => {
@@ -11,8 +11,6 @@ describe('release digest grouping and coverage rules', () => {
     expect(RELEASE_DIGEST_GROUPING_AND_COVERAGE_RULES).toContain(
       'Account for every included release item',
     );
-    expect(RELEASE_DIGEST_MODEL_ONLY_SYSTEM_PROMPT).toContain(
-      RELEASE_DIGEST_GROUPING_AND_COVERAGE_RULES,
-    );
+    expect(RELEASE_DIGEST_SYSTEM_PROMPT).toContain(RELEASE_DIGEST_GROUPING_AND_COVERAGE_RULES);
   });
 });

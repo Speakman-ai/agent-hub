@@ -2436,6 +2436,7 @@ export interface Stmts {
   markReleaseNotificationOutboxSending: Stmt;
   markReleaseNotificationOutboxSent: Stmt;
   markReleaseNotificationOutboxError: Stmt;
+  setReleaseNotificationOutboxBody: Stmt;
   markReleaseNotificationOutboxDeliveryError: Stmt;
   // Sessions
   createSession: Stmt;
