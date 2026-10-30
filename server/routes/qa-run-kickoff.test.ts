@@ -8,6 +8,7 @@ import { getDb, getStmts, initDb } from '../db.js';
 import type { Agent, ChatMessage, Project, RouteDeps } from '../types.js';
 import { qaRunPreviewOwnerSessionId } from '../qa-run-kickoff.js';
 import { maybeArchiveQaRunSession } from '../qa-run-session-archive.js';
+import { isQaRunLaunchInFlight } from '../qa-run-launch.js';
 import createQaRoutes from './qa.js';
 
 vi.mock('../effective-model.js', () => ({
@@ -366,5 +367,33 @@ describe('run kickoff', () => {
     expect(expired()).not.toContain(started.sessionId);
     getDb().prepare('DELETE FROM qa_plans WHERE id = ?').run(planId);
     expect(expired()).toContain(started.sessionId);
+  });
+});
+
+describe('launch registry', () => {
+  it('marks a run in flight only while its launch is seeding it', async () => {
+    const { base, planId } = await approvedPlan();
+    const seen: boolean[] = [];
+    handleChat.mockImplementationOnce(async (_ws: unknown, msg: ChatMessage) => {
+      const run = getStmts().getLatestQaRun.get(planId)!;
+      seen.push(isQaRunLaunchInFlight(run.id));
+      msg._onUserMessagePersisted?.(true);
+    });
+    const res = await request(app).post(`${base}/runs`).send({ scope: 'full' }).expect(201);
+    expect(seen).toEqual([true]);
+    expect(isQaRunLaunchInFlight(res.body.run.id)).toBe(false);
+  });
+
+  it('clears the run when its launch fails', async () => {
+    const { base, planId } = await approvedPlan();
+    acceptSeed = false;
+    try {
+      await request(app).post(`${base}/runs`).send({ scope: 'full' }).expect(502);
+    } finally {
+      acceptSeed = true;
+    }
+    const run = getStmts().getLatestQaRun.get(planId)!;
+    expect(run.status).toBe('cancelled');
+    expect(isQaRunLaunchInFlight(run.id)).toBe(false);
   });
 });

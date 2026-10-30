@@ -4,6 +4,7 @@ import {
   Alert,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -13,6 +14,8 @@ import {
   draftFromQaEnvironment,
   emptyQaAccount,
   emptyQaEnvironment,
+  parseQaAutoDelay,
+  QA_AUTO_DELAY_MAX_MINUTES,
   qaEnvironmentDraftToInput,
   validateQaEnvironmentDraft,
   type QaAccountDraft,
@@ -31,12 +34,18 @@ function EnvironmentEditor({
   initial,
   onSaved,
   onDeleted,
+  isDefault = false,
+  onToggleDefault,
 }: {
   projectId: string;
   initial: QaEnvironmentDraft;
   onSaved: (env: QaEnvironmentWire) => void;
   onDeleted: () => void;
+  isDefault?: boolean;
+  /** Absent for an unsaved environment: it has no id to mark yet. */
+  onToggleDefault?: (next: boolean) => Promise<void>;
 }) {
+  const [togglingDefault, setTogglingDefault] = useState(false);
   const [draft, setDraft] = useState(initial);
   const [dirty, setDirty] = useState(!initial.id);
   const [saving, setSaving] = useState(false);
@@ -187,6 +196,29 @@ function EnvironmentEditor({
       >
         <Text style={styles.secondaryText}>+ Add account</Text>
       </TouchableOpacity>
+      <View style={styles.defaultRow}>
+        <Switch
+          testID="qa-env-default"
+          accessibilityLabel="Default environment"
+          value={isDefault}
+          disabled={!onToggleDefault || togglingDefault}
+          onValueChange={async (next) => {
+            if (!onToggleDefault) return;
+            setTogglingDefault(true);
+            setError(null);
+            try {
+              await onToggleDefault(next);
+            } catch (e) {
+              setError(errorText(e));
+            } finally {
+              setTogglingDefault(false);
+            }
+          }}
+        />
+        <Text style={styles.defaultText}>
+          Default{onToggleDefault ? '' : ' (create the environment first)'}
+        </Text>
+      </View>
       {error ? <Text style={styles.error}>{error}</Text> : null}
       <View style={styles.actions}>
         <TouchableOpacity
@@ -203,6 +235,75 @@ function EnvironmentEditor({
           <Text style={styles.remove}>{draft.id ? 'Delete environment' : 'Discard'}</Text>
         </TouchableOpacity>
       </View>
+    </View>
+  );
+}
+
+function AutomatedQaSettings({ projectId }: { projectId: string }) {
+  const [value, setValue] = useState('');
+  const [saved, setSaved] = useState<number | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getQaSettings(projectId)
+      .then(({ settings }) => {
+        if (cancelled) return;
+        setSaved(settings.autoQaDelayMinutes);
+        setValue(String(settings.autoQaDelayMinutes));
+      })
+      .catch((e) => !cancelled && setError(errorText(e)));
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
+  const parsed = parseQaAutoDelay(value);
+  const save = async () => {
+    if (parsed === null) {
+      setError(`Enter whole minutes from 0 to ${QA_AUTO_DELAY_MAX_MINUTES}.`);
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const { settings } = await api.updateQaSettings(projectId, { autoQaDelayMinutes: parsed });
+      setSaved(settings.autoQaDelayMinutes);
+      setValue(String(settings.autoQaDelayMinutes));
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <View style={styles.card} testID="qa-automated-settings">
+      <Text style={styles.label}>Default delay for automated QA (minutes)</Text>
+      <TextInput
+        testID="qa-auto-delay"
+        accessibilityLabel="Default delay for automated QA"
+        editable={saved !== null && !saving}
+        style={styles.input}
+        keyboardType="number-pad"
+        value={value}
+        onChangeText={setValue}
+      />
+      <Text style={styles.hint}>
+        When a session runs QA tests, the run waits this long after the session merges so the deploy
+        can reach the default environment.
+      </Text>
+      {error ? <Text style={styles.error}>{error}</Text> : null}
+      <TouchableOpacity
+        testID="qa-auto-delay-save"
+        disabled={saving || saved === null || parsed === saved}
+        onPress={() => void save()}
+        style={[styles.primary, (saving || saved === null || parsed === saved) && styles.disabled]}
+      >
+        <Text style={styles.primaryText}>{saving ? 'Saving…' : 'Save'}</Text>
+      </TouchableOpacity>
     </View>
   );
 }
@@ -246,6 +347,7 @@ export default function QaEnvironmentsSettings({ projectId }: { projectId: strin
       >
         <Text style={styles.primaryText}>+ Add environment</Text>
       </TouchableOpacity>
+      <AutomatedQaSettings projectId={projectId} />
       {error ? <Text style={styles.error}>{error}</Text> : null}
       {saved === null ? (
         <ActivityIndicator color={colors.gray400} />
@@ -259,6 +361,16 @@ export default function QaEnvironmentsSettings({ projectId }: { projectId: strin
           key={env.id}
           projectId={projectId}
           initial={draftFromQaEnvironment(env)}
+          isDefault={!!env.isDefault}
+          onToggleDefault={async (next) => {
+            await api.setQaEnvironmentDefault(projectId, env.id, next);
+            setSaved((s) =>
+              (s ?? []).map((x) => ({
+                ...x,
+                isDefault: x.id === env.id ? next : next ? false : x.isDefault,
+              })),
+            );
+          }}
           onSaved={() => undefined}
           onDeleted={() => setSaved((s) => (s ?? []).filter((x) => x.id !== env.id))}
         />
@@ -330,5 +442,7 @@ const styles = StyleSheet.create({
   },
   primaryText: { fontSize: 13, color: colors.white },
   disabled: { opacity: 0.5 },
+  defaultRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 },
+  defaultText: { fontSize: 13, color: colors.gray300 },
   error: { fontSize: 13, color: colors.red400 },
 });

@@ -555,6 +555,8 @@ export function qaEventMatches(
 export interface QaUpdateEvent {
   projectId: string | null;
   planId: string | null;
+  sessionId?: string | null;
+  action?: string | null;
 }
 
 /**
@@ -570,10 +572,17 @@ export function createQaUpdateHub() {
         listeners.delete(listener);
       };
     },
-    emit(data: { projectId?: unknown; planId?: unknown } | null | undefined) {
+    emit(
+      data:
+        | { projectId?: unknown; planId?: unknown; sessionId?: unknown; action?: unknown }
+        | null
+        | undefined,
+    ) {
       const event: QaUpdateEvent = {
         projectId: typeof data?.projectId === 'string' ? data.projectId : null,
         planId: typeof data?.planId === 'string' ? data.planId : null,
+        sessionId: typeof data?.sessionId === 'string' ? data.sessionId : null,
+        action: typeof data?.action === 'string' ? data.action : null,
       };
       for (const listener of [...listeners]) listener(event);
     },

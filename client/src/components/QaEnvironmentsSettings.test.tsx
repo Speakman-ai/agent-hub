@@ -5,12 +5,18 @@ const listQaEnvironments = vi.fn();
 const createQaEnvironment = vi.fn();
 const updateQaEnvironment = vi.fn();
 const deleteQaEnvironment = vi.fn();
+const setQaEnvironmentDefault = vi.fn();
+const getQaSettings = vi.fn();
+const updateQaSettings = vi.fn();
 vi.mock('../utils/api', () => ({
   api: {
     listQaEnvironments: (...a: unknown[]) => listQaEnvironments(...a),
     createQaEnvironment: (...a: unknown[]) => createQaEnvironment(...a),
     updateQaEnvironment: (...a: unknown[]) => updateQaEnvironment(...a),
     deleteQaEnvironment: (...a: unknown[]) => deleteQaEnvironment(...a),
+    setQaEnvironmentDefault: (...a: unknown[]) => setQaEnvironmentDefault(...a),
+    getQaSettings: (...a: unknown[]) => getQaSettings(...a),
+    updateQaSettings: (...a: unknown[]) => updateQaSettings(...a),
   },
 }));
 
@@ -39,6 +45,7 @@ const savedEnv = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  getQaSettings.mockResolvedValue({ settings: { projectId: 'proj', autoQaDelayMinutes: 0 } });
 });
 
 describe('QaEnvironmentsSettings', () => {
@@ -93,5 +100,46 @@ describe('QaEnvironmentsSettings', () => {
     resolve({ environment: { ...savedEnv, notes: 'v2.5' } });
     await waitFor(() => expect(notes.closest('fieldset')?.disabled).toBe(false));
     expect(notes.value).toBe('v2.5');
+  });
+
+  it('marks an environment as the default and unmarks the others', async () => {
+    listQaEnvironments.mockResolvedValue({
+      environments: [
+        { ...savedEnv, isDefault: true },
+        { ...savedEnv, id: 'env-2', name: 'Prod', isDefault: false },
+      ],
+    });
+    setQaEnvironmentDefault.mockResolvedValue({ environment: savedEnv });
+    render(<QaEnvironmentsSettings projectId="proj" onBack={() => undefined} />);
+    const boxes = (await screen.findAllByTestId('qa-env-default')) as HTMLInputElement[];
+    expect(boxes.map((b) => b.checked)).toEqual([true, false]);
+    fireEvent.click(boxes[1]);
+    await waitFor(() =>
+      expect(setQaEnvironmentDefault).toHaveBeenCalledWith('proj', 'env-2', true),
+    );
+    await waitFor(() =>
+      expect(
+        (screen.getAllByTestId('qa-env-default') as HTMLInputElement[]).map((b) => b.checked),
+      ).toEqual([false, true]),
+    );
+  });
+
+  it('saves the default delay for automated QA', async () => {
+    listQaEnvironments.mockResolvedValue({ environments: [] });
+    updateQaSettings.mockResolvedValue({ settings: { projectId: 'proj', autoQaDelayMinutes: 20 } });
+    render(<QaEnvironmentsSettings projectId="proj" onBack={() => undefined} />);
+    const input = (await screen.findByLabelText(
+      'Default delay for automated QA',
+    )) as HTMLInputElement;
+    await waitFor(() => expect(input.value).toBe('0'));
+    fireEvent.change(input, { target: { value: 'abc' } });
+    fireEvent.click(screen.getByTestId('qa-auto-delay-save'));
+    expect(await screen.findByText(/whole minutes/)).toBeTruthy();
+    expect(updateQaSettings).not.toHaveBeenCalled();
+    fireEvent.change(input, { target: { value: '20' } });
+    fireEvent.click(screen.getByTestId('qa-auto-delay-save'));
+    await waitFor(() =>
+      expect(updateQaSettings).toHaveBeenCalledWith('proj', { autoQaDelayMinutes: 20 }),
+    );
   });
 });

@@ -1,5 +1,6 @@
 /**
- * QA environments REST surface (`/api/projects/:projectId/qa/environments`).
+ * QA environments and project QA settings REST surface
+ * (`/api/projects/:projectId/qa/environments`, `/api/projects/:projectId/qa/settings`).
  *
  * Project members can read (passwords come back masked); writes need Admin.
  * The project visibility gate mounted on `/api/projects/:projectId` in
@@ -11,14 +12,17 @@ import { requireRole } from '../roles.js';
 import {
   createQaEnvironment,
   deleteQaEnvironment,
+  getQaProjectSettings,
   listQaEnvironments,
   QaEnvironmentError,
   updateQaEnvironment,
+  updateQaProjectSettings,
 } from '../qa-environments.js';
 import type { RouteDeps } from '../types.js';
 import {
   CreateQaEnvironmentRequestSchema,
   UpdateQaEnvironmentRequestSchema,
+  UpdateQaProjectSettingsRequestSchema,
 } from './qa-environments.openapi.js';
 
 function parse<T extends z.ZodTypeAny>(
@@ -110,6 +114,27 @@ export default function createQaEnvironmentRoutes(
       }
       changed(projectId, id);
       res.json({ ok: true });
+    }),
+  );
+
+  const SETTINGS = '/api/projects/:projectId/qa/settings';
+
+  router.get(
+    SETTINGS,
+    handle((_req, res, projectId) => {
+      res.json({ settings: getQaProjectSettings(projectId) });
+    }),
+  );
+
+  router.put(
+    SETTINGS,
+    requireRole('Admin'),
+    handle((req, res, projectId) => {
+      const body = parse(UpdateQaProjectSettingsRequestSchema, req.body ?? {}, res);
+      if (!body) return;
+      const settings = updateQaProjectSettings(projectId, body);
+      broadcast({ type: 'qa_update', projectId, action: 'settings_updated' });
+      res.json({ settings });
     }),
   );
 

@@ -87,7 +87,7 @@ function expectQaError(fn: () => unknown, code: string, status: number): void {
 }
 
 describe('QA schema migration', () => {
-  it('creates the four tables with indexes on project/plan/run', () => {
+  it('creates the QA tables with indexes on project/plan/run', () => {
     const db = getDb();
     const tables = (
       db
@@ -98,8 +98,10 @@ describe('QA schema migration', () => {
       'qa_cases',
       'qa_environments',
       'qa_plans',
+      'qa_project_settings',
       'qa_results',
       'qa_runs',
+      'qa_session_requests',
     ]);
 
     const indexedColumns = (table: string) =>

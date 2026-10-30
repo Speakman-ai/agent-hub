@@ -42,6 +42,20 @@
  * are AES-GCM blobs from secret-crypto.ts and never leave the server except
  * through the `{{qa-password:<accountId>}}` substitution in QA sessions.
  *
+ * `is_default` marks the one environment a session's "Run QA Tests" targets;
+ * the store keeps at most one per project.
+ *
+ * qa_project_settings: per-project QA options. `auto_qa_delay_minutes` is how
+ * long a session-requested QA run waits after the session's work merged, so
+ * the deploy carrying it can reach the default environment first.
+ *
+ * qa_session_requests: one "Run QA Tests" request per session (see
+ * qa-session-runs.ts). `armed` waits for the session to merge; `authoring`
+ * has a plan whose cases the QA agent is drafting from the session's context;
+ * `waiting` is approved and waits for `due_at` (epoch ms); `launching` is
+ * persisted before the run is launched so a restart can reconcile it;
+ * `started` launched `run_id`; `failed` holds `error`.
+ *
  * Kanban / session links are ON DELETE SET NULL: deleting a card or session
  * must not erase QA history. Timestamps use `datetime('now')` like the kanban
  * tables so deploy/merge comparisons stay in one format.
@@ -55,6 +69,17 @@ export type QaAutoRerunTrigger = (typeof QA_AUTO_RERUN_TRIGGERS)[number];
 /** Merge / fixes-merged delay bounds in minutes; 0 means rerun as soon as the trigger fires. */
 export const QA_AUTO_RERUN_DELAY_MIN = 5;
 export const QA_AUTO_RERUN_DELAY_MAX = 60;
+/** Bounds of the project's default delay for session-requested QA, in minutes. */
+export const QA_SESSION_DELAY_MAX = 240;
+export const QA_SESSION_REQUEST_STATUSES = [
+  'armed',
+  'authoring',
+  'waiting',
+  'launching',
+  'started',
+  'failed',
+] as const;
+export type QaSessionRequestStatus = (typeof QA_SESSION_REQUEST_STATUSES)[number];
 
 /** Columns added to qa_results after it first shipped, for the db.ts migration. */
 export const QA_RESULT_OVERRIDE_COLUMNS = [
@@ -159,10 +184,35 @@ export const QA_SCHEMA = `
     base_url   TEXT NOT NULL DEFAULT '',
     notes      TEXT NOT NULL DEFAULT '',
     accounts   TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(accounts)),
+    is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
     position   INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_qa_environments_project
     ON qa_environments(project_id, position, id);
+
+  CREATE TABLE IF NOT EXISTS qa_project_settings (
+    project_id            TEXT PRIMARY KEY,
+    auto_qa_delay_minutes INTEGER NOT NULL DEFAULT 0
+                          CHECK (auto_qa_delay_minutes BETWEEN 0 AND ${QA_SESSION_DELAY_MAX}),
+    updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS qa_session_requests (
+    session_id           TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    project_id           TEXT NOT NULL,
+    status               TEXT NOT NULL
+                         CHECK (status IN (${inList(QA_SESSION_REQUEST_STATUSES)})),
+    requested_by         TEXT,
+    plan_id              TEXT REFERENCES qa_plans(id) ON DELETE SET NULL,
+    authoring_session_id TEXT,
+    run_id               TEXT,
+    due_at               INTEGER,
+    error                TEXT,
+    created_at           TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at           TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_qa_session_requests_project
+    ON qa_session_requests(project_id, status);
 `;

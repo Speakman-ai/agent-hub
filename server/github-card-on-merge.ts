@@ -14,6 +14,7 @@ import { pickDoneColumn } from './card-auto-close.js';
 import { findKanbanCardForIncomingPr, linkKanbanCardPrUrl } from './kanban-pr-link.js';
 import { getOrCreateBoard } from './routes/board.js';
 import { maybeDispatchWikiDocOnMerge } from './wiki-doc-session.js';
+import { recordGithubPrMerge } from './github-pr-merges.js';
 import { closeResolvePrCardsOnMerge } from './resolve-card-on-merge.js';
 import { requestDefaultBranchPoll } from './git-host/default-branch-poll-request.js';
 
@@ -38,6 +39,12 @@ export function handleGithubCardOnMerge(
 ): void {
   const { stmts, broadcast } = deps;
   const { projectId, prUrl } = args;
+  recordGithubPrMerge({
+    projectId,
+    prUrl,
+    prNumber: args.prNumber,
+    headRef: args.headRef,
+  });
 
   // The merge moved a branch on GitHub; if it was the default branch, start
   // its CI on push run now rather than on the watcher's next poll.

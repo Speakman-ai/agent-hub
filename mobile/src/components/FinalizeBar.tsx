@@ -35,6 +35,7 @@ import { useApp } from '../context/AppContext';
 import { discardBlockedReason } from '@shared/utils/discardChanges';
 import { isResolvePrSessionTitle } from '@shared/utils/sessionTitlePr';
 import DiscardChangesButton from './DiscardChangesButton';
+import SessionQaControl from './SessionQaControl';
 import { useNavigation } from '@react-navigation/native';
 import { readInheritedFailures, inheritedFailuresLabel } from '@shared/utils/inheritedFailures';
 import {
@@ -409,6 +410,19 @@ export default function FinalizeBar({
                   />
                 ) : null}
               </>
+            ) : null}
+            {/* Not gated on Consult: a shipped session flips to Consult,
+                which is when the post-merge button is needed. */}
+            {sessionId &&
+            !workflowProject &&
+            mode !== 'qa' &&
+            Number(session?.use_worktree ?? 1) !== 0 ? (
+              <SessionQaControl
+                sessionId={sessionId}
+                sessionState={session?.state ?? null}
+                onOpenPlan={(planId) => navigation.navigate('Qa', { projectId, project, planId })}
+                onError={reportError}
+              />
             ) : null}
           </>
         ) : null}

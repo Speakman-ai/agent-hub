@@ -40,6 +40,19 @@ export type QaRunLaunchResult =
       runId?: string;
     };
 
+/**
+ * Runs this process is launching right now (created, seed not yet settled).
+ * In memory on purpose: a run in it has a live launcher; a queued / running
+ * run outside it whose session was never seeded was left by a launch that
+ * died (a crashed or restarted process), and nothing will ever seed it.
+ */
+const inFlightLaunches = new Set<string>();
+
+/** Whether this process is still launching `runId`. */
+export function isQaRunLaunchInFlight(runId: string): boolean {
+  return inFlightLaunches.has(runId);
+}
+
 export async function launchQaRun(
   deps: QaRunLaunchDeps,
   plan: QaPlanRow,
@@ -92,80 +105,91 @@ export async function launchQaRun(
 
   const started = startQaRun(plan.id, { scope: opts.scope, startedBy: opts.startedBy });
   const run = started.run;
-  const inScope = new Set(qaRunCaseIds(run));
-  const seed = buildQaRunSeed({
-    project,
-    plan: started.plan,
-    run,
-    cases: s.listQaCasesByPlan.all(plan.id).filter((c) => inScope.has(c.id)),
-    routing,
-    environments: listQaEnvironments(project.id),
-  });
-  const sessionId = randomUUID();
+  // Registered synchronously with the run's creation, so no other code ever
+  // sees this run without also seeing it in flight.
+  inFlightLaunches.add(run.id);
   try {
-    const { engine, model } = resolveAgentSpawnEngineAndModel(deps.config, agent, opts.ownerUserId);
-    // QA sessions never get a worktree: they are read-only on code.
-    s.createSession.run(
-      sessionId,
-      agent.id,
-      `[QA run #${run.iteration}] ${plan.title}`.slice(0, 100),
-      engine,
-      model,
-      0,
-      0,
-      1,
-    );
-    // Hidden before anything broadcasts about it: the broadcast filter caches
-    // hidden-ness on first sight. The run is read on the QA page, not in chat.
-    s.markSessionHidden.run(sessionId);
-    setSessionOwner(sessionId, opts.ownerUserId);
-    s.updateSessionMode.run('qa', sessionId);
-    s.setQaRunSession.run(sessionId, run.id);
-    if (previewSessionId) s.setQaRunPreviewSession.run(previewSessionId, run.id);
-    markQaRunRunning(run.id);
-    await kickoffSeededTurn({
-      handleChat: deps.handleChat,
-      agentId: agent.id,
-      sessionId,
-      content: seed,
-      // A cancel that lands before the seed persists drops the turn.
-      acceptTurn: () => s.getQaRun.get(run.id)?.status === 'running',
+    const inScope = new Set(qaRunCaseIds(run));
+    const seed = buildQaRunSeed({
+      project,
+      plan: started.plan,
+      run,
+      cases: s.listQaCasesByPlan.all(plan.id).filter((c) => inScope.has(c.id)),
+      routing,
+      environments: listQaEnvironments(project.id),
     });
-  } catch (e) {
-    console.error('[qa] run session failed to start:', e);
-    s.setQaRunSession.run(null, run.id);
-    abandonUnseededSession(s, sessionId);
-    const current = s.getQaRun.get(run.id);
-    if (current && (current.status === 'queued' || current.status === 'running')) {
-      cancelQaRun(run.id);
+    const sessionId = randomUUID();
+    try {
+      const { engine, model } = resolveAgentSpawnEngineAndModel(
+        deps.config,
+        agent,
+        opts.ownerUserId,
+      );
+      // QA sessions never get a worktree: they are read-only on code.
+      s.createSession.run(
+        sessionId,
+        agent.id,
+        `[QA run #${run.iteration}] ${plan.title}`.slice(0, 100),
+        engine,
+        model,
+        0,
+        0,
+        1,
+      );
+      // Hidden before anything broadcasts about it: the broadcast filter caches
+      // hidden-ness on first sight. The run is read on the QA page, not in chat.
+      s.markSessionHidden.run(sessionId);
+      setSessionOwner(sessionId, opts.ownerUserId);
+      s.updateSessionMode.run('qa', sessionId);
+      s.setQaRunSession.run(sessionId, run.id);
+      if (previewSessionId) s.setQaRunPreviewSession.run(previewSessionId, run.id);
+      markQaRunRunning(run.id);
+      await kickoffSeededTurn({
+        handleChat: deps.handleChat,
+        agentId: agent.id,
+        sessionId,
+        content: seed,
+        // A cancel that lands before the seed persists drops the turn.
+        acceptTurn: () => s.getQaRun.get(run.id)?.status === 'running',
+      });
+    } catch (e) {
+      console.error('[qa] run session failed to start:', e);
+      s.setQaRunSession.run(null, run.id);
+      abandonUnseededSession(s, sessionId);
+      const current = s.getQaRun.get(run.id);
+      if (current && (current.status === 'queued' || current.status === 'running')) {
+        cancelQaRun(run.id);
+      }
+      deps.broadcast({
+        type: 'qa_update',
+        projectId: plan.project_id,
+        planId: plan.id,
+        action: 'run_cancelled',
+        runId: run.id,
+      });
+      return {
+        ok: false,
+        status: 502,
+        code: 'spawn_failed',
+        error: 'Failed to start the QA run session',
+        runId: run.id,
+      };
     }
     deps.broadcast({
       type: 'qa_update',
       projectId: plan.project_id,
       planId: plan.id,
-      action: 'run_cancelled',
+      action: 'run_started',
       runId: run.id,
     });
     return {
-      ok: false,
-      status: 502,
-      code: 'spawn_failed',
-      error: 'Failed to start the QA run session',
-      runId: run.id,
+      ok: true,
+      plan: s.getQaPlan.get(plan.id)!,
+      run: s.getQaRun.get(run.id)!,
+      sessionId,
+      agentId: agent.id,
     };
+  } finally {
+    inFlightLaunches.delete(run.id);
   }
-  deps.broadcast({
-    type: 'qa_update',
-    projectId: plan.project_id,
-    planId: plan.id,
-    action: 'run_started',
-    runId: run.id,
-  });
-  return {
-    ok: true,
-    plan: s.getQaPlan.get(plan.id)!,
-    run: s.getQaRun.get(run.id)!,
-    sessionId,
-    agentId: agent.id,
-  };
 }

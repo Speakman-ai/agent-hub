@@ -62,6 +62,8 @@ function makeStmts(
     deleteBoardsByProject: noop,
     deleteQaPlansByProject: noop,
     deleteQaEnvironmentsByProject: noop,
+    deleteQaProjectSettingsByProject: noop,
+    deleteQaSessionRequestsByProject: noop,
     deleteWorkflowsByProject: noop,
     deleteRoomsByProject: noop,
     deleteCronsByProject: noop,

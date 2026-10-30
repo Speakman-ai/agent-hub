@@ -15369,6 +15369,8 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/QaEnvironmentAccount"
+        isDefault:
+          type: boolean
         position:
           type: integer
         createdAt:
@@ -15382,10 +15384,69 @@ components:
         - baseUrl
         - notes
         - accounts
+        - isDefault
         - position
         - createdAt
         - updatedAt
       description: A server QA plans test against, with its test accounts. Listed in every QA run and authoring seed.
+    QaProjectSettings:
+      type: object
+      properties:
+        projectId:
+          type: string
+        autoQaDelayMinutes:
+          type: integer
+      required:
+        - projectId
+        - autoQaDelayMinutes
+    QaSessionRequest:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        projectId:
+          type: string
+        status:
+          type: string
+          enum:
+            - armed
+            - authoring
+            - waiting
+            - launching
+            - started
+            - failed
+        planId:
+          type: string
+          nullable: true
+        planTitle:
+          type: string
+          nullable: true
+        runId:
+          type: string
+          nullable: true
+        dueAt:
+          type: string
+          nullable: true
+          description: "When the run starts: merge time plus the project QA delay."
+        error:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - sessionId
+        - projectId
+        - status
+        - planId
+        - planTitle
+        - runId
+        - dueAt
+        - error
+        - createdAt
+        - updatedAt
+      description: "A session's request to QA its work: armed until merge, then the QA agent drafts a plan from the session, the plan is approved, and it runs on the default QA environment."
     QaErrorResponse:
       type: object
       properties:
@@ -59209,6 +59270,9 @@ paths:
                       - label
                   maxItems: 50
                   description: Full replacement list of test accounts, in display order.
+                isDefault:
+                  type: boolean
+                  description: true makes this the project default (any other default is cleared); false clears it. The default is where a session's "Run QA Tests" runs.
               required:
                 - name
       responses:
@@ -59382,6 +59446,9 @@ paths:
                       - label
                   maxItems: 50
                   description: Full replacement list of test accounts, in display order.
+                isDefault:
+                  type: boolean
+                  description: true makes this the project default (any other default is cleared); false clears it. The default is where a session's "Run QA Tests" runs.
       responses:
         "200":
           description: Updated environment.
@@ -59572,9 +59639,400 @@ paths:
                         - message
                 required:
                   - error
-  /api/projects/{projectId}/qa/plans:
+  /api/projects/{projectId}/qa/settings:
+    get:
+      tags: *a8
+      summary: Read the project's QA settings
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Settings (defaults when never saved).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  settings:
+                    $ref: "#/components/schemas/QaProjectSettings"
+                required:
+                  - settings
+        "404":
+          description: Project or environment not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  details:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        path:
+                          type: array
+                          items:
+                            nullable: true
+                        message:
+                          type: string
+                      required:
+                        - path
+                        - message
+                required:
+                  - error
+    put:
+      tags: *a8
+      summary: Update the project's QA settings
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                autoQaDelayMinutes:
+                  type: integer
+                  minimum: 0
+                  maximum: 240
+                  description: Minutes a session-requested QA run waits after the session merged, so the deploy can reach the default environment.
+      responses:
+        "200":
+          description: Updated settings.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  settings:
+                    $ref: "#/components/schemas/QaProjectSettings"
+                required:
+                  - settings
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  details:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        path:
+                          type: array
+                          items:
+                            nullable: true
+                        message:
+                          type: string
+                      required:
+                        - path
+                        - message
+                required:
+                  - error
+        "403":
+          description: Requires the Admin role.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  details:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        path:
+                          type: array
+                          items:
+                            nullable: true
+                        message:
+                          type: string
+                      required:
+                        - path
+                        - message
+                required:
+                  - error
+        "404":
+          description: Project or environment not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  details:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        path:
+                          type: array
+                          items:
+                            nullable: true
+                        message:
+                          type: string
+                      required:
+                        - path
+                        - message
+                required:
+                  - error
+  /api/sessions/{sessionId}/qa-request:
     get:
       tags: &a9
+        - QA
+      summary: Read the session's "Run QA Tests" state
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Current request and what it would use.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  request:
+                    allOf:
+                      - $ref: "#/components/schemas/QaSessionRequest"
+                      - nullable: true
+                  merged:
+                    type: boolean
+                    description: "Whether the session's pull request merged: the native PR for Hub-hosted repos, or a github.com merge the Hub performed. A kanban card's column does not count."
+                  defaultEnvironment:
+                    type: object
+                    nullable: true
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      baseUrl:
+                        type: string
+                    required:
+                      - id
+                      - name
+                      - baseUrl
+                  delayMinutes:
+                    type: integer
+                  hasQaAgent:
+                    type: boolean
+                required:
+                  - request
+                  - merged
+                  - defaultEnvironment
+                  - delayMinutes
+                  - hasQaAgent
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                required:
+                  - error
+    put:
+      tags: *a9
+      summary: Tick or untick "Run QA Tests" before the session merges
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                armed:
+                  type: boolean
+                  description: 'true ticks "Run QA Tests": QA runs once the session merges. false unticks it while it is still waiting for the merge.'
+              required:
+                - armed
+      responses:
+        "200":
+          description: Updated state.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  request:
+                    allOf:
+                      - $ref: "#/components/schemas/QaSessionRequest"
+                      - nullable: true
+                  merged:
+                    type: boolean
+                    description: "Whether the session's pull request merged: the native PR for Hub-hosted repos, or a github.com merge the Hub performed. A kanban card's column does not count."
+                  defaultEnvironment:
+                    type: object
+                    nullable: true
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      baseUrl:
+                        type: string
+                    required:
+                      - id
+                      - name
+                      - baseUrl
+                  delayMinutes:
+                    type: integer
+                  hasQaAgent:
+                    type: boolean
+                required:
+                  - request
+                  - merged
+                  - defaultEnvironment
+                  - delayMinutes
+                  - hasQaAgent
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: No QA agent or no default QA environment with a base URL.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                required:
+                  - error
+  /api/sessions/{sessionId}/qa-request/run:
+    post:
+      tags: *a9
+      summary: Run QA tests for the session now
+      description: Creates a plan from the session's context, lets the QA agent draft its cases, approves it, and runs it on the default QA environment once the project's delay after the merge has passed. Auto-rerun and auto-fix stay off.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Updated state.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  request:
+                    allOf:
+                      - $ref: "#/components/schemas/QaSessionRequest"
+                      - nullable: true
+                  merged:
+                    type: boolean
+                    description: "Whether the session's pull request merged: the native PR for Hub-hosted repos, or a github.com merge the Hub performed. A kanban card's column does not count."
+                  defaultEnvironment:
+                    type: object
+                    nullable: true
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      baseUrl:
+                        type: string
+                    required:
+                      - id
+                      - name
+                      - baseUrl
+                  delayMinutes:
+                    type: integer
+                  hasQaAgent:
+                    type: boolean
+                required:
+                  - request
+                  - merged
+                  - defaultEnvironment
+                  - delayMinutes
+                  - hasQaAgent
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: The session has not merged (`not_merged`), or no QA agent / default QA environment with a base URL.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/qa/plans:
+    get:
+      tags: &a10
         - QA
       summary: List the project's QA plans
       parameters:
@@ -59633,7 +60091,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/QaErrorResponse"
     post:
-      tags: *a9
+      tags: *a10
       summary: Create a draft QA plan
       parameters:
         - schema:
@@ -59717,7 +60175,7 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/qa/plans/{planId}:
     get:
-      tags: *a9
+      tags: *a10
       summary: Get a QA plan with cases, latest verdicts, and runs
       parameters:
         - schema:
@@ -59824,7 +60282,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/QaErrorResponse"
     patch:
-      tags: *a9
+      tags: *a10
       summary: Update a QA plan
       parameters:
         - schema:
@@ -59916,7 +60374,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/QaErrorResponse"
     delete:
-      tags: *a9
+      tags: *a10
       summary: Delete a QA plan and its history
       parameters:
         - schema:
@@ -59955,7 +60413,7 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/qa/plans/{planId}/cases:
     post:
-      tags: *a9
+      tags: *a10
       summary: Append a case (revokes approval)
       parameters:
         - schema:
@@ -60018,7 +60476,7 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/qa/plans/{planId}/cases/{caseId}:
     patch:
-      tags: *a9
+      tags: *a10
       summary: Edit a case (bumps its version, revokes approval)
       parameters:
         - schema:
@@ -60093,7 +60551,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/QaErrorResponse"
     delete:
-      tags: *a9
+      tags: *a10
       summary: Remove a case (revokes approval)
       parameters:
         - schema:
@@ -60140,7 +60598,7 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/qa/plans/{planId}/cases/reorder:
     post:
-      tags: *a9
+      tags: *a10
       summary: Reorder the case list (keeps approval)
       parameters:
         - schema:
@@ -60200,7 +60658,7 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/qa/plans/{planId}/approve:
     post:
-      tags: *a9
+      tags: *a10
       summary: Approve the case list
       parameters:
         - schema:
@@ -60239,7 +60697,7 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/qa/plans/{planId}/authoring-session:
     post:
-      tags: *a9
+      tags: *a10
       summary: Open the plan's authoring session with the project's QA agent
       description: "The first call creates a QA-mode session seeded with the plan id, target URL, goal, and the linked epic / card descriptions, and records it on the plan. Later calls return that session while it is live (200, `created: false`)."
       parameters:
@@ -60308,7 +60766,7 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/qa/plans/{planId}/revoke-approval:
     post:
-      tags: *a9
+      tags: *a10
       summary: Return the plan to draft
       parameters:
         - schema:
@@ -60347,7 +60805,7 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/qa/plans/{planId}/sign-off:
     post:
-      tags: *a9
+      tags: *a10
       summary: "Human sign-off: moves an all-pass plan to done"
       parameters:
         - schema:
@@ -60386,7 +60844,7 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/qa/plans/{planId}/runs:
     post:
-      tags: *a9
+      tags: *a10
       summary: Start a run in a new QA agent session
       description: Queues the run, opens a QA session seeded with the in-scope cases, target URL, and the tool to drive it with (`preview` for loopback, private, or session-preview targets, `browser` otherwise), and marks it running. 409 when unapproved, a run is active, the project has no QA agent (`no_qa_agent`), a preview-routed target is not served by a session preview in this project (`target_unreachable`), or a failed_only run has nothing to rerun (`nothing_to_rerun`). If the session cannot start, the run is cancelled and the route answers 502.
       parameters:
@@ -60465,7 +60923,7 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/qa/plans/{planId}/runs/{runId}:
     get:
-      tags: *a9
+      tags: *a10
       summary: Get a run with its results
       parameters:
         - schema:
@@ -60508,7 +60966,7 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/qa/plans/{planId}/runs/{runId}/begin:
     post:
-      tags: *a9
+      tags: *a10
       summary: Mark a queued run as running (no-op when already running)
       parameters:
         - schema:
@@ -60552,7 +61010,7 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/qa/plans/{planId}/runs/{runId}/finish:
     post:
-      tags: *a9
+      tags: *a10
       summary: Finish a running run; passed/failed is derived from the verdicts
       parameters:
         - schema:
@@ -60596,7 +61054,7 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/qa/plans/{planId}/runs/{runId}/cancel:
     post:
-      tags: *a9
+      tags: *a10
       summary: Cancel a queued or running run and stop its session
       parameters:
         - schema:
@@ -60640,7 +61098,7 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/qa/plans/{planId}/runs/{runId}/results:
     post:
-      tags: *a9
+      tags: *a10
       summary: Record or replace the verdict for one case in a running run
       description: Once every in-scope case has a result the run finishes on its own, passed when all verdicts are `pass`, and the run session gets a chat summary. 409 `out_of_scope` for a case outside the run; 400 `artifact_not_owned` when a screenshot id was not uploaded by the run session.
       parameters:
@@ -60725,7 +61183,7 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/qa/plans/{planId}/runs/{runId}/results/{caseId}/override:
     post:
-      tags: *a9
+      tags: *a10
       summary: Override the verdict of one result in a finished run
       description: For a person who judges the agent's verdict wrong. The agent's verdict is kept in `override.originalVerdict`; overriding back to it clears the override. The run's passed/failed status is re-derived, so overriding a run's only failure to `pass` makes the run passed. Overriding to `fail` or `needs_change` files a finding card; overriding to `pass` comments on an existing finding card. 409 `run_not_finished` for a queued, running, or cancelled run; 409 `plan_done` on a signed-off plan.
       parameters:
@@ -60799,7 +61257,7 @@ paths:
                 $ref: "#/components/schemas/QaErrorResponse"
   /api/projects/{projectId}/qa/plans/{planId}/runs/{runId}/results/{caseId}/troubleshoot:
     post:
-      tags: *a9
+      tags: *a10
       summary: Open a dev-agent session to troubleshoot one failed or blocked result
       description: Creates a session on the project's main dev agent seeded with the case steps, expected and actual results, QA notes, screenshot artifact ids, the run session to read, and any finding card. Only `fail`, `needs_change`, and `blocked` results qualify. Every call opens a new session.
       parameters:

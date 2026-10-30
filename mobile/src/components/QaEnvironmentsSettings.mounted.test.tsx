@@ -9,6 +9,7 @@ vi.mock('react-native', () => ({
   Alert: { alert: vi.fn() },
   ScrollView: 'ScrollView',
   StyleSheet: { create: (s: any) => s },
+  Switch: 'Switch',
   Text: 'Text',
   TextInput: 'TextInput',
   TouchableOpacity: 'TouchableOpacity',
@@ -36,10 +37,19 @@ const env = {
   ],
 };
 const updateQaEnvironment = vi.fn(async () => ({ environment: env }));
+const setQaEnvironmentDefault = vi.fn(async () => ({ environment: env }));
+const updateQaSettings = vi.fn(async () => ({
+  settings: { projectId: 'p1', autoQaDelayMinutes: 30 },
+}));
 vi.mock('../utils/api', () => ({
   api: {
-    listQaEnvironments: vi.fn(async () => ({ environments: [env] })),
+    listQaEnvironments: vi.fn(async () => ({
+      environments: [env, { ...env, id: 'env-2', name: 'Prod', isDefault: true }],
+    })),
     updateQaEnvironment: (...a: unknown[]) => (updateQaEnvironment as any)(...a),
+    setQaEnvironmentDefault: (...a: unknown[]) => (setQaEnvironmentDefault as any)(...a),
+    getQaSettings: vi.fn(async () => ({ settings: { projectId: 'p1', autoQaDelayMinutes: 0 } })),
+    updateQaSettings: (...a: unknown[]) => (updateQaSettings as any)(...a),
   },
 }));
 
@@ -56,11 +66,11 @@ describe('mobile QaEnvironmentsSettings', () => {
     await act(async () => {
       tree = TestRenderer.create(<QaEnvironmentsSettings projectId="p1" />);
     });
-    const notes = tree.root.find(
+    const notes = tree.root.findAll(
       (n: any) => n.type === 'TextInput' && /Build or version/.test(n.props.placeholder ?? ''),
-    );
+    )[0];
     await act(async () => notes.props.onChangeText('v2.5'));
-    const save = tree.root.find((n: any) => n.props?.testID === 'qa-env-save');
+    const save = tree.root.findAll((n: any) => n.props?.testID === 'qa-env-save')[0];
     await act(async () => save.props.onPress());
     expect(updateQaEnvironment).toHaveBeenCalledTimes(1);
     const [, id, input] = updateQaEnvironment.mock.calls[0] as unknown[] as [
@@ -81,11 +91,11 @@ describe('mobile QaEnvironmentsSettings', () => {
       tree = TestRenderer.create(<QaEnvironmentsSettings projectId="p1" />);
     });
     const notes = () =>
-      tree.root.find(
+      tree.root.findAll(
         (n: any) => n.type === 'TextInput' && /Build or version/.test(n.props.placeholder ?? ''),
-      );
+      )[0];
     await act(async () => notes().props.onChangeText('v2.5'));
-    const save = tree.root.find((n: any) => n.props?.testID === 'qa-env-save');
+    const save = tree.root.findAll((n: any) => n.props?.testID === 'qa-env-save')[0];
     await act(async () => {
       save.props.onPress();
     });
@@ -95,5 +105,30 @@ describe('mobile QaEnvironmentsSettings', () => {
     await act(async () => resolve({ environment: { ...env, notes: 'v2.5' } }));
     expect(notes().props.editable).toBe(true);
     expect(notes().props.value).toBe('v2.5');
+  });
+
+  it('moves the default to another environment', async () => {
+    let tree: any;
+    await act(async () => {
+      tree = TestRenderer.create(<QaEnvironmentsSettings projectId="p1" />);
+    });
+    const switches = () => tree.root.findAll((n: any) => n.type === 'Switch');
+    expect(switches().map((n: any) => n.props.value)).toEqual([false, true]);
+    await act(async () => switches()[0].props.onValueChange(true));
+    expect(setQaEnvironmentDefault).toHaveBeenCalledWith('p1', 'env-1', true);
+    expect(switches().map((n: any) => n.props.value)).toEqual([true, false]);
+  });
+
+  it('saves the default delay for automated QA', async () => {
+    let tree: any;
+    await act(async () => {
+      tree = TestRenderer.create(<QaEnvironmentsSettings projectId="p1" />);
+    });
+    const input = tree.root.find((n: any) => n.props?.testID === 'qa-auto-delay');
+    expect(input.props.value).toBe('0');
+    await act(async () => input.props.onChangeText('30'));
+    const save = tree.root.find((n: any) => n.props?.testID === 'qa-auto-delay-save');
+    await act(async () => save.props.onPress());
+    expect(updateQaSettings).toHaveBeenCalledWith('p1', { autoQaDelayMinutes: 30 });
   });
 });

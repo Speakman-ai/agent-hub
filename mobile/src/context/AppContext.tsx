@@ -1023,6 +1023,13 @@ export function AppProvider({ children }: any) {
           break;
         case 'native_pr_update':
           if (data.projectId) refreshOpenPullCountRef.current?.(data.projectId);
+          // A merge decides whether a session's "Run QA Tests" is a checkbox or a button.
+          if (data.action === 'merged') {
+            qaUpdateHub.emit({ projectId: data.projectId, action: 'pr_merged' });
+          }
+          break;
+        case 'webhook_pr_merged':
+          qaUpdateHub.emit({ projectId: data.projectId, action: 'pr_merged' });
           break;
         case 'google_chat_draft_update':
           setLastGoogleChatDraftEvent({ draft: data.draft ?? null, bump: Date.now() });

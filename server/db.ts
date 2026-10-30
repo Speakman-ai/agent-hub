@@ -35,6 +35,7 @@ import {
   FINALIZE_TERMINAL_STATUSES_SQL,
 } from './finalize/terminal-statuses.js';
 import { DEPLOYMENT_SCHEMA } from './deploy/deployment-schema.js';
+import { GITHUB_PR_MERGES_SCHEMA } from './github-pr-merges-schema.js';
 import { QA_AUTO_RERUN_TRIGGERS, QA_RESULT_OVERRIDE_COLUMNS, QA_SCHEMA } from './qa-schema.js';
 import { DEPLOYMENT_ENV_RUNTIME_CONFIG_SCHEMA } from './deploy/deployment-env-config-schema.js';
 import { DEPLOYMENT_ENV_SECRETS_SCHEMA } from './deploy/deployment-env-secrets-schema.js';
@@ -3547,6 +3548,8 @@ function initDb(dataDir: string): void {
     CREATE INDEX IF NOT EXISTS idx_pr_creation_logs_session ON pr_creation_logs(session_id);
   `);
 
+  db.exec(GITHUB_PR_MERGES_SCHEMA);
+
   db.exec(
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_creation_logs_project_pr_url
      ON pr_creation_logs(project_id, pr_url)`,
@@ -3930,6 +3933,14 @@ function initDb(dataDir: string): void {
   // What the auto-rerun trigger already did about this run.
   try {
     db.exec('ALTER TABLE qa_runs ADD COLUMN auto_rerun_state TEXT');
+  } catch (_e) {
+    /* column already present */
+  }
+  // The environment a session's "Run QA Tests" targets.
+  try {
+    db.exec(
+      'ALTER TABLE qa_environments ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1))',
+    );
   } catch (_e) {
     /* column already present */
   }
@@ -4417,6 +4428,12 @@ function initDb(dataDir: string): void {
     deleteQaPlan: db.prepare('DELETE FROM qa_plans WHERE id = ?'),
     deleteQaPlansByProject: db.prepare('DELETE FROM qa_plans WHERE project_id = ?'),
     deleteQaEnvironmentsByProject: db.prepare('DELETE FROM qa_environments WHERE project_id = ?'),
+    deleteQaProjectSettingsByProject: db.prepare(
+      'DELETE FROM qa_project_settings WHERE project_id = ?',
+    ),
+    deleteQaSessionRequestsByProject: db.prepare(
+      'DELETE FROM qa_session_requests WHERE project_id = ?',
+    ),
     setQaPlanStatus: db.prepare(
       "UPDATE qa_plans SET status = ?, updated_at = datetime('now') WHERE id = ?",
     ),

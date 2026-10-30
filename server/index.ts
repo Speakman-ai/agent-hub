@@ -221,6 +221,12 @@ import {
   observeBroadcastForQaAutoRerun,
   sweepAllQaAutoRerun,
 } from './qa-auto-rerun.js';
+import {
+  initQaSessionRuns,
+  observeBroadcastForQaSessionRuns,
+  sweepAllQaSessionRequests,
+} from './qa-session-runs.js';
+import createQaSessionRunRoutes from './routes/qa-session-runs.js';
 import createBoardRoutes from './routes/board.js';
 import createConfigRoutes from './routes/config.js';
 import createSessionRoutes, { summarizeTranscript, buildTranscript } from './routes/sessions.js';
@@ -924,6 +930,12 @@ function broadcast(data: Record<string, unknown>): void {
     observeBroadcastForQaAutoRerun(data);
   } catch (err) {
     console.error('[qa] auto-rerun observer failed:', (err as Error).message);
+  }
+  // A session's "Run QA Tests" fires once its work merges.
+  try {
+    observeBroadcastForQaSessionRuns(data);
+  } catch (err) {
+    console.error('[qa] session request observer failed:', (err as Error).message);
   }
 }
 
@@ -2701,6 +2713,7 @@ app.use(createNotificationsRoutes(routeDeps));
 app.use(createOrgTodosRoutes(routeDeps));
 app.use(createQaRoutes(routeDeps));
 app.use(createQaEnvironmentRoutes(routeDeps));
+app.use(createQaSessionRunRoutes(routeDeps));
 app.use(createHubChatRoutes(routeDeps));
 app.use(createProjectChatTriggerRoutes(routeDeps));
 app.use(createMeDashboardRoutes(routeDeps));
@@ -3411,10 +3424,14 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
     }
 
     initQaAutoRerun(routeDeps);
+    initQaSessionRuns(routeDeps);
     // Catch up on card / deployment events that landed while the server was down.
     if (process.env.NODE_ENV !== 'test') {
       void sweepAllQaAutoRerun(routeDeps).catch((e) =>
         console.error('[qa] auto-rerun boot sweep', (e as Error).message),
+      );
+      void sweepAllQaSessionRequests(routeDeps).catch((e) =>
+        console.error('[qa] session request boot sweep', (e as Error).message),
       );
     }
 

@@ -36,6 +36,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   getDb().exec('DELETE FROM qa_environments');
+  getDb().exec('DELETE FROM qa_project_settings');
   broadcast.mockClear();
   role = 'Admin';
 });
@@ -91,5 +92,37 @@ describe('QA environment routes', () => {
 
   it('404s an unknown project', async () => {
     await request(app).get('/api/projects/nope/qa/environments').expect(404);
+  });
+
+  it('marks one environment as the default', async () => {
+    const a = (await request(app).post(base).send({ name: 'A', isDefault: true }).expect(201)).body
+      .environment;
+    expect(a.isDefault).toBe(true);
+    const b = (await request(app).post(base).send({ name: 'B' }).expect(201)).body.environment;
+    expect(b.isDefault).toBe(false);
+    await request(app).patch(`${base}/${b.id}`).send({ isDefault: true }).expect(200);
+    const list = (await request(app).get(base).expect(200)).body.environments;
+    expect(list.map((e: { name: string; isDefault: boolean }) => [e.name, e.isDefault])).toEqual([
+      ['A', false],
+      ['B', true],
+    ]);
+    await request(app).patch(`${base}/${b.id}`).send({ isDefault: 'yes' }).expect(400);
+  });
+
+  it('reads and updates the default QA delay', async () => {
+    const settings = '/api/projects/proj/qa/settings';
+    expect((await request(app).get(settings).expect(200)).body.settings).toEqual({
+      projectId: 'proj',
+      autoQaDelayMinutes: 0,
+    });
+    const put = await request(app).put(settings).send({ autoQaDelayMinutes: 15 }).expect(200);
+    expect(put.body.settings.autoQaDelayMinutes).toBe(15);
+    expect(broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'qa_update', action: 'settings_updated' }),
+    );
+    await request(app).put(settings).send({ autoQaDelayMinutes: -1 }).expect(400);
+    await request(app).put(settings).send({ autoQaDelayMinutes: 9999 }).expect(400);
+    role = 'User';
+    await request(app).put(settings).send({ autoQaDelayMinutes: 5 }).expect(403);
   });
 });

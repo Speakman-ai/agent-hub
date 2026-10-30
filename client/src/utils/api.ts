@@ -9,7 +9,12 @@ import {
   type RoutineDraftWire,
 } from '@shared/utils/routineFromRecording';
 import type { ChatDigestSaveRequest } from '@shared/utils/chatDigest';
-import type { QaEnvironmentInput, QaEnvironmentWire } from '@shared/utils/qaEnvironments';
+import type {
+  QaEnvironmentInput,
+  QaEnvironmentWire,
+  QaProjectSettingsWire,
+} from '@shared/utils/qaEnvironments';
+import type { QaSessionStateWire } from '@shared/utils/qaSessionRequest';
 import { getApiBase, getAuthHeaders } from './connection';
 import { getToken as getJwt, clearToken, isLocalBundledDeployment } from './auth';
 import { normalizeSessionMessagesResponse } from '@shared/utils/sessionMessagesResponse';
@@ -2818,6 +2823,31 @@ export const api = {
       `/projects/${encodeURIComponent(projectId)}/qa/environments/${encodeURIComponent(environmentId)}`,
       { method: 'DELETE' },
     ),
+  setQaEnvironmentDefault: (projectId: string, environmentId: string, isDefault: boolean) =>
+    fetchJSON<{ environment: QaEnvironmentWire }>(
+      `/projects/${encodeURIComponent(projectId)}/qa/environments/${encodeURIComponent(environmentId)}`,
+      { method: 'PATCH', body: JSON.stringify({ isDefault }) },
+    ),
+  getQaSettings: (projectId: string) =>
+    fetchJSON<{ settings: QaProjectSettingsWire }>(
+      `/projects/${encodeURIComponent(projectId)}/qa/settings`,
+    ),
+  updateQaSettings: (projectId: string, input: { autoQaDelayMinutes: number }) =>
+    fetchJSON<{ settings: QaProjectSettingsWire }>(
+      `/projects/${encodeURIComponent(projectId)}/qa/settings`,
+      { method: 'PUT', body: JSON.stringify(input) },
+    ),
+  getSessionQaRequest: (sessionId: string) =>
+    fetchJSON<QaSessionStateWire>(`/sessions/${encodeURIComponent(sessionId)}/qa-request`),
+  setSessionQaRequestArmed: (sessionId: string, armed: boolean) =>
+    fetchJSON<QaSessionStateWire>(`/sessions/${encodeURIComponent(sessionId)}/qa-request`, {
+      method: 'PUT',
+      body: JSON.stringify({ armed }),
+    }),
+  runSessionQaRequest: (sessionId: string) =>
+    fetchJSON<QaSessionStateWire>(`/sessions/${encodeURIComponent(sessionId)}/qa-request/run`, {
+      method: 'POST',
+    }),
   listQaPlans: (projectId: string) =>
     fetchJSON<QaPlanListWire>(`/projects/${encodeURIComponent(projectId)}/qa/plans`),
   getQaPlan: (projectId: string, planId: string) =>

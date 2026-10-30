@@ -4,6 +4,7 @@ import {
   emptyQaAccount,
   emptyQaEnvironment,
   matchQaEnvironment,
+  parseQaAutoDelay,
   selectableQaEnvironments,
   QA_PASSWORD_MASK,
   qaEnvironmentDraftToInput,
@@ -105,5 +106,16 @@ describe('matchQaEnvironment', () => {
     expect(matchQaEnvironment(envs, 'https://other.example.com')).toBeNull();
     expect(matchQaEnvironment(envs, 'nope')).toBeNull();
     expect(matchQaEnvironment(envs, '')).toBeNull();
+  });
+});
+
+describe('parseQaAutoDelay', () => {
+  it('accepts whole minutes in range', () => {
+    expect(parseQaAutoDelay(' 15 ')).toBe(15);
+    expect(parseQaAutoDelay('0')).toBe(0);
+    expect(parseQaAutoDelay('240')).toBe(240);
+  });
+  it('rejects anything else', () => {
+    for (const raw of ['', '-1', '1.5', 'abc', '241']) expect(parseQaAutoDelay(raw)).toBeNull();
   });
 });

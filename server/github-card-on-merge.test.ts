@@ -80,4 +80,18 @@ describe('handleGithubCardOnMerge', () => {
       prUrl,
     });
   });
+
+  it('records the merge so a session without a card can tell its PR merged', () => {
+    const projectId = `gh-merge-${uuidv4().slice(0, 8)}`;
+    const prUrl = 'https://github.com/acme/repo/pull/777';
+    handleGithubCardOnMerge(
+      { stmts, broadcast: () => undefined },
+      { projectId, prUrl, prNumber: 777, headRef: 'agent-hub/dev/session-x', mergedBy: 'me' },
+    );
+    const row = db
+      .prepare('SELECT pr_number, head_ref, merged_at FROM github_pr_merges WHERE pr_url = ?')
+      .get(prUrl) as { pr_number: number; head_ref: string; merged_at: number };
+    expect(row).toMatchObject({ pr_number: 777, head_ref: 'agent-hub/dev/session-x' });
+    expect(row.merged_at).toBeGreaterThan(0);
+  });
 });

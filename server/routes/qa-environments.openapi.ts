@@ -4,6 +4,7 @@
  */
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
 import { QA_ENV_LIMITS } from '../qa-environments.js';
+import { QA_SESSION_DELAY_MAX } from '../qa-schema.js';
 
 const AccountInput = z.object({
   id: z.string().optional().openapi({
@@ -27,6 +28,10 @@ const EnvironmentFields = {
   }),
   accounts: z.array(AccountInput).max(QA_ENV_LIMITS.accounts).optional().openapi({
     description: 'Full replacement list of test accounts, in display order.',
+  }),
+  isDefault: z.boolean().optional().openapi({
+    description:
+      'true makes this the project default (any other default is cleared); false clears it. The default is where a session\'s "Run QA Tests" runs.',
   }),
 };
 
@@ -59,6 +64,7 @@ export const QaEnvironmentComponent = registerComponent(
       baseUrl: z.string(),
       notes: z.string(),
       accounts: z.array(AccountComponent),
+      isDefault: z.boolean(),
       position: z.number().int(),
       createdAt: z.string(),
       updatedAt: z.string(),
@@ -143,6 +149,46 @@ registerPath({
   request: { params: envParams },
   responses: {
     200: ok('Deleted.', z.object({ ok: z.literal(true) })),
+    403: forbidden,
+    404: notFound,
+  },
+});
+
+export const UpdateQaProjectSettingsRequestSchema = z.object({
+  autoQaDelayMinutes: z.number().int().min(0).max(QA_SESSION_DELAY_MAX).optional().openapi({
+    description:
+      'Minutes a session-requested QA run waits after the session merged, so the deploy can reach the default environment.',
+  }),
+});
+
+const QaProjectSettingsComponent = registerComponent(
+  'QaProjectSettings',
+  z.object({ projectId: z.string(), autoQaDelayMinutes: z.number().int() }),
+);
+const SettingsEnvelope = z.object({ settings: QaProjectSettingsComponent });
+const SETTINGS = '/api/projects/{projectId}/qa/settings';
+
+registerPath({
+  method: 'get',
+  path: SETTINGS,
+  tags: TAGS,
+  summary: "Read the project's QA settings",
+  request: { params: projectParams },
+  responses: { 200: ok('Settings (defaults when never saved).', SettingsEnvelope), 404: notFound },
+});
+
+registerPath({
+  method: 'put',
+  path: SETTINGS,
+  tags: TAGS,
+  summary: "Update the project's QA settings",
+  request: {
+    params: projectParams,
+    body: { content: json(UpdateQaProjectSettingsRequestSchema) },
+  },
+  responses: {
+    200: ok('Updated settings.', SettingsEnvelope),
+    400: invalid,
     403: forbidden,
     404: notFound,
   },

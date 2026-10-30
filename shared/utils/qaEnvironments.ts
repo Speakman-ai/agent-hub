@@ -20,6 +20,8 @@ export interface QaEnvironmentWire {
   baseUrl: string;
   notes: string;
   accounts: QaEnvironmentAccountWire[];
+  /** Where a session's "Run QA Tests" runs. At most one per project. */
+  isDefault?: boolean;
   position: number;
   createdAt: string;
   updatedAt: string;
@@ -36,6 +38,23 @@ export interface QaEnvironmentInput {
     password?: string;
     notes: string;
   }>;
+}
+
+/** Project-level QA options. */
+export interface QaProjectSettingsWire {
+  projectId: string;
+  /** Minutes a session-requested QA run waits after the session merged. */
+  autoQaDelayMinutes: number;
+}
+
+export const QA_AUTO_DELAY_MAX_MINUTES = 240;
+
+/** Parse the delay field; null when it is not a whole number in range. */
+export function parseQaAutoDelay(raw: string): number | null {
+  const t = raw.trim();
+  if (!/^\d+$/.test(t)) return null;
+  const n = Number(t);
+  return n <= QA_AUTO_DELAY_MAX_MINUTES ? n : null;
 }
 
 /** What the server returns in place of a saved password. */

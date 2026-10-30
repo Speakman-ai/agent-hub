@@ -51,10 +51,15 @@ import {
   Download,
   Package,
   Settings,
+  SquareCheck,
+  ClipboardCheck,
 } from 'lucide-react-native';
 /** @type {Record<string, React.ComponentType<{ size?: number, color?: string, strokeWidth?: number, style?: object }>>} */
 export const APP_LUCIDE_ICONS: Record<string, any> = {
   menu: Menu,
+  checkbox: SquareCheck,
+  'square-outline': Square,
+  'clipboard-check-outline': ClipboardCheck,
   'chevron-down': ChevronDown,
   'chevron-forward': ChevronRight,
   'arrow-redo-outline': Redo2,

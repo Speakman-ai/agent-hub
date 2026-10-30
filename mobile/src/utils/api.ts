@@ -9,7 +9,12 @@ import type {
 } from '@shared/utils/reminders';
 import type { UploadedAttachment } from '@shared/types/uploads';
 import type { ChatDigestSaveRequest } from '@shared/utils/chatDigest';
-import type { QaEnvironmentInput, QaEnvironmentWire } from '@shared/utils/qaEnvironments';
+import type {
+  QaEnvironmentInput,
+  QaEnvironmentWire,
+  QaProjectSettingsWire,
+} from '@shared/utils/qaEnvironments';
+import type { QaSessionStateWire } from '@shared/utils/qaSessionRequest';
 import type { RoutineDraftWire } from '@shared/utils/routineFromRecording';
 import { getApiBaseUrl, getAuthHeaders } from './config';
 import { buildNotesListUrl, buildNoteUrl } from './notesUrl';
@@ -877,6 +882,34 @@ export const api = {
       `/projects/${encodeURIComponent(projectId)}/qa/environments/${encodeURIComponent(environmentId)}`,
       { method: 'DELETE' },
     ),
+  setQaEnvironmentDefault: (
+    projectId: string,
+    environmentId: string,
+    isDefault: boolean,
+  ): Promise<{ environment: QaEnvironmentWire }> =>
+    fetchJSON(
+      `/projects/${encodeURIComponent(projectId)}/qa/environments/${encodeURIComponent(environmentId)}`,
+      { method: 'PATCH', body: JSON.stringify({ isDefault }) },
+    ),
+  getQaSettings: (projectId: string): Promise<{ settings: QaProjectSettingsWire }> =>
+    fetchJSON(`/projects/${encodeURIComponent(projectId)}/qa/settings`),
+  updateQaSettings: (
+    projectId: string,
+    input: { autoQaDelayMinutes: number },
+  ): Promise<{ settings: QaProjectSettingsWire }> =>
+    fetchJSON(`/projects/${encodeURIComponent(projectId)}/qa/settings`, {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    }),
+  getSessionQaRequest: (sessionId: string): Promise<QaSessionStateWire> =>
+    fetchJSON(`/sessions/${encodeURIComponent(sessionId)}/qa-request`),
+  setSessionQaRequestArmed: (sessionId: string, armed: boolean): Promise<QaSessionStateWire> =>
+    fetchJSON(`/sessions/${encodeURIComponent(sessionId)}/qa-request`, {
+      method: 'PUT',
+      body: JSON.stringify({ armed }),
+    }),
+  runSessionQaRequest: (sessionId: string): Promise<QaSessionStateWire> =>
+    fetchJSON(`/sessions/${encodeURIComponent(sessionId)}/qa-request/run`, { method: 'POST' }),
   listQaPlans: (projectId: string): Promise<QaPlanListResponse> =>
     fetchJSON(`/projects/${encodeURIComponent(projectId)}/qa/plans`),
   getQaPlan: (projectId: string, planId: string): Promise<QaPlanDetail> =>

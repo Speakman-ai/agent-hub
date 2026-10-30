@@ -82,6 +82,7 @@ import { markSessionDiscarded, withoutChangesReady } from './utils/sessionDiscar
 import AutopilotPrCounter from './components/finalize/AutopilotPrCounter';
 import AutopilotUnstickButton from './components/finalize/AutopilotUnstickButton';
 import FinalizeAutomationSelect from './components/finalize/FinalizeAutomationSelect';
+import SessionQaControl from './components/finalize/SessionQaControl';
 import FinalizeChecksLiveBlock from './components/finalize/FinalizeChecksLiveBlock';
 import ResolveSessionPrBanner from './components/ResolveSessionPrBanner';
 import SessionApprovalBanner from './components/SessionApprovalBanner';
@@ -3259,6 +3260,22 @@ export default function App({ initialView }: any = {}) {
             setPullsListRefreshNonce((n: any) => n + 1);
           }
           if (data.projectId) refreshOpenPullCount(data.projectId);
+          if (data.action === 'merged') {
+            // A merge decides whether a session's "Run QA Tests" is a checkbox or a button.
+            window.dispatchEvent(
+              new CustomEvent('qa_update', {
+                detail: { projectId: data.projectId ?? null, action: 'pr_merged' },
+              }),
+            );
+          }
+          break;
+
+        case 'webhook_pr_merged':
+          window.dispatchEvent(
+            new CustomEvent('qa_update', {
+              detail: { projectId: data.projectId ?? null, action: 'pr_merged' },
+            }),
+          );
           break;
 
         case 'projects_updated':
@@ -8513,6 +8530,24 @@ export default function App({ initialView }: any = {}) {
                                       )}
                                     />
                                   ))}
+                                {/* Not gated on Consult: a shipped session flips to Consult,
+                                    which is when the post-merge button is needed. */}
+                                {!chatProjectIsWorkflow &&
+                                  activeSession?.session_mode !== 'qa' &&
+                                  !!activeSession &&
+                                  isSessionWorktreeEnabled(activeSession) && (
+                                    <SessionQaControl
+                                      sessionId={activeSessionId}
+                                      sessionState={activeSession?.state ?? null}
+                                      disabled={!connected}
+                                      onOpenPlan={(planId: string) => {
+                                        setQaFocusPlanId(planId);
+                                        setCurrentView(`qa:${activeChatProject.id}`);
+                                        setSidebarOpen(false);
+                                      }}
+                                      onError={(msg: string) => showToast(msg, 'error', 8000)}
+                                    />
+                                  )}
                               </>
                             ) : null}
                           </div>

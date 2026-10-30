@@ -13,6 +13,7 @@
 import { randomBytes, randomUUID } from 'crypto';
 import { getDb } from './db.js';
 import { decryptSecret, encryptSecret, MASK } from './secret-crypto.js';
+import { QA_SESSION_DELAY_MAX } from './qa-schema.js';
 
 export const QA_ENV_LIMITS = {
   name: 100,
@@ -41,6 +42,7 @@ interface QaEnvironmentRow {
   base_url: string;
   notes: string;
   accounts: string;
+  is_default: number;
   position: number;
   created_at: string;
   updated_at: string;
@@ -63,6 +65,8 @@ export interface QaEnvironmentView {
   baseUrl: string;
   notes: string;
   accounts: QaEnvironmentAccountView[];
+  /** The environment a session's "Run QA Tests" targets. At most one per project. */
+  isDefault: boolean;
   position: number;
   createdAt: string;
   updatedAt: string;
@@ -83,6 +87,8 @@ export interface QaEnvironmentInput {
   baseUrl?: string;
   notes?: string;
   accounts?: QaEnvironmentAccountInput[];
+  /** true makes this the project default (clearing any other); false clears it. */
+  isDefault?: boolean;
 }
 
 export class QaEnvironmentError extends Error {
@@ -118,6 +124,7 @@ function toView(row: QaEnvironmentRow): QaEnvironmentView {
       hasPassword: !!a.password_enc,
       notes: a.notes,
     })),
+    isDefault: row.is_default === 1,
     position: row.position,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -138,6 +145,27 @@ function row(projectId: string, id: string): QaEnvironmentRow | undefined {
 
 export function listQaEnvironments(projectId: string): QaEnvironmentView[] {
   return rows(projectId).map(toView);
+}
+
+/** The project's default environment, or null when none is marked. */
+export function getDefaultQaEnvironment(projectId: string): QaEnvironmentView | null {
+  const r = rows(projectId).find((e) => e.is_default === 1);
+  return r ? toView(r) : null;
+}
+
+function clearOtherDefaults(projectId: string, exceptId: string): void {
+  getDb()
+    .prepare(
+      `UPDATE qa_environments SET is_default = 0, updated_at = datetime('now')
+        WHERE project_id = ? AND id != ? AND is_default = 1`,
+    )
+    .run(projectId, exceptId);
+}
+
+function cleanIsDefault(value: unknown): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'boolean') throw new QaEnvironmentError('isDefault must be a boolean');
+  return value;
 }
 
 export function getQaEnvironment(projectId: string, id: string): QaEnvironmentView | null {
@@ -238,20 +266,20 @@ export function createQaEnvironment(
   assertUniqueName(projectId, name, null);
   const id = randomUUID();
   const position = existing.reduce((m, r) => Math.max(m, r.position + 1), 0);
-  getDb()
-    .prepare(
-      `INSERT INTO qa_environments (id, project_id, name, base_url, notes, accounts, position)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
-      id,
-      projectId,
-      name,
-      cleanBaseUrl(input.baseUrl),
-      cleanText(input.notes, 'notes', QA_ENV_LIMITS.notes),
-      JSON.stringify(mergeAccounts(input.accounts ?? [], [])),
-      position,
-    );
+  const isDefault = cleanIsDefault(input.isDefault) === true;
+  const baseUrl = cleanBaseUrl(input.baseUrl);
+  const notes = cleanText(input.notes, 'notes', QA_ENV_LIMITS.notes);
+  const accounts = JSON.stringify(mergeAccounts(input.accounts ?? [], []));
+  getDb().transaction(() => {
+    getDb()
+      .prepare(
+        `INSERT INTO qa_environments
+           (id, project_id, name, base_url, notes, accounts, is_default, position)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(id, projectId, name, baseUrl, notes, accounts, isDefault ? 1 : 0, position);
+    if (isDefault) clearOtherDefaults(projectId, id);
+  })();
   return getQaEnvironment(projectId, id)!;
 }
 
@@ -264,22 +292,24 @@ export function updateQaEnvironment(
   if (!current) throw new QaEnvironmentError('Environment not found', 404);
   const name = input.name === undefined ? current.name : cleanName(input.name);
   if (name !== current.name) assertUniqueName(projectId, name, id);
-  getDb()
-    .prepare(
-      `UPDATE qa_environments SET name = ?, base_url = ?, notes = ?, accounts = ?,
-         updated_at = datetime('now')
-       WHERE id = ? AND project_id = ?`,
-    )
-    .run(
-      name,
-      input.baseUrl === undefined ? current.base_url : cleanBaseUrl(input.baseUrl),
-      input.notes === undefined
-        ? current.notes
-        : cleanText(input.notes, 'notes', QA_ENV_LIMITS.notes),
-      JSON.stringify(mergeAccounts(input.accounts, parseAccounts(current.accounts))),
-      id,
-      projectId,
-    );
+  const isDefault = cleanIsDefault(input.isDefault);
+  const baseUrl = input.baseUrl === undefined ? current.base_url : cleanBaseUrl(input.baseUrl);
+  const notes =
+    input.notes === undefined
+      ? current.notes
+      : cleanText(input.notes, 'notes', QA_ENV_LIMITS.notes);
+  const accounts = JSON.stringify(mergeAccounts(input.accounts, parseAccounts(current.accounts)));
+  const nextDefault = isDefault === undefined ? current.is_default : isDefault ? 1 : 0;
+  getDb().transaction(() => {
+    getDb()
+      .prepare(
+        `UPDATE qa_environments SET name = ?, base_url = ?, notes = ?, accounts = ?,
+           is_default = ?, updated_at = datetime('now')
+         WHERE id = ? AND project_id = ?`,
+      )
+      .run(name, baseUrl, notes, accounts, nextDefault, id, projectId);
+    if (isDefault === true) clearOtherDefaults(projectId, id);
+  })();
   return getQaEnvironment(projectId, id)!;
 }
 
@@ -288,6 +318,46 @@ export function deleteQaEnvironment(projectId: string, id: string): boolean {
     .prepare('DELETE FROM qa_environments WHERE project_id = ? AND id = ?')
     .run(projectId, id);
   return r.changes > 0;
+}
+
+// --- Project QA settings ---------------------------------------------------
+
+export interface QaProjectSettingsView {
+  projectId: string;
+  /** Minutes a session-requested QA run waits after the session merged. */
+  autoQaDelayMinutes: number;
+}
+
+export function getQaProjectSettings(projectId: string): QaProjectSettingsView {
+  const r = getDb()
+    .prepare('SELECT auto_qa_delay_minutes FROM qa_project_settings WHERE project_id = ?')
+    .get(projectId) as { auto_qa_delay_minutes: number } | undefined;
+  return { projectId, autoQaDelayMinutes: r?.auto_qa_delay_minutes ?? 0 };
+}
+
+export function updateQaProjectSettings(
+  projectId: string,
+  input: { autoQaDelayMinutes?: unknown },
+): QaProjectSettingsView {
+  const current = getQaProjectSettings(projectId);
+  let delay = current.autoQaDelayMinutes;
+  if (input.autoQaDelayMinutes !== undefined) {
+    const v = input.autoQaDelayMinutes;
+    if (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > QA_SESSION_DELAY_MAX) {
+      throw new QaEnvironmentError(
+        `autoQaDelayMinutes must be a whole number from 0 to ${QA_SESSION_DELAY_MAX}`,
+      );
+    }
+    delay = v;
+  }
+  getDb()
+    .prepare(
+      `INSERT INTO qa_project_settings (project_id, auto_qa_delay_minutes) VALUES (?, ?)
+       ON CONFLICT(project_id) DO UPDATE SET
+         auto_qa_delay_minutes = excluded.auto_qa_delay_minutes, updated_at = datetime('now')`,
+    )
+    .run(projectId, delay);
+  return getQaProjectSettings(projectId);
 }
 
 // --- Password placeholders ----------------------------------------------
