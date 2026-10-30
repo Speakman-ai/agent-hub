@@ -51,6 +51,7 @@ import { spotReclaimDetail } from './spot-interruption.js';
 import { hubUnavailableDetail } from './hub-unavailable.js';
 import { runnerLostDetail } from './runner-lost.js';
 import { DEFAULT_FLEET_MAX_AGENTS, DEFAULT_FLEET_MIN_AGENTS } from './runner-fleet-constants.js';
+import { reapIdleRunnerInstances } from './runner-instance-reaper.js';
 
 interface FleetScalerConfig {
   /** Pool label for logs and per-pool state (`default` or `ondemand`). */
@@ -449,6 +450,17 @@ export async function reconcileFleetCapacity(now: number = Date.now()): Promise<
           `[fleet-scaler] reconcile failed (${pool.pool} pool): ${(err as Error).message}`,
         );
       }
+    }
+    // Service sizing only frees TASKS; ECS managed scaling is slow to remove
+    // the empty instances underneath, so terminate those directly.
+    const servicesByCluster = new Map<string, { services: string[]; region?: string }>();
+    for (const pool of pools) {
+      const entry = servicesByCluster.get(pool.cluster) ?? { services: [], region: pool.region };
+      entry.services.push(pool.service);
+      servicesByCluster.set(pool.cluster, entry);
+    }
+    for (const [cluster, { services, region }] of servicesByCluster) {
+      await reapIdleRunnerInstances({ cluster, services, region, now });
     }
   } catch (err) {
     console.error(`[fleet-scaler] reconcile failed: ${(err as Error).message}`);

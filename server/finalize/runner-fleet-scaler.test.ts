@@ -18,6 +18,10 @@ import {
   startFleetScaler,
   type ScalerHysteresis,
 } from './runner-fleet-scaler.js';
+import {
+  __resetIdleReaperStateForTests,
+  __setIdleReaperClientsForTests,
+} from './runner-instance-reaper.js';
 import { getOrgsDb, initOrgsDb, setOrgsDbPathForTests } from '../orgs.js';
 import {
   claimRunnerJob,
@@ -889,6 +893,38 @@ describe('on-demand deploy pool (per-class scaling)', () => {
     expect(runnerInflightCount(undefined, { include: ['ondemand'] })).toBe(1);
     expect(runnerInflightCount(undefined, { exclude: ['ondemand'] })).toBe(0);
     expect(runnerQueueDepth(undefined, { include: [] })).toBe(0);
+  });
+
+  it('runs the idle-instance reaper once per cluster with every pool service', async () => {
+    process.env.FINALIZE_FLEET_IDLE_INSTANCE_REAP = '1';
+    __resetIdleReaperStateForTests();
+    const reaperCalls: Array<{ cmd: string; input: Record<string, unknown> }> = [];
+    const record = async (cmd: {
+      constructor: { name: string };
+      input: Record<string, unknown>;
+    }) => {
+      reaperCalls.push({ cmd: cmd.constructor.name, input: cmd.input });
+      if (cmd.constructor.name === 'DescribeClustersCommand') {
+        return { clusters: [{ pendingTasksCount: 0 }] };
+      }
+      if (cmd.constructor.name === 'DescribeServicesCommand') return { services: [] };
+      return { containerInstanceArns: [] };
+    };
+    __setIdleReaperClientsForTests({
+      ecs: { send: record },
+      autoscaling: { send: record },
+    } as never);
+    try {
+      await reconcileFleetCapacity(5_000);
+      expect(reaperCalls.filter((c) => c.cmd === 'DescribeClustersCommand')).toHaveLength(1);
+      expect(reaperCalls.find((c) => c.cmd === 'DescribeServicesCommand')?.input).toEqual({
+        cluster: 'hub-finalize-runner',
+        services: ['hub-finalize-runner-agent', 'hub-finalize-runner-agent-ondemand'],
+      });
+    } finally {
+      process.env.FINALIZE_FLEET_IDLE_INSTANCE_REAP = '0';
+      __resetIdleReaperStateForTests();
+    }
   });
 });
 

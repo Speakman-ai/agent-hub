@@ -135,6 +135,34 @@ resource "aws_iam_role_policy" "hub_fleet_scale" {
         Action   = ["ecs:UpdateTaskProtection"]
         Resource = ["arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:task/${var.project_name}-finalize-runner/*"]
       },
+      {
+        # Idle-instance reaper (runner-instance-reaper.ts): read cluster demand
+        # and list the fleet's container instances.
+        Effect = "Allow"
+        Action = ["ecs:DescribeClusters", "ecs:ListContainerInstances"]
+        Resource = [
+          "arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:cluster/${var.project_name}-finalize-runner",
+        ]
+      },
+      {
+        # ...then drain an empty instance before terminating it (or reactivate it
+        # when a task landed in the meantime).
+        Effect = "Allow"
+        Action = ["ecs:DescribeContainerInstances", "ecs:UpdateContainerInstancesState"]
+        Resource = [
+          "arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:container-instance/${var.project_name}-finalize-runner/*",
+        ]
+      },
+      {
+        # Terminate through Auto Scaling with a desired-capacity decrement so the
+        # ASG does not relaunch it. Not blocked by ECS-managed scale-in protection.
+        # Prefix covers the Spot fleet and the -ondemand- deploy pool ASGs.
+        Effect = "Allow"
+        Action = ["autoscaling:TerminateInstanceInAutoScalingGroup"]
+        Resource = [
+          "arn:aws:autoscaling:${var.aws_region}:${data.aws_caller_identity.current.account_id}:autoScalingGroup:*:autoScalingGroupName/${var.project_name}-finalize-runner-*",
+        ]
+      },
     ]
   })
 }

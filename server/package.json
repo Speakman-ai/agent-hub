@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@asteasolutions/zod-to-openapi": "^8.5.0",
+    "@aws-sdk/client-auto-scaling": "^3.1104.0",
     "@aws-sdk/client-cloudwatch": "^3.1104.0",
     "@aws-sdk/client-cost-explorer": "^3.1105.0",
     "@aws-sdk/client-ec2": "^3.1104.0",
