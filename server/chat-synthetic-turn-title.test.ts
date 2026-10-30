@@ -15,6 +15,7 @@ import { getStmts } from './db.js';
 import createChatHandler, { type ChatHandlerDeps } from './chat.js';
 import type { ActiveChatProcess } from './active-chat-process.js';
 import { buildCommitNudgeCliPrompt } from './local-commit-reminder.js';
+import { buildBackgroundShellWakePrompt } from './background-shells/background-shell-watch.js';
 import type { Agent, EnrichedAgent, Project, SessionRow } from './types.js';
 
 vi.mock('./per-user-cli-spawn.js', () => ({
@@ -119,6 +120,31 @@ describe('handleChat — synthetic turns do not hijack the session title', () =>
       sessionId,
       content: 'You left uncommitted changes on the branch and there is no local commit.',
       _autoContinuation: true,
+    });
+
+    expect(sessionName(sessionId)).toBe(initialName);
+  });
+
+  it('does not rename the session on a background-shell wake turn', async () => {
+    const initialName = 'Run outbound safety tests';
+    const { agentId, sessionId } = seedAutoTitledSession(`${prefix}-bgwake`, initialName);
+    const handleChat = stubChatDeps(agentId);
+
+    await handleChat(null, {
+      type: 'chat',
+      agentId,
+      sessionId,
+      content: buildBackgroundShellWakePrompt([
+        {
+          id: 'sh-1',
+          label: 'outbound safety tests',
+          command: './run-tests.sh',
+          status: 'exited',
+          exit_code: 0,
+          logTail: ['14 passed'],
+        } as Parameters<typeof buildBackgroundShellWakePrompt>[0][number],
+      ]),
+      _backgroundShellWake: true,
     });
 
     expect(sessionName(sessionId)).toBe(initialName);

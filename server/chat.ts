@@ -3180,6 +3180,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         isAutoContinuation,
         skipUserMessagePersist: msg._skipUserMessagePersist,
         seedTurn: msg._seedTurn,
+        backgroundShellWake: msg._backgroundShellWake,
       });
 
       // Auto-rename on every user turn while the title is still owned by the

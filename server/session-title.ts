@@ -214,14 +214,18 @@ export function pickInitialSessionTitle(
  * with `skipUserMessagePersist` and must NOT title from it, or their prompt text
  * (e.g. "You left uncommitted changes on '<branch>'…") hijacks the session name
  * and the linked card / PR title derived from it.
+ *
+ * Background-shell wakes and progress check-ins are persisted like user turns
+ * but are written by the Hub, so they must not title the session either.
  */
 export function isRealUserTitleTurn(input: {
   fromQueue?: boolean;
   isAutoContinuation?: boolean;
   skipUserMessagePersist?: boolean;
   seedTurn?: boolean;
+  backgroundShellWake?: boolean;
 }): boolean {
-  if (input.seedTurn) return false;
+  if (input.seedTurn || input.backgroundShellWake) return false;
   if (input.fromQueue) return true;
   return !input.isAutoContinuation && !input.skipUserMessagePersist;
 }

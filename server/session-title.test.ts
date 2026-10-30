@@ -1098,6 +1098,11 @@ describe('isRealUserTitleTurn', () => {
     expect(isRealUserTitleTurn({ seedTurn: true, fromQueue: true })).toBe(false);
   });
 
+  it('rejects background-shell wake and check-in turns', () => {
+    expect(isRealUserTitleTurn({ backgroundShellWake: true })).toBe(false);
+    expect(isRealUserTitleTurn({ backgroundShellWake: true, fromQueue: true })).toBe(false);
+  });
+
   it('treats a plain persisted user turn as real', () => {
     expect(isRealUserTitleTurn({})).toBe(true);
     expect(
