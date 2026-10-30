@@ -120,7 +120,10 @@ import {
   broadcastReleaseNotificationUpdate,
   listReleaseNotificationOutboxByDeployment,
   listReleaseNotificationRecipientsByDeployment,
+  releaseDigestSubject,
   releaseNotificationHistoryItem,
+  ReleaseDigestResendError,
+  resendReleaseDigest,
   retryReleaseNotificationOutbox,
 } from '../release-notification-outbox.js';
 import {
@@ -131,6 +134,8 @@ import {
 import {
   AdjustDeploymentReleaseItemRequestSchema,
   ApproveDeploymentRequestSchema,
+  GenerateReleaseDigestRequestSchema,
+  ResendReleaseDigestRequestSchema,
   CancelDeploymentRequestSchema,
   CreateDeployReleaseGateRequestSchema,
   CreateDeployScheduleRequestSchema,
@@ -1794,6 +1799,10 @@ export default function createDeploymentRoutes(
       if (!project) return res.status(404).json({ error: 'Project not found' });
       const deployment = deploymentForProject(projectId, req.params.deploymentId as string);
       if (!deployment) return res.status(404).json({ error: 'Deployment not found' });
+      const parsed = GenerateReleaseDigestRequestSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid body' });
+      }
 
       try {
         const result = await generateDeploymentReleaseDigest({
@@ -1802,14 +1811,53 @@ export default function createDeploymentRoutes(
           cfg: deps.config,
           userId: (req as AuthenticatedRequest).authUserId ?? null,
           runner: opts.releaseDigestRunner,
+          releaseDigestPrompt: parsed.data.releaseDigestPrompt,
         });
         return res.json({
           digestMarkdown: result.digestMarkdown,
+          subject: releaseDigestSubject(deployment),
           settings: result.settings,
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return res.status(message === 'Deployment not found' ? 404 : 500).json({ error: message });
+      }
+    },
+  );
+
+  router.post(
+    '/api/projects/:projectId/deployments/:deploymentId/release-digest/resend',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      if (!deps.findProject(projectId)) return res.status(404).json({ error: 'Project not found' });
+      const deployment = deploymentForProject(projectId, req.params.deploymentId as string);
+      if (!deployment) return res.status(404).json({ error: 'Deployment not found' });
+      if (deployment.status !== 'success') {
+        return res
+          .status(409)
+          .json({ error: 'Only successful deployments can send a release digest' });
+      }
+      const parsed = ResendReleaseDigestRequestSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid body' });
+      }
+      try {
+        const queued = resendReleaseDigest({
+          deployment,
+          digestMarkdown: parsed.data.digestMarkdown,
+          subject: parsed.data.subject,
+          broadcast: deps.broadcast,
+        });
+        return res.status(202).json({
+          queued: queued.map(releaseNotificationHistoryItem),
+          releaseNotifications: releaseNotificationsDto(deployment.id),
+        });
+      } catch (err) {
+        if (err instanceof ReleaseDigestResendError) {
+          return res.status(err.status).json({ error: err.message });
+        }
+        throw err;
       }
     },
   );

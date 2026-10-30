@@ -37,6 +37,8 @@ import {
   listRetryEligibleReleaseNotificationOutbox,
   markReleaseNotificationOutboxError,
   releaseNotificationRecipientItem,
+  ReleaseDigestResendError,
+  resendReleaseDigest,
   retryReleaseNotificationOutbox,
 } from './release-notification-outbox.js';
 
@@ -901,5 +903,48 @@ describe('release digest generation failure', () => {
       status: 'sent',
       body_text: '### Field\n\nCrews see pay rates again.',
     });
+  });
+});
+
+describe('release digest resend', () => {
+  it('delivers the edited body to every recipient even after the original was sent', async () => {
+    sendEmailMock.mockResolvedValue({ sent: true });
+    const deployment = successfulProductionDeployment();
+    const cardId = insertReleaseCard({ cardId: 'card-resend-1' });
+    ensureDeploymentReleaseItem({ deploymentId: deployment.id, cardId });
+    addReleaseDigestRecipient({ projectId: P, email: 'ops@example.com' });
+    await enqueueReleaseNotificationsForDeployment(deployment, digestOptions);
+    await deliverReleaseNotificationOutboxBatch();
+    sendEmailMock.mockClear();
+
+    const queued = resendReleaseDigest({
+      deployment,
+      digestMarkdown: '## Admin Updates\n\nHand-edited digest.',
+    });
+    expect(queued).toHaveLength(1);
+    const delivered = await deliverReleaseNotificationOutboxBatch();
+
+    expect(delivered.map((row) => row.status)).toEqual(['sent']);
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    expect(sendEmailMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: 'ops@example.com',
+        subject: 'Release digest for production abc123',
+        text: '## Admin Updates\n\nHand-edited digest.',
+      }),
+    );
+    const history = listReleaseNotificationOutboxByDeployment(deployment.id);
+    expect(history.map((row) => row.status)).toEqual(['sent', 'sent']);
+  });
+
+  it('rejects empty text and a project with no enabled recipients', () => {
+    const deployment = successfulProductionDeployment();
+    expect(() => resendReleaseDigest({ deployment, digestMarkdown: '  ' })).toThrow(
+      ReleaseDigestResendError,
+    );
+    expect(() => resendReleaseDigest({ deployment, digestMarkdown: 'Body' })).toThrow(
+      'No enabled release digest recipients.',
+    );
+    expect(listReleaseNotificationOutboxByDeployment(deployment.id)).toHaveLength(0);
   });
 });

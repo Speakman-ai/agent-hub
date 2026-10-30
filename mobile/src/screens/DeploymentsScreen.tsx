@@ -30,6 +30,7 @@ import ProjectScreenHeader from '../components/ProjectScreenHeader';
 import EnvironmentsManagementSection from '../components/settings/EnvironmentsManagementSection';
 import ReleaseNotificationSettingsSection from '../components/settings/ReleaseNotificationSettingsSection';
 import DeploySettingsEditor from '../components/settings/DeploySettingsEditor';
+import ReleaseDigestResendPanel from '../components/ReleaseDigestResendPanel';
 import { useApp } from '../context/AppContext';
 import { colors } from '../theme/colors';
 import { api } from '../utils/api';
@@ -897,6 +898,18 @@ export default function DeploymentsScreen({ route, navigation }: any) {
                   );
                 })
               )}
+
+              {isAdmin && projectId && selectedDeployment.status === 'success' ? (
+                <ReleaseDigestResendPanel
+                  key={selectedDeployment.id}
+                  projectId={projectId}
+                  deploymentId={selectedDeployment.id}
+                  onQueued={(releaseNotifications) => {
+                    setSelected((prev: any) => (prev ? { ...prev, releaseNotifications } : prev));
+                    setRecipients(null);
+                  }}
+                />
+              ) : null}
 
               {isAdmin ? (
                 <View style={styles.recipientsSection}>

@@ -5698,6 +5698,8 @@ components:
       properties:
         digestMarkdown:
           type: string
+        subject:
+          type: string
         settings:
           type: object
           properties:
@@ -5711,7 +5713,22 @@ components:
             - updatedAt
       required:
         - digestMarkdown
+        - subject
         - settings
+    ReleaseDigestResendResponse:
+      type: object
+      properties:
+        queued:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReleaseNotificationHistoryItem"
+        releaseNotifications:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReleaseNotificationHistoryItem"
+      required:
+        - queued
+        - releaseNotifications
     ReleaseNotificationRetryResponse:
       type: object
       properties:
@@ -15966,6 +15983,40 @@ components:
         - factBoundedSystemTemplate
         - updatedBy
         - updatedAt
+    TestReleaseDigestResponse:
+      type: object
+      properties:
+        digestMarkdown:
+          type: string
+        subject:
+          type: string
+        deployment:
+          type: object
+          properties:
+            id:
+              type: string
+            environment:
+              type: string
+            label:
+              type: string
+            status:
+              type: string
+            completedAt:
+              type: string
+              nullable: true
+          required:
+            - id
+            - environment
+            - label
+            - status
+            - completedAt
+        releaseItemCount:
+          type: integer
+      required:
+        - digestMarkdown
+        - subject
+        - deployment
+        - releaseItemCount
     ReleaseDigestRecipientsResponse:
       type: object
       properties:
@@ -32829,7 +32880,7 @@ paths:
       tags:
         - Deployments
       summary: Generate a deployment release digest draft
-      description: Admin+. Generates a customer-facing markdown release digest draft from included release items. The model prompt always wraps the stored project release digest prompt inside the fixed fact-bounded generation template.
+      description: Admin+. Generates a customer-facing markdown release digest draft from included release items. The model prompt always wraps the operator prompt (the stored project prompt, or `releaseDigestPrompt` when supplied) inside the fixed fact-bounded generation template. Nothing is sent.
       parameters:
         - schema:
             type: string
@@ -32846,9 +32897,12 @@ paths:
           application/json:
             schema:
               type: object
-              properties: {}
-              additionalProperties:
-                nullable: true
+              properties:
+                releaseDigestPrompt:
+                  type: string
+                  minLength: 1
+                  maxLength: 4000
+                  description: Draft prompt to generate with instead of the saved project prompt.
       responses:
         "200":
           description: Generated release digest draft.
@@ -32856,6 +32910,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DeploymentReleaseDigestResponse"
+        "400":
+          description: Invalid prompt.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
         "403":
           description: Admin role required.
           content:
@@ -32870,6 +32930,70 @@ paths:
                 $ref: "#/components/schemas/DeploymentErrorResponse"
         "500":
           description: Digest generation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+  /api/projects/{projectId}/deployments/{deploymentId}/release-digest/resend:
+    post:
+      tags:
+        - Deployments
+      summary: Send an edited release digest again
+      description: Admin+. Queues the supplied (operator-reviewed) digest markdown to every enabled release digest recipient as a new send. Earlier notification rows for the deployment are kept, so history shows both. Delivery happens on the next outbox worker tick.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: deploymentId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                digestMarkdown:
+                  type: string
+                  minLength: 1
+                  maxLength: 50000
+                subject:
+                  type: string
+                  nullable: true
+                  maxLength: 200
+              required:
+                - digestMarkdown
+      responses:
+        "202":
+          description: Digest queued for every enabled recipient.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseDigestResendResponse"
+        "400":
+          description: Invalid digest text or subject.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "403":
+          description: Admin role required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "404":
+          description: Project or deployment not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "409":
+          description: Deployment did not succeed, or no recipients are enabled.
           content:
             application/json:
               schema:
@@ -61612,6 +61736,72 @@ paths:
                 $ref: "#/components/schemas/ReleaseNotificationSettingsErrorResponse"
         "404":
           description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseNotificationSettingsErrorResponse"
+  /api/projects/{projectId}/release-notification-settings/test-digest:
+    post:
+      tags:
+        - Deployments
+      summary: Test-generate a release digest
+      description: Admin+ only. Generates a release digest with the supplied draft prompt (or the saved one) against a real deployment, without saving the prompt or sending anything. Runs on the caller's Claude login.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                releaseDigestPrompt:
+                  type: string
+                  minLength: 1
+                  maxLength: 4000
+                  description: Draft prompt to try. Defaults to the saved project prompt.
+                deploymentId:
+                  type: string
+                  minLength: 1
+                  description: Deployment whose release items to use. Defaults to the newest deployment (any status) with included release items.
+      responses:
+        "200":
+          description: Generated digest draft and the deployment it was built from.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TestReleaseDigestResponse"
+        "400":
+          description: Invalid prompt.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseNotificationSettingsErrorResponse"
+        "403":
+          description: Caller is below Admin role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseNotificationSettingsErrorResponse"
+        "404":
+          description: Project or deployment not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseNotificationSettingsErrorResponse"
+        "409":
+          description: No deployment with release items to test against.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseNotificationSettingsErrorResponse"
+        "500":
+          description: Digest generation failed.
           content:
             application/json:
               schema:

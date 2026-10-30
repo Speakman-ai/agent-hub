@@ -30,6 +30,7 @@ import EnvironmentsManagementSection from './EnvironmentsManagementSection';
 import DeploySettingsEditor from './DeploySettingsEditor';
 import ReleaseNotificationSettingsSection from './ReleaseNotificationSettingsSection';
 import ProjectEmailLogoSection from './ProjectEmailLogoSection';
+import ReleaseDigestResendPanel from './ReleaseDigestResendPanel';
 import { deploymentReleaseLabel } from '@shared/utils/deploymentReleaseLabel';
 
 const DEPLOYMENT_WS = 'agenthub-deployment-ws';
@@ -1082,6 +1083,23 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
                         })}
                       </div>
                     )}
+
+                    {isAdmin && projectId && selectedDeployment.status === 'success' ? (
+                      <div className="mt-3">
+                        <ReleaseDigestResendPanel
+                          key={selectedDeployment.id}
+                          projectId={projectId}
+                          deploymentId={selectedDeployment.id}
+                          showToast={onNotify}
+                          onQueued={(releaseNotifications) => {
+                            setSelected((prev: any) =>
+                              prev ? { ...prev, releaseNotifications } : prev,
+                            );
+                            setRecipients(null);
+                          }}
+                        />
+                      </div>
+                    ) : null}
 
                     {isAdmin ? (
                       <div className="mt-4 border-t border-gray-800 pt-3">

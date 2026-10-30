@@ -2423,6 +2423,40 @@ export const api = {
   // to, including recipient email (PII). Server gates with requireRole('Admin').
   getDeploymentNotificationRecipients: (projectId: any, deploymentId: any) =>
     fetchJSON(`/projects/${projectId}/deployments/${deploymentId}/notification-recipients`),
+  // Admin: generate a digest draft for a deployment. Nothing is sent.
+  generateReleaseDigest: (
+    projectId: string,
+    deploymentId: string,
+    body: { releaseDigestPrompt?: string } = {},
+  ) =>
+    fetchJSON<{ digestMarkdown: string; subject: string }>(
+      `/projects/${projectId}/deployments/${deploymentId}/release-digest`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  // Admin: queue an edited digest to every enabled recipient as a new send.
+  resendReleaseDigest: (
+    projectId: string,
+    deploymentId: string,
+    body: { digestMarkdown: string; subject?: string | null },
+  ) =>
+    fetchJSON<{ queued: any[]; releaseNotifications: any[] }>(
+      `/projects/${projectId}/deployments/${deploymentId}/release-digest/resend`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  // Admin: test-generate a digest with a draft prompt against a real deployment.
+  testReleaseDigest: (
+    projectId: string,
+    body: { releaseDigestPrompt?: string; deploymentId?: string } = {},
+  ) =>
+    fetchJSON<{
+      digestMarkdown: string;
+      subject: string;
+      deployment: { id: string; environment: string; label: string; status: string };
+      releaseItemCount: number;
+    }>(`/projects/${projectId}/release-notification-settings/test-digest`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   retryReleaseNotification: (projectId: any, deploymentId: any, notificationId: any) =>
     fetchJSON(
       `/projects/${projectId}/deployments/${deploymentId}/release-notifications/${encodeURIComponent(

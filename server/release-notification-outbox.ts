@@ -179,6 +179,76 @@ function renderTicketReleaseBody(
   return lines.join('\n');
 }
 
+export function releaseDigestSubject(
+  deployment: Pick<DeploymentRow, 'environment' | 'ref' | 'meta'>,
+): string {
+  return `Release digest for ${deployment.environment} ${deploymentReleaseLabel(deployment).label}`;
+}
+
+export const RELEASE_DIGEST_RESEND_BODY_MAX_LENGTH = 50_000;
+export const RELEASE_DIGEST_RESEND_SUBJECT_MAX_LENGTH = 200;
+
+export class ReleaseDigestResendError extends Error {
+  constructor(
+    message: string,
+    readonly status: 400 | 409,
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * Queue an operator-approved digest body to every enabled digest recipient as
+ * a fresh send. Earlier rows (sent or held) are left untouched so history shows
+ * both; the new rows go out on the next outbox worker tick.
+ */
+export function resendReleaseDigest(args: {
+  deployment: Pick<DeploymentRow, 'id' | 'project_id' | 'environment' | 'ref' | 'meta'>;
+  digestMarkdown: string;
+  subject?: string | null;
+  broadcast?: BroadcastFn;
+}): ReleaseNotificationOutboxRow[] {
+  const body = args.digestMarkdown.trim();
+  if (!body) throw new ReleaseDigestResendError('Digest text is required.', 400);
+  if (body.length > RELEASE_DIGEST_RESEND_BODY_MAX_LENGTH) {
+    throw new ReleaseDigestResendError(
+      `Digest text must be ${RELEASE_DIGEST_RESEND_BODY_MAX_LENGTH} characters or fewer.`,
+      400,
+    );
+  }
+  const subject = args.subject?.trim() || releaseDigestSubject(args.deployment);
+  if (subject.length > RELEASE_DIGEST_RESEND_SUBJECT_MAX_LENGTH) {
+    throw new ReleaseDigestResendError(
+      `Subject must be ${RELEASE_DIGEST_RESEND_SUBJECT_MAX_LENGTH} characters or fewer.`,
+      400,
+    );
+  }
+  const recipients = listReleaseDigestRecipients(args.deployment.project_id).filter(
+    (recipient) => recipient.enabled,
+  );
+  if (recipients.length === 0) {
+    throw new ReleaseDigestResendError('No enabled release digest recipients.', 409);
+  }
+  const sendId = randomUUID();
+  const rows = recipients.map((recipient) =>
+    enqueueReleaseNotificationOutbox({
+      projectId: args.deployment.project_id,
+      deploymentId: args.deployment.id,
+      notificationType: 'release_digest',
+      idempotencyKey: `${releaseDigestIdempotencyKey(args.deployment.id, recipient.email)}:resend:${sendId}`,
+      recipientEmail: recipient.email,
+      subject,
+      bodyText: body,
+    }),
+  );
+  broadcastReleaseNotificationUpdate(
+    args.broadcast,
+    args.deployment.project_id,
+    args.deployment.id,
+  );
+  return rows;
+}
+
 function releaseDigestIdempotencyKey(deploymentId: string, recipientEmail: string): string {
   return `deployment:${deploymentId}:release-digest:${normalizeRecipientEmail(recipientEmail)}`;
 }
@@ -430,9 +500,7 @@ export async function enqueueReleaseNotificationsForDeployment(
       };
     });
     const missingDigestRecipients = digestRecipients.filter((entry) => !entry.existing);
-    const subject = `Release digest for ${deployment.environment} ${
-      deploymentReleaseLabel(deployment).label
-    }`;
+    const subject = releaseDigestSubject(deployment);
     const bodyText =
       missingDigestRecipients.length > 0
         ? await generateReleaseDigestBody(deployment, options)

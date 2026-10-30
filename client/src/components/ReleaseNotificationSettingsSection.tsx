@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertCircle, BellRing, Loader2, Plus, RotateCcw, Save, Trash2 } from 'lucide-react';
+import {
+  AlertCircle,
+  BellRing,
+  FlaskConical,
+  Loader2,
+  Plus,
+  RotateCcw,
+  Save,
+  Trash2,
+} from 'lucide-react';
 import { api } from '../utils/api';
 
 const FALLBACK_MAX_LENGTH = 4000;
@@ -14,6 +23,13 @@ interface ReleaseNotificationSettings {
   updatedBy: string | null;
   updatedAt: string | null;
   releaseDigestRecipients?: ReleaseDigestRecipient[];
+}
+
+interface ReleaseDigestTestResult {
+  digestMarkdown: string;
+  subject: string;
+  deployment: { id: string; environment: string; label: string; status: string };
+  releaseItemCount: number;
 }
 
 interface ReleaseDigestRecipient {
@@ -43,6 +59,9 @@ export default function ReleaseNotificationSettingsSection({
   const [error, setError] = useState<string | null>(null);
   const [recipientEmail, setRecipientEmail] = useState('');
   const [recipientLabel, setRecipientLabel] = useState('');
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<ReleaseDigestTestResult | null>(null);
+  const [testError, setTestError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -118,6 +137,23 @@ export default function ReleaseNotificationSettingsSection({
       setSaving(false);
     }
   }, [projectId, saving, showToast, trimmed, validationError]);
+
+  // Runs the current (possibly unsaved) prompt against a real deployment.
+  // Nothing is saved or sent.
+  const handleTest = useCallback(async () => {
+    if (!projectId || testing || validationError) return;
+    setTesting(true);
+    setTestError(null);
+    try {
+      const res = await api.testReleaseDigest(projectId, { releaseDigestPrompt: trimmed });
+      setTestResult(res);
+    } catch (err: any) {
+      setTestResult(null);
+      setTestError(err?.message || 'Test generation failed.');
+    } finally {
+      setTesting(false);
+    }
+  }, [projectId, testing, trimmed, validationError]);
 
   const handleReset = useCallback(async () => {
     if (!projectId || saving) return;
@@ -274,6 +310,22 @@ export default function ReleaseNotificationSettingsSection({
           {settings?.isDefault ? ' · using default' : ''}
         </span>
         <div className="flex items-center gap-2">
+          {recipients && (
+            <button
+              type="button"
+              onClick={handleTest}
+              disabled={testing || loading || !!validationError}
+              title="Generate a digest with this prompt from the latest deployment. Nothing is saved or sent."
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-gray-700 text-xs text-gray-300 hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {testing ? (
+                <Loader2 size={13} className="animate-spin" />
+              ) : (
+                <FlaskConical size={13} />
+              )}
+              Test generate
+            </button>
+          )}
           <button
             type="button"
             onClick={handleReset}
@@ -299,6 +351,42 @@ export default function ReleaseNotificationSettingsSection({
         <div className="mt-3 flex items-start gap-2 text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded-lg p-3">
           <AlertCircle size={14} className="mt-0.5 shrink-0" />
           <span>{error || validationError}</span>
+        </div>
+      )}
+
+      {testError && (
+        <div className="mt-3 flex items-start gap-2 text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded-lg p-3">
+          <AlertCircle size={14} className="mt-0.5 shrink-0" />
+          <span>{testError}</span>
+        </div>
+      )}
+
+      {testResult && (
+        <div
+          className="mt-3 rounded-lg border border-sky-500/30 bg-gray-950/60 p-3"
+          data-testid="release-digest-test-result"
+        >
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs font-semibold text-gray-300">
+              Test digest · {testResult.deployment.environment} {testResult.deployment.label}
+              {testResult.deployment.status && testResult.deployment.status !== 'success'
+                ? ` (${testResult.deployment.status})`
+                : ''}{' '}
+              · {testResult.releaseItemCount} item{testResult.releaseItemCount === 1 ? '' : 's'}
+            </span>
+            <button
+              type="button"
+              onClick={() => setTestResult(null)}
+              className="text-xs text-gray-500 hover:text-gray-300"
+            >
+              Dismiss
+            </button>
+          </div>
+          <div className="mb-1 text-xs text-gray-400">Subject: {testResult.subject}</div>
+          <pre className="max-h-96 overflow-auto whitespace-pre-wrap rounded border border-gray-800 bg-gray-950 p-2 text-xs text-gray-200">
+            {testResult.digestMarkdown}
+          </pre>
+          <p className="mt-2 text-[11px] text-gray-500">Not saved and not sent.</p>
         </div>
       )}
 

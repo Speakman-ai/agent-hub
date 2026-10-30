@@ -50,6 +50,8 @@ import { DeployConfigError } from '../deploy/deploy-config-error.js';
 import { createSupportTicket, recordSupportTicketInvestigation } from '../support-tickets-store.js';
 import {
   addReleaseDigestRecipient,
+  listReleaseDigestRecipients,
+  updateReleaseDigestRecipient,
   updateReleaseNotificationSettings,
 } from '../release-notification-settings.js';
 import {
@@ -72,6 +74,16 @@ import createDeploymentRoutes, {
 } from './deployments.js';
 
 const PROJECT_ID = 'deploy-route-proj';
+
+function disableAllDigestRecipients() {
+  for (const recipient of listReleaseDigestRecipients(PROJECT_ID)) {
+    updateReleaseDigestRecipient({
+      projectId: PROJECT_ID,
+      recipientId: recipient.id,
+      enabled: false,
+    });
+  }
+}
 
 const CONFIG = parseDeployConfig(`
 version: 1
@@ -1138,6 +1150,126 @@ preview:
     });
     expect(response.body).not.toHaveProperty('prompt');
     expect(response.body).not.toHaveProperty('facts');
+  });
+
+  it('generates a digest draft with a supplied draft prompt instead of the saved one', async () => {
+    const dep = createDeployment({
+      projectId: PROJECT_ID,
+      environment: 'production',
+      ref: 'release-sha',
+      status: 'success',
+    });
+    const cardId = insertReleaseCard('release-digest-draft-prompt', PROJECT_ID, {
+      title: 'Faster exports',
+    });
+    ensureDeploymentReleaseItem({ deploymentId: dep.id, cardId });
+    updateReleaseNotificationSettings({
+      projectId: PROJECT_ID,
+      releaseDigestPrompt: 'Saved prompt text.',
+      updatedBy: 'admin-1',
+    });
+    const prompts: string[] = [];
+    const releaseDigestRunner: ReleaseDigestRunner = vi.fn(async ({ prompt }) => {
+      prompts.push(prompt);
+      return '## Admin Updates\n\nExports are faster.';
+    });
+    const { app } = makeApp({ role: 'Admin', releaseDigestRunner });
+    const response = await request(app)
+      .post(`/api/projects/${PROJECT_ID}/deployments/${dep.id}/release-digest`)
+      .send({ releaseDigestPrompt: 'Group by department.' })
+      .expect(200);
+
+    expect(prompts[0]).toContain('Group by department.');
+    expect(prompts[0]).not.toContain('Saved prompt text.');
+    expect(response.body.subject).toBe('Release digest for production release-sha');
+    expect(listReleaseNotificationOutboxByDeployment(dep.id)).toHaveLength(0);
+  });
+
+  it('resends an edited digest to every enabled recipient as a new send, keeping the old rows', async () => {
+    const dep = createDeployment({
+      projectId: PROJECT_ID,
+      environment: 'production',
+      ref: 'release-sha',
+      status: 'success',
+    });
+    disableAllDigestRecipients();
+    addReleaseDigestRecipient({ projectId: PROJECT_ID, email: 'resend-ops@example.com' });
+    addReleaseDigestRecipient({ projectId: PROJECT_ID, email: 'Resend-Field@Example.com' });
+    addReleaseDigestRecipient({
+      projectId: PROJECT_ID,
+      email: 'resend-off@example.com',
+      enabled: false,
+    });
+    const original = enqueueReleaseNotificationOutbox({
+      projectId: PROJECT_ID,
+      deploymentId: dep.id,
+      notificationType: 'release_digest',
+      idempotencyKey: `deployment:${dep.id}:release-digest:resend-ops@example.com`,
+      recipientEmail: 'resend-ops@example.com',
+      subject: 'Release digest for production release-sha',
+      bodyText: '1. Raw card title',
+    });
+
+    const { app } = makeApp({ role: 'Admin' });
+    const response = await request(app)
+      .post(`/api/projects/${PROJECT_ID}/deployments/${dep.id}/release-digest/resend`)
+      .send({
+        digestMarkdown: '  ## Admin Updates\n\nEdited by hand.  ',
+        subject: 'Release 1.0.322',
+      })
+      .expect(202);
+
+    expect(response.body.queued).toHaveLength(2);
+    const rows = listReleaseNotificationOutboxByDeployment(dep.id);
+    expect(rows).toHaveLength(3);
+    expect(rows.find((row) => row.id === original.id)?.body_text).toBe('1. Raw card title');
+    const resent = rows.filter((row) => row.id !== original.id);
+    expect(resent.map((row) => row.recipient_email).sort()).toEqual([
+      'resend-field@example.com',
+      'resend-ops@example.com',
+    ]);
+    for (const row of resent) {
+      expect(row.status).toBe('pending');
+      expect(row.subject).toBe('Release 1.0.322');
+      expect(row.body_text).toBe('## Admin Updates\n\nEdited by hand.');
+    }
+
+    // A second resend is another new send, not a no-op on the idempotency key.
+    await request(app)
+      .post(`/api/projects/${PROJECT_ID}/deployments/${dep.id}/release-digest/resend`)
+      .send({ digestMarkdown: 'Second pass.' })
+      .expect(202);
+    const after = listReleaseNotificationOutboxByDeployment(dep.id);
+    expect(after).toHaveLength(5);
+    expect(after.at(-1)?.subject).toBe('Release digest for production release-sha');
+  });
+
+  it('refuses a resend with empty text, no recipients, a failed deployment, or a non-admin', async () => {
+    const dep = createDeployment({
+      projectId: PROJECT_ID,
+      environment: 'production',
+      ref: 'release-sha',
+      status: 'success',
+    });
+    const failed = createDeployment({
+      projectId: PROJECT_ID,
+      environment: 'production',
+      ref: 'bad-sha',
+      status: 'error',
+    });
+    disableAllDigestRecipients();
+    const { app } = makeApp({ role: 'Admin' });
+    const path = `/api/projects/${PROJECT_ID}/deployments/${dep.id}/release-digest/resend`;
+    await request(app).post(path).send({ digestMarkdown: '   ' }).expect(400);
+    await request(app).post(path).send({ digestMarkdown: 'Body' }).expect(409);
+    addReleaseDigestRecipient({ projectId: PROJECT_ID, email: 'refuse-ops@example.com' });
+    await request(app)
+      .post(`/api/projects/${PROJECT_ID}/deployments/${failed.id}/release-digest/resend`)
+      .send({ digestMarkdown: 'Body' })
+      .expect(409);
+    const { app: userApp } = makeApp({ role: 'User' });
+    await request(userApp).post(path).send({ digestMarkdown: 'Body' }).expect(403);
+    expect(listReleaseNotificationOutboxByDeployment(dep.id)).toHaveLength(0);
   });
 
   it('treats Hub groups as a hint so operator department grouping can be the outline', async () => {

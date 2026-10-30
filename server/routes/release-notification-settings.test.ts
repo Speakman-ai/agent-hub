@@ -4,8 +4,14 @@ import request from 'supertest';
 import { mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
-import { beforeEach, describe, expect, it } from 'vitest';
-import { initDb } from '../db.js';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { getDb, initDb } from '../db.js';
+import {
+  createDeployment,
+  ensureDeploymentReleaseItem,
+  updateDeploymentStatus,
+} from '../deploy/deployment-store.js';
+import type { ReleaseDigestRunner } from '../release-digest.js';
 import type { Project, RouteDeps } from '../types.js';
 import { RELEASE_DIGEST_GROUPING_AND_COVERAGE_RULES } from '../release-digest-prompt.js';
 import {
@@ -17,7 +23,10 @@ import createReleaseNotificationSettingsRoutes from './release-notification-sett
 
 const PROJECT_ID = 'release-settings-proj';
 
-function makeApp(role: 'Owner' | 'Admin' | 'User' | null = 'Owner') {
+function makeApp(
+  role: 'Owner' | 'Admin' | 'User' | null = 'Owner',
+  releaseDigestRunner?: ReleaseDigestRunner,
+) {
   const project = {
     id: PROJECT_ID,
     name: 'Release Settings Project',
@@ -26,6 +35,7 @@ function makeApp(role: 'Owner' | 'Admin' | 'User' | null = 'Owner') {
   } as unknown as Project;
   const deps = {
     findProject: (id: string) => (id === PROJECT_ID ? project : null),
+    config: {},
   } as unknown as RouteDeps;
   const app = express();
   app.use(express.json());
@@ -36,7 +46,7 @@ function makeApp(role: 'Owner' | 'Admin' | 'User' | null = 'Owner') {
     }
     next();
   });
-  app.use(createReleaseNotificationSettingsRoutes(deps));
+  app.use(createReleaseNotificationSettingsRoutes(deps, { releaseDigestRunner }));
   return app;
 }
 
@@ -268,5 +278,110 @@ describe('release notification settings routes', () => {
     );
     expect(prompt).toContain('every included release item');
     expect(prompt).toContain('grounding or safety rules');
+  });
+});
+
+function seedDeploymentWithCard(cardId: string, title: string, ref: string, status = 'success') {
+  const db = getDb();
+  db.prepare('INSERT INTO kanban_boards (id, project_id, name) VALUES (?, ?, ?)').run(
+    `board-${cardId}`,
+    PROJECT_ID,
+    'Board',
+  );
+  db.prepare('INSERT INTO kanban_columns (id, board_id, name, position) VALUES (?, ?, ?, ?)').run(
+    `col-${cardId}`,
+    `board-${cardId}`,
+    'Done',
+    0,
+  );
+  db.prepare('INSERT INTO kanban_cards (id, column_id, board_id, title) VALUES (?, ?, ?, ?)').run(
+    cardId,
+    `col-${cardId}`,
+    `board-${cardId}`,
+    title,
+  );
+  const created = createDeployment({ projectId: PROJECT_ID, environment: 'production', ref });
+  const deployment = updateDeploymentStatus(
+    created.id,
+    status as Parameters<typeof updateDeploymentStatus>[1],
+  )!;
+  ensureDeploymentReleaseItem({ deploymentId: deployment.id, cardId });
+  return deployment;
+}
+
+describe('release digest test generation', () => {
+  const testPath = `/api/projects/${PROJECT_ID}/release-notification-settings/test-digest`;
+
+  it('generates with the unsaved draft prompt against the newest deployment with items', async () => {
+    seedDeploymentWithCard('card-old', 'Older release item', 'old-sha');
+    const latest = seedDeploymentWithCard('card-new', 'Newest release item', 'new-sha', 'error');
+    // Newer still, but nothing included: skipped.
+    const empty = seedDeploymentWithCard('card-empty', 'Excluded item', 'empty-sha');
+    getDb()
+      .prepare(
+        "UPDATE deployment_release_items SET inclusion_status = 'excluded' WHERE deployment_id = ?",
+      )
+      .run(empty.id);
+    const prompts: string[] = [];
+    const runner: ReleaseDigestRunner = vi.fn(async ({ prompt, userId }) => {
+      prompts.push(prompt);
+      expect(userId).toBe('user-1');
+      return '## Admin Updates\n\nNewest release item shipped.';
+    });
+
+    const res = await request(makeApp('Admin', runner))
+      .post(testPath)
+      .send({ releaseDigestPrompt: 'Draft: split by department.' })
+      .expect(200);
+
+    expect(prompts[0]).toContain('Draft: split by department.');
+    expect(prompts[0]).toContain('Newest release item');
+    expect(prompts[0]).not.toContain('Older release item');
+    expect(res.body).toMatchObject({
+      digestMarkdown: '## Admin Updates\n\nNewest release item shipped.',
+      subject: 'Release digest for production new-sha',
+      deployment: { id: latest.id, environment: 'production', label: 'new-sha', status: 'error' },
+      releaseItemCount: 1,
+    });
+    const saved = await request(makeApp('Admin')).get(
+      `/api/projects/${PROJECT_ID}/release-notification-settings`,
+    );
+    expect(saved.body.releaseDigestPrompt).toBe(DEFAULT_RELEASE_DIGEST_PROMPT);
+  });
+
+  it('finds a deployment with items even when it is older than 50 empty deployments', async () => {
+    const withItems = seedDeploymentWithCard('card-deep', 'Deep history item', 'deep-sha');
+    for (let i = 0; i < 60; i += 1) {
+      createDeployment({ projectId: PROJECT_ID, environment: 'production', ref: `empty-${i}` });
+    }
+    const runner: ReleaseDigestRunner = vi.fn(async () => 'Digest body');
+    const res = await request(makeApp('Admin', runner)).post(testPath).send({}).expect(200);
+    expect(res.body.deployment.id).toBe(withItems.id);
+  });
+
+  it('uses a chosen deployment and rejects one from another project', async () => {
+    const older = seedDeploymentWithCard('card-pick-old', 'Picked item', 'pick-sha');
+    seedDeploymentWithCard('card-pick-new', 'Other item', 'other-sha');
+    const runner: ReleaseDigestRunner = vi.fn(async () => 'Digest body');
+    const res = await request(makeApp('Admin', runner))
+      .post(testPath)
+      .send({ deploymentId: older.id })
+      .expect(200);
+    expect(res.body.deployment.id).toBe(older.id);
+    await request(makeApp('Admin', runner))
+      .post(testPath)
+      .send({ deploymentId: 'missing' })
+      .expect(404);
+  });
+
+  it('answers 409 with nothing to test against, 403 below Admin, 500 on model failure', async () => {
+    await request(makeApp('Admin')).post(testPath).send({}).expect(409);
+    await request(makeApp('User')).post(testPath).send({}).expect(403);
+    seedDeploymentWithCard('card-fail', 'Item', 'fail-sha');
+    const runner: ReleaseDigestRunner = vi.fn(async () => {
+      throw new Error('claude exited 1');
+    });
+    const res = await request(makeApp('Admin', runner)).post(testPath).send({}).expect(500);
+    expect(res.body.error).toContain('claude exited 1');
   });
 });

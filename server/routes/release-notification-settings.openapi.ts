@@ -68,6 +68,36 @@ export const PatchReleaseDigestRecipientRequestSchema = z
     message: 'At least one field is required.',
   });
 
+export const TestReleaseDigestRequestSchema = z.object({
+  releaseDigestPrompt: z
+    .string()
+    .trim()
+    .min(1)
+    .max(RELEASE_DIGEST_PROMPT_MAX_LENGTH)
+    .optional()
+    .openapi({ description: 'Draft prompt to try. Defaults to the saved project prompt.' }),
+  deploymentId: z.string().min(1).optional().openapi({
+    description:
+      'Deployment whose release items to use. Defaults to the newest deployment (any status) with included release items.',
+  }),
+});
+
+const TestReleaseDigestResponse = registerComponent(
+  'TestReleaseDigestResponse',
+  z.object({
+    digestMarkdown: z.string(),
+    subject: z.string(),
+    deployment: z.object({
+      id: z.string(),
+      environment: z.string(),
+      label: z.string(),
+      status: z.string(),
+      completedAt: z.string().nullable(),
+    }),
+    releaseItemCount: z.number().int(),
+  }),
+);
+
 const ReleaseDigestRecipientsResponse = registerComponent(
   'ReleaseDigestRecipientsResponse',
   z.object({ recipients: z.array(ReleaseDigestRecipientSchema) }),
@@ -281,5 +311,35 @@ registerPath({
       description: 'Project not found.',
       content: jsonContent(ErrorResponse),
     },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/release-notification-settings/test-digest',
+  tags: ['Deployments'],
+  summary: 'Test-generate a release digest',
+  description:
+    "Admin+ only. Generates a release digest with the supplied draft prompt (or the saved one) against a real deployment, without saving the prompt or sending anything. Runs on the caller's Claude login.",
+  request: {
+    params: projectParams,
+    body: { content: jsonContent(TestReleaseDigestRequestSchema) },
+  },
+  responses: {
+    200: {
+      description: 'Generated digest draft and the deployment it was built from.',
+      content: jsonContent(TestReleaseDigestResponse),
+    },
+    400: { description: 'Invalid prompt.', content: jsonContent(ErrorResponse) },
+    403: { description: 'Caller is below Admin role.', content: jsonContent(ErrorResponse) },
+    404: {
+      description: 'Project or deployment not found.',
+      content: jsonContent(ErrorResponse),
+    },
+    409: {
+      description: 'No deployment with release items to test against.',
+      content: jsonContent(ErrorResponse),
+    },
+    500: { description: 'Digest generation failed.', content: jsonContent(ErrorResponse) },
   },
 });

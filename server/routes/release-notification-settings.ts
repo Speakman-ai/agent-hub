@@ -16,9 +16,21 @@ import {
   CreateReleaseDigestRecipientRequestSchema,
   PatchReleaseDigestRecipientRequestSchema,
   UpdateReleaseNotificationSettingsRequestSchema,
+  TestReleaseDigestRequestSchema,
 } from './release-notification-settings.openapi.js';
+import {
+  findReleaseDigestTestDeployment,
+  generateDeploymentReleaseDigest,
+  type ReleaseDigestRunner,
+} from '../release-digest.js';
+import { releaseDigestSubject } from '../release-notification-outbox.js';
+import { getDeployment } from '../deploy/deployment-store.js';
+import { deploymentReleaseLabel } from '../deploy/release-label.js';
 
-export default function createReleaseNotificationSettingsRoutes(deps: RouteDeps): Router {
+export default function createReleaseNotificationSettingsRoutes(
+  deps: RouteDeps,
+  opts: { releaseDigestRunner?: ReleaseDigestRunner } = {},
+): Router {
   const router = Router();
   const { findProject } = deps;
 
@@ -81,6 +93,57 @@ export default function createReleaseNotificationSettingsRoutes(deps: RouteDeps)
       const projectId = resolveProject(req, res);
       if (!projectId) return;
       res.json(resetReleaseNotificationSettings(projectId, { includeRecipients: true }));
+    },
+  );
+
+  router.post(
+    '/api/projects/:projectId/release-notification-settings/test-digest',
+    requireRole('Admin'),
+    async (req: Request, res: Response) => {
+      const projectId = resolveProject(req, res);
+      if (!projectId) return;
+      const parsed = TestReleaseDigestRequestSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid body' });
+      }
+      let deployment;
+      if (parsed.data.deploymentId) {
+        deployment = getDeployment(parsed.data.deploymentId);
+        if (!deployment || deployment.project_id !== projectId) {
+          return res.status(404).json({ error: 'Deployment not found' });
+        }
+      } else {
+        deployment = findReleaseDigestTestDeployment(projectId);
+        if (!deployment) {
+          return res.status(409).json({
+            error: 'No deployment with included release items to test against yet.',
+          });
+        }
+      }
+      try {
+        const result = await generateDeploymentReleaseDigest({
+          projectId,
+          deploymentId: deployment.id,
+          cfg: deps.config,
+          userId: (req as AuthenticatedRequest).authUserId ?? null,
+          runner: opts.releaseDigestRunner,
+          releaseDigestPrompt: parsed.data.releaseDigestPrompt,
+        });
+        return res.json({
+          digestMarkdown: result.digestMarkdown,
+          subject: releaseDigestSubject(deployment),
+          deployment: {
+            id: deployment.id,
+            environment: deployment.environment,
+            label: deploymentReleaseLabel(deployment).label,
+            status: deployment.status,
+            completedAt: deployment.completed_at,
+          },
+          releaseItemCount: result.facts.releaseItems.length,
+        });
+      } catch (err: unknown) {
+        return res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
     },
   );
 

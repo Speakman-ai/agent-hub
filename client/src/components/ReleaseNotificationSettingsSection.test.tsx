@@ -11,6 +11,7 @@ vi.mock('../utils/api.js', () => ({
     addReleaseDigestRecipient: vi.fn(),
     updateReleaseDigestRecipient: vi.fn(),
     removeReleaseDigestRecipient: vi.fn(),
+    testReleaseDigest: vi.fn(),
   },
 }));
 
@@ -177,5 +178,46 @@ describe('ReleaseNotificationSettingsSection', () => {
       }),
     );
     expect(await screen.findByText('Enabled')).toBeInTheDocument();
+  });
+
+  it('test-generates with the unsaved draft prompt and shows the result without saving', async () => {
+    apiMock.getReleaseNotificationSettings.mockResolvedValueOnce(defaultSettings);
+    apiMock.testReleaseDigest.mockResolvedValueOnce({
+      digestMarkdown: '### Admin Updates\n\nInvoices are faster.',
+      subject: 'Release digest for production 1.0.322',
+      deployment: { id: 'dep-1', environment: 'production', label: '1.0.322', status: 'error' },
+      releaseItemCount: 3,
+    });
+
+    render(<ReleaseNotificationSettingsSection projectId="proj-1" />);
+
+    const input = await screen.findByLabelText('Release digest prompt');
+    fireEvent.change(input, { target: { value: 'Split by department.' } });
+    fireEvent.click(screen.getByRole('button', { name: /test generate/i }));
+
+    await waitFor(() =>
+      expect(api.testReleaseDigest).toHaveBeenCalledWith('proj-1', {
+        releaseDigestPrompt: 'Split by department.',
+      }),
+    );
+    const result = await screen.findByTestId('release-digest-test-result');
+    expect(result).toHaveTextContent('production 1.0.322 (error)');
+    expect(result).toHaveTextContent('3 items');
+    expect(result).toHaveTextContent('Invoices are faster.');
+    expect(api.updateReleaseNotificationSettings).not.toHaveBeenCalled();
+  });
+
+  it('shows the test generation error', async () => {
+    apiMock.getReleaseNotificationSettings.mockResolvedValueOnce(defaultSettings);
+    apiMock.testReleaseDigest.mockRejectedValueOnce(
+      new Error('No deployment with included release items to test against yet.'),
+    );
+
+    render(<ReleaseNotificationSettingsSection projectId="proj-1" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /test generate/i }));
+    expect(
+      await screen.findByText('No deployment with included release items to test against yet.'),
+    ).toBeInTheDocument();
   });
 });

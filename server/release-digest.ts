@@ -11,6 +11,7 @@ import {
 } from './release-notification-settings.js';
 import { deriveSupportTicketReleaseState } from './support-tickets-store.js';
 import { getDeployment, listDeploymentReleaseItemsWithContext } from './deploy/deployment-store.js';
+import { getDb } from './db.js';
 import { runReleaseDigestModel } from './release-digest-model.js';
 import { clipUtf8StringToMaxBytes } from './utf8-clip.js';
 
@@ -216,8 +217,11 @@ export function buildDeploymentReleaseDigestGenerationPrompt(args: {
   projectId: string;
   deployment: DeploymentRow;
   releaseItems: DeploymentReleaseItemDetailRow[];
+  /** Draft prompt to try instead of the saved one (test generation). */
+  releaseDigestPrompt?: string;
 }): ReleaseDigestGenerationPrompt {
   const settings = getReleaseNotificationSettings(args.projectId);
+  const operatorPrompt = args.releaseDigestPrompt?.trim() || settings.releaseDigestPrompt;
   const includedItems = args.releaseItems.filter((item) => item.inclusion_status === 'included');
   const excludedItems = args.releaseItems.filter((item) => item.inclusion_status === 'excluded');
   const boundedItems = includedItems.slice(0, RELEASE_DIGEST_ITEM_LIMIT);
@@ -249,7 +253,7 @@ export function buildDeploymentReleaseDigestGenerationPrompt(args: {
   };
 
   const prompt = [
-    buildFactBoundedReleaseDigestPrompt(settings.releaseDigestPrompt),
+    buildFactBoundedReleaseDigestPrompt(operatorPrompt),
     '',
     RELEASE_DIGEST_FACTS_PREAMBLE,
     JSON.stringify(facts, null, 2),
@@ -273,6 +277,7 @@ export async function generateDeploymentReleaseDigest(args: {
   cfg: AppConfig;
   userId?: string | null;
   runner?: ReleaseDigestRunner;
+  releaseDigestPrompt?: string;
 }): Promise<ReleaseDigestGenerationPrompt & { digestMarkdown: string }> {
   const deployment = getDeployment(args.deploymentId);
   if (!deployment || deployment.project_id !== args.projectId) {
@@ -282,6 +287,7 @@ export async function generateDeploymentReleaseDigest(args: {
     projectId: args.projectId,
     deployment,
     releaseItems: listDeploymentReleaseItemsWithContext(deployment.id),
+    releaseDigestPrompt: args.releaseDigestPrompt,
   });
   if (generation.facts.releaseItems.length === 0) {
     return { ...generation, digestMarkdown: EMPTY_RELEASE_DIGEST_MARKDOWN };
@@ -304,4 +310,27 @@ export async function generateDeploymentReleaseDigest(args: {
     throw new Error('Release digest generation returned an empty response after redaction.');
   }
   return { ...generation, digestMarkdown };
+}
+
+/**
+ * The deployment a test generation runs against when the caller doesn't pick
+ * one: the newest deployment, of any status, that has included release items.
+ * Deployments with nothing included are skipped because they can't produce a
+ * digest to judge the prompt by.
+ */
+export function findReleaseDigestTestDeployment(projectId: string): DeploymentRow | null {
+  return (
+    (getDb()
+      .prepare(
+        `SELECT d.* FROM deployments d
+          WHERE d.project_id = ?
+            AND EXISTS (
+              SELECT 1 FROM deployment_release_items ri
+               WHERE ri.deployment_id = d.id AND ri.inclusion_status = 'included'
+            )
+          ORDER BY d.created_at DESC, d.rowid DESC
+          LIMIT 1`,
+      )
+      .get(projectId) as DeploymentRow | undefined) ?? null
+  );
 }

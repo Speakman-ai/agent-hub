@@ -1,5 +1,10 @@
 import cron from 'node-cron';
 import { z, registerComponent, registerPath } from '../openapi/registry.js';
+import { RELEASE_DIGEST_PROMPT_MAX_LENGTH } from '../release-notification-settings.js';
+import {
+  RELEASE_DIGEST_RESEND_BODY_MAX_LENGTH,
+  RELEASE_DIGEST_RESEND_SUBJECT_MAX_LENGTH,
+} from '../release-notification-outbox.js';
 
 const DeploymentStatusEnum = z.enum([
   'pending',
@@ -227,6 +232,23 @@ export const AdjustDeploymentReleaseItemRequestSchema = z.object({
   inclusionStatus: z.enum(['included', 'excluded']),
   reason: z.string().trim().min(1).max(2000),
   supportTicketId: z.string().min(1).nullable().optional(),
+});
+
+export const GenerateReleaseDigestRequestSchema = z.object({
+  releaseDigestPrompt: z
+    .string()
+    .trim()
+    .min(1)
+    .max(RELEASE_DIGEST_PROMPT_MAX_LENGTH)
+    .optional()
+    .openapi({
+      description: 'Draft prompt to generate with instead of the saved project prompt.',
+    }),
+});
+
+export const ResendReleaseDigestRequestSchema = z.object({
+  digestMarkdown: z.string().trim().min(1).max(RELEASE_DIGEST_RESEND_BODY_MAX_LENGTH),
+  subject: z.string().trim().max(RELEASE_DIGEST_RESEND_SUBJECT_MAX_LENGTH).nullable().optional(),
 });
 
 const ReleaseNotificationTypeEnum = z.enum(['ticket_release', 'release_digest']);
@@ -728,10 +750,19 @@ const DeploymentReleaseDigestResponseSchema = registerComponent(
   'DeploymentReleaseDigestResponse',
   z.object({
     digestMarkdown: z.string(),
+    subject: z.string(),
     settings: z.object({
       isDefault: z.boolean(),
       updatedAt: z.string().nullable(),
     }),
+  }),
+);
+
+const ReleaseDigestResendResponseSchema = registerComponent(
+  'ReleaseDigestResendResponse',
+  z.object({
+    queued: z.array(ReleaseNotificationHistoryItemSchema),
+    releaseNotifications: z.array(ReleaseNotificationHistoryItemSchema),
   }),
 );
 
@@ -1451,19 +1482,43 @@ registerPath({
   tags: ['Deployments'],
   summary: 'Generate a deployment release digest draft',
   description:
-    'Admin+. Generates a customer-facing markdown release digest draft from included release items. The model prompt always wraps the stored project release digest prompt inside the fixed fact-bounded generation template.',
+    'Admin+. Generates a customer-facing markdown release digest draft from included release items. The model prompt always wraps the operator prompt (the stored project prompt, or `releaseDigestPrompt` when supplied) inside the fixed fact-bounded generation template. Nothing is sent.',
   request: {
     params: deploymentParams,
-    body: { content: jsonContent(z.object({}).passthrough()) },
+    body: { content: jsonContent(GenerateReleaseDigestRequestSchema) },
   },
   responses: {
     200: {
       description: 'Generated release digest draft.',
       content: jsonContent(DeploymentReleaseDigestResponseSchema),
     },
+    400: errorResponse('Invalid prompt.'),
     403: errorResponse('Admin role required.'),
     404: errorResponse('Project or deployment not found.'),
     500: errorResponse('Digest generation failed.'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/deployments/{deploymentId}/release-digest/resend',
+  tags: ['Deployments'],
+  summary: 'Send an edited release digest again',
+  description:
+    'Admin+. Queues the supplied (operator-reviewed) digest markdown to every enabled release digest recipient as a new send. Earlier notification rows for the deployment are kept, so history shows both. Delivery happens on the next outbox worker tick.',
+  request: {
+    params: deploymentParams,
+    body: { content: jsonContent(ResendReleaseDigestRequestSchema) },
+  },
+  responses: {
+    202: {
+      description: 'Digest queued for every enabled recipient.',
+      content: jsonContent(ReleaseDigestResendResponseSchema),
+    },
+    400: errorResponse('Invalid digest text or subject.'),
+    403: errorResponse('Admin role required.'),
+    404: errorResponse('Project or deployment not found.'),
+    409: errorResponse('Deployment did not succeed, or no recipients are enabled.'),
   },
 });
 

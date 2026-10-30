@@ -21,6 +21,9 @@ export default function ReleaseNotificationSettingsSection({ projectId }: any) {
   const [error, setError] = useState<any>(null);
   const [recipientEmail, setRecipientEmail] = useState('');
   const [recipientLabel, setRecipientLabel] = useState('');
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<any>(null);
+  const [testError, setTestError] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     if (!projectId) {
@@ -89,6 +92,21 @@ export default function ReleaseNotificationSettingsSection({ projectId }: any) {
       setSaving(false);
     }
   }, [projectId, saving, trimmed, validationError]);
+  // Runs the current (possibly unsaved) prompt against a real deployment.
+  // Nothing is saved or sent.
+  const handleTest = useCallback(async () => {
+    if (!projectId || testing || validationError) return;
+    setTesting(true);
+    setTestError(null);
+    try {
+      setTestResult(await api.testReleaseDigest(projectId, { releaseDigestPrompt: trimmed }));
+    } catch (err: any) {
+      setTestResult(null);
+      setTestError(err?.message || 'Test generation failed.');
+    } finally {
+      setTesting(false);
+    }
+  }, [projectId, testing, trimmed, validationError]);
   const handleReset = useCallback(async () => {
     if (!projectId || saving) return;
     setSaving(true);
@@ -234,6 +252,43 @@ export default function ReleaseNotificationSettingsSection({ projectId }: any) {
       </View>
       {(error || validationError) && <Text style={styles.error}>{error || validationError}</Text>}
       {recipients && (
+        <TouchableOpacity
+          testID="release-digest-test-generate"
+          style={[
+            styles.secondaryButton,
+            styles.testButton,
+            (testing || loading || !!validationError) && styles.buttonDisabled,
+          ]}
+          onPress={handleTest}
+          disabled={testing || loading || !!validationError}
+        >
+          {testing ? <ActivityIndicator color={colors.gray300} size="small" /> : null}
+          <Text style={styles.secondaryButtonText}>Test generate</Text>
+        </TouchableOpacity>
+      )}
+      {testError ? <Text style={styles.error}>{testError}</Text> : null}
+      {testResult ? (
+        <View style={styles.testResult} testID="release-digest-test-result">
+          <Text style={styles.testResultTitle}>
+            Test digest · {testResult.deployment?.environment} {testResult.deployment?.label}
+            {testResult.deployment?.status && testResult.deployment?.status !== 'success'
+              ? ` (${testResult.deployment?.status})`
+              : ''}{' '}
+            · {testResult.releaseItemCount} item{testResult.releaseItemCount === 1 ? '' : 's'}
+          </Text>
+          <Text style={styles.recipientLabel}>Subject: {testResult.subject}</Text>
+          <Text style={styles.testResultBody} selectable>
+            {testResult.digestMarkdown}
+          </Text>
+          <View style={styles.actionRow}>
+            <Text style={styles.counter}>Not saved and not sent.</Text>
+            <TouchableOpacity style={styles.secondaryButton} onPress={() => setTestResult(null)}>
+              <Text style={styles.secondaryButtonText}>Dismiss</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      ) : null}
+      {recipients && (
         <View style={styles.recipientsSection}>
           <Text style={styles.title}>Release digest recipients</Text>
           <Text style={styles.subtitle}>
@@ -374,6 +429,24 @@ const styles = StyleSheet.create({
   },
   primaryButtonText: { fontSize: 13, color: colors.white, fontWeight: '600' },
   buttonDisabled: { opacity: 0.5 },
+  testButton: {
+    marginTop: 10,
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  testResult: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.blue600,
+    backgroundColor: colors.gray950,
+    gap: 6,
+  },
+  testResultTitle: { fontSize: 13, color: colors.gray200, fontWeight: '600' },
+  testResultBody: { fontSize: 12, color: colors.gray200, fontFamily: 'monospace' },
   error: { fontSize: 13, color: colors.red400, marginTop: 8 },
   recipientsSection: {
     marginTop: 20,
