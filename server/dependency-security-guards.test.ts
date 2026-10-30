@@ -790,11 +790,26 @@ describe('dependency security guards (high-severity advisory floors)', () => {
       advisory: ['GHSA-587h-7wmj-h5pm', 'GHSA-698v-4r3x-3vcv', 'GHSA-r825-w8mm-5pxw'],
       line: '8.x',
     },
+    // 6.4.5 also closes a `server.fs.deny` bypass via query strings (= 6.4.4).
     {
       pkg: 'vite',
-      min: '6.4.4',
-      advisory: ['GHSA-587h-7wmj-h5pm', 'GHSA-698v-4r3x-3vcv', 'GHSA-r825-w8mm-5pxw'],
+      min: '6.4.5',
+      advisory: [
+        'GHSA-587h-7wmj-h5pm',
+        'GHSA-698v-4r3x-3vcv',
+        'GHSA-r825-w8mm-5pxw',
+        'GHSA-8g5g-mxqh-grgj',
+      ],
       line: '6.x',
+    },
+    // Quadratic replacement of percent-encoded runs (<= 0.5.0). Mobile forces
+    // it through an override under query-string 7; the CJS interop patch in
+    // mobile/patches still applies to 0.5.1.
+    {
+      pkg: 'decode-uri-component',
+      min: '0.5.1',
+      advisory: 'GHSA-qr28-fpjm-wq7f',
+      only: ['mobile'],
     },
     // A meta-refresh `content` carrying javascript:/data: URLs
     // (GHSA-cv27-6wvh-8x7j), a nonTextTags discard region closed early by an
