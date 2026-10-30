@@ -97,6 +97,32 @@ export interface FinalizeStepOutputResult {
 }
 
 const RUNNER_QUEUE_STEP_OUTPUT_MAX_LINES = 5_000;
+
+/**
+ * Exported so a test can pin their query plans: these run synchronously on the
+ * request thread against large DBs, so a full scan stalls every request.
+ */
+export const RUNNER_QUEUE_STEP_JOB_SQL = `SELECT id
+   FROM runner_jobs
+  WHERE run_id = @runId
+    AND job_id = @jobId
+    AND matrix_key = @matrixKey
+    AND project_id = @projectId
+  ORDER BY enqueued_at DESC
+  LIMIT 1`;
+export const RUNNER_QUEUE_STEP_COUNT_SQL = `SELECT COUNT(*) AS n
+   FROM runner_job_logs
+  WHERE job_id = @jobId AND step_index = @stepIndex`;
+export const RUNNER_QUEUE_STEP_HEAD_SQL = `SELECT stream, data, at
+   FROM runner_job_logs
+  WHERE job_id = @jobId AND step_index = @stepIndex
+  ORDER BY seq ASC
+  LIMIT @limit`;
+export const RUNNER_QUEUE_STEP_TAIL_SQL = `SELECT stream, data, at
+   FROM runner_job_logs
+  WHERE job_id = @jobId AND step_index = @stepIndex
+  ORDER BY seq DESC
+  LIMIT @limit`;
 const RUNNER_QUEUE_STEP_OUTPUT_TAIL_LINES = 40;
 
 /**
@@ -117,23 +143,12 @@ export function loadRunnerQueueStepOutput(args: {
 }): FinalizeStepOutputResult {
   if (!args.step.job_id) return { lines: [], truncated: false, totalLines: 0 };
   const matrixKey = args.step.matrix_key ?? '';
-  const job = getOrgsDb()
-    .prepare(
-      `SELECT id
-         FROM runner_jobs
-        WHERE project_id = @projectId
-          AND run_id = @runId
-          AND job_id = @jobId
-          AND matrix_key = @matrixKey
-        ORDER BY enqueued_at DESC
-        LIMIT 1`,
-    )
-    .get({
-      projectId: args.projectId,
-      runId: args.runId,
-      jobId: args.step.job_id,
-      matrixKey,
-    }) as RunnerQueueJobRow | undefined;
+  const job = getOrgsDb().prepare(RUNNER_QUEUE_STEP_JOB_SQL).get({
+    projectId: args.projectId,
+    runId: args.runId,
+    jobId: args.step.job_id,
+    matrixKey,
+  }) as RunnerQueueJobRow | undefined;
   if (!job) return { lines: [], truncated: false, totalLines: 0 };
 
   const maxLines =
@@ -143,11 +158,7 @@ export function loadRunnerQueueStepOutput(args: {
   const logsDb = getRunnerJobLogsDb();
   const totalLines = (
     logsDb
-      .prepare(
-        `SELECT COUNT(*) AS n
-           FROM runner_job_logs
-          WHERE job_id = @jobId AND step_index = @stepIndex`,
-      )
+      .prepare(RUNNER_QUEUE_STEP_COUNT_SQL)
       .get({ jobId: job.id, stepIndex: args.step.step_index }) as RunnerJobLogCountRow
   ).n;
   if (totalLines <= 0) return { lines: [], truncated: false, totalLines: 0 };
@@ -166,14 +177,7 @@ export function loadRunnerQueueStepOutput(args: {
     }));
 
   if (totalLines <= maxLines) {
-    const rows = loadRows(
-      `SELECT stream, data, at
-         FROM runner_job_logs
-        WHERE job_id = @jobId AND step_index = @stepIndex
-        ORDER BY seq ASC
-        LIMIT @limit`,
-      maxLines,
-    );
+    const rows = loadRows(RUNNER_QUEUE_STEP_HEAD_SQL, maxLines);
     return { lines: mapRows(rows), truncated: false, totalLines };
   }
 
@@ -182,22 +186,8 @@ export function loadRunnerQueueStepOutput(args: {
     Math.max(0, Math.floor((maxLines - 1) / 2)),
   );
   const headLimit = Math.max(0, maxLines - tailLimit - 1);
-  const headRows = loadRows(
-    `SELECT stream, data, at
-       FROM runner_job_logs
-      WHERE job_id = @jobId AND step_index = @stepIndex
-      ORDER BY seq ASC
-      LIMIT @limit`,
-    headLimit,
-  );
-  const tailRows = loadRows(
-    `SELECT stream, data, at
-       FROM runner_job_logs
-      WHERE job_id = @jobId AND step_index = @stepIndex
-      ORDER BY seq DESC
-      LIMIT @limit`,
-    tailLimit,
-  ).reverse();
+  const headRows = loadRows(RUNNER_QUEUE_STEP_HEAD_SQL, headLimit);
+  const tailRows = loadRows(RUNNER_QUEUE_STEP_TAIL_SQL, tailLimit).reverse();
   const dropped = Math.max(0, totalLines - headRows.length - tailRows.length);
   const lines = mapRows(headRows);
   lines.push({

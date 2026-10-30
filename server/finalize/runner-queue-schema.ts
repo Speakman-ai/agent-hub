@@ -41,6 +41,11 @@ CREATE INDEX IF NOT EXISTS idx_runner_jobs_claimable
   ON runner_jobs(state, runner_class, priority, enqueued_at);
 CREATE INDEX IF NOT EXISTS idx_runner_jobs_lease ON runner_jobs(state, lease_expires_at);
 CREATE INDEX IF NOT EXISTS idx_runner_jobs_run ON runner_jobs(org_id, run_id);
+-- Step-output lookup by (run, job, matrix). Without it that read scanned every
+-- row, and enqueued_at sits past the multi-KB spec_json, so the scan walked
+-- every overflow page (~1 GB) and stalled the event loop. Columns stay ahead of
+-- spec_json so the one-time build never reads overflow pages.
+CREATE INDEX IF NOT EXISTS idx_runner_jobs_run_shard ON runner_jobs(run_id, job_id, matrix_key);
 
 CREATE TABLE IF NOT EXISTS runner_agents (
   id             TEXT PRIMARY KEY,

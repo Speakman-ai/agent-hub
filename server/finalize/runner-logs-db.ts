@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS runner_job_logs (
   PRIMARY KEY (job_id, seq)
 );
 CREATE INDEX IF NOT EXISTS idx_runner_job_logs_at ON runner_job_logs(at);
+-- Per-step reads (COUNT, head, tail) stay inside the index instead of walking
+-- every frame of the job through table lookups.
+CREATE INDEX IF NOT EXISTS idx_runner_job_logs_step ON runner_job_logs(job_id, step_index, seq);
 `;
 
 /** Default filename beside `orgs.db` in the data dir. */
