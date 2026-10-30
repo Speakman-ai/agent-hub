@@ -39,6 +39,7 @@ import {
 } from './deploy-orchestrator.js';
 import type { SpawnedStep, SpawnStepFn } from '../finalize/step-runner.js';
 import type { RunnerJobLossProbe } from '../finalize/runner-queue.js';
+import { AGENT_SHUTDOWN_DETAIL } from '../finalize/runner-agent.js';
 import type { JobClaimSpec, RunnerBackend, RunnerLease } from '../finalize/runner-backend.js';
 import { createSupportTicket, getSupportTicket } from '../support-tickets-store.js';
 import { addReleaseDigestRecipient } from '../release-notification-settings.js';
@@ -1069,6 +1070,95 @@ describe('triggerDeployment — mid-run runner loss (agent crashes under a step)
       'no replacement runner could be acquired',
     );
     // Env lock released despite the second failure.
+    expect(getDeploymentEnvironment(PROJECT, 'dev')!.active_deployment_id).toBeNull();
+  });
+
+  it('rides out runners that hand the job back on shutdown without spending the loss budget', async () => {
+    // An ECS scale-in: each draining agent claims the job and returns it on
+    // SIGTERM. More hand-backs than the mid-run budget allows, then a healthy one.
+    const SHUTDOWN_MESSAGE = `runner agent lost — ${AGENT_SHUTDOWN_DETAIL}`;
+    const fb = makeFakeBackend([
+      {
+        exitCode: -1,
+        error: SHUTDOWN_MESSAGE,
+        dispatched: false,
+        probe: { state: 'lost', lost: true, detail: AGENT_SHUTDOWN_DETAIL },
+      },
+      { exitCode: -1, error: SHUTDOWN_MESSAGE, dispatched: false },
+      // No delivery evidence from the backend: the hand-back text alone counts.
+      { exitCode: -1, error: SHUTDOWN_MESSAGE },
+      { exitCode: -1, error: SHUTDOWN_MESSAGE, dispatched: false },
+      { exitCode: 0 },
+      { exitCode: 0 },
+    ]);
+
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'dev',
+        ref: 'sha-scale-in',
+        worktreePath: WORKTREE,
+        config: CONFIG,
+      },
+      makeDeps(fb.backend),
+    );
+
+    expect(dep.status).toBe('success');
+    expect(fb.acquireCalls.length).toBe(5);
+    expect(listDeploymentSteps(dep.id).map((s) => s.status)).toEqual(['success', 'success']);
+  });
+
+  it('still fails a real mid-step loss once its budget is spent after hand-backs', async () => {
+    const SHUTDOWN_MESSAGE = `runner agent lost — ${AGENT_SHUTDOWN_DETAIL}`;
+    const fb = makeFakeBackend([
+      { exitCode: -1, error: SHUTDOWN_MESSAGE, dispatched: false },
+      { exitCode: -1, error: LOSS_MESSAGE, dispatched: true },
+      { exitCode: -1, error: LOSS_MESSAGE, dispatched: true },
+      { exitCode: -1, error: LOSS_MESSAGE, dispatched: true },
+    ]);
+
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'dev',
+        ref: 'sha-scale-in-then-crash',
+        worktreePath: WORKTREE,
+        config: CONFIG,
+      },
+      makeDeps(fb.backend),
+    );
+
+    expect(dep.status).toBe('error');
+    // 1 hand-back retry + 2 mid-run retries.
+    expect(fb.acquireCalls.length).toBe(4);
+    expect(dep.error).toContain('runner lost (agent_lost)');
+  });
+
+  it('caps hand-back retries with DEPLOY_RUNNER_UNDELIVERED_MAX_RETRIES', async () => {
+    const SHUTDOWN_MESSAGE = `runner agent lost — ${AGENT_SHUTDOWN_DETAIL}`;
+    const fb = makeFakeBackend(
+      Array.from({ length: 5 }, () => ({
+        exitCode: -1,
+        error: SHUTDOWN_MESSAGE,
+        dispatched: false,
+      })),
+    );
+    const deps = makeDeps(fb.backend);
+    deps.env = { PATH: '/usr/bin', DEPLOY_RUNNER_UNDELIVERED_MAX_RETRIES: '1' };
+
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'dev',
+        ref: 'sha-scale-in-cap',
+        worktreePath: WORKTREE,
+        config: CONFIG,
+      },
+      deps,
+    );
+
+    expect(dep.status).toBe('error');
+    expect(fb.acquireCalls.length).toBe(2);
     expect(getDeploymentEnvironment(PROJECT, 'dev')!.active_deployment_id).toBeNull();
   });
 

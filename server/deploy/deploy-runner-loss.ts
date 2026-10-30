@@ -79,6 +79,45 @@ export function resolveDeployRunnerLossRetries(env: NodeJS.ProcessEnv = process.
   return Math.max(0, n);
 }
 
+/**
+ * Separate, larger budget for losses where the step's command never reached a
+ * runner. The usual cause is an ECS scale-in: every agent draining at that
+ * moment claims the job and hands it straight back on SIGTERM. Three of those
+ * in a row used to spend the whole mid-run budget in about a second and fail
+ * the deploy, even though nothing ran. Re-acquiring is always safe here, so
+ * these retries only need a cap that stops a fleet stuck in a loop. They back
+ * off between attempts and stay inside the deployment's timeout.
+ */
+export const DEFAULT_DEPLOY_RUNNER_UNDELIVERED_RETRIES = 10;
+
+/** Resolve the undelivered-step retry budget (>= 0; 0 disables). */
+export function resolveDeployRunnerUndeliveredRetries(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const raw = env.DEPLOY_RUNNER_UNDELIVERED_MAX_RETRIES?.trim();
+  if (!raw) return DEFAULT_DEPLOY_RUNNER_UNDELIVERED_RETRIES;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n)) return DEFAULT_DEPLOY_RUNNER_UNDELIVERED_RETRIES;
+  return Math.max(0, n);
+}
+
+/** Longest wait between undelivered-step re-acquires. */
+export const DEPLOY_RUNNER_UNDELIVERED_MAX_BACKOFF_MS = 30_000;
+
+/** Linear backoff for the nth (1-based) undelivered retry, capped. */
+export function deployRunnerUndeliveredBackoffMs(retry: number, baseMs: number): number {
+  return Math.min(
+    Math.max(0, baseMs) * Math.max(1, retry),
+    DEPLOY_RUNNER_UNDELIVERED_MAX_BACKOFF_MS,
+  );
+}
+
+/**
+ * The agent's hand-back text when it claimed a job while shutting down
+ * (`AGENT_SHUTDOWN_DETAIL` in `runner-agent.ts`).
+ */
+const RETURNED_BEFORE_START_PATTERN = /before the job started/i;
+
 /** The subset of a step outcome that carries loss evidence. */
 export interface DeployStepLossInput {
   /** The step's reported exit code; -1 when it never reported one. */
@@ -87,6 +126,8 @@ export interface DeployStepLossInput {
   spawnError?: string;
   /** Queue-row evidence for the job backing this step, when the backend wires one. */
   lossProbe?: RunnerJobLossProbe | null;
+  /** False when the backend knows the step's command never reached the agent. */
+  stepDispatched?: boolean;
 }
 
 /**
@@ -128,6 +169,19 @@ export function classifyDeployRunnerLoss(input: DeployStepLossInput): DeployRunn
   if (AGENT_LOST_PATTERN.test(message)) return { kind: 'agent_lost', detail: message };
   if (LEASE_EXPIRED_PATTERN.test(message)) return { kind: 'lease_expired', detail: message };
   return null;
+}
+
+/**
+ * True when a classified loss happened before the step's command reached any
+ * runner, so nothing ran and a re-acquire cannot double-apply anything.
+ */
+export function isUndeliveredDeployRunnerLoss(
+  input: DeployStepLossInput,
+  loss: DeployRunnerLoss,
+): boolean {
+  // Delivery evidence from the backend beats the message text.
+  if (input.stepDispatched !== undefined) return !input.stepDispatched;
+  return RETURNED_BEFORE_START_PATTERN.test(loss.detail);
 }
 
 /** One-line operator-facing summary of a loss, used in the step error column. */

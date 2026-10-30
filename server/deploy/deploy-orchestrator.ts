@@ -49,11 +49,14 @@ import { existsSync, rmSync } from 'fs';
 import type { AppConfig, BroadcastFn, DeploymentRow } from '../types.js';
 import type { JobClaimSpec, RunnerBackend, RunnerLease } from '../finalize/runner-backend.js';
 import { resolveRunnerBackend } from '../finalize/runner-backend.js';
-import { acquireRunnerWithRetry } from './deploy-acquire-retry.js';
+import { acquireRunnerWithRetry, resolveDeployAcquireBackoffMs } from './deploy-acquire-retry.js';
 import {
   classifyDeployRunnerLoss,
   describeDeployRunnerLoss,
+  deployRunnerUndeliveredBackoffMs,
+  isUndeliveredDeployRunnerLoss,
   resolveDeployRunnerLossRetries,
+  resolveDeployRunnerUndeliveredRetries,
 } from './deploy-runner-loss.js';
 import type { RunnerJobLossProbe } from '../finalize/runner-queue.js';
 import type { SpawnedStep, SpawnStepFn } from '../finalize/step-runner.js';
@@ -1226,6 +1229,11 @@ export async function runDeployment(
   // deploy instead of grinding through the whole timeout budget.
   const runnerLossRetryBudget = resolveDeployRunnerLossRetries(deps.env ?? process.env);
   let runnerLossRetriesUsed = 0;
+  // Losses before the command reached a runner (an agent handing the job back
+  // on SIGTERM during a scale-in) draw on their own budget: nothing ran, so
+  // they must not use up the retries a real mid-step loss needs.
+  const undeliveredRetryBudget = resolveDeployRunnerUndeliveredRetries(deps.env ?? process.env);
+  let undeliveredRetriesUsed = 0;
 
   // Snapshot the environment's currently-live ref BEFORE we overwrite it on
   // success. The deploy holds the env lock for the whole run, so no concurrent
@@ -1314,28 +1322,55 @@ export async function runDeployment(
         if (outcome.timedOut) break;
         const loss = classifyDeployRunnerLoss(outcome);
         if (!loss) break;
-        // Budget is shared across the whole deployment: a fleet that keeps
+        const undelivered = isUndeliveredDeployRunnerLoss(outcome, loss);
+        // Budgets are shared across the whole deployment: a fleet that keeps
         // dropping agents fails the deploy rather than burning the timeout.
-        if (runnerLossRetriesUsed >= runnerLossRetryBudget) break;
+        if (undelivered) {
+          if (undeliveredRetriesUsed >= undeliveredRetryBudget) break;
+        } else if (runnerLossRetriesUsed >= runnerLossRetryBudget) {
+          break;
+        }
         // Nothing left to resume into — fall through and report the loss.
         if (deadline - now() <= 0) break;
 
-        runnerLossRetriesUsed += 1;
+        if (undelivered) undeliveredRetriesUsed += 1;
+        else runnerLossRetriesUsed += 1;
         stepLossRetries += 1;
         lastRunnerLoss = loss;
         // A command still queued on the Hub cannot have dispatched a release.
         // Once delivery is possible, every later attempt must stay in recovery.
-        resuming ||= outcome.stepDispatched !== false;
+        resuming ||= !undelivered;
         console.warn(
           `[deploy-orchestrator] runner lost during step "${stepCfg.name}" for ` +
             `${projectId}/${environment} (deployment ${deploymentId}) — ${loss.kind}: ${loss.detail}; ` +
             `${resuming ? 'recovering' : 'retrying undelivered step'} on a fresh runner ` +
-            `(${runnerLossRetriesUsed}/${runnerLossRetryBudget})`,
+            (undelivered
+              ? `(undelivered ${undeliveredRetriesUsed}/${undeliveredRetryBudget})`
+              : `(${runnerLossRetriesUsed}/${runnerLossRetryBudget})`),
         );
         try {
           await lease.release();
         } catch {
           // The runner is already gone; teardown failing is expected here.
+        }
+        if (undelivered) {
+          // Draining agents keep claiming until the scale-in finishes. Wait a
+          // little longer each time so a replacement has a chance to register.
+          const waitMs = Math.min(
+            deployRunnerUndeliveredBackoffMs(
+              undeliveredRetriesUsed,
+              resolveDeployAcquireBackoffMs(),
+            ),
+            Math.max(0, deadline - now()),
+          );
+          if (waitMs > 0) await new Promise<void>((resolve) => setTimeout(resolve, waitMs));
+          if (currentDeploymentIsCancelled()) {
+            return getDeployment(deploymentId) as DeploymentRow;
+          }
+          if (deadline - now() <= 0) {
+            budgetExpiredBeforeStep = true;
+            break;
+          }
         }
         try {
           lease = await acquireLease();

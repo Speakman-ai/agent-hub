@@ -10,9 +10,14 @@ import type { RunnerJobLossProbe } from '../finalize/runner-queue.js';
 import { spotReclaimDetail } from '../finalize/spot-interruption.js';
 import {
   DEFAULT_DEPLOY_RUNNER_LOSS_RETRIES,
+  DEFAULT_DEPLOY_RUNNER_UNDELIVERED_RETRIES,
+  DEPLOY_RUNNER_UNDELIVERED_MAX_BACKOFF_MS,
   classifyDeployRunnerLoss,
+  deployRunnerUndeliveredBackoffMs,
   describeDeployRunnerLoss,
+  isUndeliveredDeployRunnerLoss,
   resolveDeployRunnerLossRetries,
+  resolveDeployRunnerUndeliveredRetries,
 } from './deploy-runner-loss.js';
 
 function probe(overrides: Partial<RunnerJobLossProbe> = {}): RunnerJobLossProbe {
@@ -128,5 +133,54 @@ describe('describeDeployRunnerLoss', () => {
     expect(describeDeployRunnerLoss(loss, 1)).toContain('after 1 retry on a fresh runner');
     expect(describeDeployRunnerLoss(loss, 2)).toContain('after 2 retries on a fresh runner');
     expect(describeDeployRunnerLoss(loss, 2)).toContain('instance reclaimed');
+  });
+});
+
+describe('isUndeliveredDeployRunnerLoss', () => {
+  const shutdown = {
+    kind: 'agent_lost' as const,
+    detail:
+      'runner agent lost — runner task stopping (SIGTERM) before the job started; requeued on another runner',
+  };
+  const crash = { kind: 'agent_lost' as const, detail: 'runner agent lost — lease expired' };
+
+  it('trusts backend delivery evidence over the message', () => {
+    expect(isUndeliveredDeployRunnerLoss({ exitCode: -1, stepDispatched: false }, crash)).toBe(
+      true,
+    );
+    expect(isUndeliveredDeployRunnerLoss({ exitCode: -1, stepDispatched: true }, shutdown)).toBe(
+      false,
+    );
+  });
+
+  it('falls back to the shutdown hand-back text when delivery is unknown', () => {
+    expect(isUndeliveredDeployRunnerLoss({ exitCode: -1 }, shutdown)).toBe(true);
+    expect(isUndeliveredDeployRunnerLoss({ exitCode: -1 }, crash)).toBe(false);
+  });
+});
+
+describe('resolveDeployRunnerUndeliveredRetries / backoff', () => {
+  it('defaults, parses, and floors at 0', () => {
+    expect(resolveDeployRunnerUndeliveredRetries({})).toBe(
+      DEFAULT_DEPLOY_RUNNER_UNDELIVERED_RETRIES,
+    );
+    expect(
+      resolveDeployRunnerUndeliveredRetries({ DEPLOY_RUNNER_UNDELIVERED_MAX_RETRIES: '4' }),
+    ).toBe(4);
+    expect(
+      resolveDeployRunnerUndeliveredRetries({ DEPLOY_RUNNER_UNDELIVERED_MAX_RETRIES: '-3' }),
+    ).toBe(0);
+    expect(
+      resolveDeployRunnerUndeliveredRetries({ DEPLOY_RUNNER_UNDELIVERED_MAX_RETRIES: 'x' }),
+    ).toBe(DEFAULT_DEPLOY_RUNNER_UNDELIVERED_RETRIES);
+  });
+
+  it('grows linearly and caps', () => {
+    expect(deployRunnerUndeliveredBackoffMs(1, 2_000)).toBe(2_000);
+    expect(deployRunnerUndeliveredBackoffMs(3, 2_000)).toBe(6_000);
+    expect(deployRunnerUndeliveredBackoffMs(50, 2_000)).toBe(
+      DEPLOY_RUNNER_UNDELIVERED_MAX_BACKOFF_MS,
+    );
+    expect(deployRunnerUndeliveredBackoffMs(5, 0)).toBe(0);
   });
 });
