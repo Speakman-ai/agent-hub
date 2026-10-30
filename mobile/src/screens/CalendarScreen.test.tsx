@@ -42,6 +42,7 @@ describe('CalendarScreen mobile parity', () => {
   it('renders an agenda event with create and refresh controls', () => {
     const html = renderToStaticMarkup(
       <CalendarAgendaContent
+        view="week"
         loading={false}
         eventsLoading={false}
         error={null}
@@ -76,34 +77,47 @@ describe('CalendarScreen mobile parity', () => {
     expect(html).toContain('Room 4');
   });
 
-  it('renders the month view below the agenda empty state once Calendar is enabled', () => {
-    const html = renderToStaticMarkup(
-      <CalendarAgendaContent
-        loading={false}
-        eventsLoading={false}
-        error={null}
-        status={{
-          connected: true,
-          grantedScopes: [CALENDAR_EVENTS_SCOPE],
-          serverConfigured: true,
-        }}
-        events={[]}
-        onRefresh={() => undefined}
-        onConnect={() => undefined}
-        onOpenSettings={() => undefined}
-        onCreate={() => undefined}
-        onEdit={() => undefined}
-        monthView={<div>MONTH-GRID</div>}
-      />,
-    );
+  it('shows only the month grid by default and the list in week or day view', () => {
+    const props = {
+      loading: false,
+      eventsLoading: false,
+      error: null,
+      status: {
+        connected: true,
+        grantedScopes: [CALENDAR_EVENTS_SCOPE],
+        serverConfigured: true,
+      },
+      events: [],
+      onRefresh: () => undefined,
+      onConnect: () => undefined,
+      onOpenSettings: () => undefined,
+      onCreate: () => undefined,
+      onEdit: () => undefined,
+      monthView: <div>MONTH-GRID</div>,
+      listLabel: 'Oct 25 to Oct 31, 2026',
+    };
+    const month = renderToStaticMarkup(<CalendarAgendaContent {...props} />);
+    expect(month).toContain('MONTH-GRID');
+    expect(month).not.toContain('No events this week');
+    expect(month).toContain('Month');
+    expect(month).toContain('Week');
+    expect(month).toContain('Day');
 
-    expect(html).toContain('No events this week');
-    expect(html.indexOf('MONTH-GRID')).toBeGreaterThan(html.indexOf('No events this week'));
+    const week = renderToStaticMarkup(<CalendarAgendaContent {...props} view="week" />);
+    expect(week).not.toContain('MONTH-GRID');
+    expect(week).toContain('No events this week');
+    expect(week).toContain('Oct 25 to Oct 31, 2026');
+    expect(week).toContain('Previous week');
+
+    const day = renderToStaticMarkup(<CalendarAgendaContent {...props} view="day" />);
+    expect(day).toContain('No events this day');
+    expect(day).toContain('Next day');
   });
 
   it('renders the not-linked route to connect Google', () => {
     const html = renderToStaticMarkup(
       <CalendarAgendaContent
+        view="week"
         loading={false}
         eventsLoading={false}
         error={null}
@@ -124,6 +138,7 @@ describe('CalendarScreen mobile parity', () => {
   it('renders the inline Enable Calendar affordance when connected but missing consent', () => {
     const html = renderToStaticMarkup(
       <CalendarAgendaContent
+        view="week"
         loading={false}
         eventsLoading={false}
         error={null}
@@ -255,6 +270,7 @@ describe('CalendarScreen mobile parity', () => {
     const render = (hiddenAccounts: string[] = []) =>
       renderToStaticMarkup(
         <CalendarAgendaContent
+          view="week"
           loading={false}
           eventsLoading={false}
           error={null}
@@ -283,6 +299,7 @@ describe('CalendarScreen mobile parity', () => {
     it('ignores a stored hidden account once only one is linked', () => {
       const html = renderToStaticMarkup(
         <CalendarAgendaContent
+          view="week"
           loading={false}
           eventsLoading={false}
           error={null}
@@ -407,6 +424,7 @@ describe('CalendarScreen mobile parity', () => {
       const render = (visibility = {}) =>
         renderToStaticMarkup(
           <CalendarAgendaContent
+            view="week"
             loading={false}
             eventsLoading={false}
             error={null}
@@ -443,6 +461,7 @@ describe('CalendarScreen mobile parity', () => {
       );
       const html = renderToStaticMarkup(
         <CalendarAgendaContent
+          view="week"
           loading={false}
           eventsLoading={false}
           error={null}
@@ -496,6 +515,7 @@ describe('CalendarScreen mobile parity', () => {
       );
       const html = renderToStaticMarkup(
         <CalendarAgendaContent
+          view="week"
           loading={false}
           eventsLoading={false}
           error={null}
@@ -554,6 +574,7 @@ describe('CalendarScreen mobile parity', () => {
       const sources = await loadCalendarSources({ listGoogleCalendars: vi.fn() }, [account]);
       const html = renderToStaticMarkup(
         <CalendarAgendaContent
+          view="week"
           loading={false}
           eventsLoading={false}
           error={null}

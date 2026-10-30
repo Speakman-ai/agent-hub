@@ -193,3 +193,75 @@ export function eventChipTime(event: CalendarEventLike): string {
   if (Number.isNaN(start.getTime())) return '';
   return start.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 }
+
+/** Calendar page layouts: the month grid, or a list of one week or one day. */
+export type CalendarViewMode = 'month' | 'week' | 'day';
+
+export const CALENDAR_VIEW_MODES: readonly CalendarViewMode[] = ['month', 'week', 'day'];
+
+export const CALENDAR_VIEW_KEY = 'agent-hub.calendar.view';
+
+export const CALENDAR_VIEW_LABELS: Record<CalendarViewMode, string> = {
+  month: 'Month',
+  week: 'Week',
+  day: 'Day',
+};
+
+/** Stored view, falling back to the month grid for anything unrecognized. */
+export function parseCalendarView(raw: string | null | undefined): CalendarViewMode {
+  return CALENDAR_VIEW_MODES.includes(raw as CalendarViewMode)
+    ? (raw as CalendarViewMode)
+    : 'month';
+}
+
+export function startOfDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+/** Sunday on or before `date`, at local midnight, matching the month grid's rows. */
+export function startOfWeek(date: Date): Date {
+  const day = startOfDay(date);
+  return addDays(day, -day.getDay());
+}
+
+/** First local midnight of the week or day containing `anchor`. */
+export function listPeriodStart(mode: 'week' | 'day', anchor: Date): Date {
+  return mode === 'week' ? startOfWeek(anchor) : startOfDay(anchor);
+}
+
+/** Fetch window for the week or day list containing `anchor`. */
+export function listViewRange(
+  mode: 'week' | 'day',
+  anchor: Date,
+): { timeMin: string; timeMax: string } {
+  const start = listPeriodStart(mode, anchor);
+  // setDate keeps local midnight across a DST change, unlike adding milliseconds.
+  return {
+    timeMin: start.toISOString(),
+    timeMax: addDays(start, mode === 'week' ? 7 : 1).toISOString(),
+  };
+}
+
+/** The anchor moved one week or day forward (`delta` 1) or back (`delta` -1). */
+export function shiftListAnchor(mode: 'week' | 'day', anchor: Date, delta: number): Date {
+  return addDays(listPeriodStart(mode, anchor), (mode === 'week' ? 7 : 1) * delta);
+}
+
+/** Heading for the list: "Oct 25 to Oct 31, 2026" for a week, "Friday, October 30, 2026" for a day. */
+export function listViewLabel(mode: 'week' | 'day', anchor: Date): string {
+  const start = listPeriodStart(mode, anchor);
+  if (mode === 'day') {
+    return start.toLocaleDateString(undefined, {
+      weekday: 'long',
+      month: 'long',
+      day: 'numeric',
+      year: 'numeric',
+    });
+  }
+  const end = addDays(start, 6);
+  const short = { month: 'short', day: 'numeric' } as const;
+  return `${start.toLocaleDateString(undefined, short)} to ${end.toLocaleDateString(undefined, {
+    ...short,
+    year: 'numeric',
+  })}`;
+}

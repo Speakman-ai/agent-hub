@@ -15,6 +15,7 @@ vi.mock('../utils/api', () => ({
 
 import CalendarAgendaPage, { CALENDAR_EVENTS_SCOPE, MONTH_MAX_RESULTS } from './CalendarAgendaPage';
 import { api } from '../utils/api';
+import { CALENDAR_VIEW_KEY } from '@shared/utils/calendarEvents';
 
 const mockApi = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
@@ -35,8 +36,16 @@ const CONNECTED = {
   serverConfigured: true,
 };
 
+// Most tests drive the event list, so they start in the week view; the month
+// view tests clear this to get the default.
+function startInWeekView() {
+  window.localStorage.setItem(CALENDAR_VIEW_KEY, 'week');
+}
+
 beforeEach(() => {
   for (const fn of Object.values(mockApi)) fn.mockReset();
+  window.localStorage.clear();
+  startInWeekView();
 });
 
 afterEach(() => {
@@ -192,6 +201,7 @@ describe('CalendarAgendaPage', () => {
     beforeEach(() => {
       vi.useFakeTimers({ toFake: ['Date'] });
       vi.setSystemTime(new Date(2026, 9, 16, 12));
+      window.localStorage.removeItem(CALENDAR_VIEW_KEY);
     });
     afterEach(() => {
       vi.useRealTimers();
@@ -219,8 +229,9 @@ describe('CalendarAgendaPage', () => {
       });
       expect(screen.getByTestId('calendar-day-2026-10-22')).toHaveTextContent('Team offsite');
       expect(screen.getByTestId('calendar-day-2026-10-23')).not.toHaveTextContent('Team offsite');
-      // The agenda empty state and the grid render together.
-      expect(screen.getByText('No events this week')).toBeInTheDocument();
+      // Month is the default view: the grid replaces the list.
+      expect(screen.queryByText('No events this week')).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Month' })).toHaveAttribute('aria-pressed', 'true');
 
       const monthCall = mockApi.listGoogleCalendarEvents.mock.calls.find(
         ([p]) => p.maxResults === MONTH_MAX_RESULTS,
@@ -278,8 +289,7 @@ describe('CalendarAgendaPage', () => {
       const alert = await screen.findByRole('alert');
       expect(alert).toHaveTextContent('October 2026');
       expect(alert).toHaveTextContent('Google Calendar unavailable');
-      // The agenda loaded fine, so its own error banner stays quiet.
-      expect(screen.getAllByText('Agenda item').length).toBeGreaterThan(0);
+      // The list loaded fine, so its own error banner stays quiet.
       expect(screen.getAllByRole('alert')).toHaveLength(1);
 
       fireEvent.click(screen.getByRole('button', { name: /Retry/i }));
@@ -288,6 +298,98 @@ describe('CalendarAgendaPage', () => {
         expect(screen.getByTestId('calendar-day-2026-10-20')).toHaveTextContent('Recovered');
       });
       expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    });
+
+    it('switches to a week list and a day list, each paging its own range', async () => {
+      mockApi.getGoogleStatus.mockResolvedValue(CONNECTED);
+      routeLists([
+        [{ id: 'standup', summary: 'Standup', start: { dateTime: '2026-10-16T16:00:00Z' } }],
+      ]);
+      const listCalls = () =>
+        mockApi.listGoogleCalendarEvents.mock.calls
+          .map(([p]) => p)
+          .filter((p) => p.maxResults !== MONTH_MAX_RESULTS);
+
+      render(<CalendarAgendaPage />);
+      await screen.findByText('October 2026');
+      expect(screen.queryByText('Standup')).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Week' }));
+      expect(await screen.findByText('Standup')).toBeInTheDocument();
+      expect(screen.queryByLabelText('Month view')).not.toBeInTheDocument();
+      expect(window.localStorage.getItem(CALENDAR_VIEW_KEY)).toBe('week');
+      // Sunday Oct 11 through Saturday Oct 17.
+      expect(new Date(listCalls()[0].timeMin).getTime()).toBe(new Date(2026, 9, 11).getTime());
+      expect(new Date(listCalls()[0].timeMax).getTime()).toBe(new Date(2026, 9, 18).getTime());
+
+      const before = mockApi.getGoogleStatus.mock.calls.length;
+      fireEvent.click(screen.getByRole('button', { name: 'Next week' }));
+      await waitFor(() => {
+        expect(new Date(listCalls().at(-1).timeMin).getTime()).toBe(
+          new Date(2026, 9, 18).getTime(),
+        );
+      });
+      // Paging re-reads events only.
+      expect(mockApi.getGoogleStatus.mock.calls.length).toBe(before);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Today' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Day' }));
+      await waitFor(() => {
+        const last = listCalls().at(-1);
+        expect(new Date(last.timeMin).getTime()).toBe(new Date(2026, 9, 16).getTime());
+        expect(new Date(last.timeMax).getTime()).toBe(new Date(2026, 9, 17).getTime());
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Previous day' }));
+      await waitFor(() => {
+        expect(new Date(listCalls().at(-1).timeMin).getTime()).toBe(
+          new Date(2026, 9, 15).getTime(),
+        );
+      });
+    });
+
+    it('finishes loading when the view changes while the first events read is pending', async () => {
+      mockApi.getGoogleStatus.mockResolvedValue(CONNECTED);
+      let releaseFirst!: (v: any) => void;
+      let listReads = 0;
+      mockApi.listGoogleCalendarEvents.mockImplementation((params: any) => {
+        if (params.maxResults === MONTH_MAX_RESULTS) return Promise.resolve({ events: [] });
+        listReads += 1;
+        if (listReads === 1) return new Promise((r) => (releaseFirst = r));
+        return Promise.resolve({
+          events: [{ id: 'd', summary: 'Dentist', start: { dateTime: '2026-10-16T17:00:00Z' } }],
+        });
+      });
+
+      render(<CalendarAgendaPage />);
+      // Status and calendars are in; the first week read is still out.
+      await waitFor(() => expect(listReads).toBe(1));
+      fireEvent.click(screen.getByRole('button', { name: 'Day' }));
+      expect(await screen.findByText('Dentist')).toBeInTheDocument();
+      expect(screen.queryByText('Loading Calendar...')).not.toBeInTheDocument();
+
+      // The superseded week read lands late and must not replace the day list.
+      releaseFirst({
+        events: [{ id: 'w', summary: 'Stale week', start: { dateTime: '2026-10-12T17:00:00Z' } }],
+      });
+      await waitFor(() => expect(screen.getByRole('button', { name: /Refresh/ })).toBeEnabled());
+      expect(screen.queryByText('Stale week')).not.toBeInTheDocument();
+      expect(screen.getByText('Dentist')).toBeInTheDocument();
+    });
+
+    it('opens the list on the month being browsed', async () => {
+      mockApi.getGoogleStatus.mockResolvedValue(CONNECTED);
+      routeLists([[]]);
+
+      render(<CalendarAgendaPage />);
+      await screen.findByText('October 2026');
+      fireEvent.click(screen.getByRole('button', { name: 'Next month' }));
+      await screen.findByText('November 2026');
+      fireEvent.click(screen.getByRole('button', { name: 'Day' }));
+      expect(await screen.findByText('No events this day')).toBeInTheDocument();
+      await waitFor(() => {
+        const last = mockApi.listGoogleCalendarEvents.mock.calls.at(-1)?.[0];
+        expect(new Date(last.timeMin).getTime()).toBe(new Date(2026, 10, 1).getTime());
+      });
     });
 
     it('hides the grid until Calendar access is granted', async () => {
@@ -343,6 +445,7 @@ describe('CalendarAgendaPage', () => {
 
     beforeEach(() => {
       window.localStorage.clear();
+      startInWeekView();
       mockApi.getGoogleStatus.mockResolvedValue(MULTI);
       mockApi.listGoogleCalendarEvents.mockImplementation(async (params: any) => ({
         events: eventsByAccount[params.account] ?? [],
@@ -539,6 +642,7 @@ describe('CalendarAgendaPage: several calendars', () => {
 
   beforeEach(() => {
     window.localStorage.clear();
+    startInWeekView();
     mockApi.getGoogleStatus.mockResolvedValue(WITH_LIST);
     mockApi.listGoogleCalendars.mockResolvedValue({ calendars: CALENDARS });
     mockApi.listGoogleCalendarEvents.mockImplementation(async (params: any) => {
@@ -629,6 +733,7 @@ describe('CalendarAgendaPage: several calendars', () => {
   });
 
   it('month events follow calendar changes after Refresh when the ids stay the same', async () => {
+    window.localStorage.removeItem(CALENDAR_VIEW_KEY);
     // An event inside the current month so the grid renders it.
     const now = new Date();
     const start = new Date(now.getFullYear(), now.getMonth(), 15, 12).toISOString();

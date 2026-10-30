@@ -20,12 +20,21 @@ import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import {
   addMonths,
+  CALENDAR_VIEW_KEY,
+  CALENDAR_VIEW_LABELS,
+  CALENDAR_VIEW_MODES,
   defaultCalendarRange,
+  listViewLabel,
+  listViewRange,
   monthGridRange,
+  parseCalendarView,
+  shiftListAnchor,
+  startOfDay,
   startOfMonth,
   eventTimeLabel,
   localTimeZone,
   type CalendarEventLike,
+  type CalendarViewMode,
 } from '@shared/utils/calendarEvents';
 import {
   CALENDAR_HIDDEN_ACCOUNTS_KEY,
@@ -254,7 +263,14 @@ export function CalendarAgendaContent({
   failedCalendarKeys = [],
   onToggleCalendar,
   onShowOtherCalendars,
+  view = 'month',
+  onChangeView,
+  listLabel = '',
+  onListPrev,
+  onListNext,
+  onListToday,
 }: any) {
+  const listMode = view === 'day' ? 'day' : 'week';
   const connected = !!status?.connected;
   const configured = status?.serverConfigured !== false;
   const accounts = linkedGoogleAccounts(status);
@@ -309,21 +325,26 @@ export function CalendarAgendaContent({
       action: 'Enable Calendar',
       onAction: onConnect,
     };
-  } else if (events?.length && !visibleEvents.length && !eventsLoading) {
-    empty = {
-      title: multiCalendar ? 'All calendars hidden' : 'All accounts hidden',
-      body: multiCalendar
-        ? 'Turn a calendar back on above to see its events.'
-        : 'Turn an account back on above to see its events.',
-      action: null,
-    };
-  } else if (!events?.length && !eventsLoading) {
-    empty = {
-      title: 'No events this week',
-      body: 'Create an event or refresh after adding one in Google Calendar.',
-      action: 'Create event',
-      onAction: onCreate,
-    };
+  }
+  // Setup states replace every view; the rest only describe the list.
+  const setupState = !!empty;
+  if (!setupState && !eventsLoading) {
+    if (events?.length && !visibleEvents.length) {
+      empty = {
+        title: multiCalendar ? 'All calendars hidden' : 'All accounts hidden',
+        body: multiCalendar
+          ? 'Turn a calendar back on above to see its events.'
+          : 'Turn an account back on above to see its events.',
+        action: null,
+      };
+    } else if (!events?.length) {
+      empty = {
+        title: listMode === 'week' ? 'No events this week' : 'No events this day',
+        body: 'Create an event or refresh after adding one in Google Calendar.',
+        action: 'Create event',
+        onAction: onCreate,
+      };
+    }
   }
 
   return (
@@ -331,7 +352,7 @@ export function CalendarAgendaContent({
       <View style={styles.headerRow}>
         <View>
           <Text style={styles.kicker}>Calendar</Text>
-          <Text style={styles.title}>Agenda</Text>
+          <Text style={styles.title}>{view === 'month' ? 'Calendar' : 'Agenda'}</Text>
         </View>
         <View style={styles.headerActions}>
           <TouchableOpacity onPress={onRefresh} style={styles.secondaryButton}>
@@ -346,6 +367,25 @@ export function CalendarAgendaContent({
           ) : null}
         </View>
       </View>
+
+      {connected && calendarEnabled ? (
+        <View style={styles.viewToggle} accessibilityLabel="Calendar view">
+          {CALENDAR_VIEW_MODES.map((mode) => (
+            <TouchableOpacity
+              key={mode}
+              onPress={() => onChangeView?.(mode)}
+              style={[styles.viewToggleButton, view === mode && styles.viewToggleButtonOn]}
+              accessibilityRole="button"
+              accessibilityState={{ selected: view === mode }}
+              accessibilityLabel={CALENDAR_VIEW_LABELS[mode as CalendarViewMode]}
+            >
+              <Text style={[styles.viewToggleText, view === mode && styles.viewToggleTextOn]}>
+                {CALENDAR_VIEW_LABELS[mode as CalendarViewMode]}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      ) : null}
 
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
       {!error && warning ? (
@@ -377,7 +417,36 @@ export function CalendarAgendaContent({
         />
       ) : null}
 
-      {empty ? (
+      {!setupState && view !== 'month' ? (
+        <View style={styles.listNav}>
+          <Text style={styles.listNavTitle} numberOfLines={1}>
+            {listLabel}
+          </Text>
+          <View style={styles.listNavButtons}>
+            <TouchableOpacity
+              onPress={onListPrev}
+              style={styles.listNavButton}
+              accessibilityLabel={`Previous ${listMode}`}
+            >
+              <Text style={styles.secondaryButtonText}>‹</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={onListToday} style={styles.listNavButton}>
+              <Text style={styles.secondaryButtonText}>Today</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={onListNext}
+              style={styles.listNavButton}
+              accessibilityLabel={`Next ${listMode}`}
+            >
+              <Text style={styles.secondaryButtonText}>›</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      ) : null}
+
+      {!setupState && view === 'month' ? (
+        <ScrollView>{monthView}</ScrollView>
+      ) : empty ? (
         <ScrollView>
           <View style={styles.emptyCard}>
             <Text style={styles.emptyTitle}>{empty.title}</Text>
@@ -388,12 +457,10 @@ export function CalendarAgendaContent({
               </TouchableOpacity>
             ) : null}
           </View>
-          {calendarEnabled && connected ? monthView : null}
         </ScrollView>
       ) : (
         <FlatList
           data={visibleEvents}
-          ListFooterComponent={monthView || null}
           keyExtractor={(item: any, index) =>
             `${item.accountId ?? ''}:${eventCalendarId(item)}:${item.id || `${item.summary}-${index}`}`
           }
@@ -764,7 +831,12 @@ export default function CalendarScreen({ navigation }: any) {
   const [capturingId, setCapturingId] = useState<string | null>(null);
   const [capturedId, setCapturedId] = useState<string | null>(null);
   const [ticketDraft, setTicketDraft] = useState<CaptureCardDraft | null>(null);
-  const range = useMemo(() => defaultCalendarRange(), []);
+  const [view, setViewState] = useState<CalendarViewMode>('month');
+  // The week or day the list shows; month mode keeps it for when the list returns.
+  const [listAnchor, setListAnchor] = useState(() => startOfDay(new Date()));
+  const listMode = view === 'day' ? 'day' : 'week';
+  const range = useMemo(() => listViewRange(listMode, listAnchor), [listMode, listAnchor]);
+  const rangeRef = useRef(range);
   const [month, setMonth] = useState(() => startOfMonth(new Date()));
   const [monthEvents, setMonthEvents] = useState<any[]>([]);
   const [monthLoading, setMonthLoading] = useState(false);
@@ -784,6 +856,9 @@ export default function CalendarScreen({ navigation }: any) {
     AsyncStorage.getItem(CALENDAR_VISIBILITY_KEY)
       .then((raw) => setCalendarVisibility(parseCalendarVisibility(raw)))
       .catch(() => {});
+    AsyncStorage.getItem(CALENDAR_VIEW_KEY)
+      .then((raw) => setViewState(parseCalendarView(raw)))
+      .catch(() => {});
   }, []);
 
   const accounts = useMemo(() => linkedGoogleAccounts(status), [status]);
@@ -802,9 +877,42 @@ export default function CalendarScreen({ navigation }: any) {
     setModalEvent(event);
   };
 
+  // Event requests for the list run on their own sequence, so a page change can
+  // replace an in-flight read without cancelling the full load around it.
+  const listSeq = useRef(0);
+  const loadListEvents = useCallback(
+    async (sources: AccountCalendars[], stillWanted: () => boolean = () => true) => {
+      const id = ++listSeq.current;
+      const latest = () => id === listSeq.current && stillWanted();
+      setEventsLoading(true);
+      try {
+        const { events: merged, failures } = await loadCalendarEventsAcrossCalendars(api, sources, {
+          ...rangeRef.current,
+          maxResults: AGENDA_MAX_RESULTS,
+        });
+        if (!latest()) return;
+        setEvents(merged);
+        setFailedAccountIds(failures.map((f) => f.account.accountId));
+        setFailedCalendarKeys(failures.map((f) => `${f.account.accountId}|${f.calendar.id}`));
+        if (failures.length && failures.length === calendarCount(sources)) {
+          setError(calendarFailureText(failures));
+          setWarning(null);
+        } else {
+          setWarning(calendarLoadWarning(sources, failures));
+        }
+      } catch (err: any) {
+        if (latest()) setError(err.message || 'Failed to load Calendar');
+      } finally {
+        if (id === listSeq.current) setEventsLoading(false);
+      }
+    },
+    [],
+  );
+
   const load = useCallback(async () => {
     const seq = ++loadSeq.current;
     const current = () => seq === loadSeq.current;
+    const listAtStart = listSeq.current;
     setError(null);
     setEventsLoading(true);
     try {
@@ -816,20 +924,10 @@ export default function CalendarScreen({ navigation }: any) {
         const sources = await loadCalendarSources(api, readable);
         if (!current()) return;
         setCalendarSources(sources);
-        const { events: merged, failures } = await loadCalendarEventsAcrossCalendars(api, sources, {
-          ...range,
-          maxResults: AGENDA_MAX_RESULTS,
-        });
-        if (!current()) return;
-        setEvents(merged);
-        setFailedAccountIds(failures.map((f) => f.account.accountId));
-        setFailedCalendarKeys(failures.map((f) => `${f.account.accountId}|${f.calendar.id}`));
-        if (failures.length && failures.length === calendarCount(sources)) {
-          setError(calendarFailureText(failures));
-          setWarning(null);
-        } else {
-          setWarning(calendarLoadWarning(sources, failures));
-        }
+        // The page is usable now; the list read keeps its own spinner, and a
+        // page change may replace it before it lands.
+        setLoading(false);
+        await loadListEvents(sources, current);
       } else {
         setWarning(null);
         setCalendarSources([]);
@@ -844,14 +942,41 @@ export default function CalendarScreen({ navigation }: any) {
     } finally {
       if (current()) {
         setLoading(false);
-        setEventsLoading(false);
+        // A list request started since owns the spinner and clears it itself.
+        if (listSeq.current === listAtStart) setEventsLoading(false);
       }
     }
-  }, [range]);
+  }, [loadListEvents]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  // Paging the list re-reads only its events; status and calendars stay put.
+  useEffect(() => {
+    if (rangeRef.current === range) return;
+    rangeRef.current = range;
+    if (!calendarSources.length) return;
+    setError(null);
+    loadListEvents(calendarSources);
+    // calendarSources is read at the moment the range changes, not tracked.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [range, loadListEvents]);
+
+  const setView = (next: CalendarViewMode) => {
+    if (next === view) return;
+    const today = new Date();
+    if (next === 'month') {
+      setMonth(startOfMonth(listAnchor));
+    } else if (view === 'month') {
+      // Land on the month being browsed: today when it is the current month, else its 1st.
+      const sameMonth =
+        month.getFullYear() === today.getFullYear() && month.getMonth() === today.getMonth();
+      setListAnchor(sameMonth ? startOfDay(today) : month);
+    }
+    setViewState(next);
+    AsyncStorage.setItem(CALENDAR_VIEW_KEY, next).catch(() => {});
+  };
 
   const calendarReady = !!status?.connected && calendarAccounts.length > 0;
 
@@ -990,6 +1115,12 @@ export default function CalendarScreen({ navigation }: any) {
         onTicket={(event: any) => setTicketDraft(buildCalendarCardDraft(event))}
         capturingId={capturingId}
         capturedId={capturedId}
+        view={view}
+        onChangeView={setView}
+        listLabel={listViewLabel(listMode, listAnchor)}
+        onListPrev={() => setListAnchor((a) => shiftListAnchor(listMode, a, -1))}
+        onListNext={() => setListAnchor((a) => shiftListAnchor(listMode, a, 1))}
+        onListToday={() => setListAnchor(startOfDay(new Date()))}
         monthView={
           calendarReady ? (
             <CalendarMonthView
@@ -1114,6 +1245,35 @@ const styles = StyleSheet.create({
   },
   secondaryButtonText: { color: colors.gray300, fontSize: 13, fontWeight: '600' },
   disabledButton: { opacity: 0.5 },
+  viewToggle: {
+    flexDirection: 'row',
+    alignSelf: 'flex-start',
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 8,
+    overflow: 'hidden',
+    marginBottom: 12,
+  },
+  viewToggleButton: { paddingHorizontal: 14, paddingVertical: 7 },
+  viewToggleButtonOn: { backgroundColor: colors.gray700 },
+  viewToggleText: { color: colors.gray300, fontSize: 13, fontWeight: '600' },
+  viewToggleTextOn: { color: colors.white },
+  listNav: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginBottom: 10,
+  },
+  listNavTitle: { color: colors.white, fontSize: 16, fontWeight: '700', flexShrink: 1 },
+  listNavButtons: { flexDirection: 'row', gap: 6 },
+  listNavButton: {
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 6,
+  },
   errorText: { color: colors.red400, fontSize: 12, marginBottom: 10 },
   warningText: { color: colors.amber400, fontSize: 12, marginBottom: 10 },
   emptyCard: {
