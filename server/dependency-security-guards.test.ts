@@ -376,11 +376,18 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // cross-domain redirect. 1.16.1 closed two more stripping gaps: array-form
     // headers skipped the cross-origin strip (GHSA-q3jh-wrc6-jgq8), and an
     // unescaped sensitiveHeaders regex let credential headers through
-    // (GHSA-8r9p-f939-6h3c). Server only, via axios under @slack/bolt.
+    // (GHSA-8r9p-f939-6h3c). 1.16.2 (GHSA-mrwp-f3q8-3g9p): a cross-realm
+    // sensitiveHeaders array was discarded, and custom credential headers
+    // followed redirects. Server only, via axios under @slack/bolt.
     {
       pkg: 'follow-redirects',
-      min: '1.16.1',
-      advisory: ['GHSA-r4q5-vmmm-2653', 'GHSA-q3jh-wrc6-jgq8', 'GHSA-8r9p-f939-6h3c'],
+      min: '1.16.2',
+      advisory: [
+        'GHSA-r4q5-vmmm-2653',
+        'GHSA-q3jh-wrc6-jgq8',
+        'GHSA-8r9p-f939-6h3c',
+        'GHSA-mrwp-f3q8-3g9p',
+      ],
     },
     // GHSA-v2v4-37r5-5v8g (10.1.1): XSS in the Address6 HTML-emitting methods.
     // 10.5.1 then fixed two classifier gaps that let an address slip past an
@@ -1737,6 +1744,83 @@ describe('unpatched advisories (containment guards)', () => {
       // app bundle.
       dependents: ['@expo/config'],
       why: 'no deepmerge release fixes it; @expo/config only merges the app config committed to this repo, at dev/build time',
+    },
+    // Patched but incompatible. GHSA-g3hv-75wg-m249 (globparts amplification
+    // DoS) is fixed only in minimatch 11.0.1 and GHSA-3g3m-2fjr-6pw4 (an
+    // AbortSignal that fires after the timeout no longer stops the walk) only
+    // in glob 14.0.2. Both majors shipped together on 2026-10-27 as a rewrite
+    // (minimatch 11 matches through @isaacs/nonrecursive-glob-match) with no
+    // backport to any legacy line, and every consumer below declares an older
+    // major: ^3 (eslint, also calling the CJS export as a function), ^5, ^9,
+    // ^10, ^13. The minimatch DoS needs an attacker-chosen pattern and the glob
+    // one needs a caller passing `signal`; every pattern here is hardcoded in
+    // tooling or in this repo's own config, and no caller passes a signal.
+    {
+      workspace: 'root',
+      pkg: 'minimatch',
+      advisory: ['GHSA-g3hv-75wg-m249'],
+      vulnerableRange: '< 11.0.1',
+      // eslint, typescript-eslint and electron-builder tooling.
+      dependents: [
+        '@electron/asar',
+        '@electron/universal',
+        '@eslint/config-array',
+        '@eslint/eslintrc',
+        '@typescript-eslint/typescript-estree',
+        'app-builder-lib',
+        'dir-compare',
+        'eslint',
+        'eslint-plugin-react',
+        'filelist',
+        'glob',
+      ],
+      flags: { dev: true },
+      why: 'the fix is only on the days-old minimatch 11 rewrite and eslint, typescript-eslint and electron-builder declare ^3/^5/^9/^10; dev-only lint and packaging globs from committed config',
+    },
+    {
+      workspace: 'server',
+      pkg: 'minimatch',
+      advisory: ['GHSA-g3hv-75wg-m249'],
+      vulnerableRange: '< 11.0.1',
+      // glob 10 (archiver-utils, rimraf) and readdir-glob (archiver). The
+      // instance backup only calls archive.file() with fixed paths, never
+      // archive.glob() / directory(), so no pattern reaches the matcher.
+      dependents: ['glob', 'readdir-glob'],
+      why: 'the fix is only on minimatch 11 and glob 10 / readdir-glob declare ^9 / ^5; no request data is ever used as a pattern',
+    },
+    {
+      workspace: 'server',
+      pkg: 'glob',
+      advisory: ['GHSA-3g3m-2fjr-6pw4'],
+      vulnerableRange: '>= 9.0.0, <= 14.0.1',
+      // archiver-utils (archiver) and rimraf (gaxios). Neither passes an
+      // AbortSignal, so there is no cancellation to bypass.
+      dependents: ['archiver-utils', 'rimraf'],
+      why: 'the fix is only on glob 14 and archiver-utils / rimraf declare ^10; no caller passes the AbortSignal the advisory is about',
+    },
+    {
+      workspace: 'mobile',
+      pkg: 'minimatch',
+      advisory: ['GHSA-g3hv-75wg-m249'],
+      vulnerableRange: '< 11.0.1',
+      // Expo CLI/config tooling; matches globs from Expo itself and this
+      // repo's app config on the developer machine. Nothing ships in the app.
+      dependents: ['@expo/fingerprint', 'glob'],
+      why: 'the fix is only on minimatch 11 and glob 13 / @expo/fingerprint declare ^10; patterns come from Expo tooling and committed config',
+    },
+    {
+      workspace: 'mobile',
+      pkg: 'glob',
+      advisory: ['GHSA-3g3m-2fjr-6pw4'],
+      vulnerableRange: '>= 9.0.0, <= 14.0.1',
+      dependents: [
+        '@expo/cli',
+        '@expo/config',
+        '@expo/config-plugins',
+        '@expo/fingerprint',
+        '@expo/metro-config',
+      ],
+      why: 'the fix is only on glob 14 and every Expo package declares ^13; dev/build-time tooling that never passes an AbortSignal',
     },
   ];
 
