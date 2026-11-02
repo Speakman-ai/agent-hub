@@ -87,7 +87,7 @@ export function buildHubModePreamble(args: {
     '',
     '### When code changes are actually needed',
     '',
-    'Name the project and agent that should take the ticket, offer to spawn that session, and stay on Hub. Do not switch this session into Build.',
+    'Do not build or finalize here. If the user asks you to change code or fix something, ask which automation they want with one `agenthub:ask` picker unless they already named one: Build (`manual`), Build and Review (`review`), Build and Push (`push`), or Auto Merge (`merge`). Then `sessions.sh dispatch` that project agent with that `--mode`, paste the `ref`, and stay on Hub. You can check on the session afterward.',
     '',
     ...(instructions
       ? [

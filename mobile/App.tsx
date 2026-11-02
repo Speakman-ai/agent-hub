@@ -24,6 +24,9 @@ import KanbanCardTemplatesScreen from './src/screens/KanbanCardTemplatesScreen';
 import DashboardScreen from './src/screens/DashboardScreen';
 import DashboardHomeScreen from './src/screens/DashboardHomeScreen';
 import HubScreen from './src/screens/HubScreen';
+import SimpleChatsScreen from './src/screens/SimpleChatsScreen';
+import SimpleChatScreen from './src/screens/SimpleChatScreen';
+import { readShellMode } from './src/utils/simpleShell';
 import TodosScreen from './src/screens/TodosScreen';
 import NotificationsScreen from './src/screens/NotificationsScreen';
 import WikiScreen from './src/screens/WikiScreen';
@@ -97,6 +100,16 @@ function AppContent() {
   const overlayAnim = useRef(new Animated.Value(0)).current;
   const navigationRef = useRef<any>(null);
   const [inviteToken, setInviteToken] = useState<any>(null);
+  const [initialRoute, setInitialRoute] = useState<'Hub' | 'Simple' | null>(null);
+  useEffect(() => {
+    let live = true;
+    void readShellMode().then((mode) => {
+      if (live) setInitialRoute(mode === 'simple' ? 'Simple' : 'Hub');
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
   const {
     setActiveSessionId,
     showAiSignInGuide,
@@ -204,7 +217,7 @@ function AppContent() {
     };
   }, []);
   // Show loading screen while config loads from AsyncStorage
-  if (!configReady) {
+  if (!configReady || !initialRoute) {
     return (
       <View style={styles.loadingContainer}>
         <StatusBar style="light" />
@@ -239,11 +252,13 @@ function AppContent() {
         <NavigationContainer theme={DarkTheme} ref={navigationRef}>
           <StatusBar style="light" />
           <Stack.Navigator
-            initialRouteName="Hub"
+            initialRouteName={initialRoute}
             screenOptions={{ headerShown: false, animation: 'none' }}
           >
             <Stack.Screen name="Chat" component={ChatScreen} />
             <Stack.Screen name="Hub" component={HubScreen} />
+            <Stack.Screen name="Simple" component={SimpleChatsScreen} />
+            <Stack.Screen name="SimpleChat" component={SimpleChatScreen} />
             <Stack.Screen name="Organizations" component={OrganizationsScreen} />
             <Stack.Screen name="Home" component={DashboardHomeScreen} />
             <Stack.Screen name="Dashboard" component={DashboardScreen} />

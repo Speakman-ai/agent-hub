@@ -144,6 +144,8 @@ export default function TopBar({
   showToast,
   onOpenForward,
   canForward,
+  /** Messaging-style shell: keep engine and model, drop the Hub chrome. */
+  simple = false,
 }: any) {
   const [modelOpen, setModelOpen] = useState(false);
   const [engineOpen, setEngineOpen] = useState(false);
@@ -206,8 +208,12 @@ export default function TopBar({
 
   return (
     <div
-      className="flex items-center justify-between px-3 md:px-6 py-2 md:py-3 border-b-2 border-gray-800 bg-gray-900/50 electron-no-drag"
-      style={{ borderBottomColor: headerAccent }}
+      className={`flex items-center justify-between electron-no-drag ${
+        simple
+          ? 'px-3 md:px-4 py-2 border-b border-white/10 bg-gray-950'
+          : 'px-3 md:px-6 py-2 md:py-3 border-b-2 border-gray-800 bg-gray-900/50'
+      }`}
+      style={simple ? undefined : { borderBottomColor: headerAccent }}
     >
       <div className="flex items-center gap-3">
         {/* Mobile sidebar toggle */}
@@ -233,7 +239,7 @@ export default function TopBar({
         {agent && (
           <>
             <span
-              className="w-3 h-3 rounded-full flex-shrink-0"
+              className={`${simple ? 'w-8 h-8' : 'w-3 h-3'} rounded-full flex-shrink-0`}
               style={{ backgroundColor: headerAccent }}
             />
             {activeSessionId && (
@@ -263,7 +269,7 @@ export default function TopBar({
             <div className="min-w-0">
               <div className="flex items-center gap-2 min-w-0">
                 <h2 className="font-semibold truncate">{agent.name}</h2>
-                {activeSessionId && (
+                {activeSessionId && !simple && (
                   <button
                     type="button"
                     onClick={copyActiveSessionId}
@@ -276,7 +282,7 @@ export default function TopBar({
                     <span className="truncate">{truncateSessionId(activeSessionId)}</span>
                   </button>
                 )}
-                {activeSessionId && (
+                {activeSessionId && !simple && (
                   <HubChatBacklinks kind="session" targetId={activeSessionId} variant="menu" />
                 )}
               </div>
@@ -444,7 +450,7 @@ export default function TopBar({
         )}
 
         {/* Per-session computer tool switch (off unless this session or the agent turns it on) */}
-        {agent && onComputerToolChange && (
+        {agent && onComputerToolChange && !simple && (
           <button
             type="button"
             data-testid="session-computer-tool-toggle"
@@ -470,7 +476,7 @@ export default function TopBar({
             )}
           </button>
         )}
-        {agent && onComputerToolChange && computerToolSetting?.overridden && (
+        {agent && onComputerToolChange && !simple && computerToolSetting?.overridden && (
           <button
             type="button"
             data-testid="session-computer-tool-reset"
@@ -626,7 +632,7 @@ export default function TopBar({
         )}
 
         {/* Export conversation dropdown */}
-        {agent && messages?.length > 0 && (
+        {agent && messages?.length > 0 && !simple && (
           <div className="relative" ref={exportRef}>
             <button
               onClick={() => setExportOpen((v: any) => !v)}
@@ -877,7 +883,7 @@ export default function TopBar({
           </div>
         )}
         {/* Forward session to another agent */}
-        {agent && activeSessionId && (
+        {agent && activeSessionId && !simple && (
           <button
             onClick={onOpenForward}
             disabled={!canForward}
@@ -910,7 +916,7 @@ export default function TopBar({
             hamburger), so this is desktop-only to keep the mobile header lean.
             Reviewer agents are spawned only by the Finalize review phase, so
             hide "+ New" for them — the server refuses to create the thread. */}
-        {agent?.role !== 'reviewer' && (
+        {agent?.role !== 'reviewer' && !simple && (
           <button
             onClick={onNewSession}
             disabled={!agent || !onNewSession}

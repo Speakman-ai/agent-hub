@@ -31,6 +31,7 @@ import PreviewChatLayout from '../components/PreviewChatLayout';
 import MobileContextUsagePanel from '../components/MobileContextUsagePanel';
 import {
   ChevronDown,
+  Files,
   Gauge,
   Globe,
   History,
@@ -57,14 +58,23 @@ import AutopilotSetupPrompt from '../components/AutopilotSetupPrompt';
 import WindowKeyboardAvoidingView from '../components/WindowKeyboardAvoidingView';
 export default function ChatScreen({
   embedded = false,
+  simple = false,
+  simpleServer = false,
   composePrefix = '',
   emptyHint,
   onClearChat,
+  onOpenSession,
 }: {
   embedded?: boolean;
+  /** Messaging shell: no finalize, timeline, progress, or status chrome. */
+  simple?: boolean;
+  /** The simple chat is the Server Agent, so sends stay on the Hub session. */
+  simpleServer?: boolean;
   composePrefix?: string;
   emptyHint?: string;
   onClearChat?: () => void;
+  /** Opens a session linked from the transcript. Defaults to switching in place. */
+  onOpenSession?: (agentId: string, sessionId: string) => void;
 } = {}) {
   const {
     agents,
@@ -82,6 +92,8 @@ export default function ChatScreen({
     sessionReasoningEffort,
     modelConfig,
     persistHubModel,
+    handleEngineChange,
+    handleModelChange,
     handleReasoningEffortChange,
     connected,
     isProcessing,
@@ -137,6 +149,7 @@ export default function ChatScreen({
       setShowBrowser(true);
     }
   }, [browserPaneRequest, activeSessionId]);
+  const [showArtifacts, setShowArtifacts] = useState(false);
   const [showContextUsage, setShowContextUsage] = useState(false);
   const [showSideBar, setShowSideBar] = useState(false);
   const [showTimeline, setShowTimeline] = useState(false);
@@ -174,12 +187,15 @@ export default function ChatScreen({
     () => sessions?.find((s: any) => s.id === activeSessionId) ?? null,
     [sessions, activeSessionId],
   );
-  const hubSession = embedded || activeSession?.session_mode === 'hub';
+  // Embedded used to mean "this is the Hub assistant". A simple project chat
+  // is also embedded, and must keep sending as that project agent.
+  const hubBound = (embedded && !simple) || simpleServer;
+  const hubSession = hubBound || activeSession?.session_mode === 'hub';
   const consultLike = sessionConsultMode || activeSession?.session_mode === 'consult' || hubSession;
   // In the embedded Hub assistant tab, only send once the live Hub session is
   // the active one. Before HubScreen's GET resolves (or if it failed) the
   // active session may still be a restored project row — never post there.
-  const hubComposerLocked = embedded && (!hubSessionId || activeSessionId !== hubSessionId);
+  const hubComposerLocked = hubBound && (!hubSessionId || activeSessionId !== hubSessionId);
   const sendChat = useCallback(
     (content: any, images: any = [], opts: any = {}) => {
       if (hubComposerLocked) return;
@@ -187,7 +203,7 @@ export default function ChatScreen({
       // `__hub_assistant__` + the live Hub session — never the shared
       // activeAgentId/activeSessionId, which init/restore can leave on a
       // project agent (the server spawns from the message's agentId).
-      const merged = embedded
+      const merged = hubBound
         ? { ...opts, agentId: HUB_ASSISTANT_AGENT_ID, sessionId: hubSessionId }
         : opts;
       if (composePrefix) {
@@ -200,7 +216,7 @@ export default function ChatScreen({
       }
       return handleSend(content, images, merged);
     },
-    [composePrefix, handleSend, hubComposerLocked, embedded, hubSessionId],
+    [composePrefix, handleSend, hubComposerLocked, hubBound, hubSessionId],
   );
   useEffect(() => {
     if (!activeSessionId) {
@@ -231,7 +247,7 @@ export default function ChatScreen({
     },
     [navigation, projects],
   );
-  const showFinalizeBar = Boolean(activeSessionId && activeProject?.id);
+  const showFinalizeBar = !simple && Boolean(activeSessionId && activeProject?.id);
   const finalize = useFinalizeRunPoll(activeSessionId, {
     enabled: showFinalizeBar && !workflowProject,
   });
@@ -256,10 +272,11 @@ export default function ChatScreen({
           },
         ]
       : []),
-    ...(activeDelegation?.tasks?.length > 0
+    ...(!simple && activeDelegation?.tasks?.length > 0
       ? [{ type: 'delegation', key: 'delegation', data: activeDelegation }]
       : []),
-    ...(pendingChanges &&
+    ...(!simple &&
+    pendingChanges &&
     !workflowProject &&
     !thinking &&
     !streamingContent &&
@@ -286,7 +303,7 @@ export default function ChatScreen({
               fromAgent={activeAgent}
               agents={agents}
               sessionHandoffs={sessionHandoffs}
-              onOpenSession={handleOpenHandoffSession}
+              onOpenSession={onOpenSession ?? handleOpenHandoffSession}
               hosted={activeProject?.gitHost === 'agenthub'}
               onOpenPrDetail={openNativePrDetail}
             />
@@ -296,6 +313,7 @@ export default function ChatScreen({
                 events={eventsByMessage[msg.id]}
                 agentColor={activeAgent?.color}
                 onEventsLoaded={handleEventsLoaded}
+                hideStatus={simple}
                 onAskSubmit={handleAskSubmit}
                 onCredentialSubmit={handleCredentialSubmit}
                 askSubmittedIds={askSubmitted}
@@ -312,11 +330,13 @@ export default function ChatScreen({
           <ThinkingIndicator
             agentColor={liveStream.agentColor}
             statusText={
-              latestSessionEnvLaunchStatus(
-                streamingMsgId ? eventsByMessage[streamingMsgId] : undefined,
-              ) === 'started'
-                ? 'Launching session VM…'
-                : undefined
+              simple
+                ? undefined
+                : latestSessionEnvLaunchStatus(
+                      streamingMsgId ? eventsByMessage[streamingMsgId] : undefined,
+                    ) === 'started'
+                  ? 'Launching session VM…'
+                  : undefined
             }
           />
         );
@@ -328,6 +348,7 @@ export default function ChatScreen({
               agentColor={liveStream.agentColor}
               agentName={liveStream.agentName}
               engine={item.data.engine}
+              hideStatus={simple}
               onInterrupt={handleCancel}
             />
             {/* Parity with web (client/src/App.jsx): render a SessionTail for
@@ -349,6 +370,7 @@ export default function ChatScreen({
                 agentColor={liveStream.agentColor}
                 streaming
                 onEventsLoaded={handleEventsLoaded}
+                hideStatus={simple}
                 onAskSubmit={handleAskSubmit}
                 onCredentialSubmit={handleCredentialSubmit}
                 askSubmittedIds={askSubmitted}
@@ -416,7 +438,7 @@ export default function ChatScreen({
     );
   return (
     <SafeAreaView style={styles.container} edges={embedded ? ['bottom'] : ['top', 'bottom']}>
-      {embedded ? null : (
+      {embedded || simple ? null : (
         <TopBar
           onOpenChatChannel={(channelId) => navigation.navigate('Hub', { tab: 'chat', channelId })}
         />
@@ -435,7 +457,7 @@ export default function ChatScreen({
           <Text style={styles.clearLabel}>Clear chat</Text>
         </TouchableOpacity>
       ) : null}
-      {activeSessionId && isOrganizationAgentId(activeAgent?.id) ? (
+      {!simple && activeSessionId && isOrganizationAgentId(activeAgent?.id) ? (
         <OrganizationComputerBar
           key={`${organizationChatOrganization?.id ?? ''}:${activeSessionId}`}
           agent={activeAgent}
@@ -446,7 +468,7 @@ export default function ChatScreen({
           onOpenViewer={() => setShowBrowser(true)}
         />
       ) : null}
-      {activeSessionId && !hubSession ? (
+      {!simple && activeSessionId && !hubSession ? (
         <FinalizeBar
           projectId={activeProject?.id}
           project={activeProject}
@@ -475,13 +497,13 @@ export default function ChatScreen({
           onChanged={finalize.refetch}
         />
       ) : null}
-      {activeSessionId && activeSession?.session_mode === 'design' ? (
+      {!simple && activeSessionId && activeSession?.session_mode === 'design' ? (
         <SessionDesignFilesPanel
           sessionId={activeSessionId}
           reloadNonce={isProcessing ? 0 : messages.length}
         />
       ) : null}
-      {activeSessionId && !hubSession ? (
+      {((!simple && !hubSession) || (simple && showArtifacts)) && activeSessionId ? (
         <SessionArtifactsPanel
           sessionId={activeSessionId}
           reloadNonce={artifactReloadBySession?.[activeSessionId] || 0}
@@ -489,10 +511,10 @@ export default function ChatScreen({
           onPresentedArtifact={acknowledgePresentedArtifact}
         />
       ) : null}
-      {activeSessionId && !hubSession ? (
+      {!simple && activeSessionId && !hubSession ? (
         <SessionChatDraftsPanel sessionId={activeSessionId} />
       ) : null}
-      {activeSessionId && !hubSession ? (
+      {!simple && activeSessionId && !hubSession ? (
         <SessionAgentsPanel
           sessionId={activeSessionId}
           sessionAgents={sessionAgents}
@@ -502,7 +524,7 @@ export default function ChatScreen({
           onUpdated={handleSessionAgentsUpdated}
         />
       ) : null}
-      {activeSessionId && !hubSession ? (
+      {activeSessionId && (simple || !hubSession) ? (
         <>
           <View style={styles.terminalToggleRow}>
             <TouchableOpacity
@@ -518,19 +540,38 @@ export default function ChatScreen({
           </View>
           {showActions ? (
             <View style={styles.actionsMenu} testID="mobile-session-actions-menu">
-              <TouchableOpacity
-                testID="toggle-mobile-timeline"
-                accessibilityRole="button"
-                accessibilityState={{ expanded: showTimeline }}
-                onPress={() => setShowTimeline((open) => !open)}
-                style={[styles.actionRow, showTimeline && styles.actionRowActive]}
-              >
-                <History size={14} color={showTimeline ? colors.gray200 : colors.gray300} />
-                <Text style={styles.terminalToggleText}>
-                  {showTimeline ? 'Hide timeline' : 'Timeline'}
-                </Text>
-              </TouchableOpacity>
-              {activeSession?.session_mode !== 'consult' && !hubSession ? (
+              {!simple ? (
+                <TouchableOpacity
+                  testID="toggle-mobile-timeline"
+                  accessibilityRole="button"
+                  accessibilityState={{ expanded: showTimeline }}
+                  onPress={() => setShowTimeline((open) => !open)}
+                  style={[styles.actionRow, showTimeline && styles.actionRowActive]}
+                >
+                  <History size={14} color={showTimeline ? colors.gray200 : colors.gray300} />
+                  <Text style={styles.terminalToggleText}>
+                    {showTimeline ? 'Hide timeline' : 'Timeline'}
+                  </Text>
+                </TouchableOpacity>
+              ) : null}
+              {simple ? (
+                <TouchableOpacity
+                  testID="toggle-mobile-artifacts"
+                  accessibilityRole="button"
+                  accessibilityState={{ expanded: showArtifacts }}
+                  onPress={() => {
+                    setShowArtifacts((open) => !open);
+                    setShowActions(false);
+                  }}
+                  style={[styles.actionRow, showArtifacts && styles.actionRowActive]}
+                >
+                  <Files size={14} color={showArtifacts ? colors.gray200 : colors.gray300} />
+                  <Text style={styles.terminalToggleText}>
+                    {showArtifacts ? 'Hide artifacts' : 'Artifacts'}
+                  </Text>
+                </TouchableOpacity>
+              ) : null}
+              {!simple && activeSession?.session_mode !== 'consult' && !hubSession ? (
                 <TouchableOpacity
                   testID="toggle-mobile-terminal"
                   accessibilityRole="button"
@@ -551,7 +592,10 @@ export default function ChatScreen({
                 testID="toggle-mobile-browser"
                 accessibilityRole="button"
                 accessibilityState={{ expanded: showBrowser }}
-                onPress={() => setShowBrowser((open) => !open)}
+                onPress={() => {
+                  setShowBrowser((open) => !open);
+                  if (simple) setShowActions(false);
+                }}
                 style={[styles.actionRow, showBrowser && styles.actionRowActive]}
               >
                 <Globe size={14} color={showBrowser ? colors.sky300 : colors.gray300} />
@@ -559,28 +603,33 @@ export default function ChatScreen({
                   {showBrowser ? 'Hide agent browser' : 'Agent browser'}
                 </Text>
               </TouchableOpacity>
-              <TouchableOpacity
-                testID="toggle-mobile-preview"
-                accessibilityRole="button"
-                accessibilityState={{ expanded: showPreview }}
-                onPress={() => {
-                  setShowPreview((open) => {
-                    if (open) setPreviewFullscreen(false);
-                    return !open;
-                  });
-                }}
-                style={[styles.actionRow, showPreview && styles.actionRowActive]}
-              >
-                <Monitor size={14} color={showPreview ? colors.sky300 : colors.gray300} />
-                <Text style={styles.terminalToggleText}>
-                  {showPreview ? 'Hide preview' : 'Preview'}
-                </Text>
-              </TouchableOpacity>
+              {!simple ? (
+                <TouchableOpacity
+                  testID="toggle-mobile-preview"
+                  accessibilityRole="button"
+                  accessibilityState={{ expanded: showPreview }}
+                  onPress={() => {
+                    setShowPreview((open) => {
+                      if (open) setPreviewFullscreen(false);
+                      return !open;
+                    });
+                  }}
+                  style={[styles.actionRow, showPreview && styles.actionRowActive]}
+                >
+                  <Monitor size={14} color={showPreview ? colors.sky300 : colors.gray300} />
+                  <Text style={styles.terminalToggleText}>
+                    {showPreview ? 'Hide preview' : 'Preview'}
+                  </Text>
+                </TouchableOpacity>
+              ) : null}
               <TouchableOpacity
                 testID="toggle-mobile-sidebar"
                 accessibilityRole="button"
                 accessibilityState={{ expanded: showSideBar }}
-                onPress={() => setShowSideBar(true)}
+                onPress={() => {
+                  setShowSideBar(true);
+                  if (simple) setShowActions(false);
+                }}
                 style={[styles.actionRow, showSideBar && styles.actionRowActive]}
               >
                 <MessageCircleQuestion
@@ -606,7 +655,7 @@ export default function ChatScreen({
               </TouchableOpacity>
             </View>
           ) : null}
-          {showTimeline ? (
+          {!simple && showTimeline ? (
             <SessionTimelinePanel
               messages={messages}
               selectedAnchorId={selectedTimelineAnchor}
@@ -652,7 +701,7 @@ export default function ChatScreen({
           />
         </>
       ) : null}
-      {sessionRoundProcessing ? (
+      {!simple && sessionRoundProcessing ? (
         <View style={styles.roundBanner}>
           <Text style={styles.roundBannerText}>Multi-agent round in progress…</Text>
         </View>
@@ -662,7 +711,7 @@ export default function ChatScreen({
         <PreviewChatLayout
           fullscreen={previewFullscreen}
           preview={
-            showPreview && activeSessionId && !hubSession ? (
+            showPreview && activeSessionId && !hubSession && !simple ? (
               <MobilePreviewPane
                 sessionId={activeSessionId}
                 event={previewEventBySession?.[activeSessionId]}
@@ -696,7 +745,7 @@ export default function ChatScreen({
               }}
             />
 
-            {listData.length > 0 && configuringAutopilot && activeSessionId ? (
+            {!simple && listData.length > 0 && configuringAutopilot && activeSessionId ? (
               <View style={{ paddingHorizontal: 16, paddingBottom: 8 }}>
                 <AutopilotSetupPrompt
                   key={activeSessionId}
@@ -725,19 +774,21 @@ export default function ChatScreen({
               agentColor={activeAgent?.color}
               skills={skills}
               queueLength={(messageQueues[activeSessionId] || []).length}
-              consultMode={consultLike}
+              consultMode={simple ? false : consultLike}
               consultHint={
-                hubSession
-                  ? 'Hub assistant — server & account help, no code ship or Finalize'
-                  : null
+                simple
+                  ? null
+                  : hubSession
+                    ? 'Hub assistant — server & account help, no code ship or Finalize'
+                    : null
               }
               toolbarStart={
-                hubSession ? (
+                hubSession || simple ? (
                   <TouchableOpacity
                     testID="hub-model-picker"
                     onPress={() => setShowHubModelPicker(true)}
                     style={styles.hubModelChip}
-                    accessibilityLabel="Hub model"
+                    accessibilityLabel="Model"
                   >
                     <Text style={styles.hubModelLabel} numberOfLines={1}>
                       {sessionModel || 'Model'}
@@ -746,7 +797,7 @@ export default function ChatScreen({
                 ) : null
               }
             />
-            {hubSession ? (
+            {hubSession || simple ? (
               <SessionEngineModelSheet
                 visible={showHubModelPicker}
                 onClose={() => setShowHubModelPicker(false)}
@@ -763,10 +814,12 @@ export default function ChatScreen({
                     modelConfig?.engineValidModels?.[engine]?.[0] ||
                     '';
                   if (!next) return;
-                  void persistHubModel(engine, next);
+                  if (hubBound) void persistHubModel(engine, next);
+                  else void handleEngineChange(engine);
                 }}
                 onSelectModel={(model: string) => {
-                  void persistHubModel(sessionEngine, model);
+                  if (hubBound) void persistHubModel(sessionEngine, model);
+                  else void handleModelChange(model);
                 }}
                 onSelectReasoningEffort={handleReasoningEffortChange}
               />

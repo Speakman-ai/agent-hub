@@ -117,6 +117,11 @@ vi.mock('./HubIcon', () => ({ default: nativeHost('HubIcon') }));
 vi.mock('./ProjectIcon', () => ({ default: nativeHost('ProjectIcon') }));
 vi.mock('./SessionStateIcon', () => ({ default: nativeHost('SessionStateIcon') }));
 vi.mock('@shared/utils/humanCron', () => ({ default: () => '' }));
+const shell = vi.hoisted(() => ({ remember: vi.fn(async () => {}), write: vi.fn(async () => {}) }));
+vi.mock('../utils/simpleShell', () => ({
+  rememberPreSimpleTarget: shell.remember,
+  writeShellMode: shell.write,
+}));
 
 const { default: DrawerContent } = await import('./DrawerContent');
 
@@ -595,5 +600,34 @@ describe('mobile DrawerContent inactive-agent cache refresh', () => {
     await rerenderDrawer(renderer, nav);
     expect(testState.app.reloadAgentSessions).toHaveBeenLastCalledWith('agent-2');
     expect(listText(renderer)).toContain('Created while active');
+  });
+});
+
+describe('mobile DrawerContent Simple entry', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    testState.cacheLoad.mockResolvedValue([]);
+    testState.cacheSaverFactory.mockImplementation(() => ({ save: vi.fn(), cancel: vi.fn() }));
+    testState.api.getHealth.mockResolvedValue({});
+    testState.api.getGoogleStatus.mockResolvedValue({ connected: false });
+    testState.api.getMySidebarCollapsedProjects.mockResolvedValue({
+      sidebarCollapsedProjects: [],
+    });
+  });
+
+  it('remembers the open build session as the Full Hub return target', async () => {
+    const app = testState.app as any;
+    app.sessions = [{ id: 'build-1', session_mode: null }];
+    app.activeSessionId = 'build-1';
+    const nav = navigation();
+    const renderer = await renderDrawer(nav);
+    TestRenderer.act(() =>
+      renderer.root.findByProps({ testID: 'drawer-open-simple' }).props.onPress(),
+    );
+    expect(shell.remember).toHaveBeenCalledWith('agent-1', 'build-1', null);
+    expect(shell.write).toHaveBeenCalledWith('simple');
+    expect(nav.navigate).toHaveBeenCalledWith('Simple');
+    app.sessions = [];
+    app.activeSessionId = null;
   });
 });

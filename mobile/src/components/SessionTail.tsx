@@ -362,6 +362,7 @@ function SessionTail({
   onCredentialSubmit,
   askSubmittedIds,
   browserScreenshots = {},
+  hideStatus = false,
 }: any) {
   const [expanded, setExpanded] = useState(false);
   const [expandedBlocks, setExpandedBlocks] = useState<any>({});
@@ -460,7 +461,9 @@ function SessionTail({
     ['tool', 'subagent', 'explored', 'todos', 'plan_proposal', 'wakeup'].includes(b.kind),
   ).length;
   const thinkingCount = blocks.filter((b: any) => b.kind === 'thinking').length;
-  const resultBlock = blocks.find((b: any) => b.kind === 'result');
+  // The simple chat hides done/cost/duration; questions and credential
+  // prompts still render.
+  const resultBlock = hideStatus ? undefined : blocks.find((b: any) => b.kind === 'result');
   if (!expanded) {
     const hasClassicMeta = toolCount > 0 || thinkingCount > 0 || resultBlock;
     const hasMeta = hasClassicMeta || hasBrowserTimeline;
@@ -775,6 +778,7 @@ function SessionTail({
             );
           }
           case 'result': {
+            if (hideStatus) return null;
             const evt = block.event;
             const parts = [];
             if (typeof evt?.durationMs === 'number') {

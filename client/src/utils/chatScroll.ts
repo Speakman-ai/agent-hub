@@ -18,6 +18,16 @@ export function isNearBottom(el: any, thresholdPx: any = CHAT_STICK_TO_BOTTOM_TH
   return el.scrollHeight - el.scrollTop - el.clientHeight < thresholdPx;
 }
 
+/** True when the transcript is taller than the viewport, so follow chrome has something to track. */
+export function chatContentOverflows(
+  el: { scrollHeight?: number; clientHeight?: number } | null | undefined,
+): boolean {
+  if (!el) return false;
+  const height = Number(el.scrollHeight) || 0;
+  const viewport = Number(el.clientHeight) || 0;
+  return height - viewport > 1;
+}
+
 /**
  * Decide whether the chat should keep following the tail after a user scroll.
  *

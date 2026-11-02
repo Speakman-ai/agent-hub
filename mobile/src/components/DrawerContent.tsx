@@ -22,6 +22,7 @@ import { colors } from '../theme/colors';
 import { daysUntilPurge, parseDate } from '../utils/time';
 import humanCron from '@shared/utils/humanCron';
 import { isSidebarHiddenAgent } from '@shared/utils/sidebarAgents';
+import { rememberPreSimpleTarget, writeShellMode } from '../utils/simpleShell';
 import { isWorkflowProject } from '../utils/project-mode';
 import { projectNavGroups } from '../utils/projectMenu';
 import {
@@ -54,7 +55,7 @@ import NotificationBell from './NotificationBell';
 import BrandLogo from './BrandLogo';
 import { useHubChatBadge } from '../hooks/useHubChat';
 import { useGoogleChatAvailable } from '../hooks/useGoogleChatAvailable';
-import { parseHubPane, type HubWorkspacePane } from '@shared/utils/hub';
+import { HUB_ASSISTANT_AGENT_ID, parseHubPane, type HubWorkspacePane } from '@shared/utils/hub';
 import { serverAgentDisplayName, useServerAgentSettings } from '../utils/serverAgentInstance';
 
 /**
@@ -976,12 +977,32 @@ export default function DrawerContent({ navigation }: any) {
           testID="drawer-global-hub"
           style={[styles.dashboardItem, hubActive && styles.dashboardItemActive]}
           onPress={() => {
+            void writeShellMode('hub');
             navigation.navigate('Hub');
             navigation.closeDrawer();
           }}
           accessibilityLabel="Hub"
         >
           <BrandLogo size="sm" />
+        </TouchableOpacity>
+        <TouchableOpacity
+          testID="drawer-open-simple"
+          style={styles.dashboardItem}
+          onPress={() => {
+            // Full Hub returns to the session open now, whatever Simple opens later.
+            const open = (sessions || []).find((row: any) => row.id === activeSessionId);
+            void rememberPreSimpleTarget(
+              activeAgentId === HUB_ASSISTANT_AGENT_ID ? null : activeAgentId,
+              activeSessionId,
+              open?.session_mode,
+            );
+            void writeShellMode('simple');
+            navigation.navigate('Simple');
+            navigation.closeDrawer();
+          }}
+          accessibilityLabel="Simple"
+        >
+          <Text style={styles.navButtonText}>Simple</Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={[

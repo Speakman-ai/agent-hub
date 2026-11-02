@@ -68,7 +68,7 @@ export default function HubModelPicker({
   const safeModel = models.includes(model) ? model : models[0] || '';
 
   return (
-    <div className="flex items-center gap-1.5 shrink-0" data-testid="hub-model-picker">
+    <div className="flex min-w-0 max-w-full items-center gap-1.5" data-testid="hub-model-picker">
       <label className="sr-only" htmlFor="hub-engine">
         Hub engine
       </label>
@@ -78,7 +78,7 @@ export default function HubModelPicker({
         value={safeEngine}
         disabled={disabled || !engines.length}
         onChange={(e) => onEngineChange(e.target.value)}
-        className="max-w-[8.5rem] bg-gray-900 border border-gray-800 rounded-md px-1.5 py-1 text-[11px] text-gray-200 focus:outline-none focus:border-gray-600 disabled:opacity-50"
+        className="min-w-0 w-[8.5rem] max-w-[50%] bg-gray-900 border border-gray-800 rounded-md px-1.5 py-1 text-[11px] text-gray-200 focus:outline-none focus:border-gray-600 disabled:opacity-50"
       >
         {engines.map((id) => (
           <option key={id} value={id}>
@@ -95,7 +95,7 @@ export default function HubModelPicker({
         value={safeModel}
         disabled={disabled || !models.length}
         onChange={(e) => onModelChange(e.target.value)}
-        className="max-w-[9.5rem] bg-gray-900 border border-gray-800 rounded-md px-1.5 py-1 text-[11px] text-gray-200 focus:outline-none focus:border-gray-600 disabled:opacity-50"
+        className="min-w-0 w-[9.5rem] max-w-[50%] bg-gray-900 border border-gray-800 rounded-md px-1.5 py-1 text-[11px] text-gray-200 focus:outline-none focus:border-gray-600 disabled:opacity-50"
       >
         {models.map((id) => (
           <option key={id} value={id}>

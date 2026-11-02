@@ -36,6 +36,7 @@ import {
   getApiBaseUrl,
   getAuthHeaders,
   getServerBaseUrl,
+  saveConnectionConfig,
 } from '../utils/config';
 import {
   loadAuthToken,
@@ -1605,8 +1606,6 @@ export function AppProvider({ children }: any) {
       await loadConnectionConfig();
       await migrateFromLegacy();
       // Ensure active org's connection config is synced (URL + API key)
-      const { getActiveOrg } = require('../utils/orgs');
-      const { saveConnectionConfig } = require('../utils/config');
       const activeOrg = getActiveOrg();
       if (activeOrg?.remoteUrl) {
         await saveConnectionConfig({

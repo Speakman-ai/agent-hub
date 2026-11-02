@@ -76,7 +76,14 @@ const markdownStyles = {
   strong: { color: colors.white, fontWeight: 'bold' },
   em: { color: colors.gray300, fontStyle: 'italic' },
 };
-function StreamingMessage({ content, agentColor, agentName, engine, onInterrupt }: any) {
+function StreamingMessage({
+  content,
+  agentColor,
+  agentName,
+  engine,
+  hideStatus,
+  onInterrupt,
+}: any) {
   const engineBadge = engine ? ENGINE_BADGES[engine] : null;
   return (
     <View style={styles.container}>
@@ -90,10 +97,12 @@ function StreamingMessage({ content, agentColor, agentName, engine, onInterrupt 
               <Text style={styles.engineBadge}>{engineBadge.label}</Text>
             </View>
           )}
-          <View style={styles.streamingBadge}>
-            <View style={styles.streamingDot} />
-            <Text style={styles.streamingText}>streaming</Text>
-          </View>
+          {hideStatus ? null : (
+            <View style={styles.streamingBadge}>
+              <View style={styles.streamingDot} />
+              <Text style={styles.streamingText}>streaming</Text>
+            </View>
+          )}
           {typeof onInterrupt === 'function' && (
             <TouchableOpacity
               onPress={onInterrupt}

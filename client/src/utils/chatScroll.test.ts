@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   isNearBottom,
+  chatContentOverflows,
   CHAT_STICK_TO_BOTTOM_THRESHOLD_PX,
   distanceFromBottom,
   forcePinChatTailScroll,
@@ -16,6 +17,13 @@ describe('isNearBottom', () => {
   it('returns true when within threshold of the bottom', () => {
     const el = { scrollHeight: 1000, scrollTop: 851, clientHeight: 100 };
     expect(isNearBottom(el, CHAT_STICK_TO_BOTTOM_THRESHOLD_PX)).toBe(true);
+  });
+
+  it('is overflow only when the transcript is taller than the viewport', () => {
+    expect(chatContentOverflows(null)).toBe(false);
+    expect(chatContentOverflows({ scrollHeight: 300, clientHeight: 300 })).toBe(false);
+    expect(chatContentOverflows({ scrollHeight: 301, clientHeight: 300 })).toBe(false);
+    expect(chatContentOverflows({ scrollHeight: 480, clientHeight: 300 })).toBe(true);
   });
 
   it('returns false when scrolled further up than threshold', () => {

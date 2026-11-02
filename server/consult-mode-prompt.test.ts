@@ -10,11 +10,19 @@ describe('consult-mode-prompt', () => {
     expect(workflow).toContain('workflow');
     expect(workflow).toContain('no Finalize');
 
-    const dev = buildConsultModePreamble({ project: { id: 'app', name: 'App', mode: 'dev' } });
-    expect(dev).toContain('Switch to a **Build** mode');
+    const dev = buildConsultModePreamble({
+      project: { id: 'app', name: 'App', mode: 'dev' },
+      agentId: 'ada',
+    });
+    expect(dev).toContain('this chat does not build or finalize');
+    expect(dev).toContain('agenthub:ask');
+    expect(dev).toContain('Auto Merge (`merge`)');
+    expect(dev).toContain('scripts/sessions.sh dispatch app --agent ada');
+    expect(dev).not.toContain('Switch to a **Build** mode');
 
     const legacyDev = buildConsultModePreamble({ project: { id: 'legacy', name: 'Legacy' } });
-    expect(legacyDev).toContain('Switch to a **Build** mode');
+    expect(legacyDev).toContain('scripts/sessions.sh dispatch legacy');
+    expect(legacyDev).toContain('this agent');
   });
 
   it('affirms browser/web research tools and disavows image generation', () => {

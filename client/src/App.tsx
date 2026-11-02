@@ -20,6 +20,7 @@ import {
   type CSSProperties,
 } from 'react';
 import Sidebar from './components/Sidebar';
+import SimpleRoster from './components/SimpleRoster';
 import { readSelectedOrganization, writeSelectedOrganization } from './utils/sidebarOrgSections';
 import NotificationBell, { NOTIFICATION_WS_EVENT } from './components/NotificationBell';
 import type { NotificationTarget } from './utils/notificationTarget';
@@ -210,6 +211,7 @@ import { coalescePromiseByKey } from '@shared/utils/coalesceInFlight';
 import { coalesceRefreshByKey, type PendingRefresh } from '@shared/utils/coalesceRefresh';
 import {
   isNearBottom,
+  chatContentOverflows,
   distanceFromBottom,
   forcePinChatTailScroll,
   shouldFollowTailAfterScroll,
@@ -265,6 +267,19 @@ import {
   Gauge,
 } from 'lucide-react';
 import { readSidebarCollapsed, writeSidebarCollapsed } from './utils/sidebarCollapse';
+import { getServerBase } from './utils/connection';
+import {
+  isSimpleConsultSession,
+  pickNewestSession,
+  readShellMode,
+  sessionShowsNeedsYou,
+  simpleSessionKey,
+  simpleShellMustLeaveFor,
+  rememberPreSimpleTarget,
+  takePreSimpleTarget,
+  writeShellMode,
+  type ShellMode,
+} from './utils/shellMode';
 import { useResizablePaneWidth } from './hooks/useResizablePaneWidth';
 import { SIDEBAR_WS_EVENT, isSidebarWsEvent } from '@shared/utils/sessionSidebar';
 import {
@@ -450,6 +465,12 @@ export default function App({ initialView }: any = {}) {
   // using the `sidebarOpen` slide-out drawer and ignores this flag). Persisted
   // to localStorage so the preference survives reloads.
   const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
+  // Messaging-style shell. The URL (`shell=simple`) wins when it names the
+  // simple view; otherwise the last choice sticks, so a reload does not
+  // drop back to the full Hub.
+  const [shellMode, setShellMode] = useState<ShellMode>(() =>
+    initialNavigation.shell === 'simple' ? 'simple' : readShellMode(),
+  );
   const {
     width: sidebarWidth,
     isResizing: sidebarResizing,
@@ -1003,12 +1024,43 @@ export default function App({ initialView }: any = {}) {
   useEffect(() => {
     writeSidebarCollapsed(sidebarCollapsed);
   }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    writeShellMode(shellMode);
+  }, [shellMode]);
+  const shellModeRef = useRef(shellMode);
+  shellModeRef.current = shellMode;
+  // Bumped by every navigation. An async roster open captures it at the
+  // click and commits only if nothing else navigated while it waited, so a
+  // slow response cannot replace a later choice.
+  const navGenerationRef = useRef(0);
+  const bumpNavGeneration = useCallback(() => ++navGenerationRef.current, []);
+  useEffect(() => {
+    bumpNavGeneration();
+  }, [shellMode, currentView, hubPane, bumpNavGeneration]);
   /** One in-flight implicit `createSession` per agent + ask-mode (send with no session). */
   const implicitSessionCreateByKeyRef = useRef<Map<any, any>>(new Map());
   const activeAgentIdRef = useRef(activeAgentId);
   activeAgentIdRef.current = activeAgentId;
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
+  /**
+   * Entering the simple view from the full Hub remembers the session that
+   * was open, so Full Hub returns to it. Runs before any Simple navigation
+   * changes the active agent or session, and only on the Hub-to-Simple
+   * transition: moves inside Simple keep the original target.
+   */
+  const captureShellReturnTarget = useCallback(() => {
+    if (shellModeRef.current === 'simple') return;
+    const agentId = activeAgentIdRef.current;
+    const sessionId = activeSessionIdRef.current;
+    const row = sessionsRef.current.find((session: any) => session.id === sessionId);
+    rememberPreSimpleTarget(
+      agentId === HUB_ASSISTANT_AGENT_ID ? null : agentId,
+      sessionId,
+      row?.session_mode,
+    );
+  }, []);
   /** Cross-agent session rows for accent color + owner sync before per-agent lists reload. */
   const sessionsByIdRef = useRef<Map<any, any>>(new Map());
   const [sessionsIndexTick, setSessionsIndexTick] = useState(0);
@@ -1194,14 +1246,21 @@ export default function App({ initialView }: any = {}) {
   useEffect(() => {
     if (initialView) return;
     if (typeof window === 'undefined') return;
-    const onRouteChange = () => applyNavigationState(getInitialNavigation());
+    const onRouteChange = () => {
+      bumpNavGeneration();
+      const route = getInitialNavigation();
+      if (route.shell === 'simple') captureShellReturnTarget();
+      applyNavigationState(route);
+      // History entries name the shell. A URL with no shell is the full Hub.
+      setShellMode(route.shell === 'simple' ? 'simple' : 'hub');
+    };
     window.addEventListener('hashchange', onRouteChange);
     window.addEventListener('popstate', onRouteChange);
     return () => {
       window.removeEventListener('hashchange', onRouteChange);
       window.removeEventListener('popstate', onRouteChange);
     };
-  }, [applyNavigationState, initialView]);
+  }, [applyNavigationState, initialView, bumpNavGeneration, captureShellReturnTarget]);
 
   // A path deep-link (`/projects/acme/pulls/306`) has already been folded into
   // the initial navigation state, so collapse the path back to the app root
@@ -1237,6 +1296,7 @@ export default function App({ initialView }: any = {}) {
       designId: activeDesignId,
       ticketId: currentView === 'support' ? supportTicketId : null,
       hubPane: currentView === 'hub' ? hubPane : null,
+      shell: shellMode === 'simple' ? 'simple' : null,
       organizationId: currentView === 'organizations' ? organizationRouteId : null,
       serverId: getActiveOrg()?.id ?? null,
     });
@@ -1258,6 +1318,7 @@ export default function App({ initialView }: any = {}) {
     supportTicketId,
     hubPane,
     organizationRouteId,
+    shellMode,
   ]);
 
   const isWizardView = (v: any) =>
@@ -1622,6 +1683,8 @@ export default function App({ initialView }: any = {}) {
   // means the view is pinned to the tail and new content auto-scrolls; false
   // means the user has scrolled away and the tail is detached.
   const [following, setFollowing] = useState(true);
+  // The follow pill is noise until the transcript is taller than the viewport.
+  const [chatOverflows, setChatOverflows] = useState(false);
 
   // Tracks whether a programmatic scroll is in progress so we don't
   // interpret the resulting scroll events as the user scrolling away.
@@ -1679,7 +1742,15 @@ export default function App({ initialView }: any = {}) {
       });
   }, []);
 
+  const syncChatOverflow = useCallback(() => {
+    const overflows = chatContentOverflows(scrollContainerRef.current);
+    setChatOverflows((prev) => (prev === overflows ? prev : overflows));
+  }, []);
+
   const handleScrollEvent = useCallback(() => {
+    // Measure overflow even during a programmatic pin, so the follow pill
+    // appears as soon as the transcript outgrows the viewport.
+    syncChatOverflow();
     // Ignore scroll events caused by our own programmatic scrolling —
     // these would otherwise flip isNearBottomRef to false mid-animation
     // and break auto-follow.
@@ -1714,7 +1785,19 @@ export default function App({ initialView }: any = {}) {
     if (el) lastScrollTopRef.current = el.scrollTop;
     isNearBottomRef.current = following;
     setFollowing(following);
-  }, [checkNearBottom, loadOlderMessages]);
+  }, [checkNearBottom, loadOlderMessages, syncChatOverflow]);
+
+  useLayoutEffect(() => {
+    syncChatOverflow();
+  }, [syncChatOverflow, messages, streamingContent, thinking, activeSessionId, currentView]);
+
+  useEffect(() => {
+    const column = messagesColumnRef.current;
+    if (!column || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => syncChatOverflow());
+    observer.observe(column);
+    return () => observer.disconnect();
+  }, [syncChatOverflow, activeSessionId, currentView, messages.length]);
 
   /** Snap to the tail. Always instant — smooth scroll cannot keep up with streaming tokens. */
   const scrollToBottom = useCallback(() => {
@@ -4650,10 +4733,18 @@ export default function App({ initialView }: any = {}) {
   const focusAgentSession = useCallback(
     (agentId: any, sessionId: any) => {
       if (!sessionId) return;
+      bumpNavGeneration();
       const row =
         sessionsRef.current.find((x: any) => x.id === sessionId) ??
         sessionsByIdRef.current.get(sessionId);
       const resolvedAgentId = agentId || row?.agent_id;
+      // An explicit link (a dispatched build chip, a notification) can target
+      // any session. The simple shell keeps only known consult chats; anything
+      // else opens in the full Hub with its build controls.
+      if (shellModeRef.current === 'simple' && !isSimpleConsultSession(row)) {
+        writeShellMode('hub');
+        setShellMode('hub');
+      }
       if (resolvedAgentId) {
         pendingSessionIdRef.current = sessionId;
         setActiveAgentId(resolvedAgentId);
@@ -4664,9 +4755,20 @@ export default function App({ initialView }: any = {}) {
       setCurrentView('chat');
       setSidebarOpen(false);
     },
-    [setActiveAgentId],
+    [setActiveAgentId, bumpNavGeneration],
   );
   focusAgentSessionRef.current = focusAgentSession;
+
+  // Every path into the simple chat (restore, deep link, the sessions loader
+  // picking the newest row) must land on a consult chat. A build session that
+  // slips in opens in the full Hub, where its build controls are visible.
+  useEffect(() => {
+    if (shellMode !== 'simple' || currentView !== 'chat' || !activeSessionId) return;
+    const row = sessions.find((session: any) => session.id === activeSessionId);
+    if (!simpleShellMustLeaveFor(row)) return;
+    writeShellMode('hub');
+    setShellMode('hub');
+  }, [shellMode, currentView, activeSessionId, sessions]);
 
   const openNotificationTarget = useCallback(
     (target: NotificationTarget) => {
@@ -5267,6 +5369,156 @@ export default function App({ initialView }: any = {}) {
     setMessages([]);
     setCurrentView('chat');
   };
+
+  const openServerAgentInSimpleView = useCallback(() => {
+    bumpNavGeneration();
+    captureShellReturnTarget();
+    writeShellMode('simple');
+    setShellMode('simple');
+    setCurrentView('hub');
+    setHubPane('agent');
+    setHubMobileTab('agent');
+    setSidebarOpen(false);
+  }, [bumpNavGeneration, captureShellReturnTarget]);
+
+  const consultCreateByAgentRef = useRef(new Map<string, Promise<any>>());
+  const openAgentInSimpleView = useCallback(
+    async (agentId: string, fresh = false) => {
+      const generation = bumpNavGeneration();
+      const superseded = () => navGenerationRef.current !== generation;
+      // Switch the view only once the consult chat is known, in the same
+      // batch as the session change. Switching first would leave the
+      // composer on the previous session (possibly a build) until the list
+      // or create call resolves.
+      const enterSimpleChat = () => {
+        captureShellReturnTarget();
+        writeShellMode('simple');
+        setShellMode('simple');
+        setCurrentView('chat');
+        setSidebarOpen(false);
+      };
+      try {
+        if (!agentId) {
+          enterSimpleChat();
+          return;
+        }
+        const agent = agents.find((item: any) => item.id === agentId);
+        const openRow =
+          agentId === activeAgentId
+            ? sessions.find((session: any) => session.id === activeSessionId)
+            : null;
+        const remember = (sessionId: string) => {
+          try {
+            localStorage.setItem(simpleSessionKey(agentId), sessionId);
+          } catch {
+            // The chat still opens if storage is blocked.
+          }
+        };
+        const startConsult = async () => {
+          // One create per agent at a time: a second click while the first is
+          // in flight joins it instead of making a second empty chat.
+          let pending = consultCreateByAgentRef.current.get(agentId);
+          if (!pending) {
+            pending = api
+              .createSession(agentId, 'Chat', { consultMode: true })
+              .finally(() => consultCreateByAgentRef.current.delete(agentId));
+            consultCreateByAgentRef.current.set(agentId, pending);
+          }
+          const session = await pending;
+          insertCreatedSession(agentId, session);
+          // Selection state (remembered chat, active session) is written only
+          // by the open that still owns the navigation.
+          if (superseded()) return;
+          remember(session.id);
+          enterSimpleChat();
+          pendingSessionIdRef.current = session.id;
+          setActiveAgentId(agentId);
+          setActiveSessionId(session.id);
+          setSessionEngine(session.engine || agent?.engine || 'claude-code');
+          setSessionModel(
+            session.model ||
+              modelConfig?.engineDefaultModels?.[
+                session.engine || agent?.engine || 'claude-code'
+              ] ||
+              'claude-opus-5-5',
+          );
+          setSessionConsultMode(true);
+          setMessages([]);
+        };
+        if (fresh) {
+          await startConsult();
+          return;
+        }
+        if (openRow && isSimpleConsultSession(openRow)) {
+          enterSimpleChat();
+          remember(openRow.id);
+          return;
+        }
+        let list: any[] | undefined =
+          agentId === loadedSessionsAgentId ? sessions : sessionsByAgentId[agentId];
+        if (!list) {
+          try {
+            const data = await api.getSessions(agentId);
+            list = Array.isArray(data) ? data : [];
+            const loaded = list;
+            setSessionsByAgentId((prev: any) => ({ ...prev, [agentId]: loaded }));
+          } catch {
+            list = [];
+          }
+          if (superseded()) return;
+        }
+        let remembered: string | null = null;
+        try {
+          remembered = localStorage.getItem(simpleSessionKey(agentId));
+        } catch {
+          remembered = null;
+        }
+        const consults = (list || []).filter(isSimpleConsultSession);
+        const chosen =
+          (remembered && consults.find((session: any) => session.id === remembered)) ||
+          pickNewestSession(consults);
+        if (chosen) {
+          enterSimpleChat();
+          pendingSessionIdRef.current = chosen.id;
+          setActiveAgentId(agentId);
+          setActiveSessionId(chosen.id);
+          remember(chosen.id);
+          return;
+        }
+        await startConsult();
+      } catch (err) {
+        // The previous view stays as it was; nothing switched yet.
+        console.error('Could not open the chat', err);
+      }
+    },
+    [
+      agents,
+      activeAgentId,
+      activeSessionId,
+      loadedSessionsAgentId,
+      sessions,
+      sessionsByAgentId,
+      insertCreatedSession,
+      modelConfig,
+      setActiveAgentId,
+      bumpNavGeneration,
+      captureShellReturnTarget,
+    ],
+  );
+
+  const openSimpleView = openServerAgentInSimpleView;
+
+  const openFullHub = useCallback(() => {
+    bumpNavGeneration();
+    const target = takePreSimpleTarget();
+    writeShellMode('hub');
+    setShellMode('hub');
+    if (target) {
+      focusAgentSession(target.agentId, target.sessionId);
+      return;
+    }
+    setCurrentView('chat');
+  }, [focusAgentSession, bumpNavGeneration]);
 
   // Start chat in Skill Builder mode for a project (replaces the legacy Skill Builder agent).
   const handleStartSkillBuilderMode = useCallback(
@@ -6666,10 +6918,102 @@ export default function App({ initialView }: any = {}) {
               ? (browserScreensBySession[activeSessionId]?.[streamingMsgId] ?? {})
               : {}
           }
+          hideStatus={shellMode === 'simple'}
         />
       )}
     </>
   );
+
+  const simpleChatTools = (sessionId: string | null | undefined) => {
+    if (shellMode !== 'simple' || !sessionId) return null;
+    const closeOtherPanes = (keep: 'artifacts' | 'browser') => {
+      setDiffPaneOpenBySession((prev: any) => ({ ...prev, [sessionId]: false }));
+      setTerminalPaneOpenBySession((prev: any) => ({ ...prev, [sessionId]: false }));
+      if (keep !== 'artifacts') {
+        setArtifactsPaneOpenBySession((prev: any) => ({ ...prev, [sessionId]: false }));
+      }
+      if (keep !== 'browser') {
+        setBrowserPaneOpenBySession((prev) => ({ ...prev, [sessionId]: false }));
+      }
+    };
+    return (
+      <div className="relative flex flex-wrap items-center gap-1.5 min-w-0">
+        {contextUsageOpenBySession[sessionId] ? (
+          <div className="absolute bottom-full left-0 mb-2 z-30">
+            <SessionContextUsagePanel
+              sessionId={sessionId}
+              onClose={() =>
+                setContextUsageOpenBySession((prev) => ({
+                  ...prev,
+                  [sessionId]: false,
+                }))
+              }
+            />
+          </div>
+        ) : null}
+        <SessionActionsMenu
+          items={[
+            {
+              id: 'artifacts',
+              testId: 'toggle-artifacts-pane',
+              label: 'Artifacts',
+              icon: Package,
+              title: 'View documents the agent generated',
+              pressed: !!artifactsPaneOpenBySession[sessionId],
+              badge: artifactCountBySession[sessionId],
+              onSelect: () => {
+                const opening = !artifactsPaneOpenBySession[sessionId];
+                setArtifactsPaneOpenBySession((prev: any) => ({ ...prev, [sessionId]: opening }));
+                if (opening) closeOtherPanes('artifacts');
+              },
+            },
+            {
+              id: 'browser',
+              testId: 'toggle-browser-pane',
+              label: 'Agent browser',
+              icon: Globe,
+              title: "Watch the agent live — public web or this session's preview",
+              pressed: browserPaneOpenBySession[sessionId] === true,
+              onSelect: () => {
+                const opening = browserPaneOpenBySession[sessionId] !== true;
+                setBrowserPaneOpenBySession((prev) => ({ ...prev, [sessionId]: opening }));
+                if (opening) closeOtherPanes('browser');
+              },
+            },
+            {
+              id: 'sidebar',
+              testId: 'toggle-sidebar-pane',
+              label: 'SideBar',
+              icon: MessageCircleQuestion,
+              title: 'Ask side questions on a fork of this session without adding to it',
+              pressed: !!sideBarPaneOpenBySession[sessionId],
+              onSelect: () => {
+                setSideBarPaneOpenBySession((prev) => ({
+                  ...prev,
+                  [sessionId]: !prev[sessionId],
+                }));
+              },
+            },
+            {
+              id: 'context-usage',
+              testId: 'toggle-context-usage',
+              label: 'Context usage',
+              icon: Gauge,
+              title: "Show what is filling this session's context window",
+              pressed: !!contextUsageOpenBySession[sessionId],
+              closeOnSelect: true,
+              onSelect: () => {
+                setContextUsageOpenBySession((prev) => ({
+                  ...prev,
+                  [sessionId]: !prev[sessionId],
+                }));
+              },
+            },
+          ]}
+        />
+      </div>
+    );
+  };
 
   const hubModelPicker = (
     <HubModelPicker
@@ -6704,15 +7048,15 @@ export default function App({ initialView }: any = {}) {
   const hubAssistantTranscriptLive = isHubAssistantSessionActive(activeSessionId, hubSessionId);
   const hubAssistantChat = (
     <HubChatRefOpenContext.Provider value={handleOpenChatRef}>
-      <div className="flex-1 flex flex-col min-h-0">
+      <div className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col overflow-x-hidden">
         <div
           ref={scrollContainerRef}
           onScroll={handleScrollEvent}
           data-testid="hub-assistant-scroll"
-          className="flex-1 overflow-y-auto px-3 py-3 space-y-2"
+          className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto px-3 py-3 space-y-2"
           style={{ overflowAnchor: 'none' }}
         >
-          <div ref={messagesColumnRef}>
+          <div className="min-w-0 max-w-full" ref={messagesColumnRef}>
             {hubAssistantTranscriptLive &&
               messages.length === 0 &&
               !thinking &&
@@ -6745,6 +7089,7 @@ export default function App({ initialView }: any = {}) {
                       delegationDispatchError={delegationDispatchErrors[activeSessionId]}
                       onOpenSession={handleOpenHandoffSession}
                       browserScreenshots={browserScreensBySession[activeSessionId]?.[msg.id] ?? {}}
+                      hideStatus={shellMode === 'simple'}
                     />
                   ) : (
                     <ChatMessage
@@ -6769,7 +7114,7 @@ export default function App({ initialView }: any = {}) {
             )}
           </div>
         </div>
-        <div className="shrink-0">
+        <div className="min-w-0 max-w-full shrink-0">
           <MessageInput
             ref={messageInputRef}
             onSend={sendHubChat}
@@ -6790,8 +7135,12 @@ export default function App({ initialView }: any = {}) {
             queueLength={(messageQueues[activeSessionId] || []).length}
             agentColor={chatAccentColor}
             skills={skills}
-            consultMode
-            consultHint={`${serverAgentName}, with your permissions. No code ship or Finalize`}
+            consultMode={shellMode !== 'simple'}
+            consultHint={
+              shellMode === 'simple'
+                ? null
+                : `${serverAgentName}, with your permissions. No code ship or Finalize`
+            }
             readOnly={false}
             draftKey={activeSessionId || 'hub'}
             onFileError={(msg: any) => showToast(msg, 'error', 6000)}
@@ -6801,8 +7150,9 @@ export default function App({ initialView }: any = {}) {
             sessionAgents={sessionAgents}
             enableMentions={false}
             toolbarStart={
-              <div className="flex items-center gap-2 min-w-0 w-full">
+              <div className="flex items-center gap-2 min-w-0 w-full flex-wrap">
                 {hubModelPicker}
+                {simpleChatTools(hubSessionId || activeSessionId)}
                 <div className="ml-auto shrink-0">{hubClearButton}</div>
               </div>
             }
@@ -6813,7 +7163,10 @@ export default function App({ initialView }: any = {}) {
   );
 
   return (
-    <div className="flex flex-col h-dvh max-h-dvh overflow-hidden bg-gray-950 text-gray-100">
+    <div
+      className="flex flex-col h-dvh max-h-dvh overflow-hidden bg-gray-950 text-gray-100"
+      data-shell-mode={shellMode}
+    >
       {/* Electron title bar — draggable region for window movement */}
       {isElectron && (
         <div
@@ -6829,7 +7182,7 @@ export default function App({ initialView }: any = {}) {
         </div>
       )}
 
-      <div className="flex flex-1 min-h-0">
+      <div className="flex w-full min-h-0 min-w-0 max-w-full flex-1 overflow-x-hidden">
         {/* Mobile sidebar overlay */}
         {sidebarOpen && (
           <div
@@ -6841,7 +7194,7 @@ export default function App({ initialView }: any = {}) {
         {/* Collapsed rail (desktop only) — lets users re-open the sidebar from
             any view after collapsing it. Hidden on mobile, which uses the
             slide-out drawer instead. */}
-        {sidebarCollapsed && (
+        {shellMode === 'hub' && sidebarCollapsed && (
           <div className="hidden md:flex flex-col items-center w-10 flex-shrink-0 border-r border-gray-800 bg-gray-900 pt-2.5 electron-no-drag">
             <BrandLogo variant="mark" size="sm" className="mb-2" />
             <button
@@ -6853,6 +7206,16 @@ export default function App({ initialView }: any = {}) {
               data-testid="sidebar-expand"
             >
               <PanelLeftOpen size={18} />
+            </button>
+            <button
+              type="button"
+              onClick={openSimpleView}
+              className="text-gray-400 hover:text-white p-2 rounded-lg hover:bg-gray-800 transition-colors"
+              title="Simple chat view"
+              aria-label="Simple chat view"
+              data-testid="rail-open-simple"
+            >
+              <MessageCircle size={18} />
             </button>
             <NotificationBell
               placement="right"
@@ -6866,189 +7229,256 @@ export default function App({ initialView }: any = {}) {
 
         {/* Sidebar */}
         <div
-          className={`fixed md:relative inset-y-0 left-0 z-50 md:z-auto flex h-dvh max-h-dvh md:h-full md:max-h-none overflow-hidden transition-transform duration-200 ${
+          className={`fixed md:relative inset-y-0 left-0 z-50 md:z-auto flex h-dvh max-h-dvh max-w-full md:h-full md:max-h-none overflow-hidden transition-transform duration-200 ${
             sidebarResizing ? 'select-none' : ''
           } ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'} ${
-            sidebarCollapsed ? 'md:hidden' : ''
+            shellMode === 'hub' && sidebarCollapsed ? 'md:hidden' : ''
           }`}
-          style={{ '--sidebar-width': `${sidebarWidth}px` } as CSSProperties}
+          style={
+            shellMode === 'hub'
+              ? ({ '--sidebar-width': `${sidebarWidth}px` } as CSSProperties)
+              : undefined
+          }
         >
-          <Sidebar
-            showAiSignInGuide={showAiSignInGuide && !currentView.startsWith('settings')}
-            onDismissAiSignInGuide={dismissAiSignInGuide}
-            desktopUpdateHintVersion={
-              versionCheck.showUpdateHint && !currentView.startsWith('settings')
-                ? versionCheck.serverVersion
-                : null
-            }
-            onDismissDesktopUpdateHint={versionCheck.dismiss}
-            onOpenChat={() => {
-              setCurrentView('hub');
-              setHubPane('chat');
-              setHubMobileTab('chat');
-              setSidebarOpen(false);
-            }}
-            chatActive={currentView === 'hub' && hubPane === 'chat'}
-            chatUnread={hubChatUnread.badge}
-            serverAgentName={serverAgentName}
-            serverAgentUnread={hubAssistantUnread}
-            googleChatAvailable={chatEnabled}
-            googleChatUnread={googleChatBadge}
-            onCollapseSidebar={() => setSidebarCollapsed(true)}
-            onOpenNotificationTarget={openNotificationTarget}
-            onOpenNotificationSettings={openNotificationSettings}
-            isLoading={sidebarDataLoading}
-            projects={projects}
-            agents={agents}
-            activeAgentId={activeAgentId}
-            onSelectAgent={(id: any) => {
-              pendingSessionIdRef.current = null;
-              setActiveSessionId(null);
-              setActiveAgentId(id);
-              setSidebarOpen(false);
-            }}
-            onExpandAgent={loadSidebarAgentSessions}
-            sessionsByAgentId={sessionsByAgentId}
-            archivedSessionsByAgentId={archivedSessionsByAgentId}
-            loadedSessionsAgentId={loadedSessionsAgentId}
-            loadedArchivedAgentId={loadedArchivedAgentId}
-            onFocusSession={focusAgentSession}
-            showToast={showToast}
-            connected={connected}
-            reconnecting={reconnecting}
-            bugReportProjectId={currentProjectId}
-            bugReportAgentId={activeAgentId}
-            sessions={sessions}
-            activeSessionId={activeSessionId}
-            onSelectSession={(id: any) => focusAgentSession(undefined, id)}
-            onNewSession={handleNewSession}
-            onDeleteSession={handleDeleteSession}
-            onClearAllSessions={handleClearAllSessions}
-            onClearMergedSessions={handleClearMergedSessions}
-            archivedSessions={archivedSessions}
-            onRestoreSession={handleRestoreSession}
-            restoringSessionIds={restoringSessionIds}
-            deletingSessionIds={deletingSessionIds}
-            deletingBulk={deletingBulk}
-            onRenameSession={handleRenameSession}
-            onOpenOrganizationChat={handleOpenOrganizationChat}
-            hubPane={currentView === 'hub' ? hubPane : hubPaneFromLegacyView(currentView)}
-            onNavigate={(view: any, extra: any) => {
-              setCurrentView(view);
-              if (view === 'hub' && isHubWorkspacePane(extra)) {
-                setHubPane(extra);
-                setHubMobileTab(extra);
+          {shellMode === 'simple' ? (
+            <SimpleRoster
+              agents={agents}
+              loadedSessionsAgentId={loadedSessionsAgentId}
+              activeSessions={sessions}
+              sessionsByAgentId={sessionsByAgentId}
+              activeTaskSessionIds={activeTasks}
+              needsInputBySession={needsInputBySession}
+              finalizeStatusBySession={finalizeStatusBySession}
+              activeAgentId={currentView === 'chat' ? activeAgentId : null}
+              activeSessionId={
+                currentView === 'chat' && activeSession?.session_mode === 'consult'
+                  ? activeSessionId
+                  : null
               }
-              if (view === 'organizations') {
-                const routed =
-                  typeof extra === 'string' && extra && extra !== 'independent' ? extra : null;
-                const sidebarOrg =
-                  sidebarOrganizationId && sidebarOrganizationId !== 'independent'
-                    ? sidebarOrganizationId
-                    : null;
-                setOrganizationRouteId(routed ?? sidebarOrg ?? organizationRouteId);
-              }
-              if (view === 'wiki' && extra) setWikiProjectId(extra);
-              if (view === 'notes' && extra) setNotesProjectId(extra);
-              if (view === 'reviewer' && extra) setReviewerProjectId(extra);
-              if (view === 'pulls' && extra) setPullsProjectId(extra);
-              if (view === 'design' && extra) setActiveDesignId(extra);
-              if (view === 'designs') {
-                // Opening the list view shouldn't clobber the last-opened design
-                // context, but we do clear any in-progress transient state.
-                setDesignStreaming(null);
-                setDesignThinking(false);
-              }
-              if (view === 'support') {
-                if (extra) setSupportProjectId(extra);
-                // Opening support from the sidebar is not a ticket deep-link.
-                setSupportTicketId(null);
-              }
-              if (view === 'deployments' && extra) setDeploymentsProjectId(extra);
-              if (view === 'replays' && extra) setReplaysProjectId(extra);
-              if (view === 'security' && extra) setSecurityProjectId(extra);
-              setSidebarOpen(false);
-            }}
-            currentView={currentView}
-            activeOrganizationId={currentView === 'organizations' ? organizationRouteId : null}
-            selectedOrganizationId={sidebarOrganizationId}
-            onSelectOrganization={(id: string) => {
-              setSidebarOrganizationId(id);
-              writeSelectedOrganization(id);
-              if (id !== 'independent') setOrganizationRouteId(id);
-            }}
-            activeTaskSessionIds={activeTasks}
-            awaitingInputBySession={awaitingInputBySession}
-            subagentsBySession={subagents}
-            backgroundShellsBySession={backgroundShellsBySession}
-            previewEventBySession={previewEventBySession}
-            previewStartingBySession={previewStartingBySession}
-            changesReadyBySession={changesReady}
-            finalizeStatusBySession={finalizeStatusBySession}
-            needsInputBySession={needsInputBySession}
-            onOpenProject={openAdaptiveProjectWizard}
-            onImportProject={openImportProjectWizard}
-            onReorderProjects={handleReorderProjects}
-            cronSessions={cronSessions}
-            wikiProjectId={wikiProjectId}
-            notesProjectId={notesProjectId}
-            reviewerProjectId={reviewerProjectId}
-            supportProjectId={supportProjectId}
-            googleCalendarNavVisible={googleCalendarNavVisible}
-            googleGmailNavVisible={googleGmailNavVisible}
-            deploymentsProjectId={deploymentsProjectId}
-            replaysProjectId={replaysProjectId}
-            securityProjectId={securityProjectId}
-            pullsProjectId={pullsProjectId}
-            onOpenPrDetail={handleOpenPrDetail}
-            workflowBadgeByProject={workflowSidebarBadgeByProject}
-            unreadTicketCounts={unreadTicketCounts}
-            openPullCounts={openPullCounts}
-            securityOpenCounts={securityOpenCounts}
-            skillImprovementCounts={skillImprovementCounts}
-            activeReviews={activeReviews}
-            electronSuppressHealthFetch={isElectron}
-            electronHealthSnapshot={electronDesktopHealth}
-            kanbanProjectId={currentView.startsWith('kanban:') ? currentView.split(':')[1] : null}
-            kanbanProjectName={
-              currentView.startsWith('kanban:')
-                ? projects.find((p: any) => p.id === currentView.split(':')[1])?.name
-                : null
-            }
-            kanbanSearchQuery={kanbanSearchQuery}
-            onKanbanSearchChange={setKanbanSearchQuery}
-            kanbanSelectedEpicIds={kanbanSelectedEpicIds}
-            onKanbanSelectedEpicIdsChange={setKanbanSelectedEpicIds}
-            kanbanAvailableLabels={kanbanAvailableLabels}
-            kanbanSelectedLabels={kanbanSelectedLabels}
-            onKanbanSelectedLabelsChange={setKanbanSelectedLabels}
-            kanbanAssignableUsers={kanbanAssignableUsers}
-            kanbanSelectedUserIds={kanbanSelectedUserIds}
-            onKanbanSelectedUserIdsChange={setKanbanSelectedUserIds}
-            kanbanCollapsedColumnIds={kanbanCollapsedColumnIds}
-            onKanbanCollapsedColumnIdsChange={applyKanbanCollapsedColumnIds}
-            onOpenKanbanEpics={() => {
-              const projectId = currentView.split(':')[1];
-              setCurrentView(`epics:${projectId}`);
-              setSidebarOpen(false);
-            }}
-            kanbanRefreshKey={kanbanRefreshKey}
-          />
-          <div
-            {...sidebarResizeHandleProps}
-            data-testid="sidebar-resize-handle"
-            aria-label="Resize sidebar"
-            title="Drag to resize sidebar. Double-click to reset."
-            onDoubleClick={(event) => {
-              event.preventDefault();
-              resetSidebarWidth();
-            }}
-            className={`absolute top-0 right-0 z-30 hidden h-full w-1.5 cursor-col-resize touch-none items-center justify-center focus:outline-none focus-visible:bg-sky-500/50 md:flex ${
-              sidebarResizing ? 'bg-sky-500/50' : 'hover:bg-sky-500/35'
-            }`}
-          >
-            <GripVertical size={14} className="text-gray-500" aria-hidden />
-          </div>
+              apiBase={getServerBase()}
+              serverAgent={{
+                id: HUB_ASSISTANT_AGENT_ID,
+                name: serverAgentName,
+                preview:
+                  hubSessionId &&
+                  sessionShowsNeedsYou(
+                    { id: hubSessionId },
+                    {
+                      activeTaskSessionIds: activeTasks,
+                      finalizeStatusBySession,
+                      needsInputBySession,
+                    },
+                  )
+                    ? 'Needs you'
+                    : hubSessionId && activeTasks[hubSessionId]
+                      ? 'Working…'
+                      : 'Ask about the Hub',
+                status:
+                  hubSessionId &&
+                  sessionShowsNeedsYou(
+                    { id: hubSessionId },
+                    {
+                      activeTaskSessionIds: activeTasks,
+                      finalizeStatusBySession,
+                      needsInputBySession,
+                    },
+                  )
+                    ? 'needs-you'
+                    : hubSessionId && activeTasks[hubSessionId]
+                      ? 'working'
+                      : 'idle',
+                selected: currentView === 'hub' && hubPane === 'agent',
+              }}
+              onOpenServerAgent={openServerAgentInSimpleView}
+              onOpenAgent={(agentId) => {
+                void openAgentInSimpleView(agentId);
+              }}
+              onOpenFullHub={openFullHub}
+              onEnsureSessions={loadSidebarAgentSessions}
+            />
+          ) : (
+            <>
+              <Sidebar
+                showAiSignInGuide={showAiSignInGuide && !currentView.startsWith('settings')}
+                onDismissAiSignInGuide={dismissAiSignInGuide}
+                desktopUpdateHintVersion={
+                  versionCheck.showUpdateHint && !currentView.startsWith('settings')
+                    ? versionCheck.serverVersion
+                    : null
+                }
+                onDismissDesktopUpdateHint={versionCheck.dismiss}
+                onOpenChat={() => {
+                  setCurrentView('hub');
+                  setHubPane('chat');
+                  setHubMobileTab('chat');
+                  setSidebarOpen(false);
+                }}
+                chatActive={currentView === 'hub' && hubPane === 'chat'}
+                chatUnread={hubChatUnread.badge}
+                serverAgentName={serverAgentName}
+                serverAgentUnread={hubAssistantUnread}
+                googleChatAvailable={chatEnabled}
+                googleChatUnread={googleChatBadge}
+                onCollapseSidebar={() => setSidebarCollapsed(true)}
+                onOpenSimpleView={openSimpleView}
+                onOpenNotificationTarget={openNotificationTarget}
+                onOpenNotificationSettings={openNotificationSettings}
+                isLoading={sidebarDataLoading}
+                projects={projects}
+                agents={agents}
+                activeAgentId={activeAgentId}
+                onSelectAgent={(id: any) => {
+                  pendingSessionIdRef.current = null;
+                  setActiveSessionId(null);
+                  setActiveAgentId(id);
+                  setSidebarOpen(false);
+                }}
+                onExpandAgent={loadSidebarAgentSessions}
+                sessionsByAgentId={sessionsByAgentId}
+                archivedSessionsByAgentId={archivedSessionsByAgentId}
+                loadedSessionsAgentId={loadedSessionsAgentId}
+                loadedArchivedAgentId={loadedArchivedAgentId}
+                onFocusSession={focusAgentSession}
+                showToast={showToast}
+                connected={connected}
+                reconnecting={reconnecting}
+                bugReportProjectId={currentProjectId}
+                bugReportAgentId={activeAgentId}
+                sessions={sessions}
+                activeSessionId={activeSessionId}
+                onSelectSession={(id: any) => focusAgentSession(undefined, id)}
+                onNewSession={handleNewSession}
+                onDeleteSession={handleDeleteSession}
+                onClearAllSessions={handleClearAllSessions}
+                onClearMergedSessions={handleClearMergedSessions}
+                archivedSessions={archivedSessions}
+                onRestoreSession={handleRestoreSession}
+                restoringSessionIds={restoringSessionIds}
+                deletingSessionIds={deletingSessionIds}
+                deletingBulk={deletingBulk}
+                onRenameSession={handleRenameSession}
+                onOpenOrganizationChat={handleOpenOrganizationChat}
+                hubPane={currentView === 'hub' ? hubPane : hubPaneFromLegacyView(currentView)}
+                onNavigate={(view: any, extra: any) => {
+                  setCurrentView(view);
+                  if (view === 'hub' && isHubWorkspacePane(extra)) {
+                    setHubPane(extra);
+                    setHubMobileTab(extra);
+                  }
+                  if (view === 'organizations') {
+                    const routed =
+                      typeof extra === 'string' && extra && extra !== 'independent' ? extra : null;
+                    const sidebarOrg =
+                      sidebarOrganizationId && sidebarOrganizationId !== 'independent'
+                        ? sidebarOrganizationId
+                        : null;
+                    setOrganizationRouteId(routed ?? sidebarOrg ?? organizationRouteId);
+                  }
+                  if (view === 'wiki' && extra) setWikiProjectId(extra);
+                  if (view === 'notes' && extra) setNotesProjectId(extra);
+                  if (view === 'reviewer' && extra) setReviewerProjectId(extra);
+                  if (view === 'pulls' && extra) setPullsProjectId(extra);
+                  if (view === 'design' && extra) setActiveDesignId(extra);
+                  if (view === 'designs') {
+                    // Opening the list view shouldn't clobber the last-opened design
+                    // context, but we do clear any in-progress transient state.
+                    setDesignStreaming(null);
+                    setDesignThinking(false);
+                  }
+                  if (view === 'support') {
+                    if (extra) setSupportProjectId(extra);
+                    // Opening support from the sidebar is not a ticket deep-link.
+                    setSupportTicketId(null);
+                  }
+                  if (view === 'deployments' && extra) setDeploymentsProjectId(extra);
+                  if (view === 'replays' && extra) setReplaysProjectId(extra);
+                  if (view === 'security' && extra) setSecurityProjectId(extra);
+                  setSidebarOpen(false);
+                }}
+                currentView={currentView}
+                activeOrganizationId={currentView === 'organizations' ? organizationRouteId : null}
+                selectedOrganizationId={sidebarOrganizationId}
+                onSelectOrganization={(id: string) => {
+                  setSidebarOrganizationId(id);
+                  writeSelectedOrganization(id);
+                  if (id !== 'independent') setOrganizationRouteId(id);
+                }}
+                activeTaskSessionIds={activeTasks}
+                awaitingInputBySession={awaitingInputBySession}
+                subagentsBySession={subagents}
+                backgroundShellsBySession={backgroundShellsBySession}
+                previewEventBySession={previewEventBySession}
+                previewStartingBySession={previewStartingBySession}
+                changesReadyBySession={changesReady}
+                finalizeStatusBySession={finalizeStatusBySession}
+                needsInputBySession={needsInputBySession}
+                onOpenProject={openAdaptiveProjectWizard}
+                onImportProject={openImportProjectWizard}
+                onReorderProjects={handleReorderProjects}
+                cronSessions={cronSessions}
+                wikiProjectId={wikiProjectId}
+                notesProjectId={notesProjectId}
+                reviewerProjectId={reviewerProjectId}
+                supportProjectId={supportProjectId}
+                googleCalendarNavVisible={googleCalendarNavVisible}
+                googleGmailNavVisible={googleGmailNavVisible}
+                deploymentsProjectId={deploymentsProjectId}
+                replaysProjectId={replaysProjectId}
+                securityProjectId={securityProjectId}
+                pullsProjectId={pullsProjectId}
+                onOpenPrDetail={handleOpenPrDetail}
+                workflowBadgeByProject={workflowSidebarBadgeByProject}
+                unreadTicketCounts={unreadTicketCounts}
+                openPullCounts={openPullCounts}
+                securityOpenCounts={securityOpenCounts}
+                skillImprovementCounts={skillImprovementCounts}
+                activeReviews={activeReviews}
+                electronSuppressHealthFetch={isElectron}
+                electronHealthSnapshot={electronDesktopHealth}
+                kanbanProjectId={
+                  currentView.startsWith('kanban:') ? currentView.split(':')[1] : null
+                }
+                kanbanProjectName={
+                  currentView.startsWith('kanban:')
+                    ? projects.find((p: any) => p.id === currentView.split(':')[1])?.name
+                    : null
+                }
+                kanbanSearchQuery={kanbanSearchQuery}
+                onKanbanSearchChange={setKanbanSearchQuery}
+                kanbanSelectedEpicIds={kanbanSelectedEpicIds}
+                onKanbanSelectedEpicIdsChange={setKanbanSelectedEpicIds}
+                kanbanAvailableLabels={kanbanAvailableLabels}
+                kanbanSelectedLabels={kanbanSelectedLabels}
+                onKanbanSelectedLabelsChange={setKanbanSelectedLabels}
+                kanbanAssignableUsers={kanbanAssignableUsers}
+                kanbanSelectedUserIds={kanbanSelectedUserIds}
+                onKanbanSelectedUserIdsChange={setKanbanSelectedUserIds}
+                kanbanCollapsedColumnIds={kanbanCollapsedColumnIds}
+                onKanbanCollapsedColumnIdsChange={applyKanbanCollapsedColumnIds}
+                onOpenKanbanEpics={() => {
+                  const projectId = currentView.split(':')[1];
+                  setCurrentView(`epics:${projectId}`);
+                  setSidebarOpen(false);
+                }}
+                kanbanRefreshKey={kanbanRefreshKey}
+              />
+              <div
+                {...sidebarResizeHandleProps}
+                data-testid="sidebar-resize-handle"
+                aria-label="Resize sidebar"
+                title="Drag to resize sidebar. Double-click to reset."
+                onDoubleClick={(event) => {
+                  event.preventDefault();
+                  resetSidebarWidth();
+                }}
+                className={`absolute top-0 right-0 z-30 hidden h-full w-1.5 cursor-col-resize touch-none items-center justify-center focus:outline-none focus-visible:bg-sky-500/50 md:flex ${
+                  sidebarResizing ? 'bg-sky-500/50' : 'hover:bg-sky-500/35'
+                }`}
+              >
+                <GripVertical size={14} className="text-gray-500" aria-hidden />
+              </div>
+            </>
+          )}
         </div>
 
         <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
@@ -7057,48 +7487,77 @@ export default function App({ initialView }: any = {}) {
             <>
               {currentView === 'chat' && activeSessionId ? (
                 <>
-                  <TopBar
-                    agent={chatAgent}
-                    accentColor={chatAccentColor}
-                    onNewSession={handleNewSession}
-                    onToggleSidebar={() => setSidebarOpen((prev: any) => !prev)}
-                    sessionEngine={sessionEngine}
-                    onEngineChange={handleEngineChange}
-                    sessionModel={sessionModel}
-                    onModelChange={handleModelChange}
-                    sessionReasoningEffort={sessionReasoningEffort}
-                    onReasoningEffortChange={handleReasoningEffortChange}
-                    computerToolOn={resolveComputerToolEnabled(
-                      chatAgent?.computerToolEnabled,
-                      activeSession?.computer_tool_enabled,
-                    )}
-                    computerToolSetting={describeComputerToolSetting(
-                      chatAgent?.computerToolEnabled,
-                      activeSession?.computer_tool_enabled,
-                    )}
-                    onComputerToolChange={handleComputerToolChange}
-                    modelConfig={modelConfig}
-                    messages={messages}
-                    activeSessionId={activeSessionId}
-                    activeSessionState={activeSessionState}
-                    backgroundShellWatch={
-                      activeSessionId
-                        ? deriveWatchIndicator(backgroundShellsBySession[activeSessionId])
-                        : null
-                    }
-                    projectId={
-                      workflowEditRoute?.projectId ||
-                      projects.find((p: any) => p.agents?.some((a: any) => a.id === activeAgentId))
-                        ?.id
-                    }
-                    showToast={showToast}
-                    onOpenForward={() => setShowForward(true)}
-                    canForward={
-                      !!activeSessionId && filterForwardTargets(agents, activeAgent).length > 0
-                    }
-                  />
+                  {shellMode === 'simple' && (
+                    <div className="sticky top-0 z-20 md:hidden flex w-full items-center px-3 py-2 border-b border-gray-800 bg-gray-950 electron-no-drag">
+                      <button
+                        type="button"
+                        onClick={() => setSidebarOpen((prev: any) => !prev)}
+                        className="text-gray-400 hover:text-white p-2 min-w-[44px] min-h-[44px] flex items-center justify-center"
+                        aria-label="Open sidebar"
+                        data-testid="simple-open-sidebar"
+                      >
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          className="h-6 w-6"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M4 6h16M4 12h16M4 18h16"
+                          />
+                        </svg>
+                      </button>
+                    </div>
+                  )}
+                  {shellMode !== 'simple' && (
+                    <TopBar
+                      agent={chatAgent}
+                      accentColor={chatAccentColor}
+                      onNewSession={handleNewSession}
+                      onToggleSidebar={() => setSidebarOpen((prev: any) => !prev)}
+                      sessionEngine={sessionEngine}
+                      onEngineChange={handleEngineChange}
+                      sessionModel={sessionModel}
+                      onModelChange={handleModelChange}
+                      sessionReasoningEffort={sessionReasoningEffort}
+                      onReasoningEffortChange={handleReasoningEffortChange}
+                      computerToolOn={resolveComputerToolEnabled(
+                        chatAgent?.computerToolEnabled,
+                        activeSession?.computer_tool_enabled,
+                      )}
+                      computerToolSetting={describeComputerToolSetting(
+                        chatAgent?.computerToolEnabled,
+                        activeSession?.computer_tool_enabled,
+                      )}
+                      onComputerToolChange={handleComputerToolChange}
+                      modelConfig={modelConfig}
+                      messages={messages}
+                      activeSessionId={activeSessionId}
+                      activeSessionState={activeSessionState}
+                      backgroundShellWatch={
+                        activeSessionId
+                          ? deriveWatchIndicator(backgroundShellsBySession[activeSessionId])
+                          : null
+                      }
+                      projectId={
+                        workflowEditRoute?.projectId ||
+                        projects.find((p: any) =>
+                          p.agents?.some((a: any) => a.id === activeAgentId),
+                        )?.id
+                      }
+                      showToast={showToast}
+                      onOpenForward={() => setShowForward(true)}
+                      canForward={
+                        !!activeSessionId && filterForwardTargets(agents, activeAgent).length > 0
+                      }
+                    />
+                  )}
 
-                  {organizationComputerChat && (
+                  {shellMode !== 'simple' && organizationComputerChat && (
                     <OrganizationComputerBar
                       key={`${organizationChatOrganization?.id ?? ''}:${activeSessionId}`}
                       agent={chatAgent}
@@ -7110,21 +7569,23 @@ export default function App({ initialView }: any = {}) {
                     />
                   )}
 
-                  <SessionSummarySidebar
-                    sessionId={activeSessionId}
-                    isLive={Boolean(streamingMsgId || activeTasks[activeSessionId])}
-                    variant="top"
-                    onOpenPrDetail={handleOpenPrDetail}
-                    onOpenCard={(projectId: any, cardId: any) => {
-                      if (!projectId) return;
-                      if (cardId) setKanbanFocusCardId(cardId);
-                      setCurrentView(`kanban:${projectId}`);
-                      setSidebarOpen(false);
-                    }}
-                  />
+                  {shellMode === 'hub' && (
+                    <SessionSummarySidebar
+                      sessionId={activeSessionId}
+                      isLive={Boolean(streamingMsgId || activeTasks[activeSessionId])}
+                      variant="top"
+                      onOpenPrDetail={handleOpenPrDetail}
+                      onOpenCard={(projectId: any, cardId: any) => {
+                        if (!projectId) return;
+                        if (cardId) setKanbanFocusCardId(cardId);
+                        setCurrentView(`kanban:${projectId}`);
+                        setSidebarOpen(false);
+                      }}
+                    />
+                  )}
                 </>
               ) : (
-                <div className="md:hidden flex items-center px-3 py-2 border-b border-gray-800 bg-gray-900/50 electron-no-drag">
+                <div className="sticky top-0 z-20 md:hidden flex w-full items-center px-3 py-2 border-b border-gray-800 bg-gray-950 electron-no-drag">
                   <button
                     type="button"
                     onClick={() => setSidebarOpen((prev: any) => !prev)}
@@ -7532,6 +7993,94 @@ export default function App({ initialView }: any = {}) {
                     focusAgentSession(agentId, sessionId)
                   }
                 />
+              ) : currentView === 'hub' && shellMode === 'simple' && hubPane === 'agent' ? (
+                <div
+                  className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden lg:flex-row"
+                  data-testid="simple-server-chat"
+                >
+                  {hubAssistantChat}
+                  {(hubSessionId || activeSessionId) &&
+                    sideBarPaneOpenBySession[hubSessionId || activeSessionId] && (
+                      <Suspense fallback={null}>
+                        <SessionSideBarPane
+                          key={hubSessionId || activeSessionId}
+                          parentSessionId={hubSessionId || activeSessionId}
+                          agentId={sessionOwnerAgentId || HUB_ASSISTANT_AGENT_ID}
+                          agentName={serverAgentName}
+                          connected={connected}
+                          send={send}
+                          onSidebarSessionChange={handleSideBarSessionChange}
+                          onClose={() =>
+                            setSideBarPaneOpenBySession((prev) => ({
+                              ...prev,
+                              [hubSessionId || activeSessionId]: false,
+                            }))
+                          }
+                        />
+                      </Suspense>
+                    )}
+                  {(hubSessionId || activeSessionId) &&
+                    browserPaneOpenBySession[hubSessionId || activeSessionId] === true && (
+                      <Suspense
+                        fallback={
+                          <aside className="hidden lg:flex items-center justify-center shrink-0 border-l border-gray-800 bg-gray-950 w-[640px]">
+                            <Loader2 size={18} className="animate-spin text-sky-300" />
+                          </aside>
+                        }
+                      >
+                        <SessionBrowserPane
+                          key={hubSessionId || activeSessionId}
+                          sessionId={hubSessionId || activeSessionId}
+                          desktopOwnerLabel={organizationComputerOwner}
+                          onClose={() =>
+                            setBrowserPaneOpenBySession((prev) => ({
+                              ...prev,
+                              [hubSessionId || activeSessionId]: false,
+                            }))
+                          }
+                        />
+                      </Suspense>
+                    )}
+                  {(hubSessionId || activeSessionId) &&
+                    artifactsPaneOpenBySession[hubSessionId || activeSessionId] && (
+                      <Suspense
+                        fallback={
+                          <aside className="hidden lg:flex items-center justify-center shrink-0 border-l border-gray-800 bg-gray-950 w-[420px]">
+                            <Loader2 size={18} className="animate-spin text-violet-300" />
+                          </aside>
+                        }
+                      >
+                        <SessionArtifactsPane
+                          sessionId={hubSessionId || activeSessionId}
+                          reloadToken={artifactTickBySession[hubSessionId || activeSessionId] || 0}
+                          presentedArtifact={
+                            presentedArtifactBySession[hubSessionId || activeSessionId] || null
+                          }
+                          onPresentedArtifact={(sessionId: any, artifactId: any) =>
+                            setPresentedArtifactBySession((prev: any) => {
+                              if (prev[sessionId]?.id !== artifactId) return prev;
+                              const next = { ...prev };
+                              delete next[sessionId];
+                              return next;
+                            })
+                          }
+                          onClose={() =>
+                            setArtifactsPaneOpenBySession((prev: any) => ({
+                              ...prev,
+                              [hubSessionId || activeSessionId]: false,
+                            }))
+                          }
+                          onCount={(n: any) =>
+                            setArtifactCountBySession((prev: any) =>
+                              prev[hubSessionId || activeSessionId] === n
+                                ? prev
+                                : { ...prev, [hubSessionId || activeSessionId]: n },
+                            )
+                          }
+                        />
+                      </Suspense>
+                    )}
+                </div>
               ) : currentView === 'hub' ||
                 currentView === 'home' ||
                 currentView === 'dashboard' ||
@@ -7788,7 +8337,7 @@ export default function App({ initialView }: any = {}) {
                 />
               ) : (
                 <div className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden">
-                  {activeSessionId && (
+                  {shellMode === 'hub' && activeSessionId && (
                     <SessionAgentsPanel
                       sessionId={activeSessionId}
                       sessionAgents={sessionAgents}
@@ -7799,7 +8348,7 @@ export default function App({ initialView }: any = {}) {
                     />
                   )}
                   <div className="relative flex flex-col flex-1 min-h-0 min-w-0 overflow-hidden lg:flex-row">
-                    {showSessionTimeline && (
+                    {shellMode === 'hub' && showSessionTimeline && (
                       <SessionTimelineSidebar
                         sessionId={activeSessionId}
                         messages={messages}
@@ -7822,7 +8371,9 @@ export default function App({ initialView }: any = {}) {
                           ref={scrollContainerRef}
                           onScroll={handleScrollEvent}
                           data-testid="chat-scroll-container"
-                          className="flex-1 overflow-y-auto p-3 md:p-6 relative border-t-2"
+                          className={`min-w-0 flex-1 overflow-x-hidden overflow-y-auto relative ${
+                            shellMode === 'simple' ? 'px-3 py-3 space-y-2' : 'p-3 md:p-6 border-t-2'
+                          }`}
                           // `overflowAnchor: none` hands scroll-position ownership entirely to
                           // the JS in this component (auto-follow tail-pin + manual prepend
                           // restore). Left at the browser default `auto`, native scroll
@@ -7831,7 +8382,7 @@ export default function App({ initialView }: any = {}) {
                           // producing the rapid back-and-forth scroll jitter on load-older.
                           style={{ borderTopColor: chatAccentColor, overflowAnchor: 'none' }}
                         >
-                          <div className="mx-auto" ref={messagesColumnRef}>
+                          <div className="mx-auto min-w-0 max-w-full" ref={messagesColumnRef}>
                             {/* Reverse-infinite-scroll: spinner shown at the top
                       while an older page is being fetched on scroll-up. */}
                             {loadingOlderMessages && (
@@ -7846,143 +8397,169 @@ export default function App({ initialView }: any = {}) {
                             {/* Cursor-style timed checklist — rendered at top of chat
                       whenever the session has emitted `[[STEP:...]]` markers.
                       Collapses automatically once all steps resolve. */}
-                            {orchestrationTimelineEntries.length > 0 && (
+                            {shellMode !== 'simple' && orchestrationTimelineEntries.length > 0 && (
                               <OrchestrationTimelinePanel entries={orchestrationTimelineEntries} />
                             )}
-                            {(sessionProgress[activeSessionId] || []).length > 0 && (
-                              <div className="px-3 md:px-0 mb-3 max-w-[95%] sm:max-w-[90%] mx-auto">
-                                <ProgressPanel
-                                  steps={sessionProgress[activeSessionId]}
-                                  sessionRunning={Boolean(
-                                    streamingMsgId || activeTasks[activeSessionId],
-                                  )}
-                                />
-                              </div>
-                            )}
+                            {shellMode !== 'simple' &&
+                              (sessionProgress[activeSessionId] || []).length > 0 && (
+                                <div className="px-3 md:px-0 mb-3 max-w-[95%] sm:max-w-[90%] mx-auto">
+                                  <ProgressPanel
+                                    steps={sessionProgress[activeSessionId]}
+                                    sessionRunning={Boolean(
+                                      streamingMsgId || activeTasks[activeSessionId],
+                                    )}
+                                  />
+                                </div>
+                              )}
                             {(reactLoopStepsBySession[activeSessionId] || []).length > 0 && (
                               <ReactLoopObservabilityPanel
                                 steps={reactLoopStepsBySession[activeSessionId]}
                                 streaming={Boolean(streamingMsgId || activeTasks[activeSessionId])}
                               />
                             )}
-                            {messages.length === 0 && !thinking && !streamingContent && (
-                              <div
-                                className="flex flex-col items-center justify-center h-full text-gray-500 py-20 px-6 text-center"
-                                data-testid={
-                                  sessionMessagesLoading
-                                    ? 'chat-messages-loading'
-                                    : 'chat-empty-state'
-                                }
-                              >
-                                {sessionMessagesLoading ? (
-                                  <>
-                                    <Loader2
-                                      size={40}
-                                      className="mb-4 text-gray-500 animate-spin"
-                                    />
-                                    <p className="text-lg">Loading conversation</p>
-                                    <p className="text-sm mt-1 text-gray-500">Fetching messages…</p>
-                                  </>
-                                ) : activeSessionWorkspaceEnsureError ? (
-                                  <>
-                                    <AlertTriangle size={40} className="mb-4 text-amber-500" />
-                                    <p className="text-lg">Couldn't set up this session</p>
-                                    <p className="text-sm mt-1 text-gray-500 max-w-md">
-                                      {activeSessionWorkspaceEnsureError}
-                                    </p>
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        activeSessionId &&
-                                        retrySessionWorkspaceEnsure(activeSessionId)
-                                      }
-                                      className="mt-4 px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600 text-gray-100 text-sm"
-                                    >
-                                      Retry
-                                    </button>
-                                  </>
-                                ) : !activeSessionComposerWorkspaceReady ? (
-                                  <>
-                                    <Loader2
-                                      size={40}
-                                      className="mb-4 text-gray-500 animate-spin"
-                                    />
-                                    <p className="text-lg">Setting up this session</p>
-                                    <p className="text-sm mt-1 text-gray-500">
-                                      Preparing the workspace and environment…
-                                    </p>
-                                  </>
-                                ) : (
-                                  <>
-                                    {needsAutopilotSetup(activeSession) ? null : (
-                                      <MessageCircle size={40} className="mb-3 text-gray-600" />
-                                    )}
-                                    {sessionsListLoading && projectDataReady && activeAgent ? (
-                                      <>
-                                        <p className="text-lg">Loading conversation</p>
-                                        <p className="text-sm mt-1 text-gray-500">
-                                          Sessions are syncing…
-                                        </p>
-                                      </>
-                                    ) : activeAgent ? (
-                                      needsAutopilotSetup(activeSession) ? (
-                                        <div className="w-full max-w-lg text-left">
-                                          <AutopilotSetupPrompt
-                                            key={activeSessionId}
-                                            mainlineAvailable={
-                                              activeSession?.can_autopilot_mainline === true
-                                            }
-                                            sessionId={activeSessionId}
-                                            onStarted={(updated: any) => {
-                                              setSessions((prev: any) =>
-                                                prev.map((s: any) =>
-                                                  s.id === updated.id ? { ...s, ...updated } : s,
-                                                ),
-                                              );
-                                            }}
-                                            onError={(msg) => showToast(msg, 'error', 8000)}
-                                          />
-                                        </div>
+                            {messages.length === 0 &&
+                              !thinking &&
+                              !streamingContent &&
+                              shellMode === 'simple' &&
+                              !sessionMessagesLoading &&
+                              !activeSessionWorkspaceEnsureError &&
+                              activeSessionComposerWorkspaceReady && (
+                                <p
+                                  className="text-sm text-gray-500 px-1"
+                                  data-testid="chat-empty-state"
+                                >
+                                  Ask {activeAgent?.name || 'this agent'} anything.
+                                </p>
+                              )}
+                            {messages.length === 0 &&
+                              !thinking &&
+                              !streamingContent &&
+                              !(
+                                shellMode === 'simple' &&
+                                !sessionMessagesLoading &&
+                                !activeSessionWorkspaceEnsureError &&
+                                activeSessionComposerWorkspaceReady
+                              ) && (
+                                <div
+                                  className="flex flex-col items-center justify-center h-full text-gray-500 py-20 px-6 text-center"
+                                  data-testid={
+                                    sessionMessagesLoading
+                                      ? 'chat-messages-loading'
+                                      : 'chat-empty-state'
+                                  }
+                                >
+                                  {sessionMessagesLoading ? (
+                                    <>
+                                      <Loader2
+                                        size={40}
+                                        className="mb-4 text-gray-500 animate-spin"
+                                      />
+                                      <p className="text-lg">Loading conversation</p>
+                                      <p className="text-sm mt-1 text-gray-500">
+                                        Fetching messages…
+                                      </p>
+                                    </>
+                                  ) : activeSessionWorkspaceEnsureError ? (
+                                    <>
+                                      <AlertTriangle size={40} className="mb-4 text-amber-500" />
+                                      <p className="text-lg">Couldn't set up this session</p>
+                                      <p className="text-sm mt-1 text-gray-500 max-w-md">
+                                        {activeSessionWorkspaceEnsureError}
+                                      </p>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          activeSessionId &&
+                                          retrySessionWorkspaceEnsure(activeSessionId)
+                                        }
+                                        className="mt-4 px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600 text-gray-100 text-sm"
+                                      >
+                                        Retry
+                                      </button>
+                                    </>
+                                  ) : !activeSessionComposerWorkspaceReady ? (
+                                    <>
+                                      <Loader2
+                                        size={40}
+                                        className="mb-4 text-gray-500 animate-spin"
+                                      />
+                                      <p className="text-lg">Setting up this session</p>
+                                      <p className="text-sm mt-1 text-gray-500">
+                                        Preparing the workspace and environment…
+                                      </p>
+                                    </>
+                                  ) : (
+                                    <>
+                                      {needsAutopilotSetup(activeSession) ? null : (
+                                        <MessageCircle size={40} className="mb-3 text-gray-600" />
+                                      )}
+                                      {sessionsListLoading && projectDataReady && activeAgent ? (
+                                        <>
+                                          <p className="text-lg">Loading conversation</p>
+                                          <p className="text-sm mt-1 text-gray-500">
+                                            Sessions are syncing…
+                                          </p>
+                                        </>
+                                      ) : activeAgent ? (
+                                        needsAutopilotSetup(activeSession) ? (
+                                          <div className="w-full max-w-lg text-left">
+                                            <AutopilotSetupPrompt
+                                              key={activeSessionId}
+                                              mainlineAvailable={
+                                                activeSession?.can_autopilot_mainline === true
+                                              }
+                                              sessionId={activeSessionId}
+                                              onStarted={(updated: any) => {
+                                                setSessions((prev: any) =>
+                                                  prev.map((s: any) =>
+                                                    s.id === updated.id ? { ...s, ...updated } : s,
+                                                  ),
+                                                );
+                                              }}
+                                              onError={(msg) => showToast(msg, 'error', 8000)}
+                                            />
+                                          </div>
+                                        ) : (
+                                          <>
+                                            <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-600 mb-1">
+                                              Chat
+                                            </p>
+                                            <h2 className="text-xl font-semibold text-gray-200 mb-2">
+                                              Talk to {activeAgent.name}
+                                            </h2>
+                                            <p className="text-sm text-gray-500 max-w-md leading-relaxed">
+                                              This is a chat session with{' '}
+                                              <span className="text-gray-300">
+                                                {activeAgent.name}
+                                              </span>
+                                              . Type a message below to ask a question, hand off a
+                                              task, or pair on changes — replies stream in real
+                                              time.
+                                            </p>
+                                          </>
+                                        )
                                       ) : (
                                         <>
                                           <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-600 mb-1">
                                             Chat
                                           </p>
                                           <h2 className="text-xl font-semibold text-gray-200 mb-2">
-                                            Talk to {activeAgent.name}
+                                            No agent selected
                                           </h2>
                                           <p className="text-sm text-gray-500 max-w-md leading-relaxed">
-                                            This is a chat session with{' '}
-                                            <span className="text-gray-300">
-                                              {activeAgent.name}
-                                            </span>
-                                            . Type a message below to ask a question, hand off a
-                                            task, or pair on changes — replies stream in real time.
+                                            Pick an agent from the sidebar to start a conversation,
+                                            or jump to the dashboard to see what&apos;s happening
+                                            across your projects.
                                           </p>
                                         </>
-                                      )
-                                    ) : (
-                                      <>
-                                        <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-600 mb-1">
-                                          Chat
-                                        </p>
-                                        <h2 className="text-xl font-semibold text-gray-200 mb-2">
-                                          No agent selected
-                                        </h2>
-                                        <p className="text-sm text-gray-500 max-w-md leading-relaxed">
-                                          Pick an agent from the sidebar to start a conversation, or
-                                          jump to the dashboard to see what&apos;s happening across
-                                          your projects.
-                                        </p>
-                                      </>
-                                    )}
-                                  </>
-                                )}
-                                <p className="text-xs text-gray-700 mt-5 hidden sm:block">
-                                  Ctrl+K to switch agents · Esc to cancel
-                                </p>
-                              </div>
-                            )}
+                                      )}
+                                    </>
+                                  )}
+                                  <p className="text-xs text-gray-700 mt-5 hidden sm:block">
+                                    Ctrl+K to switch agents · Esc to cancel
+                                  </p>
+                                </div>
+                              )}
                             {(() => {
                               const queuedIds = new Set(
                                 (messageQueues[activeSessionId] || []).map((q: any) => q.id),
@@ -8017,6 +8594,7 @@ export default function App({ initialView }: any = {}) {
                                         browserScreenshots={
                                           browserScreensBySession[activeSessionId]?.[msg.id] ?? {}
                                         }
+                                        hideStatus={shellMode === 'simple'}
                                       />
                                     ) : (
                                       <ChatMessage
@@ -8156,8 +8734,9 @@ export default function App({ initialView }: any = {}) {
                           </div>
 
                           {/* Follow-state footer: "Following" pill while pinned to
-                              the tail, "Scroll to bottom" button once detached. */}
-                          {following ? (
+                              the tail, "Scroll to bottom" button once detached.
+                              Hidden until the transcript is taller than the viewport. */}
+                          {chatOverflows && following ? (
                             <div
                               data-testid="chat-follow-indicator"
                               data-following="true"
@@ -8167,7 +8746,7 @@ export default function App({ initialView }: any = {}) {
                               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
                               Following
                             </div>
-                          ) : (
+                          ) : chatOverflows ? (
                             <button
                               onClick={() => scrollToBottom()}
                               data-testid="chat-follow-indicator"
@@ -8190,14 +8769,15 @@ export default function App({ initialView }: any = {}) {
                               </svg>
                               Scroll to bottom
                             </button>
-                          )}
+                          ) : null}
                         </div>
                       </RunInTerminalProvider>
 
                       {/* Show-preview pill — visible only when there's a
                         preview event for this session but the user has
                         closed the pane. One-click reopen. */}
-                      {activeSessionId &&
+                      {shellMode !== 'simple' &&
+                        activeSessionId &&
                         !chatProjectIsWorkflow &&
                         activePreviewEvent &&
                         (previewPaneOpenBySession[activeSessionId] === false ||
@@ -8231,7 +8811,8 @@ export default function App({ initialView }: any = {}) {
 
                       {/* Show-agent-browser pill — the human closed the live
                         pane for this session; one-click reopen. */}
-                      {activeSessionId &&
+                      {shellMode !== 'simple' &&
+                        activeSessionId &&
                         !chatProjectIsWorkflow &&
                         browserPaneOpenBySession[activeSessionId] === false && (
                           <div className="px-3 md:px-6 pb-1">
@@ -8263,7 +8844,7 @@ export default function App({ initialView }: any = {}) {
                           </div>
                         )}
 
-                      {activeSessionId && (
+                      {shellMode !== 'simple' && activeSessionId && (
                         <div className="relative shrink-0 border-t border-gray-800/80">
                           {contextUsageOpenBySession[activeSessionId] ? (
                             <div className="absolute bottom-full left-3 md:left-6 mb-2 z-30">
@@ -8618,7 +9199,7 @@ export default function App({ initialView }: any = {}) {
                           queueLength={(messageQueues[activeSessionId] || []).length}
                           agentColor={chatAccentColor}
                           skills={skills}
-                          consultMode={sessionConsultActive}
+                          consultMode={shellMode === 'simple' ? false : sessionConsultActive}
                           readOnly={activeAgent?.role === 'reviewer'}
                           draftKey={activeSessionId || activeAgentId || 'none'}
                           onFileError={(msg: any) => showToast(msg, 'error', 6000)}
@@ -8627,6 +9208,20 @@ export default function App({ initialView }: any = {}) {
                           onReplaceQueuedMessage={handleEditQueuedMessage}
                           sessionAgents={sessionAgents}
                           enableMentions={sessionAgents.length > 1}
+                          toolbarStart={
+                            shellMode === 'simple' ? (
+                              <div className="flex items-center gap-2 min-w-0 w-full flex-wrap">
+                                <HubModelPicker
+                                  modelConfig={modelConfig}
+                                  engine={sessionEngine}
+                                  model={sessionModel}
+                                  onEngineChange={handleEngineChange}
+                                  onModelChange={handleModelChange}
+                                />
+                                {simpleChatTools(activeSessionId)}
+                              </div>
+                            ) : null
+                          }
                         />
                       </div>
                     </div>

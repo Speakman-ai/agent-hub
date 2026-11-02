@@ -3667,6 +3667,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           project: project as Project,
           browserToolsEnabled: effectiveBrowserToolsEnabled(agent, project),
           sidebar: isSidebarSession(session),
+          agentId: agent?.id ?? null,
         });
         enrichedPrompt = `${consultPreamble}\n\n${enrichedPrompt}`;
       }

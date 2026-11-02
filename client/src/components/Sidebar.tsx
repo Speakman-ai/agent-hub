@@ -236,6 +236,8 @@ export default function Sidebar({
    * renders in the header. Mobile uses the slide-out drawer and never shows it.
    */
   onCollapseSidebar,
+  /** Switch from the project tree to the messaging-style agent list. */
+  onOpenSimpleView,
   /** Bell inbox: renders in the header only when both handlers are provided. */
   onOpenNotificationTarget,
   onOpenNotificationSettings,
@@ -817,6 +819,18 @@ export default function Sidebar({
             <BrandLogo size="md" />
           </button>
           <div className="min-w-0 flex-1" />
+          {onOpenSimpleView && (
+            <button
+              type="button"
+              onClick={onOpenSimpleView}
+              className="shrink-0 rounded-lg px-2 py-1 text-[12px] text-gray-300 hover:bg-gray-800 hover:text-white transition-colors"
+              title="Simple chat view"
+              aria-label="Simple chat view"
+              data-testid="sidebar-open-simple"
+            >
+              Simple
+            </button>
+          )}
           {onCollapseSidebar && (
             <button
               type="button"
@@ -900,7 +914,11 @@ export default function Sidebar({
                 onClick={() => openHubPane(item.pane)}
                 className={projectMenuLinkClass(active)}
               >
-                <Icon size={14} className="shrink-0" />
+                {item.pane === 'agent' ? (
+                  <BrandLogo variant="mark" size="xs" alt="" className="shrink-0" />
+                ) : (
+                  <Icon size={14} className="shrink-0" />
+                )}
                 <span className="truncate">{item.label}</span>
                 {unread > 0 && (
                   <span

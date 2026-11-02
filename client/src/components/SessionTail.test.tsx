@@ -12,6 +12,50 @@ import { SESSION_ENV_LAUNCH_STEP } from '@shared/utils/sessionEnvLaunch';
  * the tail — otherwise the chat fills up with noisy "unhandled event" rows
  * (observed in Electron client v1.2.1 bug report).
  */
+describe('SessionTail — simple chat status', () => {
+  it('hides the streaming status chip when hideStatus is set', () => {
+    render(
+      <SessionTail
+        message={{ id: 'm-status', role: 'assistant', content: 'Hello' }}
+        events={[{ seq: 1, event: { type: 'assistant_text', text: 'Hello' } }]}
+        agentColor="#6366f1"
+        agentName="Ada"
+        streaming
+        hideStatus
+      />,
+    );
+    expect(screen.queryByTestId('assistant-status-working')).toBeNull();
+    expect(screen.getByText('Ada')).toBeTruthy();
+  });
+
+  it('hides the done, cost, and turn footer when hideStatus is set', () => {
+    const events = [
+      { seq: 1, event: { type: 'assistant_text', text: 'Hello' } },
+      { seq: 2, event: { type: 'result', durationMs: 11700, costUsd: 0.2996, numTurns: 3 } },
+    ];
+    const { rerender } = render(
+      <SessionTail
+        message={{ id: 'm-result', role: 'assistant', content: 'Hello' }}
+        events={events}
+        agentColor="#6366f1"
+        agentName="Ada"
+      />,
+    );
+    expect(screen.getByText(/\$0\.2996/)).toBeTruthy();
+    rerender(
+      <SessionTail
+        message={{ id: 'm-result', role: 'assistant', content: 'Hello' }}
+        events={events}
+        agentColor="#6366f1"
+        agentName="Ada"
+        hideStatus
+      />,
+    );
+    expect(screen.queryByText(/\$0\.2996/)).toBeNull();
+    expect(screen.getByText('Hello')).toBeTruthy();
+  });
+});
+
 describe('SessionTail — browser_tool_activity UI', () => {
   const wrap = (events: any) => events.map((event: any, i: any) => ({ seq: i, event }));
 

@@ -669,7 +669,7 @@ function MessageInput(
 
   return (
     <div
-      className={`border-t border-gray-800 p-3 md:p-4 safe-bottom transition-colors ${
+      className={`min-w-0 max-w-full border-t border-gray-800 p-3 md:p-4 safe-bottom transition-colors ${
         dragOver ? 'bg-blue-900/20 border-blue-500' : ''
       }`}
       onDragOver={handleDragOver}
@@ -785,7 +785,7 @@ function MessageInput(
         </div>
       ) : null}
 
-      <div className="flex items-end gap-2 md:gap-3 mx-auto relative">
+      <div className="flex w-full min-w-0 items-end gap-2 md:gap-3 mx-auto relative">
         {refPicker.popup}
         {/* Slash-command autocomplete popup */}
         {slashQuery !== null && filteredSkills.length > 0 && (
@@ -1001,7 +1001,7 @@ function MessageInput(
           }
           disabled={disabled && !isProcessing}
           rows={1}
-          className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-gray-100 placeholder-gray-500 resize-none focus:outline-none focus:border-gray-600 disabled:opacity-50 transition-colors"
+          className="min-w-0 flex-1 bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-gray-100 placeholder-gray-500 resize-none focus:outline-none focus:border-gray-600 disabled:opacity-50 transition-colors"
         />
         {isProcessing && (
           <button

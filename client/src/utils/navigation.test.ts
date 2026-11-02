@@ -103,6 +103,24 @@ describe('navigation defaults', () => {
     ).toBe('#/deployments/agent-hub');
   });
 
+  it('round-trips the simple chat shell without changing a full Hub URL', () => {
+    expect(buildNavigationHash({ view: 'chat', shell: 'simple' })).toBe('#/chat?shell=simple');
+    expect(parseNavigationHash('#/chat?shell=simple')).toMatchObject({
+      view: 'chat',
+      shell: 'simple',
+    });
+    expect(buildNavigationHash({ view: 'hub', hubPane: 'agent', shell: 'simple' })).toBe(
+      '#/hub?shell=simple',
+    );
+    expect(parseNavigationHash('#/hub?shell=simple')).toMatchObject({
+      view: 'hub',
+      hubPane: 'agent',
+      shell: 'simple',
+    });
+    expect(buildNavigationHash({ view: 'chat' })).toBe('#/chat');
+    expect(parseNavigationHash('#/chat')?.shell).toBeUndefined();
+  });
+
   it('folds Calendar into Hub and never treats it as project-scoped', () => {
     expect(buildNavigationHash({ view: 'hub', hubPane: 'calendar' })).toBe('#/hub/calendar');
     expect(buildNavigationHash({ view: 'calendar', projectId: 'agent-hub' })).toBe('#/calendar');

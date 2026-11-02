@@ -177,11 +177,22 @@ describe('App — chat follow-state indicator', () => {
     globalThis.window.electronAPI = origElectron;
   });
 
-  it('shows the "Following" indicator while pinned to the tail', async () => {
-    await mountChat();
-    const indicator = await screen.findByTestId('chat-follow-indicator');
-    expect(indicator.getAttribute('data-following')).toBe('true');
-    expect(indicator.textContent).toContain('Following');
+  it('hides Following until the transcript is taller than the viewport', async () => {
+    const container = await mountChat();
+    setGeometry(container, { scrollTop: 0, scrollHeight: 300, clientHeight: 300 });
+    fireEvent.scroll(container);
+    expect(screen.queryByTestId('chat-follow-indicator')).toBeNull();
+  });
+
+  it('shows the "Following" indicator while pinned to a scrollable tail', async () => {
+    const container = await mountChat();
+    setGeometry(container, { scrollTop: 1700, scrollHeight: 2000, clientHeight: 300 });
+    await waitFor(() => {
+      fireEvent.scroll(container);
+      const indicator = screen.getByTestId('chat-follow-indicator');
+      expect(indicator.getAttribute('data-following')).toBe('true');
+      expect(indicator.textContent).toContain('Following');
+    });
   });
 
   it('flips to the "Scroll to bottom" button after an upward scroll detaches the tail', async () => {

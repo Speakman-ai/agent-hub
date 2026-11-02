@@ -497,9 +497,9 @@ function ChatMessage({
   const components = markdownComponents;
 
   return (
-    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} mb-4`}>
+    <div className={`flex min-w-0 max-w-full ${isUser ? 'justify-end' : 'justify-start'} mb-4`}>
       <div
-        className={`max-w-[95%] sm:max-w-[90%] ${
+        className={`min-w-0 max-w-[95%] sm:max-w-[90%] break-words ${
           isUser
             ? isQueued
               ? 'bg-blue-600/40 border border-blue-500/30 rounded-2xl rounded-br-md px-4 py-2.5'
@@ -665,7 +665,7 @@ function ChatMessage({
           <div className={isUser ? 'text-white' : 'markdown-content text-gray-200'}>
             {isUser ? (
               displayContent ? (
-                <p className="whitespace-pre-wrap">
+                <p className="whitespace-pre-wrap break-words">
                   {hasHubChatRefTokens(displayContent) ? (
                     <HubChatPlainTextWithRefs text={displayContent} />
                   ) : (

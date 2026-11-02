@@ -109,6 +109,7 @@ function SessionTail({
   onOpenSession,
   browserScreenshots = {},
   onInterrupt,
+  hideStatus = false,
 }: any) {
   // `streaming` doubles as the parent-active signal for DelegateCard so it
   // can decide whether an empty live snapshot means "still awaiting dispatch"
@@ -211,6 +212,7 @@ function SessionTail({
             streaming={false}
             createdAt={message?.created_at}
             outcome={null}
+            hideStatus={hideStatus}
           />
           <div
             className="mt-3 flex items-center gap-2 text-xs text-gray-400"
@@ -253,6 +255,7 @@ function SessionTail({
             sessionDelegations={sessionDelegations}
             delegationDispatchError={delegationDispatchError}
             onOpenSession={onOpenSession}
+            hideStatus={hideStatus}
           />
           <div className="flex justify-start -mt-2 mb-4 min-w-0">
             <div className="max-w-[95%] sm:max-w-[90%] w-full min-w-0 pl-3">
@@ -295,6 +298,7 @@ function SessionTail({
             streaming={false}
             createdAt={message?.created_at}
             outcome={null}
+            hideStatus={hideStatus}
           />
           <div
             className="mt-3 flex flex-col gap-2 rounded-lg border border-amber-800/50 bg-amber-950/25 px-3 py-2.5 text-xs text-amber-100"
@@ -337,6 +341,7 @@ function SessionTail({
         sessionDelegations={sessionDelegations}
         delegationDispatchError={delegationDispatchError}
         onOpenSession={onOpenSession}
+        hideStatus={hideStatus}
       />
     );
   }
@@ -378,6 +383,7 @@ function SessionTail({
           streaming={streaming}
           createdAt={message?.created_at}
           outcome={outcome}
+          hideStatus={hideStatus}
           onInterrupt={streaming ? onInterrupt : undefined}
         />
 
@@ -492,6 +498,7 @@ function SessionTail({
                   />
                 );
               case 'result':
+                if (hideStatus) return null;
                 return <ResultFooter key={`b${i}`} result={block.event} />;
               case 'checkpoint':
                 return <CheckpointBlock key={`b${i}`} event={block.event} />;
@@ -506,7 +513,7 @@ function SessionTail({
             }
           })}
         </div>
-        {!streaming && <WikiConsultedChip metadata={message?.metadata} />}
+        {!streaming && !hideStatus && <WikiConsultedChip metadata={message?.metadata} />}
         <div data-testid="session-tail-bottom" className="h-px w-full shrink-0" aria-hidden />
       </div>
     </div>
@@ -818,12 +825,14 @@ function Header({
   createdAt,
   outcome,
   onInterrupt,
+  hideStatus = false,
 }: any) {
   const badge = engine ? ENGINE_BADGES[engine] : null;
   const modelLabel = model ? model.replace('claude-', '').replace(/-/g, ' ') : null;
   const phase = outcome?.phase;
-  const showWorking = streaming || phase === 'working';
-  const showTerminal = !showWorking && outcome && (phase === 'done' || phase === 'error');
+  const showWorking = !hideStatus && (streaming || phase === 'working');
+  const showTerminal =
+    !hideStatus && !showWorking && outcome && (phase === 'done' || phase === 'error');
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
       <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: agentColor }} />
@@ -844,7 +853,7 @@ function Header({
           <span className="text-emerald-500">streaming</span>
         </span>
       )}
-      {showWorking && typeof onInterrupt === 'function' && (
+      {(streaming || phase === 'working') && typeof onInterrupt === 'function' && (
         <button
           type="button"
           onClick={onInterrupt}
@@ -2159,6 +2168,7 @@ function StoredAssistantBubble({
   sessionDelegations,
   delegationDispatchError,
   onOpenSession,
+  hideStatus = false,
 }: any) {
   // Strip coordination blocks here too. Stored messages may include the
   // raw `<handoff>...</handoff>` JSON in their content. Delegate blocks get
@@ -2199,6 +2209,7 @@ function StoredAssistantBubble({
           streaming={false}
           createdAt={message.created_at}
           outcome={outcome}
+          hideStatus={hideStatus}
         />
         {review.prose ? (
           <div className="markdown-content text-gray-200 mt-1">

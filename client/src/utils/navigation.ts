@@ -54,6 +54,8 @@ export type NavigationState = {
   /** Organizations view only: the selected organization and the Server it belongs to. */
   organizationId?: string | null;
   serverId?: string | null;
+  /** Messaging shell. Present only when the simple chat view is the location. */
+  shell?: 'simple' | null;
 };
 
 function cleanSegment(value: any) {
@@ -127,6 +129,7 @@ export function parseNavigationHash(hash?: any): NavigationState | null {
   const chatChannelId =
     view === 'hub' && hubPane === 'chat' ? cleanSegment(params.get('channel')) : null;
   const organizationId = view === 'organizations' ? cleanSegment(params.get('organization')) : null;
+  const shell = params.get('shell') === 'simple' ? ('simple' as const) : null;
 
   return {
     view: view || DEFAULT_VIEW,
@@ -138,6 +141,7 @@ export function parseNavigationHash(hash?: any): NavigationState | null {
     ...(chatChannelId ? { chatChannelId, chatMessageId: cleanSegment(params.get('message')) } : {}),
     ...(openSummaries && !chatChannelId ? { openSummaries: true } : {}),
     ...(organizationId ? { organizationId, serverId: cleanSegment(params.get('server')) } : {}),
+    ...(shell ? { shell } : {}),
   };
 }
 
@@ -186,6 +190,7 @@ export function buildNavigationHash(state: NavigationState) {
     const serverId = cleanSegment(state?.serverId);
     if (serverId) params.set('server', serverId);
   }
+  if (state?.shell === 'simple') params.set('shell', 'simple');
 
   const query = params.toString();
   if (!path && !query) return '';
