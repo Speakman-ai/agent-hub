@@ -19,6 +19,7 @@ import {
   STAT_GRANULARITIES,
   type StatGranularity,
 } from '../project-stats.js';
+import { computeSessionHistory, normalizeSessionHistoryLimit } from '../project-session-history.js';
 
 const jsonContent = <T extends z.ZodTypeAny>(schema: T) => ({
   'application/json': { schema },
@@ -82,6 +83,55 @@ registerPath({
   },
 });
 
+const SessionHistoryRowSchema = z.object({
+  session_id: z.string(),
+  agent_id: z.string(),
+  title: z.string(),
+  created_at: z.string(),
+  updated_at: z.string(),
+  card: z
+    .object({
+      id: z.string(),
+      short_id: z.number().int().nullable(),
+      card_prefix: z.string().nullable(),
+      title: z.string(),
+    })
+    .nullable(),
+  pr: z
+    .object({
+      number: z.number().int().nullable(),
+      url: z.string(),
+      title: z.string().nullable(),
+      status: z.string().nullable(),
+    })
+    .nullable(),
+  review_rounds: z.number().int(),
+  finalize_review_rounds: z.number().int(),
+  pr_reviews: z.number().int(),
+  ci_rounds: z.number().int(),
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/stats/sessions',
+  tags: ['Projects'],
+  summary: 'Recent work-session history for the Stats page',
+  description:
+    'Most recently updated sessions of the project that have a linked card, a PR, or a Finalize run. Each row carries the linked card, the linked PR, review rounds (in-hub Finalize review rounds plus formal native-PR reviews), and CI rounds (distinct Finalize rounds that executed CI jobs).',
+  request: {
+    params: z.object({ projectId: z.string() }),
+    query: z.object({ limit: z.coerce.number().int().optional() }),
+  },
+  responses: {
+    200: {
+      description: 'Session history rows, newest first.',
+      content: jsonContent(z.object({ sessions: z.array(SessionHistoryRowSchema) })),
+    },
+    404: { description: 'Unknown project.', content: jsonContent(ErrorResponse) },
+    500: { description: 'History could not be read.', content: jsonContent(ErrorResponse) },
+  },
+});
+
 export default function createProjectStatsRoutes(deps: RouteDeps): Router {
   const router = Router();
 
@@ -129,6 +179,26 @@ export default function createProjectStatsRoutes(deps: RouteDeps): Router {
     } catch (err) {
       res.status(500).json({
         error: err instanceof Error ? err.message : 'Failed to read project stats',
+      });
+    }
+  });
+
+  router.get('/api/projects/:projectId/stats/sessions', (req: Request, res: Response) => {
+    const project = findProjectOr404(req, res);
+    if (!project) return;
+    const limitRaw = Number.parseInt((req.query.limit as string) || '', 10);
+    const limit = normalizeSessionHistoryLimit(Number.isFinite(limitRaw) ? limitRaw : undefined);
+    const agentIds = deps
+      .allAgents()
+      .filter((a) => a.projectId === project.id)
+      .map((a) => a.id);
+    try {
+      res.json({
+        sessions: computeSessionHistory(getDb(), { projectId: project.id, agentIds, limit }),
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Failed to read session history',
       });
     }
   });

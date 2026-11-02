@@ -15,7 +15,7 @@ vi.mock('react-native-safe-area-context', () => ({ SafeAreaView: 'SafeAreaView' 
 vi.mock('../components/ProjectScreenHeader', () => ({ default: 'ProjectScreenHeader' }));
 vi.mock('../utils/api', () => ({ api: { getProjectStats: vi.fn() } }));
 
-import { formatStatsWindow } from './StatsScreen';
+import { formatStatsWindow, sessionHistoryLabels } from './StatsScreen';
 
 describe('StatsScreen formatStatsWindow', () => {
   it('labels a daily window with a day-level date range', () => {
@@ -39,5 +39,40 @@ describe('StatsScreen formatStatsWindow', () => {
       '1 weeks · Jul 13, 2026',
     );
     expect(formatStatsWindow('day', [])).toBe('');
+  });
+});
+
+describe('StatsScreen sessionHistoryLabels', () => {
+  it('labels ticket, PR, review rounds, and CI rounds', () => {
+    const l = sessionHistoryLabels({
+      session_id: 's1',
+      agent_id: 'a1',
+      title: 'Add history',
+      card: { id: 'c1', short_id: 42, card_prefix: 'AH', title: 'History card' },
+      pr: { number: 9, url: '/projects/p/pulls/9', title: 'PR', status: 'merged' },
+      review_rounds: 1,
+      ci_rounds: 3,
+    });
+    expect(l).toEqual({
+      ticket: 'AH-42 History card',
+      pr: '#9 merged',
+      reviews: '1 review',
+      ci: '3 CI',
+    });
+  });
+
+  it('uses dashes when nothing is linked', () => {
+    const l = sessionHistoryLabels({
+      session_id: 's1',
+      agent_id: 'a1',
+      title: 'x',
+      card: null,
+      pr: null,
+      review_rounds: 0,
+      ci_rounds: 0,
+    });
+    expect(l.ticket).toBe('—');
+    expect(l.pr).toBe('—');
+    expect(l.reviews).toBe('0 reviews');
   });
 });

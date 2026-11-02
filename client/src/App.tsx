@@ -7344,7 +7344,17 @@ export default function App({ initialView }: any = {}) {
                 </div>
               ) : currentView.startsWith('stats:') ? (
                 <div className="flex-1 overflow-y-auto p-4 md:p-6">
-                  <ProjectStatsView projects={statsScopedProjects} />
+                  <ProjectStatsView
+                    projects={statsScopedProjects}
+                    onOpenSession={(agentId: string, sessionId: string) =>
+                      focusAgentSession(agentId, sessionId)
+                    }
+                    onOpenPr={handleOpenPrDetail}
+                    onOpenCard={(projectId: string, cardId: string) => {
+                      setKanbanFocusCardId(cardId);
+                      setCurrentView(`kanban:${projectId}`);
+                    }}
+                  />
                 </div>
               ) : currentView.startsWith('devserver:') ? (
                 <div className="flex-1 overflow-y-auto p-4 md:p-6">

@@ -2973,6 +2973,10 @@ export const api = {
     if (buckets != null) qs.set('buckets', String(buckets));
     return fetchJSON(`/projects/${projectId}/stats?${qs.toString()}`);
   },
+  getProjectSessionHistory: (projectId: any, { limit }: { limit?: number } = {}) => {
+    const qs = limit != null ? `?limit=${encodeURIComponent(String(limit))}` : '';
+    return fetchJSON(`/projects/${projectId}/stats/sessions${qs}`);
+  },
   getFinalizeStepOutput: (projectId: any, runId: any, stepIndex: any, opts: any = {}) =>
     fetchJSON(`/projects/${projectId}/finalize/${runId}/steps/${stepIndex}/output`, {
       signal: opts.signal,

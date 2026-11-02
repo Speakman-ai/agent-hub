@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { BarChart3, RefreshCw } from 'lucide-react';
 import { api } from '../utils/api';
+import SessionHistoryTable from './SessionHistoryTable';
 
 type Granularity = 'day' | 'week' | 'month';
 
@@ -116,7 +117,17 @@ function MiniBarChart({
   );
 }
 
-export default function ProjectStatsView({ projects }: { projects: any[] }) {
+export default function ProjectStatsView({
+  projects,
+  onOpenSession,
+  onOpenPr,
+  onOpenCard,
+}: {
+  projects: any[];
+  onOpenSession?: (agentId: string, sessionId: string) => void;
+  onOpenPr?: (projectId: string, prNumber: number) => void;
+  onOpenCard?: (projectId: string, cardId: string) => void;
+}) {
   const project = projects?.[0] ?? null;
   const projectId = project?.id ?? null;
   const [granularity, setGranularity] = useState<Granularity>('day');
@@ -198,6 +209,14 @@ export default function ProjectStatsView({ projects }: { projects: any[] }) {
           </button>
         </div>
       </div>
+
+      <SessionHistoryTable
+        key={projectId}
+        projectId={projectId}
+        onOpenSession={onOpenSession}
+        onOpenPr={onOpenPr}
+        onOpenCard={onOpenCard}
+      />
 
       {error && (
         <div className="mb-4 p-3 rounded-lg bg-red-900/40 border border-red-800 text-red-200 text-sm">

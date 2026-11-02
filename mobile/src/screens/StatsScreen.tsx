@@ -11,6 +11,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import ProjectScreenHeader from '../components/ProjectScreenHeader';
+import { cardShortLabel } from '../utils/kanbanCard';
 
 type Granularity = 'day' | 'week' | 'month';
 
@@ -34,6 +35,39 @@ const METRICS: Array<{ key: string; label: string; color: string }> = [
   { key: 'tickets_completed', label: 'Tickets completed', color: colors.purple500 },
   { key: 'epics_completed', label: 'Epics completed', color: colors.amber400 },
 ];
+
+export interface SessionHistoryRow {
+  session_id: string;
+  agent_id: string;
+  title: string;
+  card: { id: string; short_id: number | null; card_prefix: string | null; title: string } | null;
+  pr: { number: number | null; url: string; title: string | null; status: string | null } | null;
+  review_rounds: number;
+  ci_rounds: number;
+}
+
+/** Display labels for one session-history row (same columns as the web table). */
+export function sessionHistoryLabels(row: SessionHistoryRow): {
+  ticket: string;
+  pr: string;
+  reviews: string;
+  ci: string;
+} {
+  const ticket = row.card
+    ? `${cardShortLabel(row.card.card_prefix, row.card.short_id) || 'Card'} ${row.card.title}`
+    : '—';
+  let pr = '—';
+  if (row.pr) {
+    pr = row.pr.number != null ? `#${row.pr.number}` : 'PR';
+    if (row.pr.status) pr += ` ${row.pr.status}`;
+  }
+  return {
+    ticket,
+    pr,
+    reviews: `${row.review_rounds} review${row.review_rounds === 1 ? '' : 's'}`,
+    ci: `${row.ci_rounds} CI`,
+  };
+}
 
 const GRANULARITIES: Array<{ value: Granularity; label: string }> = [
   { value: 'day', label: 'Daily' },
@@ -126,6 +160,28 @@ export default function StatsScreen({ route, navigation }: any) {
     load();
   }, [load]);
 
+  const [history, setHistory] = useState<SessionHistoryRow[] | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!projectId) return;
+    let cancelled = false;
+    setHistory(null);
+    setHistoryError(null);
+    (async () => {
+      try {
+        const data = (await api.getProjectSessionHistory(projectId)) as {
+          sessions: SessionHistoryRow[];
+        };
+        if (!cancelled) setHistory(data?.sessions ?? []);
+      } catch (err: any) {
+        if (!cancelled) setHistoryError(err?.message || 'Failed to load session history');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
   const totalModelMessages = useMemo(
     () => (stats?.model_usage ?? []).reduce((sum, m) => sum + m.count, 0),
     [stats],
@@ -135,6 +191,34 @@ export default function StatsScreen({ route, navigation }: any) {
     <SafeAreaView style={styles.container} edges={['top']}>
       <ProjectScreenHeader title="Stats" project={project} onBack={() => navigation.goBack()} />
       <ScrollView contentContainerStyle={styles.content}>
+        <View style={styles.chartCard}>
+          <Text style={styles.chartLabel}>Session history</Text>
+          {historyError && <Text style={styles.error}>{historyError}</Text>}
+          {!history && !historyError && (
+            <ActivityIndicator color={colors.indigo400} style={{ marginTop: 8 }} />
+          )}
+          {history && history.length === 0 && (
+            <Text style={styles.axisText}>
+              No sessions with a linked ticket, PR, or Finalize run yet.
+            </Text>
+          )}
+          {history?.map((row) => {
+            const l = sessionHistoryLabels(row);
+            return (
+              <View key={row.session_id} style={styles.historyRow}>
+                <Text style={styles.historyTitle} numberOfLines={1}>
+                  {row.title}
+                </Text>
+                <Text style={styles.historyMeta} numberOfLines={1}>
+                  {l.ticket}
+                </Text>
+                <Text style={styles.historyMeta} numberOfLines={1}>
+                  {l.pr} · {l.reviews} · {l.ci}
+                </Text>
+              </View>
+            );
+          })}
+        </View>
         <View style={styles.granularityRow}>
           {GRANULARITIES.map((g) => (
             <TouchableOpacity
@@ -273,5 +357,13 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     overflow: 'hidden',
   },
+  historyRow: {
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.gray700,
+  },
+  historyTitle: { color: colors.gray200, fontSize: 13 },
+  historyMeta: { color: colors.gray400, fontSize: 11, marginTop: 2 },
   modelCount: { color: colors.gray400, fontSize: 12, width: 40, textAlign: 'right' },
 });

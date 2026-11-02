@@ -816,6 +816,10 @@ export const api = {
     if (buckets != null) qs.set('buckets', String(buckets));
     return fetchJSON(`/projects/${projectId}/stats?${qs.toString()}`);
   },
+  getProjectSessionHistory: (projectId: any, { limit }: { limit?: number } = {}) => {
+    const qs = limit != null ? `?limit=${encodeURIComponent(String(limit))}` : '';
+    return fetchJSON(`/projects/${projectId}/stats/sessions${qs}`);
+  },
   // Hub workflows
   getProjectWorkflows: (projectId: any) => fetchJSON(`/projects/${projectId}/workflows`),
   getProjectWorkflow: (projectId: any, workflowId: any) =>
