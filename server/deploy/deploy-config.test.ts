@@ -265,6 +265,7 @@ describe("this repo's .agent-hub/deploy.yaml", () => {
   it('dispatches release-all.yml AND watches it to completion (not fire-and-forget)', () => {
     const cfg = parseDeployConfig(raw);
     const prod = resolveDeployEnvironment(cfg, 'production');
+    expect(prod.approval).toBe(false);
     const step = prod.steps.find((s) => s.githubWorkflow);
     expect(step, 'production must use a github_workflow step, not a bare `run:`').toBeTruthy();
     expect(step!.githubWorkflow).toEqual({
@@ -281,7 +282,7 @@ describe("this repo's .agent-hub/deploy.yaml", () => {
     const cfg = parseDeployConfig(raw);
     const mobile = resolveDeployEnvironment(cfg, 'mobile-production');
 
-    expect(mobile.approval).toBe(true);
+    expect(mobile.approval).toBe(false);
     expect(mobile.runsOn).toBe('ubuntu-24.04');
     expect(mobile.timeoutMinutes).toBe(240);
     expect(mobile.steps).toHaveLength(1);
