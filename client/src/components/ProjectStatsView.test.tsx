@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import ProjectStatsView, { formatStatsWindow, formatStatsWindowLength } from './ProjectStatsView';
 import { api } from '../utils/api';
+import { placePopover } from './SessionHistoryTable';
 
 vi.mock('../utils/api', () => ({
   api: { getProjectStats: vi.fn(), getProjectSessionHistory: vi.fn() },
@@ -173,6 +174,90 @@ describe('ProjectStatsView session history', () => {
     expect(onOpenCard).toHaveBeenCalledWith('p1', 'c1');
   });
 
+  it('shows only the ticket id in the row and the title in a hover popover', async () => {
+    getProjectSessionHistory.mockResolvedValue({
+      sessions: [
+        {
+          session_id: 's1',
+          agent_id: 'a1',
+          title: 'Add history table',
+          created_at: '2026-11-02 10:00:00',
+          updated_at: '2026-11-02 11:00:00',
+          card: { id: 'c1', short_id: 42, card_prefix: 'AH', title: 'History card' },
+          pr: null,
+          review_rounds: 0,
+          finalize_review_rounds: 0,
+          pr_reviews: 0,
+          ci_rounds: 0,
+          ship_seconds: null,
+          shipped_via: null,
+          shipped_at: null,
+        },
+      ],
+    });
+    render(
+      <ProjectStatsView projects={[{ id: 'p1', name: 'Project One' }]} onOpenCard={vi.fn()} />,
+    );
+    await waitFor(() => expect(screen.getByText('AH-42')).toBeTruthy());
+    expect(screen.queryByText('History card')).toBeNull();
+    expect(screen.queryByTestId('session-history-ticket-popover')).toBeNull();
+
+    fireEvent.mouseEnter(screen.getByText('AH-42'));
+    const popover = screen.getByTestId('session-history-ticket-popover');
+    expect(popover.textContent).toContain('History card');
+    expect(popover.textContent).toContain('AH-42');
+
+    fireEvent.mouseLeave(screen.getByTestId('session-history-ticket'));
+    expect(screen.queryByTestId('session-history-ticket-popover')).toBeNull();
+  });
+
+  it('keeps the ticket popover reachable when tickets are not navigable', async () => {
+    getProjectSessionHistory.mockResolvedValue({
+      sessions: [
+        {
+          session_id: 's1',
+          agent_id: 'a1',
+          title: 'Add history table',
+          created_at: '2026-11-02 10:00:00',
+          updated_at: '2026-11-02 11:00:00',
+          card: { id: 'c1', short_id: 42, card_prefix: 'AH', title: 'History card' },
+          pr: null,
+          review_rounds: 0,
+          finalize_review_rounds: 0,
+          pr_reviews: 0,
+          ci_rounds: 0,
+          ship_seconds: null,
+          shipped_via: null,
+          shipped_at: null,
+        },
+      ],
+    });
+    render(<ProjectStatsView projects={[{ id: 'p1', name: 'Project One' }]} />);
+    await waitFor(() => expect(screen.getByTestId('session-history-ticket')).toBeTruthy());
+    const trigger = screen.getByTestId('session-history-ticket');
+    expect(trigger.hasAttribute('disabled')).toBe(false);
+    expect(trigger.getAttribute('tabindex')).toBe('0');
+
+    fireEvent.mouseEnter(trigger);
+    expect(screen.getByTestId('session-history-ticket-popover').textContent).toContain(
+      'History card',
+    );
+    fireEvent.mouseLeave(trigger);
+
+    fireEvent.focus(trigger);
+    const popover = screen.getByTestId('session-history-ticket-popover');
+    expect(popover.textContent).toContain('History card');
+    expect(popover.textContent).not.toContain('Click to open');
+    expect(trigger.getAttribute('aria-describedby')).toBe(popover.id);
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByTestId('session-history-ticket-popover')).toBeNull();
+
+    fireEvent.focus(trigger);
+    fireEvent.scroll(window);
+    expect(screen.queryByTestId('session-history-ticket-popover')).toBeNull();
+  });
+
   it('shows an empty state when no work sessions exist', async () => {
     getProjectSessionHistory.mockResolvedValue({ sessions: [] });
     render(<ProjectStatsView projects={[{ id: 'p1', name: 'Project One' }]} />);
@@ -214,5 +299,39 @@ describe('ProjectStatsView session history', () => {
     expect(onOpenPr).not.toHaveBeenCalled();
     // A session that never pushed code leaves the time-to-ship cell empty.
     expect(screen.getByTestId('session-history-ship-time').textContent).toBe('');
+  });
+});
+
+describe('placePopover', () => {
+  const viewport = { width: 1000, height: 800 };
+  const size = { width: 288, height: 100 };
+
+  it('places the popover below the trigger when it fits', () => {
+    expect(placePopover({ left: 100, top: 200, bottom: 220 }, size, viewport)).toEqual({
+      left: 100,
+      top: 224,
+    });
+  });
+
+  it('flips above the trigger near the bottom of the viewport', () => {
+    expect(placePopover({ left: 100, top: 740, bottom: 760 }, size, viewport)).toEqual({
+      left: 100,
+      top: 636,
+    });
+  });
+
+  it('clamps horizontally so the popover stays inside the viewport', () => {
+    expect(placePopover({ left: 900, top: 200, bottom: 220 }, size, viewport).left).toBe(704);
+    expect(placePopover({ left: -20, top: 200, bottom: 220 }, size, viewport).left).toBe(8);
+  });
+
+  it('keeps a popover taller than both sides on screen', () => {
+    const top = placePopover(
+      { left: 100, top: 300, bottom: 320 },
+      { width: 288, height: 700 },
+      viewport,
+    ).top;
+    expect(top).toBeGreaterThanOrEqual(8);
+    expect(top + 700).toBeLessThanOrEqual(792);
   });
 });

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { History, RefreshCw } from 'lucide-react';
 import { api } from '../utils/api';
 import { cardShortLabel } from '../utils/kanbanCard';
@@ -29,6 +29,143 @@ const PR_STATUS_CLASS: Record<string, string> = {
 
 function isExternalUrl(url: string): boolean {
   return /^https?:\/\//i.test(url);
+}
+
+const POPOVER_GAP = 4;
+const VIEWPORT_MARGIN = 8;
+
+/**
+ * Viewport position for a fixed popover anchored to a trigger. Prefers below
+ * the trigger, flips above when it would run off the bottom and there is more
+ * room above, and clamps horizontally so the whole popover stays on screen.
+ */
+export function placePopover(
+  trigger: { left: number; top: number; bottom: number },
+  popover: { width: number; height: number },
+  viewport: { width: number; height: number },
+): { left: number; top: number } {
+  const spaceBelow = viewport.height - trigger.bottom - POPOVER_GAP - VIEWPORT_MARGIN;
+  const spaceAbove = trigger.top - POPOVER_GAP - VIEWPORT_MARGIN;
+  const below = popover.height <= spaceBelow || spaceBelow >= spaceAbove;
+  let top = below ? trigger.bottom + POPOVER_GAP : trigger.top - POPOVER_GAP - popover.height;
+  top = Math.max(
+    VIEWPORT_MARGIN,
+    Math.min(top, viewport.height - VIEWPORT_MARGIN - popover.height),
+  );
+  const maxLeft = viewport.width - VIEWPORT_MARGIN - popover.width;
+  const left = Math.max(VIEWPORT_MARGIN, Math.min(trigger.left, maxLeft));
+  return { left, top };
+}
+
+/**
+ * Ticket id only, so the row has room for the numeric columns. The title and
+ * the rest of the card detail live in a hover/focus popover. The popover is
+ * position: fixed because the table's scroll container would clip an
+ * absolutely positioned one.
+ */
+function TicketCell({
+  label,
+  card,
+  onOpen,
+}: {
+  label: string;
+  card: NonNullable<SessionHistoryRow['card']>;
+  onOpen?: () => void;
+}) {
+  const ref = useRef<HTMLElement | null>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const popoverId = useId();
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
+  const show = () => setOpen(true);
+  const hide = useCallback(() => {
+    setOpen(false);
+    setPosition(null);
+  }, []);
+  // Measure after render so placement uses the popover's real height, which
+  // depends on how long the ticket title wraps.
+  useLayoutEffect(() => {
+    if (!open || !ref.current || !popoverRef.current) return;
+    const trigger = ref.current.getBoundingClientRect();
+    const size = popoverRef.current.getBoundingClientRect();
+    setPosition(
+      placePopover(trigger, size, { width: window.innerWidth, height: window.innerHeight }),
+    );
+  }, [open]);
+  // A fixed popover does not follow its trigger, so dismiss it when anything
+  // scrolls (including the table's own scroll container) or the window resizes.
+  // Escape dismisses it too, so it never sits over content the user wants.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') hide();
+    };
+    window.addEventListener('scroll', hide, true);
+    window.addEventListener('resize', hide);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('scroll', hide, true);
+      window.removeEventListener('resize', hide);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [open, hide]);
+  // The popover must stay reachable when the ticket is not navigable, so the
+  // trigger is never a disabled button (disabled buttons get neither focus nor
+  // mouseenter). Without a click target it is a focusable span instead.
+  const triggerProps = {
+    'aria-describedby': open ? popoverId : undefined,
+    'data-testid': 'session-history-ticket',
+    onMouseEnter: show,
+    onMouseLeave: hide,
+    onFocus: show,
+    onBlur: hide,
+  };
+  return (
+    <>
+      {onOpen ? (
+        <button
+          ref={(el) => {
+            ref.current = el;
+          }}
+          type="button"
+          className="text-sky-300 hover:underline"
+          onClick={onOpen}
+          {...triggerProps}
+        >
+          {label}
+        </button>
+      ) : (
+        <span
+          ref={(el) => {
+            ref.current = el;
+          }}
+          tabIndex={0}
+          className="text-gray-300 cursor-default"
+          {...triggerProps}
+        >
+          {label}
+        </span>
+      )}
+      {open && (
+        <div
+          id={popoverId}
+          role="tooltip"
+          data-testid="session-history-ticket-popover"
+          className="fixed z-50 w-72 rounded-lg border border-gray-700 bg-gray-900 p-3 text-xs shadow-xl whitespace-normal pointer-events-none"
+          ref={popoverRef}
+          style={
+            position
+              ? { left: position.left, top: position.top }
+              : { left: 0, top: 0, visibility: 'hidden' }
+          }
+        >
+          <div className="font-medium text-sky-300">{label}</div>
+          <div className="mt-1 text-gray-200 break-words">{card.title}</div>
+          {onOpen && <div className="mt-2 text-gray-500">Click to open the ticket</div>}
+        </div>
+      )}
+    </>
+  );
 }
 
 export default function SessionHistoryTable({
@@ -138,17 +275,15 @@ export default function SessionHistoryTable({
                         </span>
                       )}
                     </td>
-                    <td className="py-1.5 pr-3 max-w-[14rem]">
+                    <td className="py-1.5 pr-3 whitespace-nowrap">
                       {row.card ? (
-                        <button
-                          type="button"
-                          className="text-left text-sky-300 hover:underline truncate max-w-full block disabled:no-underline"
-                          title={row.card.title}
-                          disabled={!onOpenCard}
-                          onClick={() => onOpenCard?.(projectId, row.card!.id)}
-                        >
-                          {cardLabel} <span className="text-gray-400">{row.card.title}</span>
-                        </button>
+                        <TicketCell
+                          label={cardLabel ?? 'Card'}
+                          card={row.card}
+                          onOpen={
+                            onOpenCard ? () => onOpenCard(projectId, row.card!.id) : undefined
+                          }
+                        />
                       ) : (
                         <span className="text-gray-600">—</span>
                       )}
