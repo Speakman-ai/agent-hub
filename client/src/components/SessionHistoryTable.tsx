@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { History, RefreshCw } from 'lucide-react';
 import { api } from '../utils/api';
 import { cardShortLabel } from '../utils/kanbanCard';
+import { formatShipDuration } from '@shared/utils/shipDuration';
 
 export interface SessionHistoryRow {
   session_id: string;
@@ -15,6 +16,9 @@ export interface SessionHistoryRow {
   finalize_review_rounds: number;
   pr_reviews: number;
   ci_rounds: number;
+  ship_seconds: number | null;
+  shipped_via: 'merged' | 'pushed' | null;
+  shipped_at: string | null;
 }
 
 const PR_STATUS_CLASS: Record<string, string> = {
@@ -97,7 +101,13 @@ export default function SessionHistoryTable({
                 <th className="py-1.5 pr-3 font-medium">Ticket</th>
                 <th className="py-1.5 pr-3 font-medium">PR</th>
                 <th className="py-1.5 pr-3 font-medium text-right">Review rounds</th>
-                <th className="py-1.5 font-medium text-right">CI rounds</th>
+                <th className="py-1.5 pr-3 font-medium text-right">CI rounds</th>
+                <th
+                  className="py-1.5 font-medium text-right"
+                  title="First prompt to merge, or to the latest push if not merged"
+                >
+                  Time to ship
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -186,8 +196,19 @@ export default function SessionHistoryTable({
                     >
                       {row.review_rounds}
                     </td>
-                    <td className="py-1.5 text-right text-gray-200 tabular-nums">
+                    <td className="py-1.5 pr-3 text-right text-gray-200 tabular-nums">
                       {row.ci_rounds}
+                    </td>
+                    <td
+                      className="py-1.5 text-right text-gray-200 tabular-nums whitespace-nowrap"
+                      data-testid="session-history-ship-time"
+                      title={
+                        row.shipped_at
+                          ? `${row.shipped_via === 'merged' ? 'Merged' : 'Pushed'} ${new Date(row.shipped_at).toLocaleString()}`
+                          : undefined
+                      }
+                    >
+                      {formatShipDuration(row.ship_seconds)}
                     </td>
                   </tr>
                 );

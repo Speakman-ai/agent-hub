@@ -109,6 +109,9 @@ const SessionHistoryRowSchema = z.object({
   finalize_review_rounds: z.number().int(),
   pr_reviews: z.number().int(),
   ci_rounds: z.number().int(),
+  ship_seconds: z.number().int().nullable(),
+  shipped_via: z.enum(['merged', 'pushed']).nullable(),
+  shipped_at: z.string().nullable(),
 });
 
 registerPath({
@@ -117,7 +120,7 @@ registerPath({
   tags: ['Projects'],
   summary: 'Recent work-session history for the Stats page',
   description:
-    'Most recently updated sessions of the project that have a linked card, a PR, or a Finalize run. Each row carries the linked card, the linked PR, review rounds (in-hub Finalize review rounds plus formal native-PR reviews), and CI rounds (distinct Finalize rounds that executed CI jobs).',
+    'Most recently updated sessions of the project that have a linked card, a PR, or a Finalize run. Each row carries the linked card, the linked PR, review rounds (in-hub Finalize review rounds plus formal native-PR reviews), CI rounds (distinct Finalize rounds that executed CI jobs), and time to ship (seconds from the first user prompt to the PR merge, or to the latest push when unmerged; null when the session never pushed code).',
   request: {
     params: z.object({ projectId: z.string() }),
     query: z.object({ limit: z.coerce.number().int().optional() }),

@@ -52,12 +52,15 @@ describe('StatsScreen sessionHistoryLabels', () => {
       pr: { number: 9, url: '/projects/p/pulls/9', title: 'PR', status: 'merged' },
       review_rounds: 1,
       ci_rounds: 3,
+      ship_seconds: 2 * 3600 + 15 * 60,
+      shipped_via: 'merged',
     });
     expect(l).toEqual({
       ticket: 'AH-42 History card',
       pr: '#9 merged',
       reviews: '1 review',
       ci: '3 CI',
+      ship: 'merged in 2h 15m',
     });
   });
 
@@ -74,5 +77,6 @@ describe('StatsScreen sessionHistoryLabels', () => {
     expect(l.ticket).toBe('—');
     expect(l.pr).toBe('—');
     expect(l.reviews).toBe('0 reviews');
+    expect(l.ship).toBeNull();
   });
 });

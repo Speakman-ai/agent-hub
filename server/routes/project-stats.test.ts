@@ -207,6 +207,100 @@ describe('GET /api/projects/:projectId/stats/sessions', () => {
     expect(row.pr_reviews).toBe(1);
     expect(row.review_rounds).toBe(3);
     expect(row.ci_rounds).toBe(2);
+    // The open PR was opened from the session branch, so it counts as a push.
+    expect(row.shipped_via).toBe('pushed');
+    expect(typeof row.ship_seconds).toBe('number');
+  });
+
+  it('measures time to ship from the first user prompt to merge, and leaves unpushed sessions blank', async () => {
+    const projectId = await freshProject();
+    const agentId = `${projectId}-dev`;
+    await request
+      .post('/api/agents')
+      .send({ id: agentId, projectId, name: 'Dev', engine: 'claude-code' })
+      .expect(201);
+    const db = getDb();
+    const insertRun = db.prepare(
+      `INSERT INTO finalize_runs
+         (id, card_id, session_id, project_id, branch, head_sha, idempotency_key, status,
+          trigger_source, triggered_by_user_id, author_name, author_email, started_at, ended_at)
+       VALUES (?, 'c', ?, ?, ?, 'abc', ?, ?, 'manual', 'u', 'n', 'e', ?, ?)`,
+    );
+    const userMsg = db.prepare(
+      `INSERT INTO messages (id, session_id, role, content, created_at) VALUES (?, ?, 'user', 'go', ?)`,
+    );
+    const start = Date.parse('2026-10-01T10:00:00Z');
+
+    // Merged: pushed at +1h, merged at +3h → 3h, measured from the earliest prompt.
+    const merged = uuidv4();
+    const mergedBranch = `agent-hub/${agentId}/session-${merged.slice(0, 8)}`;
+    db.prepare(
+      `INSERT INTO sessions (id, agent_id, name, worktree_branch) VALUES (?, ?, 'merged', ?)`,
+    ).run(merged, agentId, mergedBranch);
+    userMsg.run(uuidv4(), merged, '2026-10-01 10:30:00');
+    userMsg.run(uuidv4(), merged, '2026-10-01 10:00:00');
+    insertRun.run(
+      uuidv4(),
+      merged,
+      projectId,
+      mergedBranch,
+      uuidv4(),
+      'pushed',
+      start,
+      start + 3600_000,
+    );
+    db.prepare(
+      `INSERT INTO pull_requests
+         (id, project_id, number, title, head_branch, base_branch, head_sha, status,
+          author, created_at, updated_at, merged_at)
+       VALUES (?, ?, 11, 'Merged PR', ?, 'main', 'abc', 'merged', 'tester', ?, ?, ?)`,
+    ).run(uuidv4(), projectId, mergedBranch, start + 3600_000, start, start + 3 * 3600_000);
+
+    // Pushed but not merged: latest push wins.
+    const pushed = uuidv4();
+    db.prepare(`INSERT INTO sessions (id, agent_id, name) VALUES (?, ?, 'pushed')`).run(
+      pushed,
+      agentId,
+    );
+    userMsg.run(uuidv4(), pushed, '2026-10-01 10:00:00');
+    insertRun.run(uuidv4(), pushed, projectId, 'b', uuidv4(), 'pushed', start, start + 600_000);
+    insertRun.run(uuidv4(), pushed, projectId, 'b', uuidv4(), 'pushed', start, start + 1200_000);
+
+    // Finalize ran but never pushed: no ship time.
+    const unpushed = uuidv4();
+    db.prepare(`INSERT INTO sessions (id, agent_id, name) VALUES (?, ?, 'unpushed')`).run(
+      unpushed,
+      agentId,
+    );
+    userMsg.run(uuidv4(), unpushed, '2026-10-01 10:00:00');
+    insertRun.run(uuidv4(), unpushed, projectId, 'b', uuidv4(), 'failed', start, start + 600_000);
+
+    // Mixed timestamp formats: the ISO prompt is chronologically first even
+    // though the SQLite-format string sorts before it lexicographically.
+    const mixed = uuidv4();
+    db.prepare(`INSERT INTO sessions (id, agent_id, name) VALUES (?, ?, 'mixed')`).run(
+      mixed,
+      agentId,
+    );
+    userMsg.run(uuidv4(), mixed, '2026-10-01 10:00:00');
+    userMsg.run(uuidv4(), mixed, '2026-10-01T09:00:00Z');
+    insertRun.run(uuidv4(), mixed, projectId, 'b', uuidv4(), 'pushed', start, start + 3600_000);
+
+    const res = await request.get(`/api/projects/${projectId}/stats/sessions`).expect(200);
+    const byId = (id: string) =>
+      res.body.sessions.find((r: { session_id: string }) => r.session_id === id);
+    expect(byId(merged)).toMatchObject({
+      ship_seconds: 3 * 3600,
+      shipped_via: 'merged',
+      shipped_at: '2026-10-01T13:00:00.000Z',
+    });
+    expect(byId(pushed)).toMatchObject({ ship_seconds: 1200, shipped_via: 'pushed' });
+    expect(byId(mixed)).toMatchObject({ ship_seconds: 2 * 3600, shipped_via: 'pushed' });
+    expect(byId(unpushed)).toMatchObject({
+      ship_seconds: null,
+      shipped_via: null,
+      shipped_at: null,
+    });
   });
 
   it('does not expose a PR number for a fallback link into another project', async () => {

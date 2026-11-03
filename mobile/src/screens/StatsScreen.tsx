@@ -12,6 +12,7 @@ import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import ProjectScreenHeader from '../components/ProjectScreenHeader';
 import { cardShortLabel } from '../utils/kanbanCard';
+import { formatShipDuration } from '@shared/utils/shipDuration';
 
 type Granularity = 'day' | 'week' | 'month';
 
@@ -44,6 +45,8 @@ export interface SessionHistoryRow {
   pr: { number: number | null; url: string; title: string | null; status: string | null } | null;
   review_rounds: number;
   ci_rounds: number;
+  ship_seconds?: number | null;
+  shipped_via?: 'merged' | 'pushed' | null;
 }
 
 /** Display labels for one session-history row (same columns as the web table). */
@@ -52,6 +55,8 @@ export function sessionHistoryLabels(row: SessionHistoryRow): {
   pr: string;
   reviews: string;
   ci: string;
+  /** Null for sessions that never pushed code, so nothing renders. */
+  ship: string | null;
 } {
   const ticket = row.card
     ? `${cardShortLabel(row.card.card_prefix, row.card.short_id) || 'Card'} ${row.card.title}`
@@ -66,6 +71,10 @@ export function sessionHistoryLabels(row: SessionHistoryRow): {
     pr,
     reviews: `${row.review_rounds} review${row.review_rounds === 1 ? '' : 's'}`,
     ci: `${row.ci_rounds} CI`,
+    ship: (() => {
+      const d = formatShipDuration(row.ship_seconds);
+      return d ? `${row.shipped_via === 'merged' ? 'merged' : 'pushed'} in ${d}` : null;
+    })(),
   };
 }
 
@@ -214,6 +223,7 @@ export default function StatsScreen({ route, navigation }: any) {
                 </Text>
                 <Text style={styles.historyMeta} numberOfLines={1}>
                   {l.pr} · {l.reviews} · {l.ci}
+                  {l.ship ? ` · ${l.ship}` : ''}
                 </Text>
               </View>
             );

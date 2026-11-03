@@ -12,6 +12,10 @@
  *                     reviews left on the native PR
  *   - ci rounds     → distinct (run, round) pairs in finalize_run_job_attempts,
  *                     i.e. how many times CI actually executed for the session
+ *   - time to ship  → first user prompt to the merge of the session's native PR,
+ *                     or to its latest push when the PR has not merged. A push is
+ *                     a `pushed` Finalize run or a native PR opened from the
+ *                     session branch. Null for sessions that never pushed code.
  *
  * Sessions carry no project column, so scoping goes through the project's
  * current agent roster (same caveat as model usage in project-stats.ts).
@@ -52,6 +56,20 @@ export interface SessionHistoryRow {
   finalize_review_rounds: number;
   pr_reviews: number;
   ci_rounds: number;
+  /** Seconds from the first user prompt to merge (or latest push); null when nothing was pushed. */
+  ship_seconds: number | null;
+  /** Which event ended the ship clock. */
+  shipped_via: 'merged' | 'pushed' | null;
+  /** ISO timestamp of that event. */
+  shipped_at: string | null;
+}
+
+/** Parses SQLite `datetime('now')` text (UTC, no zone) as well as full ISO strings. */
+export function parseSqliteUtc(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const iso = /[zZ]|[+-]\d\d:?\d\d$/.test(value) ? value : `${value.replace(' ', 'T')}Z`;
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? ms : null;
 }
 
 export function normalizeSessionHistoryLimit(requested: number | undefined): number {
@@ -135,10 +153,42 @@ export function computeSessionHistory(
     'SELECT number, title, status FROM pull_requests WHERE project_id = ? AND number = ?',
   );
   const prByBranch = db.prepare(
-    `SELECT number, title, status FROM pull_requests
+    `SELECT number, title, status, created_at, merged_at FROM pull_requests
       WHERE project_id = ? AND head_branch = ? ORDER BY number DESC LIMIT 1`,
   );
   type PrLookup = { number: number; title: string; status: string } | undefined;
+  type BranchPrLookup =
+    | {
+        number: number;
+        title: string;
+        status: string;
+        created_at: number;
+        merged_at: number | null;
+      }
+    | undefined;
+
+  const firstPrompts = db
+    .prepare(
+      // julianday() normalizes SQLite text and ISO-with-zone timestamps, so the
+      // minimum is chronological rather than lexicographic across formats.
+      `SELECT session_id, (MIN(julianday(created_at)) - 2440587.5) * 86400000.0 AS first_ms
+         FROM messages
+        WHERE session_id IN (${idPh}) AND role = 'user'
+        GROUP BY session_id`,
+    )
+    .all(...ids) as Array<{ session_id: string; first_ms: number | null }>;
+  const firstPromptBySession = new Map(
+    firstPrompts.map((r) => [r.session_id, r.first_ms == null ? null : Math.round(r.first_ms)]),
+  );
+
+  const pushedRuns = db
+    .prepare(
+      `SELECT session_id, MAX(ended_at) AS pushed_at FROM finalize_runs
+        WHERE session_id IN (${idPh}) AND status = 'pushed' AND ended_at IS NOT NULL
+        GROUP BY session_id`,
+    )
+    .all(...ids) as Array<{ session_id: string; pushed_at: number | null }>;
+  const pushedAtBySession = new Map(pushedRuns.map((r) => [r.session_id, r.pushed_at]));
 
   const ciRows = db
     .prepare(
@@ -179,7 +229,7 @@ export function computeSessionHistory(
 
     let pr: SessionHistoryPr | null = null;
     const branchPr = s.worktree_branch
-      ? (prByBranch.get(projectId, s.worktree_branch) as PrLookup)
+      ? (prByBranch.get(projectId, s.worktree_branch) as BranchPrLookup)
       : undefined;
     if (branchPr) {
       pr = {
@@ -212,6 +262,26 @@ export function computeSessionHistory(
         : 0;
     const finalizeReviews = reviewKeys.get(s.id)?.size ?? 0;
 
+    let shippedMs: number | null = null;
+    let shippedVia: 'merged' | 'pushed' | null = null;
+    if (branchPr?.status === 'merged' && branchPr.merged_at != null) {
+      shippedMs = branchPr.merged_at;
+      shippedVia = 'merged';
+    } else {
+      const pushes = [pushedAtBySession.get(s.id) ?? null, branchPr?.created_at ?? null].filter(
+        (v): v is number => v != null,
+      );
+      if (pushes.length > 0) {
+        shippedMs = Math.max(...pushes);
+        shippedVia = 'pushed';
+      }
+    }
+    const startMs = firstPromptBySession.get(s.id) ?? parseSqliteUtc(s.created_at);
+    const shipSeconds =
+      shippedMs != null && startMs != null
+        ? Math.max(0, Math.round((shippedMs - startMs) / 1000))
+        : null;
+
     return {
       session_id: s.id,
       agent_id: s.agent_id,
@@ -231,6 +301,10 @@ export function computeSessionHistory(
       finalize_review_rounds: finalizeReviews,
       pr_reviews: prReviews,
       ci_rounds: ciBySession.get(s.id) ?? 0,
+      ship_seconds: shipSeconds,
+      shipped_via: shipSeconds != null ? shippedVia : null,
+      shipped_at:
+        shipSeconds != null && shippedMs != null ? new Date(shippedMs).toISOString() : null,
     };
   });
 }

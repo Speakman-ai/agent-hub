@@ -138,6 +138,9 @@ describe('ProjectStatsView session history', () => {
           finalize_review_rounds: 2,
           pr_reviews: 1,
           ci_rounds: 4,
+          ship_seconds: 2 * 3600 + 15 * 60,
+          shipped_via: 'merged',
+          shipped_at: '2026-11-02T12:15:00.000Z',
         },
       ],
     });
@@ -159,6 +162,8 @@ describe('ProjectStatsView session history', () => {
     expect(screen.getByText('merged')).toBeTruthy();
     expect(screen.getByText('3')).toBeTruthy();
     expect(screen.getByText('4')).toBeTruthy();
+    expect(screen.getByText('Time to ship')).toBeTruthy();
+    expect(screen.getByTestId('session-history-ship-time').textContent).toBe('2h 15m');
 
     fireEvent.click(screen.getByText('Add history table'));
     expect(onOpenSession).toHaveBeenCalledWith('a1', 's1');
@@ -193,6 +198,9 @@ describe('ProjectStatsView session history', () => {
           finalize_review_rounds: 0,
           pr_reviews: 0,
           ci_rounds: 0,
+          ship_seconds: null,
+          shipped_via: null,
+          shipped_at: null,
         },
       ],
     });
@@ -204,5 +212,7 @@ describe('ProjectStatsView session history', () => {
     expect(label.tagName).toBe('SPAN');
     fireEvent.click(label);
     expect(onOpenPr).not.toHaveBeenCalled();
+    // A session that never pushed code leaves the time-to-ship cell empty.
+    expect(screen.getByTestId('session-history-ship-time').textContent).toBe('');
   });
 });
