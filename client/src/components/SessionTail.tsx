@@ -46,6 +46,8 @@ import { formatSystemBannerModelLine } from '@shared/utils/systemBannerModel';
 import { extractCredentialRequestBlocks } from '../utils/credentialRequests';
 import AskUserQuestion from './AskUserQuestion';
 import SessionForwardCard from './SessionForwardCard';
+import ReviewDisputeCard from './ReviewDisputeCard';
+import { extractReviewDisputeBlocks } from '@shared/utils/extractReviewDisputeBlocks';
 import CredentialRequestPrompt from './CredentialRequestPrompt';
 import HandoffCard from './HandoffCard';
 import DelegateCard from './DelegateCard';
@@ -2008,7 +2010,8 @@ function TextBubble({
   // bubble also renders `message.content` during early streaming (before the
   // first session_event) — that path must not leak fenced skill blocks into
   // the markdown renderer.
-  const scrubbed = stripAssistantControlBlocks(text);
+  const disputeParts = extractReviewDisputeBlocks(stripAssistantControlBlocks(text));
+  const scrubbed = disputeParts.strippedText;
   // Strip any <handoff>/<delegate> blocks from the prose so the raw JSON
   // wall doesn't end up rendered inline. The blocks are surfaced separately
   // as dedicated cards below the prose. Rendering delegate blocks here as a
@@ -2065,6 +2068,9 @@ function TextBubble({
           dispatchError={delegationDispatchError}
         />
       )}
+      {disputeParts.blocks.map((block, i) => (
+        <ReviewDisputeCard key={`dispute${i}`} block={block} />
+      ))}
     </>
   );
 }
@@ -2222,7 +2228,8 @@ function StoredAssistantBubble({
   // raw `<handoff>...</handoff>` JSON in their content. Delegate blocks get
   // the same treatment: the message-anchored DelegateCard is the persistent
   // visual record even when live WebSocket events never arrived.
-  const scrubbed = stripAssistantControlBlocks(message.content);
+  const disputeParts = extractReviewDisputeBlocks(stripAssistantControlBlocks(message.content));
+  const scrubbed = disputeParts.strippedText;
   const { stripped, handoff, handoffMalformed, delegate, delegateMalformed } =
     extractCoordinationBlocks(scrubbed);
   const review = extractReviewVerdictContent(stripped);
@@ -2243,7 +2250,8 @@ function StoredAssistantBubble({
     Boolean(handoff) ||
     Boolean(malformedProps) ||
     Boolean(delegate) ||
-    Boolean(delegateMalformed);
+    Boolean(delegateMalformed) ||
+    disputeParts.blocks.length > 0;
   if (!hasAssistantBubbleContent) return null;
 
   return (
@@ -2301,6 +2309,9 @@ function StoredAssistantBubble({
             dispatchError={delegationDispatchError}
           />
         )}
+        {disputeParts.blocks.map((block, i) => (
+          <ReviewDisputeCard key={`dispute${i}`} block={block} />
+        ))}
         <WikiConsultedChip metadata={message.metadata} />
       </div>
     </div>

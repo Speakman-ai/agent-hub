@@ -27,6 +27,8 @@ import { createSelectableMarkdownRules } from '../utils/selectableMarkdownRules'
 import { parsePrCreatedMetadata, shortSha } from '../utils/prMessage';
 import { parseShipRequestedMetadata, shipRequestedCopy } from '../utils/shipRequestedMessage';
 import { stripAskAnswerBlocks } from '../utils/askAnswers';
+import { extractReviewDisputeBlocks } from '@shared/utils/extractReviewDisputeBlocks';
+import ReviewDisputeCard from './ReviewDisputeCard';
 import { getUserMessageFlags } from '../utils/chatMessageUserFlags';
 import { resolveAgentDisplayName } from '../utils/agentDisplayName';
 import { parseRawReviewVerdictContent } from '../utils/reviewVerdictContent';
@@ -516,8 +518,13 @@ function ChatMessage({
   // For assistant messages, extract any `<handoff>` block so the JSON wall
   // doesn't render as raw text. The block is shown as a HandoffCard instead.
   const assistantBlocks = useMemo<any>(() => {
-    if (isUser) return { stripped: message.content, handoff: null };
-    return extractCoordinationBlocks(message.content);
+    if (isUser) return { stripped: message.content, handoff: null, disputes: [] };
+    const { strippedText, blocks } = extractReviewDisputeBlocks(message.content);
+    const hasDispute = blocks.length > 0;
+    return {
+      ...extractCoordinationBlocks(hasDispute ? strippedText : message.content),
+      disputes: blocks,
+    };
   }, [isUser, message.content]);
   // Correlate the parsed block to the matching DB row so HandoffCard can
   // surface status (pending/delivered/failed) and a tappable "Open session"
@@ -679,6 +686,9 @@ function ChatMessage({
                 onOpenSession={onOpenSession}
               />
             )}
+            {assistantBlocks.disputes.map((block: any, i: number) => (
+              <ReviewDisputeCard key={`dispute${i}`} block={block} />
+            ))}
           </>
         )}
 
