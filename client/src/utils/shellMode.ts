@@ -21,6 +21,10 @@ export function isSimpleChatAgent(agent: { role?: string | null } | null | undef
 export const SHELL_MODE_KEY = 'agenthub.shellMode';
 /** Saved simple-sidebar order. The Server Agent is not in this list. */
 export const SIMPLE_ROSTER_ORDER_KEY = 'agenthub.simpleRosterOrder';
+/** Saved organization order for the simple chat list. */
+export const SIMPLE_ORG_ORDER_KEY = 'agenthub.simpleOrgOrder';
+/** Saved project order inside each organization. */
+export const SIMPLE_PROJECT_ORDER_KEY = 'agenthub.simpleProjectOrder';
 
 export type ShellMode = 'hub' | 'simple';
 
@@ -124,6 +128,7 @@ export function takePreSimpleTarget(
 export type SimpleContact = {
   agentId: string;
   name: string;
+  projectId: string;
   projectName: string;
   color: string;
   avatar: string | null;
@@ -174,6 +179,73 @@ export function writeSimpleRosterOrder(
 ): void {
   try {
     storage?.setItem(SIMPLE_ROSTER_ORDER_KEY, JSON.stringify(ids));
+  } catch {
+    // Order is best-effort; the in-memory list still works.
+  }
+}
+
+export function readSimpleOrgOrder(
+  storage: Pick<Storage, 'getItem'> | null = defaultStorage(),
+): string[] {
+  return readIdList(storage, SIMPLE_ORG_ORDER_KEY);
+}
+
+export function writeSimpleOrgOrder(
+  ids: readonly string[],
+  storage: Pick<Storage, 'setItem'> | null = defaultStorage(),
+): void {
+  writeIdList(storage, SIMPLE_ORG_ORDER_KEY, ids);
+}
+
+export function readSimpleProjectOrder(
+  storage: Pick<Storage, 'getItem'> | null = defaultStorage(),
+): Record<string, string[]> {
+  try {
+    const raw = storage?.getItem(SIMPLE_PROJECT_ORDER_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const out: Record<string, string[]> = {};
+    for (const [orgId, value] of Object.entries(parsed)) {
+      if (!Array.isArray(value)) continue;
+      out[orgId] = value.filter((id): id is string => typeof id === 'string' && id.trim() !== '');
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function writeSimpleProjectOrder(
+  order: Readonly<Record<string, readonly string[]>>,
+  storage: Pick<Storage, 'setItem'> | null = defaultStorage(),
+): void {
+  try {
+    storage?.setItem(SIMPLE_PROJECT_ORDER_KEY, JSON.stringify(order));
+  } catch {
+    // Order is best-effort; the in-memory list still works.
+  }
+}
+
+function readIdList(storage: Pick<Storage, 'getItem'> | null, key: string): string[] {
+  try {
+    const raw = storage?.getItem(key);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((id) => typeof id === 'string' && id.trim() !== '');
+  } catch {
+    return [];
+  }
+}
+
+function writeIdList(
+  storage: Pick<Storage, 'setItem'> | null,
+  key: string,
+  ids: readonly string[],
+): void {
+  try {
+    storage?.setItem(key, JSON.stringify(ids));
   } catch {
     // Order is best-effort; the in-memory list still works.
   }
@@ -365,6 +437,7 @@ export function buildSimpleContacts(input: {
     contacts.push({
       agentId: agent.id,
       name: agent.name?.trim() || 'Agent',
+      projectId: agent.projectId?.trim() || agent.id,
       projectName,
       color: agent.color || '#6b7280',
       avatar: agent.avatar ?? null,

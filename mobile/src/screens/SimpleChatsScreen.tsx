@@ -15,7 +15,10 @@ import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import BrandLogo from '../components/BrandLogo';
+import HubIcon from '../components/HubIcon';
+import { useGoogleChatAvailable } from '../hooks/useGoogleChatAvailable';
 import { serverAgentDisplayName, useServerAgentSettings } from '../utils/serverAgentInstance';
+import { groupSimpleChats } from '@shared/utils/simpleRosterGroups';
 import {
   buildSimpleContacts,
   filterSimpleContacts,
@@ -23,12 +26,16 @@ import {
   moveSimpleContact,
   orderSimpleContacts,
   preferredSimpleSession,
+  readSimpleOrgOrder,
+  readSimpleProjectOrder,
   readSimpleRosterOrder,
   readSimpleSessionId,
   reconcileSimpleRosterOrder,
   sessionShowsNeedsYou,
   takePreSimpleTarget,
   writeShellMode,
+  writeSimpleOrgOrder,
+  writeSimpleProjectOrder,
   writeSimpleRosterOrder,
   writeSimpleSessionId,
   type SimpleAgent,
@@ -56,10 +63,33 @@ export default function SimpleChatsScreen() {
     setActiveSessionId,
   } = useApp();
   const settings = useServerAgentSettings();
+  const googleChatAvailable = useGoogleChatAvailable();
+  const homeLinks = [
+    { pane: 'chat', label: 'Chat', icon: 'MessageSquare' },
+    ...(googleChatAvailable
+      ? [{ pane: 'google-chat', label: 'Google Chat', icon: 'MessageCircle' }]
+      : []),
+    { pane: 'todos', label: 'Todos', icon: 'ListTodo' },
+    { pane: 'reminders', label: 'Reminders', icon: 'BellRing' },
+    { pane: 'calendar', label: 'Calendar', icon: 'CalendarDays' },
+    { pane: 'mail', label: 'Mail', icon: 'Mail' },
+    { pane: 'org', label: 'Server', icon: 'BarChart3' },
+  ];
   const serverName = serverAgentDisplayName(settings);
   const [query, setQuery] = useState('');
   const [savedOrder, setSavedOrder] = useState<string[]>([]);
+  const [orgOrder, setOrgOrder] = useState<string[]>([]);
+  const [projectOrderByOrg, setProjectOrderByOrg] = useState<Record<string, string[]>>({});
+  const [directory, setDirectory] = useState<{
+    organizations: { id: string; name: string }[];
+    membership: Record<string, string[]>;
+  } | null>(null);
   const [orderReady, setOrderReady] = useState(false);
+  const [move, setMove] = useState<
+    | { kind: 'org'; id: string; name: string }
+    | { kind: 'project'; orgId: string; projectId: string; name: string }
+    | null
+  >(null);
   const [sessionsByAgentId, setSessionsByAgentId] = useState<
     Record<string, SimpleSession[] | undefined>
   >({});
@@ -83,11 +113,47 @@ export default function SimpleChatsScreen() {
 
   useEffect(() => {
     let live = true;
-    void readSimpleRosterOrder().then((order) => {
+    void Promise.all([
+      readSimpleRosterOrder(),
+      readSimpleOrgOrder(),
+      readSimpleProjectOrder(),
+    ]).then(([order, orgs, projects]) => {
       if (!live) return;
       setSavedOrder(order);
+      setOrgOrder(orgs);
+      setProjectOrderByOrg(projects);
       setOrderReady(true);
     });
+    void (async () => {
+      try {
+        const result = await api.organizations.list();
+        const rows = Array.isArray(result?.organizations) ? result.organizations : [];
+        if (!live || rows.length === 0) return;
+        const membership: Record<string, string[]> = {};
+        await Promise.all(
+          rows.map(async (org: { id: string }) => {
+            try {
+              const linked = await api.organizations.linked(org.id);
+              membership[org.id] = (Array.isArray(linked?.projects) ? linked.projects : []).map(
+                (project: { id: string }) => project.id,
+              );
+            } catch {
+              membership[org.id] = [];
+            }
+          }),
+        );
+        if (!live) return;
+        setDirectory({
+          organizations: rows.map((org: { id: string; name: string }) => ({
+            id: org.id,
+            name: org.name,
+          })),
+          membership,
+        });
+      } catch {
+        if (live) setDirectory(null);
+      }
+    })();
     return () => {
       live = false;
     };
@@ -155,9 +221,25 @@ export default function SimpleChatsScreen() {
 
   const ordered = useMemo(() => orderSimpleContacts(built, savedOrder), [built, savedOrder]);
   const visible = useMemo(() => filterSimpleContacts(ordered, query), [ordered, query]);
+  const groups = useMemo(
+    () =>
+      groupSimpleChats({
+        items: visible,
+        projectId: (contact) => contact.projectId,
+        projectName: (contact) => contact.projectName,
+        organizations: directory?.organizations,
+        membership: directory?.membership ?? {},
+        orgOrder,
+        projectOrderByOrg,
+      }),
+    [visible, directory, orgOrder, projectOrderByOrg],
+  );
   const reorderable = query.trim().length === 0;
   useEffect(() => {
-    if (!reorderable) setMovingId(null);
+    if (!reorderable) {
+      setMovingId(null);
+      setMove(null);
+    }
   }, [reorderable]);
 
   const serverStatus = useMemo((): SimpleContactStatus => {
@@ -184,6 +266,7 @@ export default function SimpleChatsScreen() {
   const serverContact: SimpleContact = {
     agentId: '__server__',
     name: serverName,
+    projectId: '',
     projectName: '',
     color: '#38bdf8',
     preview: serverPreview,
@@ -313,6 +396,20 @@ export default function SimpleChatsScreen() {
 
   return (
     <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
+      <View style={styles.homeNav} testID="simple-home-nav">
+        {homeLinks.map((item) => (
+          <Pressable
+            key={item.pane}
+            testID={`simple-home-${item.pane}`}
+            accessibilityRole="button"
+            accessibilityLabel={item.label}
+            onPress={() => navigation.navigate('Hub', { pane: item.pane, tab: undefined })}
+            style={styles.homeIcon}
+          >
+            <HubIcon name={item.icon} size={18} color={colors.gray400} />
+          </Pressable>
+        ))}
+      </View>
       <View style={styles.header}>
         <Text style={styles.title}>Chats</Text>
         <Text style={styles.subtitle}>Chat here. Hand off a build when you need one.</Text>
@@ -340,7 +437,11 @@ export default function SimpleChatsScreen() {
           autoCapitalize="none"
         />
       </View>
-      {movingName ? (
+      {move ? (
+        <Text testID="simple-move-banner" style={styles.moveBanner}>
+          Tap {move.kind === 'org' ? 'an organization' : 'a project'} to place {move.name} there
+        </Text>
+      ) : movingName ? (
         <Text testID="simple-move-banner" style={styles.moveBanner}>
           Tap a chat to place {movingName} there
         </Text>
@@ -356,24 +457,138 @@ export default function SimpleChatsScreen() {
             }}
           />
         ) : null}
-        {visible.map((contact) => (
-          <ContactRow
-            key={contact.agentId}
-            testID={`simple-agent-${contact.agentId}`}
-            contact={contact}
-            reorderable={reorderable}
-            moving={movingId === contact.agentId}
-            onLongPress={
-              reorderable
-                ? () =>
-                    setMovingId((current) => (current === contact.agentId ? null : contact.agentId))
-                : undefined
-            }
-            onPress={() => {
-              void openAgent(contact.agentId);
-            }}
-          />
-        ))}
+        {groups
+          ? groups.map((group) => (
+              <View key={group.id} testID={`simple-org-${group.id}`}>
+                <Pressable
+                  testID={`simple-org-drag-${group.id}`}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Reorder ${group.name}`}
+                  onLongPress={
+                    reorderable
+                      ? () => setMove({ kind: 'org', id: group.id, name: group.name })
+                      : undefined
+                  }
+                  onPress={() => {
+                    if (move?.kind !== 'org') return;
+                    const next = moveSimpleContact(
+                      groups.map((item) => item.id),
+                      move.id,
+                      group.id,
+                    );
+                    setMove(null);
+                    if (!next) return;
+                    setOrgOrder(next);
+                    void writeSimpleOrgOrder(next);
+                  }}
+                  style={styles.orgHeader}
+                >
+                  {reorderable ? <Text style={styles.grip}>⋮⋮</Text> : null}
+                  <Text style={styles.orgName}>{group.name}</Text>
+                </Pressable>
+                {group.projects.map((project) => (
+                  <View key={project.id} testID={`simple-project-${project.id}`}>
+                    {project.items.length > 1 ? (
+                      <Pressable
+                        testID={`simple-project-drag-${project.id}`}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Reorder ${project.name}`}
+                        onLongPress={
+                          reorderable
+                            ? () =>
+                                setMove({
+                                  kind: 'project',
+                                  orgId: group.id,
+                                  projectId: project.id,
+                                  name: project.name,
+                                })
+                            : undefined
+                        }
+                        onPress={() => {
+                          if (move?.kind !== 'project' || move.orgId !== group.id) return;
+                          const next = moveSimpleContact(
+                            group.projects.map((item) => item.id),
+                            move.projectId,
+                            project.id,
+                          );
+                          setMove(null);
+                          if (!next) return;
+                          const orderByOrg = { ...projectOrderByOrg, [group.id]: next };
+                          setProjectOrderByOrg(orderByOrg);
+                          void writeSimpleProjectOrder(orderByOrg);
+                        }}
+                        style={styles.projectHeader}
+                      >
+                        {reorderable ? <Text style={styles.grip}>⋮⋮</Text> : null}
+                        <Text style={styles.projectName}>{project.name}</Text>
+                      </Pressable>
+                    ) : null}
+                    {project.items.map((contact) => (
+                      <ContactRow
+                        key={contact.agentId}
+                        testID={`simple-agent-${contact.agentId}`}
+                        contact={contact}
+                        reorderable={reorderable && project.items.length === 1}
+                        moving={
+                          move?.kind === 'project' &&
+                          move.orgId === group.id &&
+                          move.projectId === project.id
+                        }
+                        onLongPress={
+                          reorderable
+                            ? () =>
+                                setMove({
+                                  kind: 'project',
+                                  orgId: group.id,
+                                  projectId: project.id,
+                                  name: project.name,
+                                })
+                            : undefined
+                        }
+                        onPress={() => {
+                          if (move?.kind === 'project') {
+                            if (move.orgId !== group.id) return;
+                            const next = moveSimpleContact(
+                              group.projects.map((item) => item.id),
+                              move.projectId,
+                              project.id,
+                            );
+                            setMove(null);
+                            if (!next) return;
+                            const orderByOrg = { ...projectOrderByOrg, [group.id]: next };
+                            setProjectOrderByOrg(orderByOrg);
+                            void writeSimpleProjectOrder(orderByOrg);
+                            return;
+                          }
+                          if (move) return;
+                          void openAgent(contact.agentId);
+                        }}
+                      />
+                    ))}
+                  </View>
+                ))}
+              </View>
+            ))
+          : visible.map((contact) => (
+              <ContactRow
+                key={contact.agentId}
+                testID={`simple-agent-${contact.agentId}`}
+                contact={contact}
+                reorderable={reorderable}
+                moving={movingId === contact.agentId}
+                onLongPress={
+                  reorderable
+                    ? () =>
+                        setMovingId((current) =>
+                          current === contact.agentId ? null : contact.agentId,
+                        )
+                    : undefined
+                }
+                onPress={() => {
+                  void openAgent(contact.agentId);
+                }}
+              />
+            ))}
         {orderReady && !serverVisible && visible.length === 0 ? (
           <Text style={styles.empty}>No chats match</Text>
         ) : null}
@@ -439,7 +654,44 @@ function ContactRow({
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.gray950 },
+  homeNav: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingTop: 8,
+  },
+  homeIcon: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 8,
+  },
   header: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 8 },
+  orgHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 8,
+    paddingTop: 14,
+    paddingBottom: 4,
+  },
+  orgName: {
+    color: colors.gray500,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+  },
+  projectHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 8,
+    paddingTop: 6,
+  },
+  projectName: { color: colors.gray400, fontSize: 12, fontWeight: '600' },
   title: { color: colors.white, fontSize: 22, fontWeight: '700' },
   subtitle: { color: colors.gray500, fontSize: 13, marginTop: 4 },
   fullHub: {

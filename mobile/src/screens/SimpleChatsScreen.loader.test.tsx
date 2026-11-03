@@ -46,6 +46,8 @@ vi.mock('react-native', () => ({
 }));
 vi.mock('react-native-safe-area-context', () => ({ SafeAreaView: 'SafeAreaView' }));
 vi.mock('../components/BrandLogo', () => ({ default: () => null }));
+vi.mock('../components/HubIcon', () => ({ default: () => null }));
+vi.mock('../hooks/useGoogleChatAvailable', () => ({ useGoogleChatAvailable: () => false }));
 vi.mock('../utils/serverAgentInstance', () => ({
   useServerAgentSettings: () => null,
   serverAgentDisplayName: () => 'Server Agent',

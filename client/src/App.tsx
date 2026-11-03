@@ -7307,6 +7307,14 @@ export default function App({ initialView }: any = {}) {
               }}
               onOpenFullHub={openFullHub}
               onEnsureSessions={loadSidebarAgentSessions}
+              activePane={currentView === 'hub' ? hubPane : hubPaneFromLegacyView(currentView)}
+              googleChatAvailable={chatEnabled}
+              onOpenPane={(pane) => {
+                setCurrentView('hub');
+                setHubPane(pane);
+                setHubMobileTab(pane);
+                setSidebarOpen(false);
+              }}
             />
           ) : (
             <>

@@ -25,6 +25,8 @@ export function isSimpleChatAgent(agent: { role?: string | null } | null | undef
 
 export const SHELL_MODE_KEY = 'agenthub.shellMode';
 export const SIMPLE_ROSTER_ORDER_KEY = 'agenthub.simpleRosterOrder';
+export const SIMPLE_ORG_ORDER_KEY = 'agenthub.simpleOrgOrder';
+export const SIMPLE_PROJECT_ORDER_KEY = 'agenthub.simpleProjectOrder';
 
 export type ShellMode = 'hub' | 'simple';
 export type SimpleContactStatus = 'working' | 'needs-you' | 'idle';
@@ -56,6 +58,7 @@ export type SimpleSession = {
 export type SimpleContact = {
   agentId: string;
   name: string;
+  projectId: string;
   projectName: string;
   color: string;
   preview: string;
@@ -134,6 +137,56 @@ export async function writeSimpleRosterOrder(ids: readonly string[]): Promise<vo
     await AsyncStorage.setItem(SIMPLE_ROSTER_ORDER_KEY, JSON.stringify(ids));
   } catch {
     // Order still applies for this visit.
+  }
+}
+
+export async function readSimpleOrgOrder(): Promise<string[]> {
+  return readIdList(SIMPLE_ORG_ORDER_KEY);
+}
+
+export async function writeSimpleOrgOrder(ids: readonly string[]): Promise<void> {
+  try {
+    await AsyncStorage.setItem(SIMPLE_ORG_ORDER_KEY, JSON.stringify(ids));
+  } catch {
+    // Order still applies for this visit.
+  }
+}
+
+export async function readSimpleProjectOrder(): Promise<Record<string, string[]>> {
+  try {
+    const raw = await AsyncStorage.getItem(SIMPLE_PROJECT_ORDER_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const out: Record<string, string[]> = {};
+    for (const [orgId, value] of Object.entries(parsed)) {
+      if (!Array.isArray(value)) continue;
+      out[orgId] = value.filter((id): id is string => typeof id === 'string' && id.trim() !== '');
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export async function writeSimpleProjectOrder(
+  order: Readonly<Record<string, readonly string[]>>,
+): Promise<void> {
+  try {
+    await AsyncStorage.setItem(SIMPLE_PROJECT_ORDER_KEY, JSON.stringify(order));
+  } catch {
+    // Order still applies for this visit.
+  }
+}
+
+async function readIdList(key: string): Promise<string[]> {
+  try {
+    const raw = await AsyncStorage.getItem(key);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : [];
+  } catch {
+    return [];
   }
 }
 
@@ -338,6 +391,7 @@ export function buildSimpleContacts(input: {
     contacts.push({
       agentId: agent.id,
       name: agent.name?.trim() || 'Agent',
+      projectId: agent.projectId?.trim() || agent.id,
       projectName,
       color: agent.color || '#6b7280',
       preview: simpleContactPreview(status, session, projectName),

@@ -12,6 +12,11 @@ vi.mock('react-native', () => ({
 }));
 vi.mock('react-native-safe-area-context', () => ({ SafeAreaView: 'SafeAreaView' }));
 vi.mock('../components/BrandLogo', () => ({ default: () => 'brand-mark' }));
+vi.mock('../components/HubIcon', () => ({ default: () => null }));
+const googleChat = vi.hoisted(() => ({ available: false }));
+vi.mock('../hooks/useGoogleChatAvailable', () => ({
+  useGoogleChatAvailable: () => googleChat.available,
+}));
 vi.mock('../utils/serverAgentInstance', () => ({
   useServerAgentSettings: () => null,
   serverAgentDisplayName: () => 'Server Agent',
@@ -67,6 +72,10 @@ const api = vi.hoisted(() => ({
     return [{ id: 'cam-chat', session_mode: 'consult', name: 'Notes' }];
   }),
   createSession: vi.fn(),
+  organizations: {
+    list: vi.fn(async () => ({ organizations: [] as { id: string; name: string }[] })),
+    linked: vi.fn(async (_id: string) => ({ projects: [] as { id: string }[] })),
+  },
 }));
 vi.mock('../utils/api', () => ({ api }));
 
@@ -98,9 +107,89 @@ function rowIds(renderer: ReturnType<typeof TestRenderer.create>) {
 describe('SimpleChatsScreen', () => {
   beforeEach(() => {
     storage.store.clear();
+    googleChat.available = false;
+    api.organizations.list.mockReset();
+    api.organizations.list.mockResolvedValue({ organizations: [] });
+    api.organizations.linked.mockReset();
+    api.organizations.linked.mockResolvedValue({ projects: [] });
     navigation.navigate.mockClear();
     app.handleOpenHandoffSession.mockClear();
     app.setActiveSessionId.mockClear();
+  });
+
+  it('opens Hub pages from the icons and hides Google Chat until it is connected', async () => {
+    const renderer = await renderList();
+    expect(renderer.root.findAllByProps({ testID: 'simple-home-today' })).toHaveLength(0);
+    expect(renderer.root.findByProps({ testID: 'simple-home-chat' }).props.accessibilityLabel).toBe(
+      'Chat',
+    );
+    expect(renderer.root.findAllByProps({ testID: 'simple-home-google-chat' })).toHaveLength(0);
+    await act(async () => {
+      renderer.root.findByProps({ testID: 'simple-home-todos' }).props.onPress();
+    });
+    expect(navigation.navigate).toHaveBeenCalledWith('Hub', { pane: 'todos', tab: undefined });
+
+    googleChat.available = true;
+    await act(async () => {
+      renderer.update(React.createElement(SimpleChatsScreen));
+    });
+    await act(async () => {
+      renderer.root.findByProps({ testID: 'simple-home-google-chat' }).props.onPress();
+    });
+    expect(navigation.navigate).toHaveBeenLastCalledWith('Hub', {
+      pane: 'google-chat',
+      tab: undefined,
+    });
+  });
+
+  it('groups chats by organization and reorders those groups', async () => {
+    const agents = app.agents;
+    const projects = app.projects;
+    app.agents = [
+      { id: 'ada', name: 'Ada', role: 'dev', projectId: 'app', active: true, color: '#fff' },
+      { id: 'cam', name: 'Cam', role: 'dev', projectId: 'notes', active: true, color: '#000' },
+    ];
+    app.projects = [
+      { id: 'app', name: 'App' },
+      { id: 'notes', name: 'Notes' },
+    ];
+    api.organizations.list.mockResolvedValue({
+      organizations: [
+        { id: 'acme', name: 'Acme' },
+        { id: 'beta', name: 'Beta' },
+      ],
+    });
+    api.organizations.linked.mockImplementation(async (id: string) => ({
+      projects: id === 'acme' ? [{ id: 'app' }] : [{ id: 'notes' }],
+    }));
+    try {
+      const renderer = await renderList();
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      const orgIds = () =>
+        renderer.root
+          .findAll(
+            (node) =>
+              String(node.type) === 'View' &&
+              typeof node.props?.testID === 'string' &&
+              node.props.testID.startsWith('simple-org-'),
+          )
+          .map((node) => node.props.testID as string);
+      expect(orgIds()).toEqual(['simple-org-acme', 'simple-org-beta']);
+      await act(async () => {
+        renderer.root.findByProps({ testID: 'simple-org-drag-beta' }).props.onLongPress();
+      });
+      await act(async () => {
+        renderer.root.findByProps({ testID: 'simple-org-drag-acme' }).props.onPress();
+      });
+      expect(orgIds()).toEqual(['simple-org-beta', 'simple-org-acme']);
+      expect(storage.store.get('agenthub.simpleOrgOrder')).toBe(JSON.stringify(['beta', 'acme']));
+    } finally {
+      app.agents = agents;
+      app.projects = projects;
+    }
   });
 
   it('pins the Server Agent, hides the reviewer, and marks needs-you', async () => {
