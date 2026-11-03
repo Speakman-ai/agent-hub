@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
+  hubSidebarSessions,
+  isSimpleViewChat,
   SHELL_MODE_KEY,
   buildSimpleContacts,
   isSimpleChatAgent,
@@ -289,5 +291,24 @@ describe('simpleShellMustLeaveFor', () => {
     expect(simpleShellMustLeaveFor({ session_mode: 'consult' })).toBe(false);
     expect(simpleShellMustLeaveFor(undefined)).toBe(false);
     expect(simpleShellMustLeaveFor(null)).toBe(false);
+  });
+});
+
+describe('hubSidebarSessions', () => {
+  it('leaves Simple view chats out of the Hub sidebar', () => {
+    const rows = [
+      { id: 'a', session_mode: 'consult', simple_chat: 1 },
+      { id: 'b', session_mode: 'consult', simple_chat: 0 },
+      { id: 'c', session_mode: 'chat' },
+    ];
+    expect(hubSidebarSessions(rows).map((row) => row.id)).toEqual(['b', 'c']);
+    expect(isSimpleViewChat(rows[0])).toBe(true);
+    expect(isSimpleViewChat(rows[1])).toBe(false);
+    expect(isSimpleViewChat(null)).toBe(false);
+  });
+
+  it('returns the same array when nothing is filtered', () => {
+    const rows = [{ id: 'a' }, { id: 'b', simple_chat: 0 }];
+    expect(hubSidebarSessions(rows)).toBe(rows);
   });
 });

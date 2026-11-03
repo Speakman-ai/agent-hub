@@ -5430,7 +5430,7 @@ export default function App({ initialView }: any = {}) {
           let pending = consultCreateByAgentRef.current.get(agentId);
           if (!pending) {
             pending = api
-              .createSession(agentId, 'Chat', { consultMode: true })
+              .createSession(agentId, 'Chat', { consultMode: true, simpleChat: true })
               .finally(() => consultCreateByAgentRef.current.delete(agentId));
             consultCreateByAgentRef.current.set(agentId, pending);
           }

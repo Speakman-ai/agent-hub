@@ -269,7 +269,10 @@ describe('SimpleChatsScreen', () => {
     await act(async () => {
       await Promise.resolve();
     });
-    expect(api.createSession).toHaveBeenCalledWith('cam', 'Chat', { consultMode: true });
+    expect(api.createSession).toHaveBeenCalledWith('cam', 'Chat', {
+      consultMode: true,
+      simpleChat: true,
+    });
     expect(JSON.stringify(renderer.toJSON())).toContain('Working');
     app.activeTasks = {};
     api.getSessions.mockImplementation(original);
@@ -311,7 +314,10 @@ describe('SimpleChatsScreen', () => {
     await act(async () => {
       await Promise.resolve();
     });
-    expect(api.createSession).toHaveBeenCalledWith('cam', 'Chat', { consultMode: true });
+    expect(api.createSession).toHaveBeenCalledWith('cam', 'Chat', {
+      consultMode: true,
+      simpleChat: true,
+    });
 
     await act(async () => {
       await renderer.root.findByProps({ testID: 'simple-agent-ada' }).props.onPress();

@@ -118,7 +118,9 @@ vi.mock('./ProjectIcon', () => ({ default: nativeHost('ProjectIcon') }));
 vi.mock('./SessionStateIcon', () => ({ default: nativeHost('SessionStateIcon') }));
 vi.mock('@shared/utils/humanCron', () => ({ default: () => '' }));
 const shell = vi.hoisted(() => ({ remember: vi.fn(async () => {}), write: vi.fn(async () => {}) }));
-vi.mock('../utils/simpleShell', () => ({
+vi.mock('../utils/simpleShell', async (importOriginal) => ({
+  hubSidebarSessions: (await importOriginal<typeof import('../utils/simpleShell')>())
+    .hubSidebarSessions,
   rememberPreSimpleTarget: shell.remember,
   writeShellMode: shell.write,
 }));

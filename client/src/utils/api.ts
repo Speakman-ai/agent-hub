@@ -2569,8 +2569,11 @@ export const api = {
       seedMessage,
       autoStart,
       autoTitle,
+      simpleChat,
     }: {
       consultMode?: boolean;
+      /** Opened by the Simple view; kept out of the full Hub sidebar. */
+      simpleChat?: boolean;
       seedMessage?: string;
       autoStart?: boolean;
       /** `name` is provisional: the automatic title flow may replace it. */
@@ -2585,6 +2588,7 @@ export const api = {
         ...(seedMessage ? { seedMessage } : {}),
         ...(seedMessage && autoStart ? { autoStart: true } : {}),
         ...(autoTitle ? { autoTitle: true } : {}),
+        ...(simpleChat ? { simpleChat: true } : {}),
       }),
     }),
   /**

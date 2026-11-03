@@ -22,7 +22,7 @@ import { colors } from '../theme/colors';
 import { daysUntilPurge, parseDate } from '../utils/time';
 import humanCron from '@shared/utils/humanCron';
 import { isSidebarHiddenAgent } from '@shared/utils/sidebarAgents';
-import { rememberPreSimpleTarget, writeShellMode } from '../utils/simpleShell';
+import { hubSidebarSessions, rememberPreSimpleTarget, writeShellMode } from '../utils/simpleShell';
 import { isWorkflowProject } from '../utils/project-mode';
 import { projectNavGroups } from '../utils/projectMenu';
 import {
@@ -281,7 +281,7 @@ export default function DrawerContent({ navigation }: any) {
     setCollapsedAgents((prev: any) => ({ ...prev, [agentId]: !prev[agentId] }));
   };
   const sessionsForAgent = (agentId: string) =>
-    agentId === activeAgentId ? sessions : sessionsByAgentId[agentId] || [];
+    hubSidebarSessions(agentId === activeAgentId ? sessions : sessionsByAgentId[agentId] || []);
   const archivedForAgent = (agentId: string) =>
     agentId === activeAgentId ? archivedSessions || [] : archivedByAgentId[agentId] || [];
   // Inactive agents' lists are fetched on every expand (the cache only fills

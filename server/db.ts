@@ -3430,6 +3430,16 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE sessions ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0');
   }
 
+  // Consult chats the Simple view opens. They belong to the Simple view, so
+  // the full Hub sidebar leaves them out.
+  try {
+    db.prepare('SELECT simple_chat FROM sessions LIMIT 1').get();
+  } catch {
+    // No backfill: nothing recorded which older consult sessions the Simple
+    // view opened, and guessing would hide Hub sessions from the sidebar.
+    db.exec('ALTER TABLE sessions ADD COLUMN simple_chat INTEGER NOT NULL DEFAULT 0');
+  }
+
   try {
     db.prepare('SELECT card_kind FROM kanban_cards LIMIT 1').get();
   } catch {
@@ -5408,6 +5418,7 @@ function initDb(dataDir: string): void {
     ),
     getSession: db.prepare('SELECT * FROM sessions WHERE id = ?'),
     markSessionHidden: db.prepare('UPDATE sessions SET hidden = 1 WHERE id = ?'),
+    markSessionSimpleChat: db.prepare('UPDATE sessions SET simple_chat = 1 WHERE id = ?'),
     // Used by the awaiting-input snapshot to bound the scan: only sessions a
     // user has plausibly touched in the last week can be "blocked waiting for
     // a reply." The LIMIT keeps the worst-case bootstrap O(few hundred) row

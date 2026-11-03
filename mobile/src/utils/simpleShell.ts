@@ -49,6 +49,7 @@ export type SimpleSession = {
   session_mode?: string | null;
   sidebar_parent_id?: string | null;
   cron_id?: unknown;
+  simple_chat?: number | boolean | null;
   state?: string | null;
   finalize_status?: string | null;
   needs_input?: unknown;
@@ -74,6 +75,20 @@ export type SimpleStatusSignals = {
 };
 
 export const SIMPLE_SESSION_KEY_PREFIX = 'agenthub.simpleSession:';
+/** A chat the Simple view opened. It lives in the Simple view, not the Hub sidebar. */
+export function isSimpleViewChat(
+  session: { simple_chat?: number | boolean | null } | null | undefined,
+): boolean {
+  return Boolean(session?.simple_chat);
+}
+
+/** The rows the full Hub sidebar lists for an agent: everything but Simple view chats. */
+export function hubSidebarSessions<T extends { simple_chat?: number | boolean | null }>(
+  sessions: T[],
+): T[] {
+  return sessions.some(isSimpleViewChat) ? sessions.filter((s) => !isSimpleViewChat(s)) : sessions;
+}
+
 /** Where Full Hub returns to: the session open when the simple view was entered. */
 export const PRE_SIMPLE_TARGET_KEY = 'agenthub.preSimpleTarget';
 

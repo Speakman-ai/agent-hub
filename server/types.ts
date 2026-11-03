@@ -67,6 +67,8 @@ export interface SessionRow {
   sidebar_parent_id?: string | null;
   /** 1 = run by the system for output posted elsewhere; kept out of session lists. */
   hidden?: number;
+  /** 1 = consult chat opened by the Simple view; the full Hub sidebar omits it. */
+  simple_chat?: number;
   /** Claude Code session id the SideBar's first turn forks (`--fork-session`). */
   fork_from_engine_session_id?: string | null;
   /** Per-parent SideBar creation order (1, 2, …). */
@@ -2443,6 +2445,7 @@ export interface Stmts {
   getSessions: Stmt;
   getSession: Stmt;
   markSessionHidden: Stmt;
+  markSessionSimpleChat: Stmt;
   getRecentLiveSessions: Stmt;
   updateSessionName: Stmt;
   updateSessionNameWithTitleSource: Stmt;

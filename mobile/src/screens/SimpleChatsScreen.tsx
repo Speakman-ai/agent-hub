@@ -334,7 +334,10 @@ export default function SimpleChatsScreen() {
             const found = preferredSimpleSession(consults, remembered);
             if (found) return found;
             if (navGenerationRef.current !== entry.owner) return null;
-            const created = await api.createSession(agentId, 'Chat', { consultMode: true });
+            const created = await api.createSession(agentId, 'Chat', {
+              consultMode: true,
+              simpleChat: true,
+            });
             if (!created?.id) return null;
             setSessionsByAgentId((current) => ({
               ...current,

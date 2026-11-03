@@ -357,6 +357,10 @@ export const CreateSessionRequestSchema = z.object({
     description:
       'When true and `name` is non-empty, treat `name` as a provisional title owned by the automatic title flow: it is normalized like a first-message title, and an LLM title generated from `seedMessage`, a later substantive user turn, or a linked card may replace it.',
   }),
+  simpleChat: z.boolean().optional().openapi({
+    description:
+      'When true, mark the session as a Simple view chat (`simple_chat = 1`). Clients keep these chats out of the full Hub sidebar and list them in the Simple view.',
+  }),
 });
 
 /** PATCH /api/sessions/:sessionId — `name`, `max_turns`, and/or `finalize_automation`. */

@@ -186,6 +186,7 @@ export const api = {
         name,
         ...(options.consultMode ? { session_mode: 'consult' } : {}),
         ...(options.seedMessage ? { seedMessage: options.seedMessage } : {}),
+        ...(options.simpleChat ? { simpleChat: true } : {}),
       }),
     }),
   getMessages: async (sessionId: any, opts: any = {}) => {

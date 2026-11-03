@@ -776,6 +776,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     stmts.createSession.run(id, req.params.agentId, name, engine, model, useWorktree, 0, 1);
     setSessionOwner(id, ownerUid);
     if (autoTitle) stmts.updateSessionNameWithTitleSource.run(name, 'auto', id);
+    if (parsed.simpleChat === true) stmts.markSessionSimpleChat.run(id);
     // Optional opening user message (e.g. an email/todo context block, or chat
     // messages sent to an agent). With `autoStart` it runs as the first turn
     // right away (handleChat stores the message itself, below). Otherwise it is

@@ -149,6 +149,15 @@ describe('api session helpers — URL + method + body parity with web client', (
       session_mode: 'consult',
     });
   });
+  it('createSession({ simpleChat: true }) forwards simpleChat', async () => {
+    await api.createSession('agent-1', 'Chat', { consultMode: true, simpleChat: true });
+    const [, init] = lastCall();
+    expect(JSON.parse(init.body)).toEqual({
+      name: 'Chat',
+      session_mode: 'consult',
+      simpleChat: true,
+    });
+  });
   it('createSession({ consultMode: false }) omits session_mode', async () => {
     await api.createSession('agent-1', 'My session', { consultMode: false });
     const [, init] = lastCall();

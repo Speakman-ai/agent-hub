@@ -95,6 +95,7 @@ import { useRequestScope } from '../utils/requestScope';
 import { rosterAgents, type OrganizationAgent } from '@shared/utils/organization-agents';
 import { hubPaneFromLegacyView, parseHubPane, type HubWorkspacePane } from '@shared/utils/hub';
 import type { OrganizationChatTarget } from './OrganizationAgentsPanel';
+import { hubSidebarSessions } from '../utils/shellMode';
 
 /**
  * The one API call the collapsed-project saver makes. Module scope so every
@@ -623,7 +624,9 @@ export default function Sidebar({
   // render (new agent active, old `sessions` still in state) would show the old
   // agent's rows and feed them into the per-agent clear controls.
   const sessionsForAgent = (agentId: any) =>
-    sessionsByAgentId[agentId] ?? (agentId === loadedSessionsAgentId ? sessions : []);
+    hubSidebarSessions(
+      sessionsByAgentId[agentId] ?? (agentId === loadedSessionsAgentId ? sessions : []),
+    );
 
   const archivedForAgent = (agentId: any) =>
     archivedSessionsByAgentId[agentId] ??
@@ -2168,7 +2171,9 @@ export default function Sidebar({
                   canCollapse &&
                   isActiveProject &&
                   (() => {
-                    const actionableSessions = (sessions || []).filter(isSessionActionable);
+                    const actionableSessions = hubSidebarSessions(sessions || []).filter(
+                      isSessionActionable,
+                    );
                     if (actionableSessions.length === 0) return null;
                     return (
                       <div

@@ -49,6 +49,7 @@ export type SimpleSession = {
   session_mode?: string | null;
   sidebar_parent_id?: string | null;
   cron_id?: unknown;
+  simple_chat?: number | boolean | null;
 };
 
 /** Key for the chat this simple view last opened with an agent. */
@@ -60,6 +61,20 @@ export type PreSimpleTarget = { agentId: string; sessionId: string };
 
 export function simpleSessionKey(agentId: string): string {
   return `${SIMPLE_SESSION_KEY_PREFIX}${agentId}`;
+}
+
+/** A chat the Simple view opened. It lives in the Simple view, not the Hub sidebar. */
+export function isSimpleViewChat(
+  session: { simple_chat?: number | boolean | null } | null | undefined,
+): boolean {
+  return Boolean(session?.simple_chat);
+}
+
+/** The rows the full Hub sidebar lists for an agent: everything but Simple view chats. */
+export function hubSidebarSessions<T extends { simple_chat?: number | boolean | null }>(
+  sessions: T[],
+): T[] {
+  return sessions.some(isSimpleViewChat) ? sessions.filter((s) => !isSimpleViewChat(s)) : sessions;
 }
 
 /** A simple-view chat: consult, not a SideBar fork and not a cron run. */
