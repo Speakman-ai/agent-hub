@@ -680,6 +680,101 @@ describe('POST /api/projects/:projectId/cards/:cardId/finalize', () => {
     await vi.waitFor(() => expect(getSessionWorktreeLockOwner('sess-1')).toBeNull());
   });
 
+  it('Stop reaches a run whose row lands after the visibility poll gives up', async () => {
+    const { app, findProject, stmts } = makeApp();
+    findProject.mockReturnValue({ id: 'proj-1', githubRepo: 'acme/proj' });
+    stmts.getKanbanCard.get.mockReturnValue({
+      id: 'card-1',
+      board_id: 'board-1',
+      session_id: 'sess-1',
+      created_by: 'user-1',
+      title: 't',
+    });
+    stmts.getKanbanBoard.get.mockReturnValue({ id: 'board-1' });
+    stmts.getSession.get.mockReturnValue({
+      id: 'sess-1',
+      worktree_path: '/tmp/wt',
+      worktree_branch: 'feature/x',
+    });
+    stmts.getFinalizeRunByIdempotencyKey.get.mockReturnValue(undefined);
+    let resolveRun!: () => void;
+    let runOpts!: {
+      signal: { aborted: boolean };
+      onRunCreated?: (runId: string) => void;
+    };
+    runFinalize.mockImplementation((_deps: unknown, opts: typeof runOpts) => {
+      runOpts = opts;
+      return new Promise<void>((resolve) => {
+        resolveRun = resolve;
+      });
+    });
+
+    await supertest(app).post('/api/projects/proj-1/cards/card-1/finalize').send({}).expect(202);
+
+    // Slow pre-insert setup (git token resolution): the row only appears now,
+    // after the kickoff already answered 202 without a run id.
+    runOpts.onRunCreated?.('run-late');
+    stmts.getFinalizeRun.get.mockReturnValue({
+      id: 'run-late',
+      project_id: 'proj-1',
+      status: 'running',
+      session_id: 'sess-1',
+    });
+
+    await supertest(app).post('/api/projects/proj-1/finalize/run-late/cancel').send({}).expect(200);
+    expect(runOpts.signal.aborted).toBe(true);
+
+    resolveRun();
+    await vi.waitFor(() => expect(getSessionWorktreeLockOwner('sess-1')).toBeNull());
+    expect(stmts.deleteFinalizeKickoffClaim.run).toHaveBeenCalled();
+  });
+
+  it('releases the claim when the run is created and settles during the final poll sleep', async () => {
+    const { app, findProject, stmts } = makeApp();
+    findProject.mockReturnValue({ id: 'proj-1', githubRepo: 'acme/proj' });
+    stmts.getKanbanCard.get.mockReturnValue({
+      id: 'card-1',
+      board_id: 'board-1',
+      session_id: 'sess-1',
+      created_by: 'user-1',
+      title: 't',
+    });
+    stmts.getKanbanBoard.get.mockReturnValue({ id: 'board-1' });
+    stmts.getSession.get.mockReturnValue({
+      id: 'sess-1',
+      worktree_path: '/tmp/wt',
+      worktree_branch: 'feature/x',
+    });
+    let pollChecks: number | null = null;
+    let runOpts!: { onRunCreated?: (runId: string) => void };
+    let resolveRun!: () => void;
+    runFinalize.mockImplementation((_deps: unknown, opts: typeof runOpts) => {
+      runOpts = opts;
+      pollChecks = 0;
+      return new Promise<void>((resolve) => {
+        resolveRun = resolve;
+      });
+    });
+    stmts.getFinalizeRunByIdempotencyKey.get.mockImplementation(() => {
+      if (pollChecks !== null && ++pollChecks === 15) {
+        // Last visibility check misses; the row lands and the run settles
+        // while the poll sleeps one final interval.
+        setTimeout(() => {
+          runOpts.onRunCreated?.('run-final-sleep');
+          resolveRun();
+        }, 0);
+      }
+      return undefined;
+    });
+
+    const res = await supertest(app).post('/api/projects/proj-1/cards/card-1/finalize').send({});
+
+    expect(pollChecks).toBe(15);
+    expect(res.body.run_id).toBe('run-final-sleep');
+    expect(stmts.deleteFinalizeKickoffClaim.run).toHaveBeenCalled();
+    await vi.waitFor(() => expect(getSessionWorktreeLockOwner('sess-1')).toBeNull());
+  });
+
   it('409 dedupes an overlapping kickoff once the first run row becomes visible', async () => {
     const { app, findProject, stmts } = makeApp();
     findProject.mockReturnValue({ id: 'proj-1', githubRepo: 'acme/proj' });

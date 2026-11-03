@@ -3006,11 +3006,9 @@ export const api = {
       signal: opts.signal,
     }),
   /**
-   * Cancel an in-flight Finalize run. UI-only at v0 — flips the DB row to
-   * `cancelled` and broadcasts `finalize_run_phase_changed` /
-   * `finalize_run_completed`. Does not interrupt an already-running
-   * subprocess (the orchestrator polls its in-process CancelSignal at
-   * await boundaries).
+   * Cancel an in-flight Finalize run: flips the row to `cancelled`, trips the
+   * orchestrator's CancelSignal (which kills in-flight check steps and tears
+   * down their runners), and halts the session's agent turn.
    */
   cancelFinalizeRun: (projectId: any, runId: any) =>
     fetchJSON(`/projects/${projectId}/finalize/${runId}/cancel`, {

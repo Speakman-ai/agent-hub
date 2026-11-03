@@ -342,6 +342,7 @@ async function kickoffFinalizeRunBody(
     const { signal, abort } = createFinalizeRunSignal();
     let registeredRunId: string | null = null;
     let settled = false;
+    let pollGaveUp = false;
     const orchestratorPromise = runFinalize(orchestratorDeps, {
       card,
       project,
@@ -357,6 +358,11 @@ async function kickoffFinalizeRunBody(
       mode,
       attempt,
       signal,
+      onRunCreated: (runId) => {
+        if (settled) return;
+        registeredRunId = runId;
+        registerFinalizeRunAbort(runId, abort);
+      },
     });
     runFinalizeStarted = true;
     orchestratorPromise
@@ -375,7 +381,9 @@ async function kickoffFinalizeRunBody(
         // progress (or may already have returned 202), so release the claim
         // here as well; a duplicate that observed our worktree lock can then
         // retry instead of waiting for the stale-claim TTL.
-        if (!registeredRunId) stmts.deleteFinalizeKickoffClaim.run(claimKey);
+        // The visibility poll hands the claim to this handler when it gives up,
+        // even if the row landed afterwards.
+        if (!registeredRunId || pollGaveUp) stmts.deleteFinalizeKickoffClaim.run(claimKey);
         args.onFinalizeSettled?.();
       });
     args.onFinalizeStarted?.();
@@ -385,19 +393,25 @@ async function kickoffFinalizeRunBody(
         | FinalizeRunRow
         | undefined;
       if (created) {
-        registeredRunId = created.id;
         shouldReleaseClaim = true;
-        // The run may have already settled within this poll window — register
-        // then immediately reconcile so we never leak a dead entry.
-        registerFinalizeRunAbort(created.id, abort);
-        if (settled) unregisterFinalizeRunAbort(created.id);
+        // onRunCreated normally registered the abort already; this covers an
+        // orchestrator that does not report it (test doubles). Register then
+        // reconcile so a run that settled inside the poll window never leaks.
+        if (registeredRunId !== created.id) {
+          registeredRunId = created.id;
+          registerFinalizeRunAbort(created.id, abort);
+          if (settled) unregisterFinalizeRunAbort(created.id);
+        }
         return { kind: 'started', runId: created.id, status: created.status };
       }
       await sleep(ROW_VISIBILITY_POLL_INTERVAL_MS);
     }
 
-    shouldReleaseClaim = false;
-    return { kind: 'started', runId: '', status: 'queued' };
+    // Hand claim cleanup to the settle handler, unless the run already settled
+    // during the last poll sleep and that handler has come and gone.
+    shouldReleaseClaim = settled;
+    pollGaveUp = true;
+    return { kind: 'started', runId: registeredRunId ?? '', status: 'queued' };
   } finally {
     if (shouldReleaseClaim || !runFinalizeStarted) {
       stmts.deleteFinalizeKickoffClaim.run(claimKey);

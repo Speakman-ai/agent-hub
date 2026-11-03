@@ -657,6 +657,13 @@ export interface OrchestratorOptions {
   env?: NodeJS.ProcessEnv;
   /** Cancellation signal — honored at every awaitable boundary. */
   signal?: CancelSignal;
+  /**
+   * Called synchronously right after the run row is inserted, before any
+   * further await. The kickoff registers the run's abort handle here so Stop
+   * can reach the orchestrator no matter how long pre-insert setup (git token
+   * resolution) took.
+   */
+  onRunCreated?: (runId: string) => void;
   /** Optional retry parent: this run is the one infra-failure retry. */
   retryOfRunId?: string | null;
   /**
@@ -839,6 +846,15 @@ export async function runFinalize(
       failureReason: 'container_unavailable',
       detail: `insert finalize_runs failed: ${msg}`,
     };
+  }
+  try {
+    opts.onRunCreated?.(runId);
+  } catch (err) {
+    log(
+      `[finalize-orchestrator] onRunCreated threw for run=${runId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
   }
   deps.broadcast({
     type: 'finalize_run_created',

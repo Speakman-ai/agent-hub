@@ -1106,6 +1106,23 @@ describe('runFinalize — split modes', () => {
 });
 
 describe('runFinalize — happy path', () => {
+  it('reports the run id via onRunCreated before the first phase runs', async () => {
+    const { deps, stmts } = makeDeps();
+    const seenAtRebase: string[] = [];
+    const onRunCreated = vi.fn();
+    deps.runRebasePhase = (async () => {
+      seenAtRebase.push(...onRunCreated.mock.calls.map((c) => c[0] as string));
+      return REBASE_OK;
+    }) as NonNullable<OrchestratorDeps['runRebasePhase']>;
+
+    const result = await runFinalize(deps, { ...baseOpts(), onRunCreated });
+
+    expect(onRunCreated).toHaveBeenCalledOnce();
+    expect(onRunCreated).toHaveBeenCalledWith(result.runId);
+    expect(stmts.rows.has(result.runId)).toBe(true);
+    expect(seenAtRebase).toEqual([result.runId]);
+  });
+
   it('runs rebase → parse → review → tasks and parks at ready_to_push', async () => {
     const { deps, broadcast, stmts, pushed } = makeDeps();
 
