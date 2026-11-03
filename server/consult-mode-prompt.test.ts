@@ -15,13 +15,15 @@ describe('consult-mode-prompt', () => {
       agentId: 'ada',
     });
     expect(dev).toContain('this chat does not build or finalize');
-    expect(dev).toContain('agenthub:ask');
+    expect(dev).toContain('agenthub:forward');
     expect(dev).toContain('Auto Merge (`merge`)');
-    expect(dev).toContain('scripts/sessions.sh dispatch app --agent ada');
+    expect(dev).toContain('"projectId": "app"');
+    expect(dev).toContain('"agentId": "ada"');
+    expect(dev).toContain('Do not run `sessions.sh dispatch`');
     expect(dev).not.toContain('Switch to a **Build** mode');
 
     const legacyDev = buildConsultModePreamble({ project: { id: 'legacy', name: 'Legacy' } });
-    expect(legacyDev).toContain('scripts/sessions.sh dispatch legacy');
+    expect(legacyDev).toContain('"projectId": "legacy"');
     expect(legacyDev).toContain('this agent');
   });
 

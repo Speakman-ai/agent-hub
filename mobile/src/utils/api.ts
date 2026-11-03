@@ -164,6 +164,21 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(body),
     }),
+  dispatchSession: (
+    projectId: string,
+    body: { prompt: string; agentId?: string; name?: string; mode?: string },
+  ): Promise<{
+    sessionId: string;
+    agentId: string;
+    projectId: string;
+    name: string;
+    skippedSkills: string[];
+    ref: string;
+  }> =>
+    fetchJSON(`/projects/${encodeURIComponent(projectId)}/sessions/dispatch`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   createSession: (agentId: any, name: any, options: any = {}) =>
     fetchJSON(`/agents/${agentId}/sessions`, {
       method: 'POST',

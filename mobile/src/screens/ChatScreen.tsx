@@ -314,6 +314,9 @@ export default function ChatScreen({
                 agentColor={activeAgent?.color}
                 onEventsLoaded={handleEventsLoaded}
                 hideStatus={simple}
+                agents={agents}
+                projects={projects}
+                onOpenSession={onOpenSession ?? handleOpenHandoffSession}
                 onAskSubmit={handleAskSubmit}
                 onCredentialSubmit={handleCredentialSubmit}
                 askSubmittedIds={askSubmitted}
@@ -371,6 +374,9 @@ export default function ChatScreen({
                 streaming
                 onEventsLoaded={handleEventsLoaded}
                 hideStatus={simple}
+                agents={agents}
+                projects={projects}
+                onOpenSession={onOpenSession ?? handleOpenHandoffSession}
                 onAskSubmit={handleAskSubmit}
                 onCredentialSubmit={handleCredentialSubmit}
                 askSubmittedIds={askSubmitted}

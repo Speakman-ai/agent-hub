@@ -1,4 +1,5 @@
 import { extractAskBlocks } from './extractAskBlocks.js';
+import { extractForwardBlocks } from './extractForwardBlocks.js';
 import type { ChatMessageLike } from './awaitingInput.js';
 
 export interface MessageWithMetadataLike extends ChatMessageLike {
@@ -38,13 +39,17 @@ export function findCredentialRequestIds(text: string | null | undefined): strin
 
 /**
  * True when assistant text hands control to the human: it carries a rendered
- * `agenthub:ask` picker or an `agenthub:credential-request` card. The host
- * must stop driving the session on its own once this is true, because any
- * further turn runs without the answer the agent just asked for.
+ * `agenthub:ask` picker, an `agenthub:forward` card, or an
+ * `agenthub:credential-request` card. The host must stop driving the session
+ * on its own once this is true, because any further turn runs without the
+ * answer the agent just asked for.
  */
 export function textRequestsUserInput(text: string | null | undefined): boolean {
   if (typeof text !== 'string' || !text.includes('agenthub:')) return false;
   if (findCredentialRequestIds(text).length > 0) return true;
+  if (text.includes('agenthub:forward') && extractForwardBlocks(text).forwards.length > 0) {
+    return true;
+  }
   if (!text.includes('agenthub:ask')) return false;
   return extractAskBlocks(text).asks.length > 0;
 }

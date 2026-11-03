@@ -6,6 +6,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Project, Stmts } from './types.js';
+import { extractForwardBlocks } from '../shared/utils/extractForwardBlocks.js';
 
 const mocks = vi.hoisted(() => ({
   loadSkillByName: vi.fn(),
@@ -219,6 +220,23 @@ describe('dispatchBackgroundAgentSession', () => {
       }),
     ).toThrow(BackgroundSessionDispatchError);
     expect(stmts.createSession.run).not.toHaveBeenCalled();
+  });
+
+  it('starts a consult card forwarded from Hub on a workflow project', () => {
+    const card = extractForwardBlocks(
+      '```agenthub:forward\n' +
+        JSON.stringify({ projectId: 'p1', agentId: 'a', prompt: 'Triage', mode: 'consult' }) +
+        '\n```',
+    ).forwards[0];
+    expect(card.mode).toBe('consult');
+    const result = dispatchBackgroundAgentSession(proj({ mode: 'workflow' } as Partial<Project>), {
+      id: 'a1',
+      name: card.name,
+      prompt: card.prompt,
+      runAsSession: true,
+      sessionMode: card.mode,
+    });
+    expect(stmts.updateSessionMode.run).toHaveBeenCalledWith('consult', result.sessionId);
   });
 
   it.each([undefined, null])(

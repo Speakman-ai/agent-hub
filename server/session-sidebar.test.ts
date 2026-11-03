@@ -91,13 +91,15 @@ describe('buildConsultModePreamble sidebar', () => {
     const out = buildConsultModePreamble({ project, sidebar: true });
     expect(out).toContain('### SideBar');
     expect(out).toContain('ask for it in the main session');
-    expect(out).not.toContain('start a **new** session');
+    expect(out).not.toContain('starts a **new** session');
+    expect(out).not.toContain('agenthub:forward');
   });
 
   it('hands code changes to a new session for a standalone Consult chat', () => {
     const out = buildConsultModePreamble({ project });
     expect(out).not.toContain('### SideBar');
-    expect(out).toContain('start a **new** session');
+    expect(out).toContain('starts a **new** session');
+    expect(out).toContain('```agenthub:forward');
     expect(out).toContain('Do not switch this chat into that mode.');
   });
 });

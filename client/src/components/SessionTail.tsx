@@ -31,6 +31,10 @@ import { deriveAssistantTailOutcome } from '../utils/assistantTailOutcome';
 import { stripAssistantControlBlocks } from '../utils/controlBlocks';
 import { extractReviewVerdictContent } from '../utils/finalizeTimeline';
 import { extractAskBlocks } from '@shared/utils/extractAskBlocks';
+import {
+  createSessionForwardTracker,
+  extractForwardBlocks,
+} from '@shared/utils/extractForwardBlocks';
 import { shouldSuppressStreamEvent } from '@shared/utils/benignStreamEvents';
 import { isSidechainStreamEvent } from '@shared/utils/sidechainStreamEvents';
 import {
@@ -41,6 +45,7 @@ import { latestSessionEnvLaunch } from '@shared/utils/sessionEnvLaunch';
 import { formatSystemBannerModelLine } from '@shared/utils/systemBannerModel';
 import { extractCredentialRequestBlocks } from '../utils/credentialRequests';
 import AskUserQuestion from './AskUserQuestion';
+import SessionForwardCard from './SessionForwardCard';
 import CredentialRequestPrompt from './CredentialRequestPrompt';
 import HandoffCard from './HandoffCard';
 import DelegateCard from './DelegateCard';
@@ -103,6 +108,7 @@ function SessionTail({
   askSubmittedIds,
   fromAgent,
   agents,
+  projects,
   sessionHandoffs,
   sessionDelegations,
   delegationDispatchError,
@@ -486,6 +492,19 @@ function SessionTail({
                     onSubmit={(text: any) => onAskSubmit?.(block.event.askId, text)}
                   />
                 );
+              case 'session_forward':
+                return (
+                  <SessionForwardCard
+                    key={`b${i}`}
+                    forward={block.event}
+                    occurrence={block.occurrence ?? 0}
+                    sessionId={message?.session_id}
+                    messageId={messageId}
+                    agents={agents}
+                    projects={projects}
+                    onOpenSession={onOpenSession}
+                  />
+                );
               case 'credential_request':
                 return (
                   <CredentialRequestPrompt
@@ -586,6 +605,11 @@ export function eventsToBlocks(events: any) {
   let exploredBuf: any = null; // { items: [{ use, result }] }
   let thinkingBuf = '';
 
+  const forwardTracker = createSessionForwardTracker(
+    list.map(({ event }: any) => (event && !isSidechainStreamEvent(event) ? event : null)),
+  );
+  // Index of the event being walked; a flush reads it to find later card events.
+  let cursor = 0;
   const flushText = () => {
     if (!textBuf) return;
     const rawText = textBuf.final || textBuf.partials;
@@ -621,10 +645,26 @@ export function eventsToBlocks(events: any) {
         prose = strippedText;
       }
     }
+    let forwards: ReturnType<typeof extractForwardBlocks>['forwards'] = [];
+    if (prose.includes('agenthub:forward')) {
+      const extracted = extractForwardBlocks(prose);
+      if (extracted.forwards.length > 0) {
+        forwards = extracted.forwards;
+        prose = extracted.strippedText;
+      }
+    }
     // Strip skill/react/close-card tags from prose (not ask — handled above).
     const text = stripAssistantControlBlocks(prose);
     const review = extractReviewVerdictContent(text);
     if (review.prose && review.prose.trim()) blocks.push({ kind: 'text', text: review.prose });
+    for (const forward of forwards) {
+      if (forwardTracker.takenByEvent(forward.forwardId, cursor)) continue;
+      blocks.push({
+        kind: 'session_forward',
+        event: { type: 'session_forward', ...forward },
+        occurrence: forwardTracker.occurrence(forward.forwardId),
+      });
+    }
     textBuf = null;
   };
 
@@ -660,6 +700,7 @@ export function eventsToBlocks(events: any) {
   );
 
   for (let i = 0; i < list.length; i++) {
+    cursor = i;
     const { event } = list[i];
     if (!event) continue;
     // Inner-subagent frames belong to their SubagentCard, not to the tail. The
@@ -745,9 +786,16 @@ export function eventsToBlocks(events: any) {
     if (t === 'system') blocks.push({ kind: 'system', event });
     else if (t === 'result') blocks.push({ kind: 'result', event });
     else if (t === 'ask_user_question') blocks.push({ kind: 'ask_question', event });
-    else if (t === 'error') blocks.push({ kind: 'error', event });
+    else if (t === 'session_forward') {
+      blocks.push({
+        kind: 'session_forward',
+        event,
+        occurrence: forwardTracker.occurrence(String(event.forwardId)),
+      });
+    } else if (t === 'error') blocks.push({ kind: 'error', event });
     else blocks.push({ kind: 'unknown', event });
   }
+  cursor = list.length;
   flushAll();
   return blocks;
 }

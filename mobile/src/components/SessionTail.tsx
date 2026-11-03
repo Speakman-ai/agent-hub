@@ -23,6 +23,7 @@ import { resolveToolImageSrc } from '../utils/toolImageSrc';
 import DiffView from './DiffView';
 import SubagentCard from './SubagentCard';
 import AskUserQuestion from './AskUserQuestion';
+import SessionForwardCard from './SessionForwardCard';
 import CredentialRequestPrompt from './CredentialRequestPrompt';
 import BrowserActivityPanel from './BrowserActivityPanel';
 /** Inline thumbnails for images returned in a tool_result (e.g. reading a PNG). */
@@ -363,6 +364,9 @@ function SessionTail({
   askSubmittedIds,
   browserScreenshots = {},
   hideStatus = false,
+  agents,
+  projects,
+  onOpenSession,
 }: any) {
   const [expanded, setExpanded] = useState(false);
   const [expandedBlocks, setExpandedBlocks] = useState<any>({});
@@ -446,6 +450,10 @@ function SessionTail({
     () => blocks.filter((b: any) => b.kind === 'ask_question'),
     [blocks],
   );
+  const forwardBlocks = useMemo<any>(
+    () => blocks.filter((b: any) => b.kind === 'session_forward'),
+    [blocks],
+  );
   const credentialBlocks = useMemo<any>(
     () => blocks.filter((b: any) => b.kind === 'credential_request'),
     [blocks],
@@ -467,7 +475,13 @@ function SessionTail({
   if (!expanded) {
     const hasClassicMeta = toolCount > 0 || thinkingCount > 0 || resultBlock;
     const hasMeta = hasClassicMeta || hasBrowserTimeline;
-    if (!hasMeta && !events && askBlocks.length === 0 && credentialBlocks.length === 0) {
+    if (
+      !hasMeta &&
+      !events &&
+      askBlocks.length === 0 &&
+      credentialBlocks.length === 0 &&
+      forwardBlocks.length === 0
+    ) {
       if (eventsFetchFailed) {
         return (
           <View style={styles.retryBanner}>
@@ -494,6 +508,18 @@ function SessionTail({
             questions={b.event.questions || []}
             onSubmit={(text: any) => onAskSubmit?.(b.event.askId, text)}
             submitted={askSubmittedIds?.has(b.event.askId)}
+          />
+        ))}
+        {forwardBlocks.map((b: any) => (
+          <SessionForwardCard
+            key={`${b.event.forwardId}:${b.occurrence ?? 0}`}
+            forward={b.event}
+            occurrence={b.occurrence ?? 0}
+            sessionId={message?.session_id}
+            messageId={message?.id}
+            agents={agents}
+            projects={projects}
+            onOpenSession={onOpenSession}
           />
         ))}
         {credentialBlocks.map((b: any) => (
@@ -545,6 +571,18 @@ function SessionTail({
           questions={b.event.questions || []}
           onSubmit={(text: any) => onAskSubmit?.(b.event.askId, text)}
           submitted={askSubmittedIds?.has(b.event.askId)}
+        />
+      ))}
+      {forwardBlocks.map((b: any) => (
+        <SessionForwardCard
+          key={`${b.event.forwardId}:${b.occurrence ?? 0}`}
+          forward={b.event}
+          occurrence={b.occurrence ?? 0}
+          sessionId={message?.session_id}
+          messageId={message?.id}
+          agents={agents}
+          projects={projects}
+          onOpenSession={onOpenSession}
         />
       ))}
       {credentialBlocks.map((b: any) => (
@@ -761,6 +799,7 @@ function SessionTail({
             );
           }
           case 'ask_question':
+          case 'session_forward':
             return null;
           case 'system': {
             const modelLine = formatSystemBannerModelLine({

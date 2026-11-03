@@ -1,6 +1,8 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import SessionTail, { eventsToBlocks } from './SessionTail';
+import { api } from '../utils/api';
+import { extractForwardBlocks } from '@shared/utils/extractForwardBlocks';
 import { SESSION_ENV_LAUNCH_STEP } from '@shared/utils/sessionEnvLaunch';
 
 /**
@@ -53,6 +55,109 @@ describe('SessionTail — simple chat status', () => {
     );
     expect(screen.queryByText(/\$0\.2996/)).toBeNull();
     expect(screen.getByText('Hello')).toBeTruthy();
+  });
+});
+
+describe('SessionTail — session forward card', () => {
+  it('renders the card from a session_forward event and hides the raw payload', () => {
+    render(
+      <SessionTail
+        message={{ id: 'm-forward', role: 'assistant', content: 'Handing this off.' }}
+        events={[
+          { seq: 1, event: { type: 'assistant_text', text: 'Handing this off.' } },
+          {
+            seq: 2,
+            event: {
+              type: 'session_forward',
+              forwardId: 'fwd-1',
+              projectId: 'app',
+              agentId: 'ada',
+              name: 'Fix login',
+              summary: 'Repair the redirect.',
+              prompt: 'Fix the login redirect.',
+              mode: 'push',
+            },
+          },
+        ]}
+        agentColor="#6366f1"
+        agentName="Ada"
+        agents={[{ id: 'ada', name: 'Ada' }]}
+      />,
+    );
+    expect(screen.getByTestId('session-forward-card')).toBeTruthy();
+    expect(screen.getByTestId('session-forward-summary').textContent).toContain(
+      'Repair the redirect.',
+    );
+    expect(screen.getByTestId('session-forward-mode')).toHaveProperty('value', 'push');
+    expect(screen.queryByText(/agenthub:forward/)).toBeNull();
+  });
+
+  it('renders one card and dispatches once when partials precede the lifted card', async () => {
+    // The parser lifts the finalized block into session_forward and emits no
+    // final assistant_text, so the streamed partials are never superseded.
+    const raw = [
+      '```agenthub:forward',
+      JSON.stringify({
+        projectId: 'app',
+        agentId: 'ada',
+        name: 'Fix login',
+        summary: 'Repair the redirect.',
+        prompt: 'Fix the login redirect.',
+        mode: 'manual',
+      }),
+      '```',
+    ].join('\n');
+    const lifted = extractForwardBlocks(raw).forwards[0];
+    const events = [
+      { seq: 1, event: { type: 'assistant_text', text: raw.slice(0, 30), partial: true } },
+      { seq: 2, event: { type: 'assistant_text', text: raw.slice(30), partial: true } },
+      { seq: 3, event: { type: 'session_forward', ...lifted } },
+    ];
+    expect(
+      eventsToBlocks(events)
+        .map((block: any) => block.kind)
+        .filter((kind: string) => kind === 'session_forward'),
+    ).toHaveLength(1);
+
+    const dispatch = vi.spyOn(api, 'dispatchSession').mockResolvedValue({
+      sessionId: 'sess-1',
+      agentId: 'ada',
+      projectId: 'app',
+      name: 'Fix login',
+      skippedSkills: [],
+      ref: '',
+    });
+    try {
+      render(
+        <SessionTail
+          message={{ id: 'm-partial', session_id: 'chat-1', role: 'assistant', content: raw }}
+          events={events}
+          agentColor="#6366f1"
+          agentName="Ada"
+          agents={[{ id: 'ada', name: 'Ada' }]}
+          onOpenSession={() => {}}
+        />,
+      );
+      expect(screen.getAllByTestId('session-forward-card')).toHaveLength(1);
+      fireEvent.click(screen.getByTestId('session-forward'));
+      await waitFor(() => expect(screen.getByTestId('session-forward-open')).toBeTruthy());
+      expect(screen.queryAllByTestId('session-forward')).toHaveLength(0);
+      expect(dispatch).toHaveBeenCalledTimes(1);
+    } finally {
+      dispatch.mockRestore();
+      localStorage.clear();
+    }
+  });
+
+  it('keeps a streaming card visible before its final frame arrives', () => {
+    const raw =
+      '```agenthub:forward\n' +
+      JSON.stringify({ projectId: 'app', agentId: 'ada', prompt: 'Fix it.' }) +
+      '\n```';
+    const blocks = eventsToBlocks([
+      { seq: 1, event: { type: 'assistant_text', text: raw, partial: true } },
+    ]);
+    expect(blocks.map((block: any) => block.kind)).toEqual(['session_forward']);
   });
 });
 

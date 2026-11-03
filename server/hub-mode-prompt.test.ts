@@ -25,7 +25,9 @@ describe('hub-mode-prompt', () => {
 
   it('teaches session dispatch, mail, chat posting and ref chips', () => {
     const text = buildHubModePreamble({});
-    expect(text).toContain('sessions.sh dispatch');
+    expect(text).toContain('agenthub:forward');
+    expect(text).toContain('Do not run `sessions.sh dispatch`');
+    expect(text).toContain('`"mode": "consult"`');
     expect(text).toContain('Auto Merge (`merge`)');
     expect(text).toContain('Do not build or finalize here');
     expect(text).toContain('google-mail.sh');

@@ -1,8 +1,13 @@
+import {
+  extractForwardBlocks,
+  type ExtractedForward,
+} from '../shared/utils/extractForwardBlocks.js';
 import type {
   AskUserQuestionEvent,
   AskUserQuestionItem,
   ProgressStepEvent,
   ProgressStepStatus,
+  SessionForwardEvent,
   StreamEvent,
   StreamParser,
   ToolResultImageRef,
@@ -274,6 +279,47 @@ function askEvent(ask: ExtractedAsk): AskUserQuestionEvent {
   };
 }
 
+function forwardEvent(forward: ExtractedForward): SessionForwardEvent {
+  return {
+    type: 'session_forward',
+    forwardId: forward.forwardId,
+    projectId: forward.projectId,
+    agentId: forward.agentId,
+    name: forward.name,
+    summary: forward.summary,
+    prompt: forward.prompt,
+    mode: forward.mode,
+  };
+}
+
+/** Asks, session-forward cards, then step markers, each stripped from `text`. */
+function liftTurnCards(text: string): {
+  text: string;
+  asks: ExtractedAsk[];
+  forwards: ExtractedForward[];
+  steps: ExtractedStep[];
+} {
+  const asked = extractAskBlocks(text);
+  const forwarded = extractForwardBlocks(asked.strippedText);
+  const stepped = extractStepMarkers(forwarded.strippedText);
+  return {
+    text: stepped.strippedText,
+    asks: asked.asks,
+    forwards: forwarded.forwards,
+    steps: stepped.steps,
+  };
+}
+
+function turnHasCards(lifted: ReturnType<typeof liftTurnCards>): boolean {
+  return lifted.asks.length > 0 || lifted.forwards.length > 0 || lifted.steps.length > 0;
+}
+
+function pushTurnCards(out: StreamEvent[], lifted: ReturnType<typeof liftTurnCards>): void {
+  for (const step of lifted.steps) out.push(stepEvent(step));
+  for (const ask of lifted.asks) out.push(askEvent(ask));
+  for (const forward of lifted.forwards) out.push(forwardEvent(forward));
+}
+
 export function createStreamParser(engine: string): StreamParser {
   let buffer = '';
   // Codex `file_change` items are often emitted only on `item.completed` (no
@@ -444,15 +490,12 @@ function normalizeClaudeFrame(
           const text = block.text as string;
           // Extract asks first, then step markers from the stripped-of-asks text
           // so we don't accidentally parse markers nested inside a fenced ask.
-          const { strippedText: afterAsk, asks } = extractAskBlocks(text);
-          const { strippedText: afterSteps, steps } = extractStepMarkers(afterAsk);
-          const displayText = afterSteps;
-          if (asks.length > 0 || steps.length > 0) {
-            if (displayText) {
-              out.push({ type: 'assistant_text', text: displayText, partial: false });
+          const lifted = liftTurnCards(text);
+          if (turnHasCards(lifted)) {
+            if (lifted.text) {
+              out.push({ type: 'assistant_text', text: lifted.text, partial: false });
             }
-            for (const s of steps) out.push(stepEvent(s));
-            for (const ask of asks) out.push(askEvent(ask));
+            pushTurnCards(out, lifted);
           } else {
             out.push({ type: 'assistant_text', text, partial: false });
           }
@@ -783,19 +826,16 @@ function normalizeCursor(
       const resultText = typeof raw.result === 'string' ? raw.result : '';
       const out: StreamEvent[] = [];
       if (resultText) {
-        const { strippedText: afterAsk, asks } = extractAskBlocks(resultText);
-        const { strippedText: afterSteps, steps } = extractStepMarkers(afterAsk);
-        const hasSideExtracts = asks.length > 0 || steps.length > 0;
-        if (!hasSideExtracts || afterSteps) {
+        const lifted = liftTurnCards(resultText);
+        if (!turnHasCards(lifted) || lifted.text) {
           out.push({
             type: 'assistant_text',
-            text: afterSteps,
+            text: lifted.text,
             partial: false,
             replacesAssistantBuffer: true,
           });
         }
-        for (const s of steps) out.push(stepEvent(s));
-        for (const ask of asks) out.push(askEvent(ask));
+        pushTurnCards(out, lifted);
       }
       out.push({
         type: 'result',
@@ -985,14 +1025,12 @@ function normalizeGemini(raw: Record<string, unknown>): StreamEvent[] {
           }
           // Finalized assistant text — run ask + step extraction to mirror
           // normalizeClaude's behavior so pickers render in Gemini sessions too.
-          const { strippedText: afterAsk, asks } = extractAskBlocks(text);
-          const { strippedText: afterSteps, steps } = extractStepMarkers(afterAsk);
-          if (asks.length > 0 || steps.length > 0) {
-            if (afterSteps) {
-              out.push({ type: 'assistant_text', text: afterSteps, partial: false });
+          const lifted = liftTurnCards(text);
+          if (turnHasCards(lifted)) {
+            if (lifted.text) {
+              out.push({ type: 'assistant_text', text: lifted.text, partial: false });
             }
-            for (const s of steps) out.push(stepEvent(s));
-            for (const ask of asks) out.push(askEvent(ask));
+            pushTurnCards(out, lifted);
           } else {
             out.push({ type: 'assistant_text', text, partial: false });
           }
@@ -1062,14 +1100,12 @@ function normalizeGemini(raw: Record<string, unknown>): StreamEvent[] {
       // when Gemini doesn't stream the assistant text as partials first.
       const out: StreamEvent[] = [];
       if (resultText) {
-        const { strippedText: afterAsk, asks } = extractAskBlocks(resultText);
-        const { strippedText: afterSteps, steps } = extractStepMarkers(afterAsk);
-        if (asks.length > 0 || steps.length > 0) {
-          if (afterSteps) {
-            out.push({ type: 'assistant_text', text: afterSteps, partial: false });
+        const lifted = liftTurnCards(resultText);
+        if (turnHasCards(lifted)) {
+          if (lifted.text) {
+            out.push({ type: 'assistant_text', text: lifted.text, partial: false });
           }
-          for (const s of steps) out.push(stepEvent(s));
-          for (const ask of asks) out.push(askEvent(ask));
+          pushTurnCards(out, lifted);
         }
       }
       const inTok =
@@ -1146,16 +1182,14 @@ function finalizeGrokAgentMessageTurn(
   agentMessage.text = '';
   const out: StreamEvent[] = [];
   if (finalText) {
-    const { strippedText: afterAsk, asks } = extractAskBlocks(finalText);
-    const { strippedText: afterSteps, steps } = extractStepMarkers(afterAsk);
+    const lifted = liftTurnCards(finalText);
     out.push({
       type: 'assistant_text',
-      text: afterSteps,
+      text: lifted.text,
       partial: false,
       replacesAssistantBuffer: true,
     });
-    for (const s of steps) out.push(stepEvent(s));
-    for (const ask of asks) out.push(askEvent(ask));
+    pushTurnCards(out, lifted);
   }
   const inTok =
     (usage?.inputTokens as number | undefined) ?? (usage?.input_tokens as number | undefined);
@@ -1488,15 +1522,13 @@ function normalizeCodex(
           if (type !== 'item.completed') return [];
           const text = typeof item.text === 'string' ? (item.text as string) : '';
           if (!text) return [];
-          const { strippedText: afterAsk, asks } = extractAskBlocks(text);
-          const { strippedText: afterSteps, steps } = extractStepMarkers(afterAsk);
+          const lifted = liftTurnCards(text);
           const out: StreamEvent[] = [];
-          if (asks.length > 0 || steps.length > 0) {
-            if (afterSteps) {
-              out.push({ type: 'assistant_text', text: afterSteps, partial: false });
+          if (turnHasCards(lifted)) {
+            if (lifted.text) {
+              out.push({ type: 'assistant_text', text: lifted.text, partial: false });
             }
-            for (const s of steps) out.push(stepEvent(s));
-            for (const ask of asks) out.push(askEvent(ask));
+            pushTurnCards(out, lifted);
           } else {
             out.push({ type: 'assistant_text', text, partial: false });
           }
@@ -1780,16 +1812,14 @@ function finalizeMuseTurn(
   // the whole run, so it is only the fallback when nothing streamed.
   const finalText = buffered || (typeof payload.text === 'string' ? payload.text : '');
   if (finalText) {
-    const { strippedText: afterAsk, asks } = extractAskBlocks(finalText);
-    const { strippedText: afterSteps, steps } = extractStepMarkers(afterAsk);
+    const lifted = liftTurnCards(finalText);
     out.push({
       type: 'assistant_text',
-      text: afterSteps,
+      text: lifted.text,
       partial: false,
       replacesAssistantBuffer: true,
     });
-    for (const s of steps) out.push(stepEvent(s));
-    for (const ask of asks) out.push(askEvent(ask));
+    pushTurnCards(out, lifted);
   }
   out.push({
     type: 'result',

@@ -31,9 +31,14 @@ const CRED = [
 ].join('\n');
 
 describe('textRequestsUserInput', () => {
-  it('detects an ask picker and a credential card', () => {
+  it('detects an ask picker, a forward card, and a credential card', () => {
     expect(textRequestsUserInput(ASK)).toBe(true);
     expect(textRequestsUserInput(CRED)).toBe(true);
+    expect(
+      textRequestsUserInput(
+        '```agenthub:forward\n{"projectId":"app","agentId":"ada","prompt":"Fix it"}\n```',
+      ),
+    ).toBe(true);
   });
 
   it('ignores prose, malformed blocks, and credential cards without fields', () => {

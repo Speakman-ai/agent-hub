@@ -2541,6 +2541,26 @@ export const api = {
     fetchJSON<{ ok: true; closedSessionIds: string[] }>(`/sessions/${sessionId}/sidebar`, {
       method: 'DELETE',
     }),
+  /**
+   * Start a session on a project agent and send its first prompt. Used by the
+   * Session forward card; the caller picks the ship level.
+   */
+  dispatchSession: (
+    projectId: string,
+    body: { prompt: string; agentId?: string; name?: string; mode?: string },
+  ) =>
+    fetchJSON<{
+      sessionId: string;
+      agentId: string;
+      projectId: string;
+      name: string;
+      skippedSkills: string[];
+      ref: string;
+    }>(`/projects/${encodeURIComponent(projectId)}/sessions/dispatch`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+      timeout: 60000,
+    }),
   createSession: (
     agentId: string,
     name?: string,

@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { describe, it, expect } from 'vitest';
 import { eventsToBlocks, describeTool } from './sessionTailBlocks';
+import { extractForwardBlocks } from '@shared/utils/extractForwardBlocks';
 const wrap = (events: any) => events.map((event: any, i: any) => ({ seq: i, event }));
 describe('eventsToBlocks — browser_tool_activity handling', () => {
   it('does not produce unknown blocks for browser_tool_activity-only streams', () => {
@@ -281,6 +282,75 @@ describe('eventsToBlocks — misc', () => {
       ]),
     );
     expect(blocks.map((b: any) => b.kind)).toEqual(['system', 'thinking']);
+  });
+  it('maps session_forward and strips a fenced card out of prose', () => {
+    const eventBlocks = eventsToBlocks(
+      wrap([
+        {
+          type: 'session_forward',
+          forwardId: 'fwd-1',
+          projectId: 'app',
+          agentId: 'ada',
+          name: 'Fix login',
+          summary: 'Repair the redirect.',
+          prompt: 'Fix it.',
+          mode: 'merge',
+        },
+      ]),
+    );
+    expect(eventBlocks[0].kind).toBe('session_forward');
+    expect(eventBlocks[0].event.mode).toBe('merge');
+
+    const prose = [
+      'Handing this off.',
+      '```agenthub:forward',
+      JSON.stringify({
+        projectId: 'app',
+        agentId: 'ada',
+        name: 'Fix login',
+        summary: 'Repair the redirect.',
+        prompt: 'Fix it.',
+        mode: 'push',
+      }),
+      '```',
+    ].join('\n');
+    const textBlocks = eventsToBlocks(
+      wrap([{ type: 'assistant_text', text: prose, partial: false }]),
+    );
+    expect(textBlocks.map((block: any) => block.kind)).toEqual(['text', 'session_forward']);
+    expect(textBlocks[0].text).toBe('Handing this off.');
+    expect(textBlocks[0].text).not.toContain('agenthub:forward');
+  });
+  it('renders one card when streamed partials precede the lifted session_forward', () => {
+    const raw = [
+      '```agenthub:forward',
+      JSON.stringify({ projectId: 'app', agentId: 'ada', name: 'Fix login', prompt: 'Fix it.' }),
+      '```',
+    ].join('\n');
+    const lifted = extractForwardBlocks(raw).forwards[0];
+    const blocks = eventsToBlocks(
+      wrap([
+        { type: 'assistant_text', text: raw.slice(0, 25), partial: true },
+        { type: 'assistant_text', text: raw.slice(25), partial: true },
+        { type: 'session_forward', ...lifted },
+      ]),
+    );
+    expect(blocks.map((b: any) => b.kind)).toEqual(['session_forward']);
+    expect(blocks[0].occurrence).toBe(0);
+  });
+  it('numbers two identical cards in one message separately', () => {
+    const card = {
+      type: 'session_forward',
+      forwardId: 'fwd-1',
+      projectId: 'app',
+      agentId: 'ada',
+      name: 'Fix login',
+      summary: 'Fix it.',
+      prompt: 'Fix it.',
+      mode: 'manual',
+    };
+    const blocks = eventsToBlocks(wrap([card, card]));
+    expect(blocks.map((b: any) => b.occurrence)).toEqual([0, 1]);
   });
   it('maps ask_user_question with event payload', () => {
     const blocks = eventsToBlocks(

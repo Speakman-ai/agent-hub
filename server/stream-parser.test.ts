@@ -643,6 +643,41 @@ describe('createStreamParser — ask_user_question integration', () => {
     return events;
   }
 
+  it('emits session_forward and strips the card from the visible text', () => {
+    const payload = [
+      'Handing this off.',
+      '',
+      '```agenthub:forward',
+      JSON.stringify({
+        projectId: 'app',
+        agentId: 'ada',
+        name: 'Fix login',
+        summary: 'Repair the redirect.',
+        prompt: 'Fix the login redirect.',
+        mode: 'merge',
+      }),
+      '```',
+    ].join('\n');
+    const events = parse([
+      JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: payload }] },
+      }),
+    ]);
+    expect(events.map((event) => event.type)).toEqual(['assistant_text', 'session_forward']);
+    expect((events[0] as { text: string }).text).toBe('Handing this off.');
+    const card = events[1] as {
+      forwardId: string;
+      mode: string;
+      projectId: string;
+      prompt: string;
+    };
+    expect(card.mode).toBe('merge');
+    expect(card.projectId).toBe('app');
+    expect(card.prompt).toBe('Fix the login redirect.');
+    expect(card.forwardId).toMatch(/^fwd-/);
+  });
+
   it('emits ask_user_question alongside stripped assistant_text', () => {
     const payload = `Here is a question:\n\n\`\`\`agenthub:ask\n[{"question":"Q?","header":"H","multiSelect":false,"options":[{"label":"a","description":"A"},{"label":"b","description":"B"}]}]\n\`\`\`\n\nPick one.`;
     const events = parse([

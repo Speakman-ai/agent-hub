@@ -4578,6 +4578,7 @@ export type StreamEventType =
   | 'checkpoint'
   | 'rate_limit'
   | 'ask_user_question'
+  | 'session_forward'
   | 'progress_step'
   | 'browser_tool_activity' // Synthetic host telemetry — never emitted by the CLI JSONL parser
   | 'error'
@@ -4720,6 +4721,18 @@ export interface AskUserQuestionEvent extends BaseStreamEvent {
   questions: AskUserQuestionItem[];
 }
 
+/** Confirm-then-start card. The session does not exist until the client dispatches it. */
+export interface SessionForwardEvent extends BaseStreamEvent {
+  type: 'session_forward';
+  forwardId: string;
+  projectId: string;
+  agentId: string;
+  name: string;
+  summary: string;
+  prompt: string;
+  mode: 'manual' | 'review' | 'push' | 'merge' | 'consult';
+}
+
 export interface ProgressStepEvent extends BaseStreamEvent {
   type: 'progress_step';
   /** Human-readable step name, e.g. "Gathered PR context". */
@@ -4782,6 +4795,7 @@ export type StreamEvent =
   | CheckpointEvent
   | RateLimitEvent
   | AskUserQuestionEvent
+  | SessionForwardEvent
   | ProgressStepEvent
   | BrowserToolActivityEvent
   | ErrorEvent

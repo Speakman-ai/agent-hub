@@ -4700,6 +4700,16 @@ export default function App({ initialView }: any = {}) {
   const handleOpenHandoffSession = useCallback(
     (targetAgentId: any, targetSessionId: any) => {
       if (!targetAgentId || !targetSessionId) return;
+      const row =
+        sessionsRef.current.find((session: any) => session.id === targetSessionId) ??
+        sessionsByIdRef.current.get(targetSessionId);
+      // A forwarded build is not a consult chat. Leave the simple shell so its
+      // ship controls are on screen. An unknown row is treated the same way:
+      // the list often has not loaded the session the card just started.
+      if (shellModeRef.current === 'simple' && !isSimpleConsultSession(row)) {
+        writeShellMode('hub');
+        setShellMode('hub');
+      }
       pendingSessionIdRef.current = targetSessionId;
       setActiveAgentId(targetAgentId);
       setActiveSessionId(targetSessionId);
@@ -6909,6 +6919,7 @@ export default function App({ initialView }: any = {}) {
           askSubmittedIds={askSubmitted}
           fromAgent={activeAgent}
           agents={agents}
+          projects={projects}
           sessionHandoffs={sessionHandoffs}
           sessionDelegations={delegations[activeSessionId]}
           delegationDispatchError={delegationDispatchErrors[activeSessionId]}
@@ -7084,6 +7095,7 @@ export default function App({ initialView }: any = {}) {
                       askSubmittedIds={askSubmitted}
                       fromAgent={activeAgent}
                       agents={agents}
+                      projects={projects}
                       sessionHandoffs={sessionHandoffs}
                       sessionDelegations={delegations[activeSessionId]}
                       delegationDispatchError={delegationDispatchErrors[activeSessionId]}
@@ -8585,6 +8597,7 @@ export default function App({ initialView }: any = {}) {
                                         askSubmittedIds={askSubmitted}
                                         fromAgent={activeAgent}
                                         agents={agents}
+                                        projects={projects}
                                         sessionHandoffs={sessionHandoffs}
                                         sessionDelegations={delegations[activeSessionId]}
                                         delegationDispatchError={

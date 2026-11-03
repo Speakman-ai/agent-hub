@@ -12,6 +12,10 @@ import {
   lastFinalAssistantTextIndex,
   isSupersededPartialText,
 } from '@shared/utils/assistantTextPartials';
+import {
+  createSessionForwardTracker,
+  extractForwardBlocks,
+} from '@shared/utils/extractForwardBlocks';
 import { extractCredentialRequestBlocks } from './credentialRequests';
 import { isScheduleWakeupTool } from '@shared/utils/scheduledWakeup';
 const EXPLORE_TOOLS = new Set(['Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch', 'NotebookRead']);
@@ -50,6 +54,11 @@ export function eventsToBlocks(events: any) {
   let textBuf: any = null;
   let exploredBuf: any = null;
   let thinkingBuf = '';
+  const forwardTracker = createSessionForwardTracker(
+    list.map(({ event }: any) => (event && !isSidechainStreamEvent(event) ? event : null)),
+  );
+  // Index of the event being walked; a flush reads it to find later card events.
+  let cursor = 0;
   const flushText = () => {
     if (!textBuf) return;
     const rawText = textBuf.final || textBuf.partials;
@@ -66,8 +75,24 @@ export function eventsToBlocks(events: any) {
         prose = strippedText;
       }
     }
+    let forwards: ReturnType<typeof extractForwardBlocks>['forwards'] = [];
+    if (prose.includes('agenthub:forward')) {
+      const extracted = extractForwardBlocks(prose);
+      if (extracted.forwards.length > 0) {
+        forwards = extracted.forwards;
+        prose = extracted.strippedText;
+      }
+    }
     const text = stripAssistantControlBlocks(prose);
     if (text && text.trim()) blocks.push({ kind: 'text', text });
+    for (const forward of forwards) {
+      if (forwardTracker.takenByEvent(forward.forwardId, cursor)) continue;
+      blocks.push({
+        kind: 'session_forward',
+        event: { type: 'session_forward', ...forward },
+        occurrence: forwardTracker.occurrence(forward.forwardId),
+      });
+    }
     textBuf = null;
   };
   const flushExplored = () => {
@@ -96,6 +121,7 @@ export function eventsToBlocks(events: any) {
     list.map(({ event }: any) => (event && !isSidechainStreamEvent(event) ? event : null)),
   );
   for (let i = 0; i < list.length; i++) {
+    cursor = i;
     const { event } = list[i];
     if (!event) continue;
     // Inner-subagent frames belong to their SubagentCard, not to the tail.
@@ -161,9 +187,16 @@ export function eventsToBlocks(events: any) {
     if (t === 'system') blocks.push({ kind: 'system', event });
     else if (t === 'result') blocks.push({ kind: 'result', event });
     else if (t === 'ask_user_question') blocks.push({ kind: 'ask_question', event });
-    else if (t === 'error') blocks.push({ kind: 'error', event });
+    else if (t === 'session_forward') {
+      blocks.push({
+        kind: 'session_forward',
+        event,
+        occurrence: forwardTracker.occurrence(String(event.forwardId)),
+      });
+    } else if (t === 'error') blocks.push({ kind: 'error', event });
     else blocks.push({ kind: 'unknown', event });
   }
+  cursor = list.length;
   flushAll();
   return blocks;
 }

@@ -5498,7 +5498,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           });
         }
 
-        if (event.type === 'ask_user_question' && !event.parentToolUseId) {
+        if (
+          (event.type === 'ask_user_question' || event.type === 'session_forward') &&
+          !event.parentToolUseId
+        ) {
           askedUserThisTurn = true;
         }
 

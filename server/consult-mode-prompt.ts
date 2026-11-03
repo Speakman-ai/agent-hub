@@ -30,7 +30,7 @@ export function buildConsultModePreamble(args: {
     ? 'No code edits, git ship, or Finalize here.'
     : workflow
       ? 'This is a **workflow** project — there is no Finalize Code Changes flow or session PR automation.'
-      : 'This is a **dev** project, but **this chat does not build or finalize**. Answer and check on work here. When a code change is needed, ask which automation they want and start a new session.';
+      : 'This is a **dev** project, but **this chat does not build or finalize**. Answer and check on work here. When a code change is needed, show a Session forward card that starts a new session.';
   const browserLine = browserToolsEnabled
     ? 'The `browser` ReAct tool (host Chromium: `navigate`, `click`, `type`, `extract`, `screenshot`, `read_page`, …) **is available in this session** — use it to open URLs, scrape pages, read live content, or fill forms when a question needs the web. Do not claim you lack web access.'
     : 'Host browser tools are turned **off** for this agent, so omit `tool: browser` from ReAct blocks — `web` search and `wiki` retrieval still work.';
@@ -84,21 +84,22 @@ export function buildConsultModePreamble(args: {
       : workflow
         ? 'Explain the gap and recommend a **dev** project or a workflow run — Consult is Hub-only.'
         : [
-            'This chat does not build or finalize. If the user asks you to change code or fix something:',
+            'This chat does not build or finalize. If the user asks you to change code, fix something, or start another session, show one Session forward card and stop. Do not run `sessions.sh dispatch`, and do not ask the automation level with `agenthub:ask` — the card has that dropdown.',
             '',
-            '1. Ask which automation they want with one fenced `agenthub:ask` picker before you start anything, unless they already named one. Options:',
-            '   - Build (`manual`) — they stay in the loop and ship it themselves',
-            '   - Build and Review (`review`) — tests and a review after each turn; they push',
-            '   - Build and Push (`push`) — build, review, test, and push',
-            '   - Auto Merge (`merge`) — build, review, test, push, and auto-merge',
-            `2. After they answer, start a **new** session on this same agent (\`${agentId || 'this agent'}\`) in project \`${project.id}\`. Do not switch this chat into that mode.`,
-            '   `scripts/sessions.sh dispatch ' +
-              project.id +
-              (agentId ? ` --agent ${agentId}` : '') +
-              ' --name "…" --mode manual|review|push|merge --prompt "…"`',
-            '   The prompt is their request plus any decisions already made in this chat.',
-            '3. Paste the `ref` token from that command into your reply so the session is a live chip. Keep talking here.',
-            '4. To check on that work later, read the session or the board. Still no code edits, git ship, or Finalize from this chat.',
+            `The card starts a **new** session on this same agent (\`${agentId || 'this agent'}\`) in project \`${project.id}\`. Do not switch this chat into that mode. Emit exactly one fenced block after a short sentence:`,
+            '',
+            '```agenthub:forward',
+            '{',
+            `  "projectId": "${project.id}",`,
+            `  "agentId": "${agentId || '<this agent id>'}",`,
+            '  "name": "short title",',
+            '  "summary": "what the new session will do",',
+            '  "prompt": "their request plus any decisions already made in this chat",',
+            '  "mode": "manual"',
+            '}',
+            '```',
+            '',
+            '`mode` is only your suggestion: Build (`manual`), Build and Review (`review`), Build and Push (`push`), or Auto Merge (`merge`). They can change it, then press Session forward. That button starts the session. Keep talking here. To check on it later, read the session or the board. Still no code edits, git ship, or Finalize from this chat.',
           ].join('\n'),
     '',
   ].join('\n');
