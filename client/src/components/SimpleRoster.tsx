@@ -362,6 +362,7 @@ export default function SimpleRoster({
               {
                 agentId: serverAgent.id,
                 name: serverAgent.name,
+                projectId: '',
                 projectName: '',
                 color: '#38bdf8',
                 avatar: null,
