@@ -16,6 +16,8 @@ import { computeSessionState } from '../session-state.js';
 import { getUserById } from '../users-store.js';
 import { isHubAssistantAgentId, isOrganizationSystemProject } from '../../shared/utils/hub.js';
 import { isWikiDocSessionName } from '../wiki-doc-session.js';
+import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
+import { canViewProject } from '../project-visibility.js';
 
 /**
  * Mirrors `authIsConfigured` in routes/orgs.ts. When neither JWT-backed user
@@ -178,9 +180,32 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
       .prepare('SELECT DISTINCT agent_id FROM organization_workflow_sessions')
       .all() as Array<{ agent_id: string }>)
       organizationAgentIds.add(row.agent_id);
-    const projects = getProjects().filter((p) => !isOrganizationSystemProject(p));
+    // Org membership is not enough: every section below is scoped to projects
+    // the caller can view (private projects, assignment-restricted projects).
+    // Hidden projects are subtracted rather than visible ones intersected, so
+    // rows for since-deleted projects keep counting exactly as they did.
+    const caller = resolveVisibilityCaller(req);
+    const orgProjects = getProjects().filter((p) => !isOrganizationSystemProject(p));
+    const projects = orgProjects.filter((p) => canViewProject(p, caller));
+    const visibleProjectIds = new Set(projects.map((p) => p.id));
+    const hiddenProjectIds = orgProjects
+      .filter((p) => !visibleProjectIds.has(p.id))
+      .map((p) => p.id);
+    const visibleAgentIds = new Set(projects.flatMap((p) => p.agents.map((a) => a.id)));
+    const hiddenAgentIds = new Set(
+      orgProjects
+        .filter((p) => !visibleProjectIds.has(p.id))
+        .flatMap((p) => p.agents.map((a) => a.id))
+        .filter((id) => !visibleAgentIds.has(id)),
+    );
+    const excludedAgentIdsJson = JSON.stringify([...organizationAgentIds, ...hiddenAgentIds]);
+    const hiddenProjectIdsJson = JSON.stringify(hiddenProjectIds);
+    const visibleBoardSql = `board_id NOT IN (SELECT id FROM kanban_boards WHERE project_id IN (SELECT value FROM json_each(?)))`;
+
     const projectCount = projects.length;
-    const agentCount = allAgents().filter((a) => !organizationAgentIds.has(a.id)).length;
+    const agentCount = allAgents().filter(
+      (a) => !organizationAgentIds.has(a.id) && !hiddenAgentIds.has(a.id),
+    ).length;
 
     // Headline counters
     const sessionsTotal = (
@@ -188,7 +213,7 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
         .prepare(
           'SELECT COUNT(*) as c FROM sessions WHERE agent_id NOT IN (SELECT value FROM json_each(?))',
         )
-        .get(JSON.stringify([...organizationAgentIds])) as { c: number }
+        .get(excludedAgentIdsJson) as { c: number }
     ).c;
 
     // Active sessions queue (detail + count)
@@ -221,7 +246,7 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
     const ACTIVE_SESSIONS_DISPLAY_LIMIT = 200;
     const agentsById = new Map(
       allAgents()
-        .filter((a) => !organizationAgentIds.has(a.id))
+        .filter((a) => !organizationAgentIds.has(a.id) && !hiddenAgentIds.has(a.id))
         .map((a) => [a.id, a]),
     );
 
@@ -374,9 +399,10 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
       (
         db
           .prepare(
-            `SELECT COUNT(*) as c FROM kanban_cards WHERE column_id NOT IN (${placeholders})`,
+            `SELECT COUNT(*) as c FROM kanban_cards
+             WHERE column_id NOT IN (${placeholders}) AND ${visibleBoardSql}`,
           )
-          .get(...doneColumnIds) as { c: number }
+          .get(...doneColumnIds, hiddenProjectIdsJson) as { c: number }
       ).c || 0;
 
     // Open PRs (count + detail list)
@@ -506,23 +532,36 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
       },
     );
 
-    const escalations = (stmts.getAllActiveEscalations.all() as unknown[]).length;
+    const escalations = (
+      stmts.getAllActiveEscalations.all() as Array<{ project_id: string }>
+    ).filter((e) => !hiddenProjectIds.includes(e.project_id)).length;
 
     // Kanban breakdown
     const totalBoards =
-      (db.prepare('SELECT COUNT(*) as c FROM kanban_boards').get() as { c: number }).c || 0;
+      (
+        db
+          .prepare(
+            'SELECT COUNT(*) as c FROM kanban_boards WHERE project_id NOT IN (SELECT value FROM json_each(?))',
+          )
+          .get(hiddenProjectIdsJson) as { c: number }
+      ).c || 0;
     const totalCards =
-      (db.prepare('SELECT COUNT(*) as c FROM kanban_cards').get() as { c: number }).c || 0;
+      (
+        db
+          .prepare(`SELECT COUNT(*) as c FROM kanban_cards WHERE ${visibleBoardSql}`)
+          .get(hiddenProjectIdsJson) as { c: number }
+      ).c || 0;
 
     const byColumnRows = db
       .prepare(
         `SELECT c.name as column_name, COUNT(k.id) as count
          FROM kanban_columns c
          LEFT JOIN kanban_cards k ON k.column_id = c.id
+         WHERE c.${visibleBoardSql}
          GROUP BY LOWER(c.name)
          ORDER BY count DESC, column_name ASC`,
       )
-      .all() as KanbanBreakdownRow[];
+      .all(hiddenProjectIdsJson) as KanbanBreakdownRow[];
 
     // Normalise to unique display names. GROUP BY LOWER(...) means we
     // arbitrarily pick one row per (case-insensitive) column name; the
@@ -535,10 +574,10 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
     const priorityRows = db
       .prepare(
         `SELECT priority, COUNT(*) as count FROM kanban_cards
-         WHERE column_id NOT IN (${placeholders})
+         WHERE column_id NOT IN (${placeholders}) AND ${visibleBoardSql}
          GROUP BY priority`,
       )
-      .all(...doneColumnIds) as PriorityCountRow[];
+      .all(...doneColumnIds, hiddenProjectIdsJson) as PriorityCountRow[];
 
     const byPriority: Record<'urgent' | 'high' | 'medium' | 'low', number> = {
       urgent: 0,
@@ -562,36 +601,39 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
          FROM kanban_cards k
          JOIN kanban_columns c ON c.id = k.column_id
          JOIN kanban_boards b ON b.id = k.board_id
+         WHERE b.project_id NOT IN (SELECT value FROM json_each(?))
          ORDER BY k.updated_at DESC
          LIMIT ?`,
       )
-      .all(ACTIVITY_LIMIT) as CardActivityRow[];
+      .all(hiddenProjectIdsJson, ACTIVITY_LIMIT) as CardActivityRow[];
 
     const recentSessions = db
       .prepare(
         `SELECT id, name, agent_id, created_at FROM sessions
-         WHERE hidden = 0
+         WHERE hidden = 0 AND agent_id NOT IN (SELECT value FROM json_each(?))
          ORDER BY created_at DESC
          LIMIT ?`,
       )
-      .all(ACTIVITY_LIMIT) as SessionActivityRow[];
+      .all(excludedAgentIdsJson, ACTIVITY_LIMIT) as SessionActivityRow[];
 
     const recentEscalations = db
       .prepare(
         `SELECT id, project_id, type, title, created_at FROM escalations
+         WHERE project_id NOT IN (SELECT value FROM json_each(?))
          ORDER BY created_at DESC
          LIMIT ?`,
       )
-      .all(ACTIVITY_LIMIT) as EscalationActivityRow[];
+      .all(hiddenProjectIdsJson, ACTIVITY_LIMIT) as EscalationActivityRow[];
 
     const recentPrCreations = db
       .prepare(
         `SELECT id, project_id, card_id, session_id, pr_url, pr_number, pr_title, author_agent, created_at
          FROM pr_creation_logs
+         WHERE project_id NOT IN (SELECT value FROM json_each(?))
          ORDER BY created_at DESC
          LIMIT ?`,
       )
-      .all(ACTIVITY_LIMIT) as PrCreationActivityRow[];
+      .all(hiddenProjectIdsJson, ACTIVITY_LIMIT) as PrCreationActivityRow[];
 
     type ActivityEntry = {
       type: 'card_created' | 'card_updated' | 'session_created' | 'escalation' | 'pr_created';
