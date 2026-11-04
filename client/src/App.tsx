@@ -8,6 +8,7 @@ import OrganizationsPage from './components/OrganizationsPage';
 import OrganizationComputerBar from './components/OrganizationComputerBar';
 import type { OrganizationChatTarget } from './components/OrganizationAgentsPanel';
 import { isOrganizationAgentId } from '@shared/utils/organization-agents';
+import { isSessionVisibleInOwnSidebar } from '@shared/utils/sessionSidebarOwnership';
 import {
   useState,
   useEffect,
@@ -3709,7 +3710,8 @@ export default function App({ initialView }: any = {}) {
             sessionsByIdRef.current.set(row.id, row);
             setSessionsIndexTick((t: any) => t + 1);
           }
-          if (row && agentId) {
+          // Broadcast to every client; the sidebar only lists the caller's own.
+          if (row && agentId && isSessionVisibleInOwnSidebar(row, getAuthRecord()?.user?.id)) {
             // Functional setters + eager ref writes: two session_created
             // events before paint must compose. Planning only from
             // sessionsRef / sessionsByAgentIdRef then setState(plan) loses
@@ -3780,7 +3782,11 @@ export default function App({ initialView }: any = {}) {
           const restoredId = data.sessionId || data.session?.id;
           if (!restoredId) break;
           setArchivedSessions((prev: any) => prev.filter((s: any) => s.id !== restoredId));
-          if (data.session && data.session.agent_id === activeAgentIdRef.current) {
+          if (
+            data.session &&
+            data.session.agent_id === activeAgentIdRef.current &&
+            isSessionVisibleInOwnSidebar(data.session, getAuthRecord()?.user?.id)
+          ) {
             setSessions((prev: any) => {
               if (prev.some((s: any) => s.id === restoredId)) return prev;
               return [data.session, ...prev];
@@ -3820,7 +3826,11 @@ export default function App({ initialView }: any = {}) {
           // user sees it without a refresh. The initiating client also calls
           // onForwarded directly for optimistic navigation.
           const newSession = data.session;
-          if (newSession && newSession.agent_id === activeAgentIdRef.current) {
+          if (
+            newSession &&
+            newSession.agent_id === activeAgentIdRef.current &&
+            isSessionVisibleInOwnSidebar(newSession, getAuthRecord()?.user?.id)
+          ) {
             setSessions((prev: any) => {
               if (prev.some((s: any) => s.id === newSession.id)) return prev;
               return [newSession, ...prev];

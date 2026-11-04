@@ -11,6 +11,7 @@ import {
 } from '@shared/utils/computerTool';
 import { organizationComputerOwnerLabel } from '@shared/utils/organizationComputer';
 import { isOrganizationAgentId } from '@shared/utils/organization-agents';
+import { isSessionVisibleInOwnSidebar } from '@shared/utils/sessionSidebarOwnership';
 import { promoteQueuedMessage } from '@shared/utils/promoteQueuedMessage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, {
@@ -1085,7 +1086,11 @@ export function AppProvider({ children }: any) {
         case 'session_created': {
           const row = data.session;
           const agentId = data.agentId || row?.agent_id;
-          if (row && agentId === activeAgentIdRef.current) {
+          if (
+            row &&
+            agentId === activeAgentIdRef.current &&
+            isSessionVisibleInOwnSidebar(row, getAuthRecord()?.user?.id)
+          ) {
             setSessions((prev: any) => {
               if (prev.some((s: any) => s.id === row.id)) return prev;
               return [row, ...prev];
@@ -1100,9 +1105,11 @@ export function AppProvider({ children }: any) {
           const restoredId = data.sessionId || data.session?.id;
           if (!restoredId) break;
           setArchivedSessions((prev: any) => prev.filter((s: any) => s.id !== restoredId));
-          setSessions((prev: any) =>
-            withRestoredSession(prev, data.session, activeAgentIdRef.current),
-          );
+          if (isSessionVisibleInOwnSidebar(data.session, getAuthRecord()?.user?.id)) {
+            setSessions((prev: any) =>
+              withRestoredSession(prev, data.session, activeAgentIdRef.current),
+            );
+          }
           break;
         }
         // A session was forwarded from another agent — if the new session
@@ -1111,7 +1118,11 @@ export function AppProvider({ children }: any) {
         // the originating client is handled by ForwardSessionModal directly.
         case 'session_forwarded': {
           const newSession = data.session;
-          if (newSession && newSession.agent_id === activeAgentIdRef.current) {
+          if (
+            newSession &&
+            newSession.agent_id === activeAgentIdRef.current &&
+            isSessionVisibleInOwnSidebar(newSession, getAuthRecord()?.user?.id)
+          ) {
             setSessions((prev: any) => {
               if (prev.some((s: any) => s.id === newSession.id)) return prev;
               return [newSession, ...prev];
