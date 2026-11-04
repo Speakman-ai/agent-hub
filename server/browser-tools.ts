@@ -15,7 +15,10 @@ import {
   type BrowserNavigationPolicyOpts,
 } from './browser-navigation-url.js';
 import { clipUtf8StringToMaxBytes } from './utf8-clip.js';
-import { browserNavigationPolicyFromConfig } from './browser-host-policy.js';
+import {
+  browserNavigationPolicyFromConfig,
+  getBrowserIdleTimeoutMs,
+} from './browser-host-policy.js';
 import {
   getBrowserSession,
   launchBrowserSession,
@@ -62,6 +65,7 @@ export const BROWSER_REACT_OPS = [
   'navigate',
   'click',
   'type',
+  'select',
   'extract',
   'screenshot',
   'scroll',
@@ -113,8 +117,9 @@ export interface BrowserReActActionInput {
   /** Parsed from JSON — validated in {@link runBrowserReActStep}. */
   op: string;
   url?: string;
-  /** click / type target — natural language or selector string. */
+  /** click / type / select target — natural language or selector string. */
   target?: string;
+  /** type: text to enter. select: option value or visible label to pick. */
   text?: string;
   instruction?: string;
   /** Optional JSON-schema–shaped object (size-gated; extract itself is a page snapshot). */
@@ -262,10 +267,47 @@ export function looksLikeSelectorTarget(raw: string): boolean {
  */
 export type LocatorLike = {
   click: (opts?: object) => Promise<void>;
-  fill: (text: string) => Promise<void>;
+  fill: (text: string, opts?: object) => Promise<void>;
   first?: () => LocatorLike;
   filter?: (opts: { visible?: boolean }) => LocatorLike;
+  /** Playwright: count matches now, without waiting. */
+  count?: () => Promise<number>;
+  selectOption?: (
+    values:
+      | string
+      | { value?: string; label?: string; index?: number }
+      | Array<{ value?: string; label?: string; index?: number }>,
+    opts?: object,
+  ) => Promise<string[]>;
+  evaluate?: (
+    fn: string | ((el: Element) => unknown),
+    arg?: unknown,
+    opts?: { timeout?: number },
+  ) => Promise<unknown>;
 };
+
+/**
+ * Upper bound for one locator action (click / fill / selectOption). The page
+ * default is the 30s navigation timeout, so a selector that never matches
+ * used to stall the whole turn for 30s before the agent could correct it.
+ */
+export const LOCATOR_ACTION_TIMEOUT_MS = 10_000;
+
+/** Wait for a natural-language (getByText / getByLabel) match before moving on. */
+export const NATURAL_LANGUAGE_MATCH_TIMEOUT_MS = 3_000;
+
+/**
+ * True when `loc` reports zero matches right now. Unknown (no `count`, or it
+ * throws) is not "empty", so the caller still tries the action.
+ */
+async function locatorIsEmpty(loc: { count?: () => Promise<number> }): Promise<boolean> {
+  if (typeof loc.count !== 'function') return false;
+  try {
+    return (await loc.count()) === 0;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Resolve a CSS/XPath selector to a single editable target. Prefer the first
@@ -298,26 +340,21 @@ export type HubPage = {
   goForward?: (opts?: object) => Promise<void>;
   scroll?: (a: number, b: number, c: number, d: number) => Promise<void>;
   mouse?: { wheel: (x: number, y: number) => Promise<void> };
-  getByText?: (
-    text: string,
-    opts?: { exact?: boolean },
-  ) => {
-    first: () => {
-      click: (opts?: object) => Promise<void>;
-      fill?: (text: string) => Promise<void>;
-    };
-  };
-  getByLabel?: (
-    text: string,
-    opts?: { exact?: boolean },
-  ) => {
-    first: () => {
-      click: (opts?: object) => Promise<void>;
-      fill?: (text: string) => Promise<void>;
-    };
-  };
+  getByText?: (text: string, opts?: { exact?: boolean }) => NaturalLanguageLocator;
+  getByLabel?: (text: string, opts?: { exact?: boolean }) => NaturalLanguageLocator;
   title?: () => Promise<string> | string;
   innerText?: (selector: string) => Promise<string>;
+};
+
+/** What `getByText` / `getByLabel` return; production Playwright locators have every field. */
+export type NaturalLanguageLocator = {
+  first: () => {
+    click: (opts?: object) => Promise<void>;
+    fill?: (text: string, opts?: object) => Promise<void>;
+    selectOption?: LocatorLike['selectOption'];
+    evaluate?: LocatorLike['evaluate'];
+  };
+  count?: () => Promise<number>;
 };
 
 export const PAGE_TEXT_EXCERPT_MAX_CHARS = 2_000;
@@ -692,6 +729,14 @@ export function resolveStagehandModelName(): string {
 /**
  * Return an existing {@link BrowserSession} for this chat session or launch one.
  */
+/** Chats that have had a host browser this process lifetime (for the restart notice). */
+const chatsWithBrowser = new Set<string>();
+
+/** Vitest-only: forget which chats had a browser. */
+export function __resetChatsWithBrowserForTests(): void {
+  chatsWithBrowser.clear();
+}
+
 export async function getOrCreateBrowserSessionForChat(
   chatSessionId: string,
   extraOpts: BrowserSessionOptions = {},
@@ -762,13 +807,16 @@ export async function browserClick(host: unknown, target: string): Promise<Brows
   try {
     const page = getActivePage(host);
     if (looksLikeSelectorTarget(t)) {
-      await resolveEditableLocator(page, t).click();
+      await resolveEditableLocator(page, t).click({ timeout: LOCATOR_ACTION_TIMEOUT_MS });
       return result('click', true, { method: 'locator' });
     }
     if (typeof page.getByText === 'function') {
       try {
-        await page.getByText(t, { exact: false }).first().click({ timeout: 8_000 });
-        return result('click', true, { method: 'getByText' });
+        const matches = page.getByText(t, { exact: false });
+        if (!(await locatorIsEmpty(matches))) {
+          await matches.first().click({ timeout: NATURAL_LANGUAGE_MATCH_TIMEOUT_MS });
+          return result('click', true, { method: 'getByText' });
+        }
       } catch {
         // Fall through to Stagehand act, then a selector hint.
       }
@@ -782,7 +830,7 @@ export async function browserClick(host: unknown, target: string): Promise<Brows
       'click',
       false,
       undefined,
-      `Could not click "${t}". Pass a CSS selector (e.g. button.submit) or take a screenshot and retry.`,
+      `Could not click "${t}". No visible text matches it. Run read_page to get the page's form controls and their selectors, then pass one (e.g. #save or button[type=submit]).`,
     );
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -800,14 +848,17 @@ export async function browserType(
   try {
     const page = getActivePage(host);
     if (looksLikeSelectorTarget(t)) {
-      await resolveEditableLocator(page, t).fill(String(text));
+      await resolveEditableLocator(page, t).fill(String(text), {
+        timeout: LOCATOR_ACTION_TIMEOUT_MS,
+      });
       return result('type', true, { method: 'locator' });
     }
     if (typeof page.getByLabel === 'function') {
       try {
-        const loc = page.getByLabel(t, { exact: false }).first();
-        if (typeof loc.fill === 'function') {
-          await loc.fill(String(text));
+        const matches = page.getByLabel(t, { exact: false });
+        const loc = matches.first();
+        if (typeof loc.fill === 'function' && !(await locatorIsEmpty(matches))) {
+          await loc.fill(String(text), { timeout: NATURAL_LANGUAGE_MATCH_TIMEOUT_MS });
           return result('type', true, { method: 'getByLabel' });
         }
       } catch {
@@ -816,9 +867,10 @@ export async function browserType(
     }
     if (typeof page.getByText === 'function') {
       try {
-        const loc = page.getByText(t, { exact: false }).first();
-        if (typeof loc.fill === 'function') {
-          await loc.fill(String(text));
+        const matches = page.getByText(t, { exact: false });
+        const loc = matches.first();
+        if (typeof loc.fill === 'function' && !(await locatorIsEmpty(matches))) {
+          await loc.fill(String(text), { timeout: NATURAL_LANGUAGE_MATCH_TIMEOUT_MS });
           return result('type', true, { method: 'getByText' });
         }
       } catch {
@@ -835,11 +887,230 @@ export async function browserType(
       'type',
       false,
       undefined,
-      `Could not type into "${t}". Pass a CSS selector or take a screenshot and retry.`,
+      `Could not type into "${t}". No field label matches it. Run read_page to get the page's form controls and their selectors, then pass one.`,
     );
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return result('type', false, undefined, msg);
+  }
+}
+
+/** Options of a native `<select>`, as the page reports them. */
+/**
+ * Options of a native `<select>`, as the page reports them. `index` is the
+ * option's position and the only identity that is always unique: values and
+ * labels can repeat, so selection and verification go by index.
+ */
+export type SelectOptionInfo = { index: number; value: string; label: string; disabled: boolean };
+
+// Run in the page (Playwright serializes them), so they must stay self-contained.
+const readSelectOptions = (el: Element): SelectOptionInfo[] | null => {
+  if (!el || el.tagName !== 'SELECT') return null;
+  return Array.from((el as HTMLSelectElement).options).map((o, i) => ({
+    index: i,
+    value: o.value,
+    label: (o.label || o.textContent || '').trim(),
+    disabled: !!o.disabled,
+  }));
+};
+/** The option the field holds now, read the same way as {@link readSelectOptions}. */
+const readSelectedOption = (el: Element): SelectOptionInfo | null => {
+  if (!el || el.tagName !== 'SELECT') return null;
+  const sel = el as HTMLSelectElement;
+  const i = sel.selectedIndex;
+  const o = i >= 0 ? sel.options[i] : undefined;
+  if (!o) return null;
+  return {
+    index: i,
+    value: o.value,
+    label: (o.label || o.textContent || '').trim(),
+    disabled: !!o.disabled,
+  };
+};
+
+/** True when `now` is the same option, with the same value and label, as `want`. */
+export function isSameSelectOption(
+  want: SelectOptionInfo,
+  now: SelectOptionInfo | null | undefined,
+): boolean {
+  return !!now && now.index === want.index && now.value === want.value && now.label === want.label;
+}
+
+function normalizeOptionText(s: string): string {
+  return s.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+/**
+ * One option from `candidates`, or null when they name different things.
+ * Exact duplicates (same value and label) are interchangeable, so the first
+ * wins; anything else is ambiguous and the agent must be more specific.
+ */
+function onlyDistinct(candidates: SelectOptionInfo[]): SelectOptionInfo | null {
+  if (candidates.length === 0) return null;
+  const [first] = candidates;
+  return candidates.every((o) => o.value === first.value && o.label === first.label) ? first : null;
+}
+
+/**
+ * Choose the option `wanted` names, at each tier only when it names one
+ * distinct option: exact value, exact label (case/whitespace-insensitive),
+ * case-insensitive value, label prefix, label substring. A tier with an
+ * ambiguous hit stops the search (returns null) instead of falling through
+ * to a looser tier that might pick something else.
+ */
+export function matchSelectOption(
+  options: SelectOptionInfo[],
+  wanted: string,
+): SelectOptionInfo | null {
+  const enabled = options.filter((o) => !o.disabled);
+  const w = normalizeOptionText(wanted);
+  const tiers: Array<(o: SelectOptionInfo) => boolean> = [
+    (o) => o.value === wanted,
+    ...(w
+      ? [
+          (o: SelectOptionInfo) => normalizeOptionText(o.label) === w,
+          (o: SelectOptionInfo) => normalizeOptionText(o.value) === w,
+          (o: SelectOptionInfo) => normalizeOptionText(o.label).startsWith(w),
+          (o: SelectOptionInfo) => normalizeOptionText(o.label).includes(w),
+        ]
+      : []),
+  ];
+  for (const tier of tiers) {
+    const hits = enabled.filter(tier);
+    if (hits.length > 0) return onlyDistinct(hits);
+  }
+  return null;
+}
+
+function describeOptions(options: SelectOptionInfo[], max = 40): string {
+  const enabled = options.filter((o) => !o.disabled);
+  const shown = enabled
+    .slice(0, max)
+    .map((o) =>
+      o.label && o.label !== o.value
+        ? `"${o.label}" (value ${JSON.stringify(o.value)})`
+        : JSON.stringify(o.value),
+    );
+  const more = enabled.length > max ? `, … ${enabled.length - max} more` : '';
+  return shown.join(', ') + more;
+}
+
+/**
+ * Pick an option in a native `<select>`. `target` is a selector or the
+ * field's label text; `wanted` is the option's value or visible label.
+ * Custom dropdowns (a div that opens a list) are not `<select>`s: the error
+ * says so, and the agent clicks the control and then the option instead.
+ */
+export async function browserSelect(
+  host: unknown,
+  target: string,
+  wanted: string | undefined,
+): Promise<BrowserToolResult> {
+  const t = target.trim();
+  if (!t) return result('select', false, undefined, 'target is required');
+  // "" is a legitimate option value (clearing an optional select); only a
+  // missing operand is an error.
+  if (typeof wanted !== 'string') {
+    return result('select', false, undefined, 'value is required (option value or label)');
+  }
+  try {
+    const page = getActivePage(host);
+    let loc: LocatorLike | ReturnType<NaturalLanguageLocator['first']> | null = null;
+    let method = 'locator';
+    if (looksLikeSelectorTarget(t)) {
+      loc = resolveEditableLocator(page, t);
+    } else if (typeof page.getByLabel === 'function') {
+      const matches = page.getByLabel(t, { exact: false });
+      if (!(await locatorIsEmpty(matches))) {
+        loc = matches.first();
+        method = 'getByLabel';
+      }
+    }
+    if (!loc) {
+      return result(
+        'select',
+        false,
+        undefined,
+        `No field labelled "${t}". Run read_page to get the page's form controls and their selectors, then pass one.`,
+      );
+    }
+    if (typeof loc.selectOption !== 'function') {
+      return result('select', false, undefined, 'This browser cannot set select options');
+    }
+    let options: SelectOptionInfo[] | null = null;
+    if (typeof loc.evaluate === 'function') {
+      let raw: unknown;
+      try {
+        // Bounded: the evaluate waits for the target to attach, and the page
+        // default (30s) would stall a missing selector long before
+        // selectOption's own timeout even starts.
+        raw = await loc.evaluate(readSelectOptions, undefined, {
+          timeout: LOCATOR_ACTION_TIMEOUT_MS,
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return result(
+          'select',
+          false,
+          undefined,
+          `Could not find "${t}" within ${LOCATOR_ACTION_TIMEOUT_MS / 1000}s (${msg.split('\n')[0]}). Run read_page to get the page's form controls and their selectors.`,
+        );
+      }
+      if (raw === null) {
+        return result(
+          'select',
+          false,
+          undefined,
+          `"${t}" is not a native <select>. For a custom dropdown, click the control to open it, then click the option text.`,
+        );
+      }
+      if (Array.isArray(raw)) options = raw as SelectOptionInfo[];
+    }
+    if (!options || typeof loc.evaluate !== 'function') {
+      // Without the option list there is no way to know which option a
+      // value or label names, or to confirm what got selected.
+      return result('select', false, undefined, `Could not read the options of "${t}"`);
+    }
+    const hit = matchSelectOption(options, wanted);
+    if (!hit) {
+      return result(
+        'select',
+        false,
+        undefined,
+        `No single option matches "${wanted}". Options: ${describeOptions(options)}`,
+      );
+    }
+    // By index: a value or label can repeat, and Playwright would pick the
+    // first option carrying it rather than the one matched above.
+    await loc.selectOption({ index: hit.index }, { timeout: LOCATOR_ACTION_TIMEOUT_MS });
+    // Report what the page actually holds, not what we asked for: a change
+    // handler can reset or rewrite the select.
+    // The result describes the page after the select, never the pre-select
+    // snapshot: a change handler can move the selection or rewrite the
+    // chosen option's value / label in place.
+    const now = (await loc.evaluate(readSelectedOption, undefined, {
+      timeout: LOCATOR_ACTION_TIMEOUT_MS,
+    })) as SelectOptionInfo | null;
+    if (!isSameSelectOption(hit, now)) {
+      const shows = now
+        ? `"${now.label || now.value}" (value ${JSON.stringify(now.value)})`
+        : 'no option';
+      return result(
+        'select',
+        false,
+        { requested: hit, now },
+        `Selected "${hit.label || hit.value}" (value ${JSON.stringify(hit.value)}) but the field now shows ${shows}; the page changed it. Take a screenshot before continuing.`,
+      );
+    }
+    return result('select', true, {
+      method,
+      index: now!.index,
+      value: now!.value,
+      label: now!.label,
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return result('select', false, undefined, msg);
   }
 }
 
@@ -1034,6 +1305,65 @@ export async function browserWaitFixed(
   }
 }
 
+/** Max form controls `read_page` lists. */
+export const READ_PAGE_MAX_FIELDS = 120;
+
+/**
+ * Lists visible form controls with a selector the agent can pass straight to
+ * click / type / select, so it does not burn a turn guessing one. Runs in the
+ * page as an expression string.
+ */
+const READ_PAGE_FIELDS_JS = `(function(){
+  const MAX = ${READ_PAGE_MAX_FIELDS};
+  const esc = (v) => (window.CSS && CSS.escape) ? CSS.escape(v) : String(v).replace(/[^\\w-]/g, '\\\\$&');
+  const clip = (v, n) => { const s = String(v == null ? '' : v).replace(/\\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
+  const visible = (el) => { const r = el.getBoundingClientRect(); const st = getComputedStyle(el); return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none'; };
+  const unique = (sel) => { try { return document.querySelectorAll(sel).length === 1; } catch (e) { return false; } };
+  const labelOf = (el) => {
+    const aria = el.getAttribute('aria-label'); if (aria) return aria;
+    const by = el.getAttribute('aria-labelledby');
+    if (by) { const t = by.split(/\\s+/).map((id) => { const n = document.getElementById(id); return n ? n.innerText : ''; }).join(' '); if (t.trim()) return t; }
+    if (el.labels && el.labels.length) return el.labels[0].innerText;
+    if (el.tagName === 'BUTTON' || el.tagName === 'A') return el.innerText;
+    return el.getAttribute('placeholder') || el.getAttribute('title') || el.getAttribute('name') || '';
+  };
+  const selectorOf = (el) => {
+    const tag = el.tagName.toLowerCase();
+    if (el.id && unique('#' + esc(el.id))) return '#' + esc(el.id);
+    for (const a of ['data-testid', 'name', 'formcontrolname', 'aria-label']) {
+      const v = el.getAttribute(a);
+      if (v) { const s = tag + '[' + a + '="' + v.replace(/"/g, '\\\\"') + '"]'; if (unique(s)) return s; }
+    }
+    const all = Array.from(document.querySelectorAll(tag));
+    return tag + ' >> nth=' + all.indexOf(el);
+  };
+  const out = [];
+  const els = document.querySelectorAll('input, select, textarea, button, [role=combobox], [role=checkbox], [role=radio], [contenteditable=true]');
+  for (const el of els) {
+    if (out.length >= MAX) break;
+    const type = (el.getAttribute('type') || '').toLowerCase();
+    if (type === 'hidden' || !visible(el)) continue;
+    const f = { selector: selectorOf(el), tag: el.tagName.toLowerCase() };
+    if (type) f.type = type;
+    const role = el.getAttribute('role'); if (role) f.role = role;
+    const label = clip(labelOf(el), 80); if (label) f.label = label;
+    if (el.tagName === 'SELECT') {
+      const o = el.options[el.selectedIndex];
+      f.value = o ? clip(o.label || o.textContent, 80) : '';
+      f.options = Array.from(el.options).slice(0, 40).map((o) => clip(o.label || o.textContent, 60));
+      if (el.options.length > 40) f.options.push('… ' + (el.options.length - 40) + ' more');
+    } else if (type === 'checkbox' || type === 'radio') {
+      f.checked = !!el.checked;
+    } else if (type !== 'password' && 'value' in el && el.value) {
+      f.value = clip(el.value, 80);
+    }
+    if (el.required) f.required = true;
+    if (el.disabled) f.disabled = true;
+    out.push(f);
+  }
+  return out;
+})()`;
+
 export async function browserReadPage(host: unknown): Promise<BrowserToolResult> {
   try {
     const page = getActivePage(host);
@@ -1043,7 +1373,17 @@ export async function browserReadPage(host: unknown): Promise<BrowserToolResult>
       return b.innerText || b.textContent || '';
     })()`);
     const s = typeof text === 'string' ? text : String(text ?? '');
-    return result('read_page', true, { text: s.slice(0, 800_000) });
+    let fields: unknown[] | undefined;
+    try {
+      const raw = await page.evaluate(READ_PAGE_FIELDS_JS);
+      if (Array.isArray(raw) && raw.length > 0) fields = raw;
+    } catch {
+      // Field listing is a convenience; the page text still answers.
+    }
+    return result('read_page', true, {
+      ...(fields ? { fields } : {}),
+      text: s.slice(0, 800_000),
+    });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return result('read_page', false, undefined, msg);
@@ -1108,6 +1448,13 @@ export function browserToolStartLabel(input: BrowserReActActionInput): string {
       const one = t.replace(/\s+/g, ' ').trim();
       const short = one.length > 72 ? `${one.slice(0, 71)}…` : one;
       return short ? `Clicking ${short}…` : 'Clicking element…';
+    }
+    case 'select': {
+      const tgt = (input.target ?? '').trim().replace(/\s+/g, ' ');
+      const val = (input.text ?? '').trim().replace(/\s+/g, ' ').slice(0, 60);
+      const short = tgt.length > 60 ? `${tgt.slice(0, 59)}…` : tgt;
+      if (!short) return 'Choosing option…';
+      return val ? `Choosing "${val}" in ${short}…` : `Choosing option in ${short}…`;
     }
     case 'type':
       if (!(input.target ?? '').trim()) return 'Typing…';
@@ -1394,6 +1741,7 @@ export async function runBrowserReActStep(
     };
   }
   const op = opRaw as BrowserToolOp;
+  const hadLiveBrowser = !!getBrowserSession(chatSessionId);
   let session: BrowserSession;
   try {
     session = await getOrCreateBrowserSessionForChat(chatSessionId, sessionLaunchOpts);
@@ -1424,10 +1772,19 @@ export async function runBrowserReActStep(
   };
   attachHost(session);
   const profileNotice = session.profile?.takeNotice() ?? null;
+  // A browser this chat used before was closed (idle timeout, reclaimed for
+  // another session, restart). Say so, or the agent acts on about:blank as if
+  // its half-filled form were still there.
+  const relaunchNotice =
+    !hadLiveBrowser && chatsWithBrowser.has(chatSessionId) && op !== 'navigate' && op !== 'close'
+      ? `**Browser restarted.** The previous browser for this chat was closed (idle for ${Math.round(getBrowserIdleTimeoutMs() / 60_000)} min, reclaimed for another session, or a server restart), so this step ran on a fresh blank page. Earlier page state, including anything typed into a form, is gone. Navigate back and redo it.`
+      : null;
+  chatsWithBrowser.add(chatSessionId);
   let gateNotice: string | null = null;
 
   const finish = (b: BrowserReActStepOutcome): BrowserReActStepOutcome => {
     if (profileNotice) b = { ...b, markdown: `${b.markdown}\n\n${profileNotice}` };
+    if (relaunchNotice) b = { ...b, markdown: `${relaunchNotice}\n\n${b.markdown}` };
     if (gateNotice) b = { ...b, markdown: `${gateNotice}\n\n${b.markdown}` };
     logBrowserToolAudit({
       chatSessionId,
@@ -1523,7 +1880,7 @@ export async function runBrowserReActStep(
 
   // Runs before the op is marked in flight: an approval can wait for hours,
   // and the human must be able to use the pane meanwhile.
-  if (domainGate && (op === 'navigate' || op === 'click' || op === 'type')) {
+  if (domainGate && (op === 'navigate' || op === 'click' || op === 'type' || op === 'select')) {
     const gateUrl = op === 'navigate' ? (input.url ?? null) : currentPageUrlOf(host);
     // A URL like about:blank or data: does not say whose document it is.
     const pageOrigin =
@@ -1634,6 +1991,25 @@ export async function runBrowserReActStep(
                 summary: 'Click failed',
                 errorLine: r.error,
                 targetSummary: input.target?.slice(0, 220),
+              },
+        };
+      }
+      case 'select': {
+        const r = await browserSelect(host, input.target ?? '', input.text);
+        const picked = r.ok ? (r.data as { label?: string; value?: string }) : undefined;
+        return {
+          markdown: fmt(r, 'Browser: select'),
+          hostExit: r.ok ? 0 : 1,
+          hostDetail: r.ok ? 'select' : r.error,
+          ui: r.ok
+            ? {
+                summary: `Selected ${picked?.label || picked?.value || 'option'}`,
+                targetSummary: input.target?.slice(0, 160),
+              }
+            : {
+                summary: 'Select failed',
+                errorLine: r.error,
+                targetSummary: input.target?.slice(0, 160),
               },
         };
       }

@@ -659,8 +659,8 @@ const config: AppConfig = {
     32,
   ),
   browserIdleTimeoutMs: clampFiniteInt(
-    resolveInt('AGENT_HUB_BROWSER_IDLE_MS', 'browserIdleTimeoutMs', 5 * 60 * 1000),
-    300_000,
+    resolveInt('AGENT_HUB_BROWSER_IDLE_MS', 'browserIdleTimeoutMs', 15 * 60 * 1000),
+    900_000,
     30_000,
     3_600_000,
   ),

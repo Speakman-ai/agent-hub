@@ -39,6 +39,7 @@ import {
   browserReadPage,
   browserScreenshot,
   browserScroll,
+  browserSelect,
   browserType,
   browserWaitFixed,
   capturePageSnapshot,
@@ -74,6 +75,7 @@ export const PREVIEW_REACT_OPS = [
   'navigate',
   'click',
   'type',
+  'select',
   'scroll',
   'wait',
   'read_page',
@@ -101,6 +103,7 @@ export const PREVIEW_DRIVE_OPS: ReadonlySet<string> = new Set([
   'navigate',
   'click',
   'type',
+  'select',
   'scroll',
   'wait',
   'read_page',
@@ -728,6 +731,16 @@ async function runPreviewReActStepInner(
         r.ok ? 0 : 1,
         r.ok ? 'type' : (r.error ?? 'type_failed'),
         r.ok ? 'Typed into preview field' : 'Preview type failed',
+        { targetSummary: input.target?.slice(0, 160), ...(r.ok ? {} : { errorLine: r.error }) },
+      );
+    }
+    case 'select': {
+      const r = await guardEscape(await browserSelect(host, input.target ?? '', input.text));
+      return outcome(
+        fmtResult(r, 'Preview: select', { host, origin }),
+        r.ok ? 0 : 1,
+        r.ok ? 'select' : (r.error ?? 'select_failed'),
+        r.ok ? 'Preview option selected' : 'Preview select failed',
         { targetSummary: input.target?.slice(0, 160), ...(r.ok ? {} : { errorLine: r.error }) },
       );
     }

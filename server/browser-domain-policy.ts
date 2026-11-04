@@ -32,7 +32,7 @@ export const BROWSER_DOMAIN_POLICIES = ['allow', 'ask', 'block'] as const;
 export type BrowserDomainPolicy = (typeof BROWSER_DOMAIN_POLICIES)[number];
 
 /** Ops that change something on the page and so pass through the gate. */
-export const GATED_BROWSER_OPS = ['click', 'type'] as const;
+export const GATED_BROWSER_OPS = ['click', 'type', 'select'] as const;
 export type GatedBrowserOp = (typeof GATED_BROWSER_OPS)[number];
 
 export interface BrowserDomainPolicyEntry {
@@ -204,6 +204,9 @@ function describeOp(req: BrowserGateRequest): string {
     const text = (req.text ?? '').slice(0, TYPED_TEXT_PREVIEW_CHARS);
     const more = (req.text ?? '').length > TYPED_TEXT_PREVIEW_CHARS ? '…' : '';
     return `Type "${text}${more}" into ${target}`;
+  }
+  if (req.op === 'select') {
+    return `Choose "${(req.text ?? '').slice(0, TYPED_TEXT_PREVIEW_CHARS)}" in ${target}`;
   }
   return `Click ${target}`;
 }

@@ -1075,7 +1075,7 @@ export function buildEnrichedPrompt(
   // reminder on later turns).
   if (browserToolsOn) {
     prompt += `\n\n## Browser Automation Available
-You have access to a real Chromium browser in this session (host Playwright). When a user asks you to navigate to a URL, take a screenshot, fill out a form, click around a website, scrape a page, or read content from any web page, **do it** — do not claim you lack web access or a browser. Drive the browser by emitting a \`<agenthub:react>\` block with a \`browser\` action, e.g. \`{"tool":"browser","op":"navigate","url":"https://example.com"}\`. Ops: \`navigate\`, \`click\`, \`type\`, \`extract\`, \`screenshot\`, \`scroll\`, \`back\`, \`forward\`, \`wait\`, \`read_page\`, \`close\`, \`request_login\`. **Sign-ins are yours to do with the user's credentials.** The user owns their accounts and accepts the risk, so when a page needs a login you may type the username and password, fetch a 2FA code (for example from the user's own inbox with the \`google\` skill) and enter it, the same as any other form. Get the credentials from the environment (skill credentials), or collect them with an \`agenthub:credential-request\` card, never in plain chat prose, and never echo a secret back into chat, logs or files. When the user would rather do it themselves, or a CAPTCHA blocks you, emit \`{"tool":"browser","op":"request_login","domain":"example.com","reason":"Sign in so I can read your invoices"}\`: the turn pauses while the human signs in through the **Agent browser** pane, and you get an observation when they click Done or Cancel. **Two browsers, two surfaces:** the \`browser\` tool is the public-web Chromium (observations end with \`Surface: web\`). For this session's **dev preview** use \`{"tool":"preview",…}\` (including \`op":"start"\`) — a separate Chromium pinned to the preview origin (observations end with \`Surface: preview\`); the generic browser tool cannot reach it (loopback is blocked there) and the preview tool cannot leave it. The human watches **whichever Chromium you are driving** live in the **Agent browser** pane and can click/type there too. To see whether the running app rendered, emit \`{"tool":"preview","op":"screenshot"}\` (naked XML tag, never a code fence) then read the saved image path if your engine can view images — the observation also includes visible page text so every engine can tell if \`/\` is blank.`;
+You have access to a real Chromium browser in this session (host Playwright). When a user asks you to navigate to a URL, take a screenshot, fill out a form, click around a website, scrape a page, or read content from any web page, **do it** — do not claim you lack web access or a browser. Drive the browser by emitting a \`<agenthub:react>\` block with a \`browser\` action, e.g. \`{"tool":"browser","op":"navigate","url":"https://example.com"}\`. Ops: \`navigate\`, \`click\`, \`type\`, \`select\` (pick an option in a native dropdown), \`extract\`, \`screenshot\`, \`scroll\`, \`back\`, \`forward\`, \`wait\`, \`read_page\`, \`close\`, \`request_login\`. **Fill forms fast:** run \`read_page\` once (it lists every visible form control with a ready-to-use \`selector\` and each dropdown's options), then put the whole sequence of \`type\` / \`select\` / \`click\` steps in ONE \`actions\` array. Each block costs a full model round trip; the host stops the batch at the first failed step. **Sign-ins are yours to do with the user's credentials.** The user owns their accounts and accepts the risk, so when a page needs a login you may type the username and password, fetch a 2FA code (for example from the user's own inbox with the \`google\` skill) and enter it, the same as any other form. Get the credentials from the environment (skill credentials), or collect them with an \`agenthub:credential-request\` card, never in plain chat prose, and never echo a secret back into chat, logs or files. When the user would rather do it themselves, or a CAPTCHA blocks you, emit \`{"tool":"browser","op":"request_login","domain":"example.com","reason":"Sign in so I can read your invoices"}\`: the turn pauses while the human signs in through the **Agent browser** pane, and you get an observation when they click Done or Cancel. **Two browsers, two surfaces:** the \`browser\` tool is the public-web Chromium (observations end with \`Surface: web\`). For this session's **dev preview** use \`{"tool":"preview",…}\` (including \`op":"start"\`) — a separate Chromium pinned to the preview origin (observations end with \`Surface: preview\`); the generic browser tool cannot reach it (loopback is blocked there) and the preview tool cannot leave it. The human watches **whichever Chromium you are driving** live in the **Agent browser** pane and can click/type there too. To see whether the running app rendered, emit \`{"tool":"preview","op":"screenshot"}\` (naked XML tag, never a code fence) then read the saved image path if your engine can view images — the observation also includes visible page text so every engine can tell if \`/\` is blank.`;
   } else if (isDevServerConfigured(project.prEnv?.devServer)) {
     prompt += `\n\n## Preview screenshots
 The generic \`browser\` tool is off for this agent, but you can still verify **this session's running preview** with a naked \`<agenthub:react>{"actions":[{"tool":"preview","op":"screenshot"}]}</agenthub:react>\` block (never a code fence). The host returns a saved image path plus visible page text. Do not probe localhost ports with Bash.`;
@@ -1197,11 +1197,11 @@ ${skillsList.join('\n')}`;
       ? '{"actions":[{"tool":"wiki","query":"..."},{"tool":"skill","name":"kanban"},{"tool":"web","query":"..."},{"tool":"browser","op":"navigate","url":"https://example.com"}]}'
       : '{"actions":[{"tool":"wiki","query":"..."},{"tool":"skill","name":"kanban"},{"tool":"web","query":"..."}]}';
     const browserToolLines = browserToolsOn
-      ? `- \`browser\` — host Chromium via Playwright (field: \`op\` + operands). Ops: \`navigate\` (\`url\`), \`click\` / \`type\` (\`target\` — CSS/XPath preferred; natural-language labels use Playwright getByText), \`extract\` (page text snapshot — you parse it; optional \`instruction\`), \`screenshot\`, \`scroll\` (\`direction\`: up|down|top|bottom), \`back\`, \`forward\`, \`wait\` (\`condition\`: load|domcontentloaded|networkidle|selector or \`selector:…\`), \`read_page\`, \`close\`, \`request_login\` (\`domain\`, optional \`url\` of the sign-in page and \`reason\`: if the browser is on a blank page it opens \`url\` or the site root first, and refuses when that page does not load; hands the page to the human to sign in or clear a CAPTCHA and pauses the turn until they click Done or Cancel; you may also sign in yourself by typing credentials the user gave you). The human's site policy can block a site or pause a \`click\` / \`type\` until they approve it; a refused op says so, and you must not work around it. \`screenshot\` writes the image to a file and returns its absolute path — open that path with your file-reading tool if you can view images; the observation also includes visible page text. Requires Playwright Chromium on the server.
+      ? `- \`browser\` — host Chromium via Playwright (field: \`op\` + operands). Ops: \`navigate\` (\`url\`), \`click\` / \`type\` (\`target\` — CSS/XPath preferred; natural-language labels use Playwright getByText), \`select\` (\`target\` + \`value\`: picks the option of a native \`<select>\` by value or visible label; for a custom dropdown, click it then click the option), \`extract\` (page text snapshot — you parse it; optional \`instruction\`), \`screenshot\`, \`scroll\` (\`direction\`: up|down|top|bottom), \`back\`, \`forward\`, \`wait\` (\`condition\`: load|domcontentloaded|networkidle|selector or \`selector:…\`), \`read_page\` (page text plus \`fields\`: visible form controls with a \`selector\`, label, value and dropdown options), \`close\`, \`request_login\` (\`domain\`, optional \`url\` of the sign-in page and \`reason\`: if the browser is on a blank page it opens \`url\` or the site root first, and refuses when that page does not load; hands the page to the human to sign in or clear a CAPTCHA and pauses the turn until they click Done or Cancel; you may also sign in yourself by typing credentials the user gave you). Batch a known sequence of steps (several \`type\` / \`select\` / \`click\`) into one block; the host runs them in order and skips the rest of the batch after the first failed browser step. The human's site policy can block a site or pause a \`click\` / \`type\` / \`select\` until they approve it; a refused op says so, and you must not work around it. \`screenshot\` writes the image to a file and returns its absolute path — open that path with your file-reading tool if you can view images; the observation also includes visible page text. Requires Playwright Chromium on the server.
 - **Browser egress note (operators / models):** URL policy that blocks private, loopback, metadata-style, and similar targets applies to explicit \`navigate\` (redirect targets during that \`goto\` when CDP Fetch works, plus a committed-URL check), and to the URL after \`back\`/\`forward\`. It is **not** a blanket guarantee on every page transition — e.g. \`click\`-driven link navigations and client-side redirects are not funneled through that path. Hostname/string checks also do not defeat DNS rebinding. Plan network egress and isolation accordingly.`
       : `- **Browser tools** are turned off for this agent (project default or \`browserToolsEnabled: false\`). Omit browser entries from the ReAct \`actions\` array — the host will reject them. Preview screenshot/navigate (below) still work when a dev server is configured.`;
     const previewToolLines = previewEnabledForPrompt
-      ? `\n- \`preview\` — observe, start, and drive **this session's dev preview** (field: \`op\` + operands). Lifecycle: \`start\` (optional \`route\`, \`reason\`) boots the same stack as the toolbar **Start preview** (first boot can take several minutes — poll \`state\`/\`logs\` until ready). Observe: \`state\`, \`logs\` (optional \`tail\`, default 200). Drive (host Chromium pinned to the preview origin — available on every engine, including when the generic \`browser\` tool is off): \`screenshot\`, \`navigate\` (\`route\` — a path like \`/settings\`, never a full URL), \`click\` / \`type\` (\`target\`; \`type\` also needs \`text\`), \`scroll\`, \`wait\`, \`read_page\`, \`extract\`, \`close\`. \`screenshot\` returns a saved image path plus visible page text. You cannot stop the preview — ask the human to use **Stop preview**.`
+      ? `\n- \`preview\` — observe, start, and drive **this session's dev preview** (field: \`op\` + operands). Lifecycle: \`start\` (optional \`route\`, \`reason\`) boots the same stack as the toolbar **Start preview** (first boot can take several minutes — poll \`state\`/\`logs\` until ready). Observe: \`state\`, \`logs\` (optional \`tail\`, default 200). Drive (host Chromium pinned to the preview origin — available on every engine, including when the generic \`browser\` tool is off): \`screenshot\`, \`navigate\` (\`route\` — a path like \`/settings\`, never a full URL), \`click\` / \`type\` (\`target\`; \`type\` also needs \`text\`), \`select\` (\`target\` + \`value\` — native dropdown option by value or label), \`scroll\`, \`wait\`, \`read_page\`, \`extract\`, \`close\`. \`screenshot\` returns a saved image path plus visible page text. You cannot stop the preview — ask the human to use **Stop preview**.`
       : '';
     const computerToolLines = computerToolOn ? `\n${COMPUTER_TOOL_PROMPT_LINE}` : '';
     const terminalToolLines = `\n- \`terminal\` — co-observe and take a turn on **this session's shared terminal** the human opened (field: \`op\`). \`state\` — is a shell running, is it at an idle prompt. \`read\` — the current terminal screen + scrollback. \`inject\` (\`command\`) — run ONE command line at an idle prompt through the shared single-writer queue; it lands only when the shell is output-quiet and no human keystrokes are in flight (turn-taking), otherwise it's deferred with a retryable reason. The command is one line (no embedded newlines; the trailing newline is added for you). You cannot open or kill the shell — if none is running, ask the human to open the **Terminal** tab. This is for deliberate co-observation, not your primary command path — use your normal Bash tool for scripted work.`;
@@ -1243,7 +1243,7 @@ The host executes actions, appends a compact observation + loaded context, and m
         ? '{"tool":"preview","op":"screenshot"}'
         : '{"tool":"wiki","query":"..."}';
     const browserReminder = browserToolsOn
-      ? `\n**You have a real Chromium browser in this session** — ops \`navigate\`, \`click\`, \`type\`, \`extract\`, \`screenshot\`, \`scroll\`, \`back\`, \`forward\`, \`wait\`, \`read_page\`, \`close\`, \`request_login\` (hand a sign-in or CAPTCHA to the human; you may also sign in yourself with credentials the user gave you). Do not claim you lack a browser or web access; drive it with a \`browser\` action.`
+      ? `\n**You have a real Chromium browser in this session** — ops \`navigate\`, \`click\`, \`type\`, \`select\`, \`extract\`, \`screenshot\`, \`scroll\`, \`back\`, \`forward\`, \`wait\`, \`read_page\`, \`close\`, \`request_login\` (hand a sign-in or CAPTCHA to the human; you may also sign in yourself with credentials the user gave you). Do not claim you lack a browser or web access; drive it with a \`browser\` action.`
       : previewEnabledForPrompt
         ? `\n**Browser tools** are turned off for this agent — omit \`browser\` entries from the \`actions\` array. You can still verify the running preview with \`{"tool":"preview","op":"screenshot"}\`.`
         : `\n**Browser tools** are turned off for this agent — omit \`browser\` entries from the \`actions\` array.`;
@@ -1851,6 +1851,23 @@ export function detectReActBlock(text: string): string | null {
  */
 const REACT_TARGET_OPERAND_ALIASES = ['target', 'selector', 'selector_or_description'] as const;
 
+/**
+ * `text` operand. For `select` the option may arrive as `value` / `option` /
+ * `label` (what models naturally write); it travels as `text` from here on.
+ * An empty string is a real option value (`<option value="">` clears an
+ * optional select), so only an absent operand counts as missing.
+ */
+function resolveReActTextOperand(a: Record<string, unknown>, op: string): string | undefined {
+  if (op === 'select') {
+    for (const key of ['value', 'option', 'label', 'text']) {
+      const v = a[key];
+      if (typeof v === 'string') return v;
+    }
+    return undefined;
+  }
+  return typeof a.text === 'string' ? a.text : undefined;
+}
+
 function resolveReActTargetOperand(a: Record<string, unknown>): string | undefined {
   for (const key of REACT_TARGET_OPERAND_ALIASES) {
     const v = a[key];
@@ -1931,7 +1948,7 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
       }
       const url = typeof a.url === 'string' ? a.url : undefined;
       const target = resolveReActTargetOperand(a);
-      const text = typeof a.text === 'string' ? a.text : undefined;
+      const text = resolveReActTextOperand(a, op);
       const instruction = typeof a.instruction === 'string' ? a.instruction : undefined;
       const direction = typeof a.direction === 'string' ? a.direction : undefined;
       const condition = typeof a.condition === 'string' ? a.condition : undefined;
@@ -1947,10 +1964,17 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
       if (op === 'navigate' && !url?.trim()) {
         return { error: 'malformed', detail: 'browser navigate requires non-empty url' };
       }
-      if ((op === 'click' || op === 'type') && !target) {
+      if ((op === 'click' || op === 'type' || op === 'select') && !target) {
         return {
           error: 'malformed',
           detail: `browser ${op} requires target (aliases: selector, selector_or_description)`,
+        };
+      }
+      if (op === 'select' && text === undefined) {
+        return {
+          error: 'malformed',
+          detail:
+            'browser select requires value (the option value or label; aliases: option, label, text)',
         };
       }
       if (op === 'type' && text === undefined) {
@@ -1999,7 +2023,7 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
       const route = typeof a.route === 'string' ? a.route.trim() : undefined;
       const reason = typeof a.reason === 'string' ? a.reason.trim() : undefined;
       const target = resolveReActTargetOperand(a);
-      const text = typeof a.text === 'string' ? a.text : undefined;
+      const text = resolveReActTextOperand(a, op);
       const instruction = typeof a.instruction === 'string' ? a.instruction : undefined;
       const direction = typeof a.direction === 'string' ? a.direction : undefined;
       const condition = typeof a.condition === 'string' ? a.condition : undefined;
@@ -2026,10 +2050,17 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
           detail: 'preview start route must start with "/" when provided',
         };
       }
-      if ((op === 'click' || op === 'type') && !target) {
+      if ((op === 'click' || op === 'type' || op === 'select') && !target) {
         return {
           error: 'malformed',
           detail: `preview ${op} requires target (aliases: selector, selector_or_description)`,
+        };
+      }
+      if (op === 'select' && text === undefined) {
+        return {
+          error: 'malformed',
+          detail:
+            'preview select requires value (the option value or label; aliases: option, label, text)',
         };
       }
       if (op === 'type' && text === undefined) {
@@ -6385,6 +6416,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           // Set when an action must stop the rest of the batch: an approval
           // that was not granted guards whatever the model queued after it.
           let haltRemainingActions: string | null = null;
+          // Set when any browser/preview step fails: the page steps queued
+          // after it assumed it worked (a click planned from a read_page that
+          // never returned, a save after a select that missed), so they are
+          // skipped. Non-page actions (wiki, web, …) still run.
+          let pageStepFailed: string | null = null;
           for (let actionIdx = 0; actionIdx < boundedActions.length; actionIdx++) {
             if (haltRemainingActions) {
               const remaining = boundedActions.length - actionIdx;
@@ -6405,6 +6441,14 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               break;
             }
             const action = boundedActions[actionIdx]!;
+            if (pageStepFailed && (action.tool === 'browser' || action.tool === 'preview')) {
+              const skipped = `- ${action.tool}(${action.op ?? ''}) skipped: ${pageStepFailed} failed earlier in this batch. Fix that step, then re-emit the rest.`;
+              reactObservations.push(skipped);
+              assistantContextToAppend = assistantContextToAppend
+                ? `${assistantContextToAppend}\n\n${skipped.slice(2)}`
+                : skipped.slice(2);
+              continue;
+            }
             if (!organizationSessionAllowsTool(sessionId, action.tool)) {
               reactObservations.push(
                 `- ${action.tool} denied by current organization agent scope.`,
@@ -6846,6 +6890,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                   );
                 }
                 if (b.haltRemaining) haltRemainingActions = b.haltRemaining;
+                else if (b.hostExit !== 0) pageStepFailed = `browser(${action.op})`;
                 hostExit = b.hostExit;
                 hostDetail = b.hostDetail || action.op;
                 continue;
@@ -6948,6 +6993,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                     `- preview(${opName}) host step finished (exit ${p.hostExit}).`,
                   );
                 }
+                if (p.hostExit !== 0) pageStepFailed = `preview(${action.op})`;
                 hostExit = p.hostExit;
                 hostDetail = p.hostDetail || opName;
                 continue;

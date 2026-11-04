@@ -96,7 +96,7 @@ tool to drive the target with. The server has already marked the run
 1. Work only the cases listed in the seed. Posting a result for any other
    case is refused (`409`, code `out_of_scope`).
 2. Pick the tool by target (the seed names it):
-   - Public URL: the `browser` ReAct tool (`navigate`, `click`, `type`,
+   - Public URL: the `browser` ReAct tool (`navigate`, `click`, `type`, `select`,
      `screenshot`, `read_page`).
    - This project's session preview, `localhost`, or a private host: the
      `preview` tool. The `browser` tool's egress policy refuses those targets.

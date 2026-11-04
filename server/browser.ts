@@ -254,6 +254,8 @@ const idleCloseTimerBySessionId = new Map<string, NodeJS.Timeout>();
 const activeBrowserToolOpsBySessionId = new Map<string, number>();
 /** Non-agent holds (a pending sign-in handoff) that also defer idle close. */
 const idleHoldsBySessionId = new Map<string, number>();
+/** Last time each live session finished a step or was otherwise touched (epoch ms). */
+const lastActivityAtBySessionId = new Map<string, number>();
 
 // Lifecycle listeners
 
@@ -323,6 +325,26 @@ export function browserToolOpsInFlight(id: string): number {
   return activeBrowserToolOpsBySessionId.get(id) ?? 0;
 }
 
+/**
+ * Pick the live session that has sat idle longest and is safe to close: no
+ * agent step in flight and no hold (sign-in handoff, pane viewer). Returns
+ * null when every session is busy.
+ */
+export function pickBrowserSessionToEvict(now: number = Date.now()): string | null {
+  let best: string | null = null;
+  let bestAt = Number.POSITIVE_INFINITY;
+  for (const id of sessions.keys()) {
+    if ((activeBrowserToolOpsBySessionId.get(id) ?? 0) > 0) continue;
+    if ((idleHoldsBySessionId.get(id) ?? 0) > 0) continue;
+    const at = lastActivityAtBySessionId.get(id) ?? now;
+    if (at < bestAt) {
+      bestAt = at;
+      best = id;
+    }
+  }
+  return best;
+}
+
 function clearBrowserIdleTimer(id: string): void {
   const t = idleCloseTimerBySessionId.get(id);
   if (t) clearTimeout(t);
@@ -331,6 +353,7 @@ function clearBrowserIdleTimer(id: string): void {
 
 function scheduleBrowserIdleClose(id: string): void {
   clearBrowserIdleTimer(id);
+  lastActivityAtBySessionId.set(id, Date.now());
   const ms = getBrowserIdleTimeoutMs();
   const t = setTimeout(() => {
     idleCloseTimerBySessionId.delete(id);
@@ -488,6 +511,22 @@ async function performLaunchBrowserSession(opts: BrowserSessionOptions): Promise
   const maxContexts = getBrowserMaxConcurrentContexts();
   pendingBrowserConstruction++;
   try {
+    // At capacity, reclaim the longest-idle browser rather than refusing: the
+    // idle window is long so a human can finish a form between turns, and that
+    // must not lock other sessions out of a browser.
+    while (
+      exceedsBrowserConcurrencyAfterReservation(
+        sessions.size,
+        pendingBrowserConstruction,
+        maxContexts,
+      )
+    ) {
+      const victim = pickBrowserSessionToEvict();
+      if (!victim) break;
+      console.warn(`[browser] At capacity (${maxContexts}); closing idle session ${victim}`);
+      await closeBrowserSession(victim).catch(() => false);
+      if (sessions.has(victim)) break;
+    }
     if (
       exceedsBrowserConcurrencyAfterReservation(
         sessions.size,
@@ -664,6 +703,7 @@ export async function closeBrowserSession(id: string): Promise<boolean> {
   const session = sessions.get(id);
   if (!session) return false;
   clearBrowserIdleTimer(id);
+  lastActivityAtBySessionId.delete(id);
   await session.close();
   return true;
 }
@@ -708,6 +748,8 @@ export function __resetBrowserRegistryForTests(): void {
   launchInFlight.clear();
   pendingBrowserConstruction = 0;
   activeBrowserToolOpsBySessionId.clear();
+  idleHoldsBySessionId.clear();
+  lastActivityAtBySessionId.clear();
   for (const t of idleCloseTimerBySessionId.values()) clearTimeout(t);
   idleCloseTimerBySessionId.clear();
 }

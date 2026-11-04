@@ -45,6 +45,8 @@ import { getOrCreateBrowserSessionForChat } from './browser-tools.js';
 import {
   __resetBrowserRegistryForTests,
   __resetStagehandLoaderForTests,
+  getBrowserSession,
+  incrementBrowserToolOpEntered,
   launchBrowserSession,
 } from './browser.js';
 import {
@@ -89,10 +91,23 @@ describe('launchBrowserSession — pinned id singleflight', () => {
     expect(concurrencyMock.getLaunchCount()).toBe(1);
   });
 
-  it('rejects launches that exceed configured global concurrency', async () => {
+  it('rejects launches over the cap when every browser has a step in flight', async () => {
     __setBrowserConcurrencyForTests(2);
     await launchBrowserSession({ id: 'cap-a' });
     await launchBrowserSession({ id: 'cap-b' });
+    incrementBrowserToolOpEntered('cap-a');
+    incrementBrowserToolOpEntered('cap-b');
     await expect(launchBrowserSession({ id: 'cap-c' })).rejects.toThrow(/capacity reached/i);
+  });
+
+  it('at the cap, closes the longest-idle browser instead of refusing', async () => {
+    __setBrowserConcurrencyForTests(2);
+    await launchBrowserSession({ id: 'cap-a' });
+    await launchBrowserSession({ id: 'cap-b' });
+    incrementBrowserToolOpEntered('cap-b');
+    const c = await launchBrowserSession({ id: 'cap-c' });
+    expect(c.id).toBe('cap-c');
+    expect(getBrowserSession('cap-a')).toBeUndefined();
+    expect(getBrowserSession('cap-b')).toBeDefined();
   });
 });

@@ -250,7 +250,7 @@ describe('browser-tools — runBrowserReActStep', () => {
     expect(r.hostExit).toBe(0);
     expect(page.locator).toHaveBeenCalledWith('input[formcontrolname="username"]');
     expect(allMatches.filter).toHaveBeenCalledWith({ visible: true });
-    expect(fillVisible).toHaveBeenCalledWith('admin');
+    expect(fillVisible).toHaveBeenCalledWith('admin', { timeout: 10_000 });
     expect(fillMirror).not.toHaveBeenCalled();
     expect(r.markdown).toContain('"method": "locator"');
   });
@@ -275,7 +275,7 @@ describe('browser-tools — runBrowserReActStep', () => {
     });
     expect(r.hostExit).toBe(0);
     expect(page.locator).toHaveBeenCalledWith('#username');
-    expect(fillFn).toHaveBeenCalledWith('admin');
+    expect(fillFn).toHaveBeenCalledWith('admin', { timeout: 10_000 });
   });
 
   it('navigate: prefers sessionLaunchOpts.timeoutMs over cached BrowserSession.timeoutMs', async () => {

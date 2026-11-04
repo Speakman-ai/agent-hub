@@ -538,7 +538,7 @@ describe('preview-react — drive ops', () => {
       { runtime },
     );
     expect(r.hostExit).toBe(0);
-    expect(fill).toHaveBeenCalledWith('a@b.c');
+    expect(fill).toHaveBeenCalledWith('a@b.c', { timeout: 10_000 });
   });
 
   it('navigate whose route 302s to a public external origin is reverted and reported', async () => {
