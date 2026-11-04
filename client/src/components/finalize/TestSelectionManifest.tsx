@@ -147,7 +147,7 @@ export function DefaultBranchHealthBanner({
         </ul>
       ) : null}
       <p className="mt-1 text-red-300/70">
-        Merges are not blocked. Session runs that fail only on these instances pass as inherited.
+        Session runs that fail on these instances get a fix turn and can't push until they pass.
       </p>
     </div>
   );

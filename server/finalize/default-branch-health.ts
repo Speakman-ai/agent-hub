@@ -12,16 +12,13 @@
  *     comments on the same card; the run that clears the last failing
  *     instance closes the breakage with a "fixed by <sha>" comment.
  *
- *   - {@link classifyInheritedFailures}: a session Finalize run whose only
- *     failures are instances already red on the default branch at its base
- *     is "inherited". The orchestrator skips the fix turn and lets the run
- *     reach ready_to_push, recording the summary on
- *     `finalize_runs.inherited_failures`.
- *
- * Nothing here blocks merges: a red default branch is reported, never gated.
+ * A red default branch never excuses a session run: a failed checks round
+ * always gets a fix turn, even when the same jobs fail on the default branch.
+ * Matching by job instance can't tell an old break from a new one that fails
+ * the same jobs, and nothing else fixes a break a session runs into.
  */
 import { execFile } from 'child_process';
-import { plainIsAncestor, shallowAwareIsAncestor, type IsAncestorFn } from './git-ancestry.js';
+import { plainIsAncestor, type IsAncestorFn } from './git-ancestry.js';
 import { promisify } from 'util';
 import { v4 as uuidv4 } from 'uuid';
 import type {
@@ -637,9 +634,8 @@ async function ensureBreakageCard(
       (labels.length > 3 ? ` +${labels.length - 3} more` : '') +
       ` failing at ${short(args.headSha)}`;
     const description = [
-      `Full CI on \`${args.branch}\` failed at \`${args.headSha}\`. Merges are not blocked; ` +
-        'session Finalize runs whose only failures are the instances below are reported as ' +
-        'inherited and skip their fix turn until this is fixed.',
+      `Full CI on \`${args.branch}\` failed at \`${args.headSha}\`. Until this is fixed, ` +
+        'every session Finalize run that hits these failures gets a fix turn and cannot push.',
       '',
       body,
     ]
@@ -718,123 +714,12 @@ function addComment(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Inherited failures (session Finalize runs on a red default branch)
-// ---------------------------------------------------------------------------
-
+/** Shape of the stored `finalize_runs.inherited_failures` summary shown in run history. */
 export interface InheritedFailures {
   count: number;
   instances: Array<{ jobId: string; matrixKey: string; firstFailingSha: string }>;
   breakageId: string | null;
   cardId: string | null;
-}
-
-export type InheritedClassification =
-  | { kind: 'inherited'; summary: InheritedFailures }
-  | { kind: 'not_inherited'; reason: string };
-
-/**
- * Decide whether a failed checks round only failed on instances that were
- * already failing on the default branch at the session's base.
- *
- * An instance counts as inherited when it is recorded as failing on the
- * default branch and the commit where it first failed is an ancestor of (or
- * equal to) `baseSha`. A skipped instance is allowed only when it belongs to
- * a job that has an inherited failure (a fail-fast sibling): its job is
- * already red on the default branch. Anything else (a new failure, an
- * instance skipped because a needed job failed, a base the failure postdates,
- * an ancestry check git can't answer) is not inherited, so the run gets its
- * normal fix turn.
- */
-export type InheritedFailureStmts = Pick<
-  Stmts,
-  | 'listDefaultBranchFailures'
-  | 'listFinalizeRunJobsForRun'
-  | 'getDefaultBranchBreakage'
-  | 'getOpenDefaultBranchBreakage'
->;
-
-export async function classifyInheritedFailures(
-  deps: { stmts: InheritedFailureStmts; isAncestor?: IsAncestorFn },
-  args: {
-    projectId: string;
-    runId: string;
-    baseSha: string | null;
-    repoDir: string;
-    env?: NodeJS.ProcessEnv;
-  },
-): Promise<InheritedClassification> {
-  if (!args.baseSha) return { kind: 'not_inherited', reason: 'no base sha' };
-  const red = deps.stmts.listDefaultBranchFailures.all(args.projectId) as DefaultBranchFailureRow[];
-  if (red.length === 0) return { kind: 'not_inherited', reason: 'default branch is green' };
-  const redByKey = new Map(red.map((r) => [jobInstanceKey(r.job_id, r.matrix_key), r]));
-
-  const jobs = deps.stmts.listFinalizeRunJobsForRun.all(args.runId) as FinalizeRunJobRow[];
-  const failed = jobs.filter((j) => j.state === 'failed');
-  if (failed.length === 0) return { kind: 'not_inherited', reason: 'no failed instances' };
-
-  const isAncestor = deps.isAncestor ?? shallowAwareIsAncestor;
-  const ancestry = new Map<string, boolean | null>();
-  const instances: InheritedFailures['instances'] = [];
-  const breakageIds = new Set<string>();
-  for (const j of failed) {
-    const rec = redByKey.get(jobInstanceKey(j.job_id, j.matrix_key ?? ''));
-    if (!rec) {
-      return {
-        kind: 'not_inherited',
-        reason: `${instanceLabel(j.job_id, j.matrix_key ?? '')} is not failing on the default branch`,
-      };
-    }
-    let atBase = ancestry.get(rec.first_failing_sha);
-    if (atBase === undefined) {
-      atBase = await isAncestor(args.repoDir, rec.first_failing_sha, args.baseSha, args.env);
-      ancestry.set(rec.first_failing_sha, atBase);
-    }
-    if (atBase !== true) {
-      return {
-        kind: 'not_inherited',
-        reason:
-          `${instanceLabel(j.job_id, j.matrix_key ?? '')} first failed at ` +
-          `${short(rec.first_failing_sha)}, ` +
-          (atBase === false ? 'after the session base' : 'ancestry unknown'),
-      };
-    }
-    instances.push({
-      jobId: j.job_id,
-      matrixKey: j.matrix_key ?? '',
-      firstFailingSha: rec.first_failing_sha,
-    });
-    if (rec.breakage_id) breakageIds.add(rec.breakage_id);
-  }
-
-  const redJobs = new Set(instances.map((i) => i.jobId));
-  const unexplainedSkip = jobs.find((j) => j.state === 'skipped' && !redJobs.has(j.job_id));
-  if (unexplainedSkip) {
-    return {
-      kind: 'not_inherited',
-      reason: `${instanceLabel(unexplainedSkip.job_id, unexplainedSkip.matrix_key ?? '')} was skipped`,
-    };
-  }
-  const stillRunning = jobs.find((j) => j.state === 'queued' || j.state === 'running');
-  if (stillRunning) return { kind: 'not_inherited', reason: 'instances still in flight' };
-
-  let breakage: DefaultBranchBreakageRow | undefined;
-  for (const id of breakageIds) {
-    breakage = deps.stmts.getDefaultBranchBreakage.get(id) as DefaultBranchBreakageRow | undefined;
-    if (breakage) break;
-  }
-  breakage ??= deps.stmts.getOpenDefaultBranchBreakage.get(args.projectId) as
-    | DefaultBranchBreakageRow
-    | undefined;
-  return {
-    kind: 'inherited',
-    summary: {
-      count: instances.length,
-      instances,
-      breakageId: breakage?.id ?? null,
-      cardId: breakage?.card_id ?? null,
-    },
-  };
 }
 
 /** Parse `finalize_runs.inherited_failures`; null when absent or malformed. */

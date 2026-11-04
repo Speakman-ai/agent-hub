@@ -1,6 +1,6 @@
 /**
  * Default-branch CI health: breakage recording/clearing, card idempotency,
- * merge-range attribution, and inherited-failure classification. Real test
+ * merge-range attribution. Real test
  * DB (production DDL) and real git repos for ancestry.
  */
 import '../test/setup.js';
@@ -12,10 +12,8 @@ import os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 import type { KanbanCardRow, Stmts } from '../types.js';
 import {
-  classifyInheritedFailures,
   defaultIsAncestor,
   findSkippingSelectedRuns,
-  parseInheritedFailures,
   recordDefaultBranchCiResult,
   type DefaultBranchBreakageRow,
   type DefaultBranchFailureRow,
@@ -758,127 +756,5 @@ describe('recordDefaultBranchCiResult: overlapping completions', () => {
     const open = stmts.getOpenDefaultBranchBreakage.get(projectId) as DefaultBranchBreakageRow;
     expect(open).toMatchObject({ first_failing_sha: a, last_failing_sha: b, card_id: cards[0].id });
     expect(comments(cards[0].id).some((x) => x.content.includes('Still failing'))).toBe(true);
-  });
-});
-
-describe('classifyInheritedFailures', () => {
-  async function redDefaultBranch(): Promise<{
-    projectId: string;
-    dir: string;
-    shas: string[];
-    cardId: string;
-  }> {
-    const projectId = newProject();
-    const { dir, shas } = linearRepo(['a', 'b', 'c']);
-    // e2e first fails at b.
-    const red = seedRun(projectId, shas[1], [
-      ['unit', '', 'passed'],
-      ['e2e', 's1', 'failed'],
-      ['e2e', 's2', 'passed'],
-    ]);
-    const res = await recordDefaultBranchCiResult(deps(), {
-      projectId,
-      branch: 'main',
-      headSha: shas[1],
-      runId: red.runId,
-      logSessionId: red.sessionId,
-      outcome: 'failed',
-      repoDir: dir,
-    });
-    if (res.kind !== 'recorded' || !res.cardId) throw new Error('expected a breakage card');
-    return { projectId, dir, shas, cardId: res.cardId };
-  }
-
-  it('classifies a run whose only failures are already red at its base as inherited', async () => {
-    const { projectId, dir, shas, cardId } = await redDefaultBranch();
-    const session = seedRun(
-      projectId,
-      'feature-head',
-      [
-        ['unit', '', 'passed'],
-        ['e2e', 's1', 'failed'],
-        ['e2e', 's2', 'skipped'], // fail-fast sibling of the red job
-      ],
-      { trigger: 'ui_button' },
-    );
-    const verdict = await classifyInheritedFailures(
-      { stmts },
-      { projectId, runId: session.runId, baseSha: shas[2], repoDir: dir },
-    );
-    expect(verdict).toEqual({
-      kind: 'inherited',
-      summary: {
-        count: 1,
-        instances: [{ jobId: 'e2e', matrixKey: 's1', firstFailingSha: shas[1] }],
-        breakageId: expect.any(String),
-        cardId,
-      },
-    });
-    if (verdict.kind === 'inherited') {
-      expect(parseInheritedFailures(JSON.stringify(verdict.summary))).toEqual(verdict.summary);
-    }
-  });
-
-  it('is not inherited when another instance also failed', async () => {
-    const { projectId, dir, shas } = await redDefaultBranch();
-    const session = seedRun(
-      projectId,
-      'feature-head',
-      [
-        ['unit', '', 'failed'],
-        ['e2e', 's1', 'failed'],
-      ],
-      { trigger: 'ui_button' },
-    );
-    const verdict = await classifyInheritedFailures(
-      { stmts },
-      { projectId, runId: session.runId, baseSha: shas[2], repoDir: dir },
-    );
-    expect(verdict.kind).toBe('not_inherited');
-  });
-
-  it('is not inherited when the session base predates the first failure', async () => {
-    const { projectId, dir, shas } = await redDefaultBranch();
-    const session = seedRun(projectId, 'feature-head', [['e2e', 's1', 'failed']], {
-      trigger: 'ui_button',
-    });
-    const verdict = await classifyInheritedFailures(
-      { stmts },
-      { projectId, runId: session.runId, baseSha: shas[0], repoDir: dir },
-    );
-    expect(verdict).toMatchObject({ kind: 'not_inherited' });
-    if (verdict.kind === 'not_inherited')
-      expect(verdict.reason).toContain('after the session base');
-  });
-
-  it('is not inherited when a different job was skipped', async () => {
-    const { projectId, dir, shas } = await redDefaultBranch();
-    const session = seedRun(
-      projectId,
-      'feature-head',
-      [
-        ['e2e', 's1', 'failed'],
-        ['deploy-check', '', 'skipped'], // needs e2e: never validated
-      ],
-      { trigger: 'ui_button' },
-    );
-    const verdict = await classifyInheritedFailures(
-      { stmts },
-      { projectId, runId: session.runId, baseSha: shas[2], repoDir: dir },
-    );
-    expect(verdict.kind).toBe('not_inherited');
-  });
-
-  it('is not inherited once the default branch is green again', async () => {
-    const projectId = newProject();
-    const { dir, shas } = linearRepo(['a']);
-    const session = seedRun(projectId, 'feature-head', [['e2e', 's1', 'failed']], {
-      trigger: 'ui_button',
-    });
-    const verdict = await classifyInheritedFailures(
-      { stmts },
-      { projectId, runId: session.runId, baseSha: shas[0], repoDir: dir },
-    );
-    expect(verdict).toEqual({ kind: 'not_inherited', reason: 'default branch is green' });
   });
 });

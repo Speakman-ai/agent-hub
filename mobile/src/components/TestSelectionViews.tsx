@@ -110,7 +110,7 @@ export function DefaultBranchHealthBanner({
         </Text>
       ))}
       <Text style={styles.bannerNote}>
-        Merges are not blocked. Session runs that fail only on these instances pass as inherited.
+        Session runs that fail on these instances get a fix turn and can't push until they pass.
       </Text>
       {cardId && onOpenCard ? (
         <TouchableOpacity
