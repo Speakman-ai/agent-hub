@@ -2,10 +2,9 @@
  * Project setting for Finalize dynamic test selection.
  *
  * `full` (default) runs every `.agent-hub/ci.yaml` job instance. `dynamic`
- * runs only the instances a change needs, which is only safe because every
- * merge to the default branch runs the full suite through push CI. So
- * `dynamic` is refused unless `ciOnPush.enabled` is on, and `ciOnPush` can't
- * be turned off while `dynamic` is on.
+ * runs only the instances a change needs. Pairing it with `ciOnPush.enabled`
+ * (a full run on every default-branch merge) catches what selected runs skip;
+ * the pairing is recommended, not enforced.
  *
  * `alwaysRun` lists job ids that run on every selected run (build, lint,
  * typecheck, ...). A changed file matching any `fullRunPaths` glob forces a
@@ -108,57 +107,4 @@ export function parseTestSelectionPatch(
     next[key] = cleanList(value);
   }
   return { ok: true, value: next };
-}
-
-export const DYNAMIC_REQUIRES_CI_ON_PUSH_ERROR =
-  'testSelection.mode "dynamic" requires CI on push (ciOnPush.enabled): every merge to the ' +
-  'default branch must run the full suite. Turn on CI on push in the project Runners settings first.';
-
-export const CI_ON_PUSH_REQUIRED_BY_DYNAMIC_ERROR =
-  'ciOnPush cannot be turned off while testSelection.mode is "dynamic": the full run on every ' +
-  'default-branch merge is the backstop for selected runs. Set testSelection.mode to "full" first.';
-
-/**
- * Check the dynamic-selection backstop for a project PATCH. `current` is the
- * stored project; `body` is the raw request. Returns the error to send as a
- * `400`, or null when the resulting state is allowed. Field-level validation
- * of `testSelection` and `ciOnPush` happens elsewhere; malformed values here
- * fall back to the stored state so this never masks those errors.
- */
-export function checkTestSelectionBackstop(
-  current: { testSelection?: TestSelectionSettings; ciOnPush?: { enabled?: boolean } },
-  body: Record<string, unknown>,
-): string | null {
-  const has = (key: string) => Object.prototype.hasOwnProperty.call(body, key);
-  // Unrelated edits never trip over a hand-edited inconsistent projects.json.
-  if (!has('testSelection') && !has('ciOnPush')) return null;
-
-  const currentMode = resolveTestSelectionPolicy(current.testSelection).mode;
-  let nextMode = currentMode;
-  if (has('testSelection')) {
-    const parsed = parseTestSelectionPatch(body.testSelection);
-    if (parsed.ok) {
-      nextMode =
-        parsed.value === null
-          ? 'full'
-          : resolveTestSelectionPolicy({ ...(current.testSelection ?? {}), ...parsed.value }).mode;
-    }
-  }
-
-  const currentCi = current.ciOnPush?.enabled === true;
-  let nextCi = currentCi;
-  if (has('ciOnPush')) {
-    const raw = body.ciOnPush;
-    if (raw === null) nextCi = false;
-    else if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-      const enabled = (raw as Record<string, unknown>).enabled;
-      if (typeof enabled === 'boolean') nextCi = enabled;
-    }
-  }
-
-  if (nextMode !== 'dynamic' || nextCi) return null;
-  // Name the side the caller is trying to move.
-  return currentMode === 'dynamic' && currentCi
-    ? CI_ON_PUSH_REQUIRED_BY_DYNAMIC_ERROR
-    : DYNAMIC_REQUIRES_CI_ON_PUSH_ERROR;
 }

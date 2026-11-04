@@ -3784,8 +3784,8 @@ export interface Project {
   };
   /**
    * Finalize dynamic test selection. `full` (default) runs every ci.yaml job
-   * instance; `dynamic` runs only those a change needs and requires
-   * `ciOnPush.enabled` as the full-suite backstop. `fullRunPaths` add to the
+   * instance; `dynamic` runs only those a change needs (pair it with
+   * `ciOnPush.enabled` for a full-suite backstop). `fullRunPaths` add to the
    * built-in defaults. See `server/finalize/test-selection-policy.ts`.
    */
   testSelection?: {

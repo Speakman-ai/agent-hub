@@ -1,8 +1,5 @@
 import {
-  CI_ON_PUSH_REQUIRED_BY_DYNAMIC_ERROR,
   DEFAULT_FULL_RUN_PATHS,
-  DYNAMIC_REQUIRES_CI_ON_PUSH_ERROR,
-  checkTestSelectionBackstop,
   fullRunPathHits,
   parseTestSelectionPatch,
   resolveTestSelectionPolicy,
@@ -89,60 +86,5 @@ describe('parseTestSelectionPatch', () => {
     expect(parseTestSelectionPatch({ mode: 'smart' }).ok).toBe(false);
     expect(parseTestSelectionPatch({ alwaysRun: [1] }).ok).toBe(false);
     expect(parseTestSelectionPatch({ fullRunPaths: 'x' }).ok).toBe(false);
-  });
-});
-
-describe('checkTestSelectionBackstop', () => {
-  const dynamicOn = { testSelection: { mode: 'dynamic' as const }, ciOnPush: { enabled: true } };
-
-  it('refuses dynamic without ciOnPush', () => {
-    expect(checkTestSelectionBackstop({}, { testSelection: { mode: 'dynamic' } })).toBe(
-      DYNAMIC_REQUIRES_CI_ON_PUSH_ERROR,
-    );
-    expect(
-      checkTestSelectionBackstop(
-        { ciOnPush: { enabled: false } },
-        { testSelection: { mode: 'dynamic' } },
-      ),
-    ).toBe(DYNAMIC_REQUIRES_CI_ON_PUSH_ERROR);
-  });
-
-  it('allows dynamic when ciOnPush is on, stored or in the same patch', () => {
-    expect(
-      checkTestSelectionBackstop(
-        { ciOnPush: { enabled: true } },
-        { testSelection: { mode: 'dynamic' } },
-      ),
-    ).toBeNull();
-    expect(
-      checkTestSelectionBackstop(
-        {},
-        { testSelection: { mode: 'dynamic' }, ciOnPush: { enabled: true } },
-      ),
-    ).toBeNull();
-  });
-
-  it('refuses disabling or clearing ciOnPush while dynamic is on', () => {
-    expect(checkTestSelectionBackstop(dynamicOn, { ciOnPush: { enabled: false } })).toBe(
-      CI_ON_PUSH_REQUIRED_BY_DYNAMIC_ERROR,
-    );
-    expect(checkTestSelectionBackstop(dynamicOn, { ciOnPush: null })).toBe(
-      CI_ON_PUSH_REQUIRED_BY_DYNAMIC_ERROR,
-    );
-  });
-
-  it('allows turning both off together, and ignores unrelated patches', () => {
-    expect(
-      checkTestSelectionBackstop(dynamicOn, {
-        ciOnPush: { enabled: false },
-        testSelection: { mode: 'full' },
-      }),
-    ).toBeNull();
-    expect(
-      checkTestSelectionBackstop(dynamicOn, { testSelection: null, ciOnPush: null }),
-    ).toBeNull();
-    expect(
-      checkTestSelectionBackstop({ testSelection: { mode: 'dynamic' } }, { name: 'x' }),
-    ).toBeNull();
   });
 });

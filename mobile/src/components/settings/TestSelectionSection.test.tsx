@@ -14,7 +14,10 @@ vi.mock('react-native', () => ({
 }));
 
 import TestSelectionSection from './TestSelectionSection';
-import { DEFAULT_FULL_RUN_PATHS, DYNAMIC_NEEDS_CI_ON_PUSH_HINT } from '@shared/utils/testSelection';
+import {
+  DEFAULT_FULL_RUN_PATHS,
+  DYNAMIC_WITHOUT_CI_ON_PUSH_WARNING,
+} from '@shared/utils/testSelection';
 
 const tests = [
   { job_id: 'lint', configured: true },
@@ -22,12 +25,20 @@ const tests = [
 ];
 
 describe('TestSelectionSection', () => {
-  it('disables the dynamic switch and explains why while CI on push is off', () => {
+  it('keeps the dynamic switch enabled while CI on push is off', () => {
     const html = renderToStaticMarkup(
       <TestSelectionSection settings={undefined} ciOnPushEnabled={false} tests={tests} />,
     );
-    expect(html).toMatch(/<input[^>]*disabled/);
-    expect(html).toContain(DYNAMIC_NEEDS_CI_ON_PUSH_HINT.slice(0, 30));
+    expect(html).not.toMatch(/<input[^>]*disabled/);
+    expect(html).not.toContain(DYNAMIC_WITHOUT_CI_ON_PUSH_WARNING.slice(0, 30));
+  });
+
+  it('warns without blocking when dynamic runs with CI on push off', () => {
+    const html = renderToStaticMarkup(
+      <TestSelectionSection settings={{ mode: 'dynamic' }} ciOnPushEnabled={false} tests={tests} />,
+    );
+    expect(html).not.toMatch(/<input[^>]*disabled/);
+    expect(html).toContain(DYNAMIC_WITHOUT_CI_ON_PUSH_WARNING.slice(0, 30));
   });
 
   it('enables the switch with CI on push and lists the configured jobs', () => {

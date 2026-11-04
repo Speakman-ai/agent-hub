@@ -30,10 +30,9 @@ import { relativePrTime } from '../utils/prFormatting';
 import { resourceBadgeText, jobResourceKey } from '../utils/formatResources';
 import { describeFinalizeFailureReason } from '../utils/finalizeFailureReason';
 import {
-  CI_ON_PUSH_LOCKED_BY_DYNAMIC_HINT,
   DEFAULT_FULL_RUN_PATHS,
   alwaysRunJobChoices,
-  dynamicModeBlockedReason,
+  dynamicSelectionWarning,
   testSelectionFormFromSettings,
   testSelectionListsDirty,
   testSelectionListsKey,
@@ -802,7 +801,7 @@ export function BaseDriftSettings({ value, onSave, saving }: any) {
 /**
  * Finalize dynamic test selection. `dynamic` runs only the CI job instances a
  * change needs; the full run on every default-branch merge (CI on push) is the
- * backstop, so the server refuses dynamic without it. Server 400s render
+ * recommended backstop, and the panel warns when it's off. Server 400s render
  * inline under the controls.
  */
 export function TestSelectionSettings({ value, ciOnPush, tests, onSave }: any) {
@@ -816,7 +815,7 @@ export function TestSelectionSettings({ value, ciOnPush, tests, onSave }: any) {
   useEffect(() => setForm((f) => ({ ...f, ...JSON.parse(listsKey) })), [listsKey]);
 
   const dynamic = stored.mode === 'dynamic';
-  const blocked = dynamicModeBlockedReason(stored.mode, ciOnPush === true);
+  const warning = dynamicSelectionWarning(stored.mode, ciOnPush === true);
   const dirty = testSelectionListsDirty(form, value);
   const jobs = alwaysRunJobChoices(tests, form.alwaysRun);
 
@@ -848,8 +847,7 @@ export function TestSelectionSettings({ value, ciOnPush, tests, onSave }: any) {
           role="switch"
           aria-checked={dynamic}
           onClick={() => save({ mode: dynamic ? 'full' : 'dynamic' })}
-          disabled={saving || blocked !== null}
-          title={blocked ?? undefined}
+          disabled={saving}
           data-testid="test-selection-mode-toggle"
           className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 disabled:opacity-50 ${
             dynamic ? 'bg-emerald-600' : 'bg-gray-600'
@@ -862,9 +860,9 @@ export function TestSelectionSettings({ value, ciOnPush, tests, onSave }: any) {
           />
         </button>
       </div>
-      {blocked && (
-        <p className="text-xs text-amber-400/80" data-testid="test-selection-blocked">
-          {blocked}
+      {warning && (
+        <p className="text-xs text-amber-400/80" data-testid="test-selection-warning">
+          {warning}
         </p>
       )}
       <div className="space-y-1 text-xs">
@@ -1013,7 +1011,6 @@ export default function CiRunsSection({ project, onProjectsChange, showToast }: 
   const ciSpot = project?.finalizeRunner?.spot !== false;
   const [spotChoiceAvailable, setSpotChoiceAvailable] = useState(false);
   const [ciOnPushError, setCiOnPushError] = useState<string | null>(null);
-  const dynamicSelection = project?.testSelection?.mode === 'dynamic';
 
   const refresh = useCallback(async () => {
     if (!projectId) return;
@@ -1158,11 +1155,6 @@ export default function CiRunsSection({ project, onProjectsChange, showToast }: 
               : 'Run the same jobs on every new default-branch commit. Agent Hub checks GitHub about once a minute, and right away after merges it makes.'}{' '}
             Results appear below. This does not block the merge.
           </p>
-          {dynamicSelection && ciOnPush && (
-            <p className="text-xs text-gray-500" data-testid="ci-on-push-locked">
-              {CI_ON_PUSH_LOCKED_BY_DYNAMIC_HINT}
-            </p>
-          )}
           {ciOnPushError && (
             <p className="text-xs text-red-400" role="alert" data-testid="ci-on-push-error">
               {ciOnPushError}

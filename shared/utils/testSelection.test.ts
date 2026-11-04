@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
-  DYNAMIC_NEEDS_CI_ON_PUSH_HINT,
+  DYNAMIC_WITHOUT_CI_ON_PUSH_WARNING,
   alwaysRunJobChoices,
-  dynamicModeBlockedReason,
+  dynamicSelectionWarning,
   parseGlobList,
   testSelectionFormFromSettings,
   testSelectionListsDirty,
@@ -123,14 +123,15 @@ describe('alwaysRunJobChoices', () => {
   });
 });
 
-describe('dynamicModeBlockedReason', () => {
-  it('blocks turning dynamic on while CI on push is off', () => {
-    expect(dynamicModeBlockedReason('full', false)).toBe(DYNAMIC_NEEDS_CI_ON_PUSH_HINT);
+describe('dynamicSelectionWarning', () => {
+  it('warns when dynamic selection runs without CI on push', () => {
+    expect(dynamicSelectionWarning('dynamic', false)).toBe(DYNAMIC_WITHOUT_CI_ON_PUSH_WARNING);
   });
 
-  it('allows it with CI on push, and always allows turning dynamic off', () => {
-    expect(dynamicModeBlockedReason('full', true)).toBeNull();
-    expect(dynamicModeBlockedReason('dynamic', false)).toBeNull();
+  it('stays quiet for full mode or when CI on push is on', () => {
+    expect(dynamicSelectionWarning('full', false)).toBeNull();
+    expect(dynamicSelectionWarning('full', true)).toBeNull();
+    expect(dynamicSelectionWarning('dynamic', true)).toBeNull();
   });
 });
 

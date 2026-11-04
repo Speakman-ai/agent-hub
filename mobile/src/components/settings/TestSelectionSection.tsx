@@ -4,7 +4,7 @@ import { colors } from '../../theme/colors';
 import {
   DEFAULT_FULL_RUN_PATHS,
   alwaysRunJobChoices,
-  dynamicModeBlockedReason,
+  dynamicSelectionWarning,
   testSelectionFormFromSettings,
   testSelectionListsDirty,
   testSelectionListsKey,
@@ -29,7 +29,7 @@ export default function TestSelectionSection({ settings, ciOnPushEnabled, tests,
   useEffect(() => setForm((f) => ({ ...f, ...JSON.parse(listsKey) })), [listsKey]);
 
   const dynamic = stored.mode === 'dynamic';
-  const blocked = dynamicModeBlockedReason(stored.mode, ciOnPushEnabled === true);
+  const warning = dynamicSelectionWarning(stored.mode, ciOnPushEnabled === true);
   const dirty = testSelectionListsDirty(form, settings);
   const jobs = alwaysRunJobChoices(tests, form.alwaysRun);
 
@@ -58,12 +58,12 @@ export default function TestSelectionSection({ settings, ciOnPushEnabled, tests,
         </View>
         <Switch
           value={dynamic}
-          disabled={saving || blocked !== null}
+          disabled={saving}
           onValueChange={() => save({ mode: dynamic ? 'full' : 'dynamic' })}
           accessibilityLabel="Dynamic test selection"
         />
       </View>
-      {blocked ? <Text style={styles.warning}>{blocked}</Text> : null}
+      {warning ? <Text style={styles.warning}>{warning}</Text> : null}
 
       <Text style={styles.label}>Jobs that always run</Text>
       {jobs.length === 0 ? (

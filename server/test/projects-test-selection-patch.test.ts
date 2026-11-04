@@ -20,18 +20,14 @@ type Body = {
 };
 
 describe('PATCH /api/projects/:projectId — testSelection', () => {
-  it('rejects mode dynamic without ciOnPush and leaves the project unchanged', async () => {
+  it('accepts mode dynamic without ciOnPush', async () => {
     const { id } = await createProject();
     const res = await request
       .patch(`/api/projects/${id}`)
       .send({ name: 'renamed', testSelection: { mode: 'dynamic' } })
-      .expect(400);
-    expect((res.body as Body).code).toBe('test_selection_requires_ci_on_push');
-    expect((res.body as Body).error).toMatch(/requires CI on push/);
-
-    const after = await request.get(`/api/projects/${id}`).expect(200);
-    expect((after.body as Body).testSelection).toBeUndefined();
-    expect((after.body as Body).name).not.toBe('renamed');
+      .expect(200);
+    expect((res.body as Body).testSelection).toEqual({ mode: 'dynamic' });
+    expect((res.body as Body).name).toBe('renamed');
   });
 
   it('accepts mode dynamic when ciOnPush is enabled in the same request', async () => {
@@ -49,25 +45,19 @@ describe('PATCH /api/projects/:projectId — testSelection', () => {
     });
   });
 
-  it('rejects turning ciOnPush off while dynamic is on', async () => {
+  it('allows turning ciOnPush off while dynamic is on', async () => {
     const { id } = await createProject();
     await request
       .patch(`/api/projects/${id}`)
       .send({ ciOnPush: { enabled: true }, testSelection: { mode: 'dynamic' } })
       .expect(200);
 
-    for (const ciOnPush of [{ enabled: false }, null]) {
-      const res = await request.patch(`/api/projects/${id}`).send({ ciOnPush }).expect(400);
-      expect((res.body as Body).error).toMatch(/ciOnPush cannot be turned off/);
-    }
-    const after = await request.get(`/api/projects/${id}`).expect(200);
-    expect((after.body as Body).ciOnPush).toEqual({ enabled: true });
-
-    // Switching back to full in the same request is allowed.
-    await request
+    const res = await request
       .patch(`/api/projects/${id}`)
-      .send({ ciOnPush: { enabled: false }, testSelection: { mode: 'full' } })
+      .send({ ciOnPush: { enabled: false } })
       .expect(200);
+    expect((res.body as Body).ciOnPush).toEqual({ enabled: false });
+    expect((res.body as Body).testSelection).toEqual({ mode: 'dynamic' });
   });
 
   it('rejects a malformed testSelection without applying other fields', async () => {

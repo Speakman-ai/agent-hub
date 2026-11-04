@@ -64,12 +64,9 @@ export const DEFAULT_FULL_RUN_PATHS: readonly string[] = [
   '**/db/migrate/**',
 ];
 
-export const DYNAMIC_NEEDS_CI_ON_PUSH_HINT =
-  'Turn on CI on push first. Selected runs skip tests, so every merge to the default branch ' +
-  'has to run the full suite to catch what they miss.';
-
-export const CI_ON_PUSH_LOCKED_BY_DYNAMIC_HINT =
-  'Dynamic test selection depends on CI on push. Switch selection back to full to turn it off.';
+export const DYNAMIC_WITHOUT_CI_ON_PUSH_WARNING =
+  'CI on push is off. Selected runs skip tests, and nothing runs the full suite on merges to ' +
+  'the default branch to catch what they miss.';
 
 /** Stored project setting; every field optional, as in projects.json. */
 export interface TestSelectionSettingsWire {
@@ -180,16 +177,14 @@ export function alwaysRunJobChoices(
 }
 
 /**
- * Why the dynamic mode switch can't be flipped on, or null when it can.
- * Turning dynamic off is always allowed, even when CI on push is already
- * off (a hand-edited projects.json), so the user can get back to a valid state.
+ * Advisory copy when dynamic selection runs without CI on push, or null.
+ * The combination is the user's call; this only explains the trade-off.
  */
-export function dynamicModeBlockedReason(
+export function dynamicSelectionWarning(
   mode: TestSelectionMode,
   ciOnPushEnabled: boolean,
 ): string | null {
-  if (mode === 'dynamic' || ciOnPushEnabled) return null;
-  return DYNAMIC_NEEDS_CI_ON_PUSH_HINT;
+  return mode === 'dynamic' && !ciOnPushEnabled ? DYNAMIC_WITHOUT_CI_ON_PUSH_WARNING : null;
 }
 
 /** Inline copy for a failed save: drops the `400: ` status prefix the API clients add. */
