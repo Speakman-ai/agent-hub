@@ -15,6 +15,15 @@
  *     directory (two branches each adding a migration off the same parent is
  *     the failure that motivated the gate).
  *   - `off`: accept the risk and push without re-validating.
+ *
+ * The same overlap check guards native PR merges (native-pr/merge-drift.ts),
+ * because a PR can wait hours between push and merge. Two settings decide how
+ * that clears without a human:
+ *
+ *   - `mergeCheckJobs`: ci.yaml jobs to run on the exact commit the merge
+ *     would create (current base + PR). Passing them lets the merge proceed.
+ *   - `autoUpdatePrs`: when the base moves onto an open PR's files, update
+ *     the PR branch right away so its checks re-run against the new base.
  */
 
 import type { BaseDriftOutcome } from './base-drift.js';
@@ -34,12 +43,16 @@ export interface BaseDriftSettings {
   mode?: BaseDriftMode;
   reuseJobs?: string[];
   hazardPaths?: string[];
+  mergeCheckJobs?: string[];
+  autoUpdatePrs?: boolean;
 }
 
 export interface BaseDriftPolicy {
   mode: BaseDriftMode;
   reuseJobs: string[];
   hazardPaths: string[];
+  mergeCheckJobs: string[];
+  autoUpdatePrs: boolean;
 }
 
 export function isBaseDriftMode(value: unknown): value is BaseDriftMode {
@@ -55,7 +68,9 @@ export function resolveBaseDriftPolicy(
   const hazardPaths = Array.isArray(settings?.hazardPaths)
     ? cleanList(settings.hazardPaths)
     : [...DEFAULT_BASE_DRIFT_HAZARD_PATHS];
-  return { mode, reuseJobs, hazardPaths };
+  const mergeCheckJobs = cleanList(settings?.mergeCheckJobs);
+  const autoUpdatePrs = settings?.autoUpdatePrs === true;
+  return { mode, reuseJobs, hazardPaths, mergeCheckJobs, autoUpdatePrs };
 }
 
 function cleanList(raw: unknown): string[] {
@@ -192,7 +207,13 @@ export function parseBaseDriftPatch(
     }
     next.mode = body.mode;
   }
-  for (const key of ['reuseJobs', 'hazardPaths'] as const) {
+  if (body.autoUpdatePrs !== undefined) {
+    if (typeof body.autoUpdatePrs !== 'boolean') {
+      return { ok: false, error: 'baseDrift.autoUpdatePrs must be a boolean' };
+    }
+    next.autoUpdatePrs = body.autoUpdatePrs;
+  }
+  for (const key of ['reuseJobs', 'hazardPaths', 'mergeCheckJobs'] as const) {
     const value = body[key];
     if (value === undefined) continue;
     if (

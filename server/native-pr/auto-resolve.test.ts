@@ -13,6 +13,7 @@ const {
   __resetAutoResolveState,
   autoResolveOnBaseMoved,
   autoResolveOnChecksFailed,
+  autoResolveOnMergeChecksFailed,
   maybeAutoResolvePr,
   pickAutoResolveAgent,
   MAX_AUTO_RESOLVE_DISPATCHES_PER_PR,
@@ -142,6 +143,33 @@ describe('maybeAutoResolvePr', () => {
       project(),
       7,
       { kind: 'ci', headSha: HEAD, reason: 'x' },
+      deps,
+    );
+    expect(r.outcome).toBe('stale_head');
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it("dispatches on failed merge checks even though the head's own checks are green", async () => {
+    // No failing check on the head: the break only exists combined with main.
+    const { deps } = makeDeps([prRow()], { failing: false });
+    const r = await autoResolveOnMergeChecksFailed(
+      project(),
+      { prNumber: 7, headSha: HEAD, baseBranch: 'main', reason: 'job backend-checks failed' },
+      deps,
+    );
+    expect(r.outcome).toBe('dispatched');
+    const args = spawnMock.mock.calls[0][1];
+    expect(args.preamble).toMatch(
+      /merge checks failed on this PR combined with the current main \(job backend-checks failed\)/,
+    );
+    expect(args.preamble).toMatch(/first merge or rebase the current\s+main into it/);
+  });
+
+  it('ignores failed merge checks for a head the PR has moved past', async () => {
+    const { deps } = makeDeps([prRow()], { headSha: 'b'.repeat(40) });
+    const r = await autoResolveOnMergeChecksFailed(
+      project(),
+      { prNumber: 7, headSha: HEAD, baseBranch: 'main', reason: 'x' },
       deps,
     );
     expect(r.outcome).toBe('stale_head');

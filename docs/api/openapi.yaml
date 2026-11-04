@@ -14984,6 +14984,41 @@ components:
           maxItems: 100
           description: Globs that force a full run when a changed file matches. Added to the built-in defaults (lockfiles, manifests, test-runner config, `.agent-hub/ci.yaml`, Dockerfiles, compose files, migrations).
       description: Finalize dynamic test selection setting.
+    BaseDriftSettings:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum:
+            - full
+            - fast
+            - off
+          description: What Finalize does when the base moves onto files the branch touches while checks run, and whether native PR merges re-check it. `full` (default) re-runs review and every job, `fast` keeps `reuseJobs` results unless the overlap is a same-file or `hazardPaths` collision, `off` skips both the push-time and merge-time checks. Unknown values read as `full`.
+        reuseJobs:
+          type: array
+          items:
+            type: string
+            maxLength: 200
+          maxItems: 50
+          description: "`fast` mode: job ids that keep their earlier passing result."
+        hazardPaths:
+          type: array
+          items:
+            type: string
+            maxLength: 200
+          maxItems: 50
+          description: Globs whose overlap always forces a full re-run. Defaults to migrations directories.
+        mergeCheckJobs:
+          type: array
+          items:
+            type: string
+            maxLength: 200
+          maxItems: 50
+          description: ci.yaml job ids run on the would-be merge commit (current base plus PR head) when a native PR's base moved onto its files since its checks ran. Passing lets the merge proceed, and a merge attempted while they run arms auto-merge. Empty means the PR must be updated first.
+        autoUpdatePrs:
+          type: boolean
+          description: When the default branch moves onto files an open native PR changes, run Update branch on the PR so its checks re-run against the new base.
+      description: Base-drift policy for Finalize pushes and native PR merges.
     ProjectDetail:
       type: object
       properties:
@@ -15010,6 +15045,8 @@ components:
           description: GitHub repo in `owner/repo` form (e.g. `Speakman-ai/agent-hub`). Empty/null when the project has no GitHub remote.
         testSelection:
           $ref: "#/components/schemas/TestSelectionSettings"
+        baseDrift:
+          $ref: "#/components/schemas/BaseDriftSettings"
       required:
         - id
         - name
@@ -29366,6 +29403,7 @@ paths:
               - agent_block
               - git_push
               - pr_push
+              - merge_check
           required: false
           name: trigger
           in: query
@@ -58769,6 +58807,42 @@ paths:
                       maxItems: 100
                       description: Globs that force a full run when a changed file matches. Added to the built-in defaults (lockfiles, manifests, test-runner config, `.agent-hub/ci.yaml`, Dockerfiles, compose files, migrations).
                   description: "Merged over the stored value; `null` clears it. `mode: dynamic` is rejected with `400` unless `ciOnPush.enabled` is on, and turning `ciOnPush` off while dynamic is on is rejected the same way."
+                baseDrift:
+                  type: object
+                  nullable: true
+                  properties:
+                    mode:
+                      type: string
+                      enum:
+                        - full
+                        - fast
+                        - off
+                      description: What Finalize does when the base moves onto files the branch touches while checks run, and whether native PR merges re-check it. `full` (default) re-runs review and every job, `fast` keeps `reuseJobs` results unless the overlap is a same-file or `hazardPaths` collision, `off` skips both the push-time and merge-time checks. Unknown values read as `full`.
+                    reuseJobs:
+                      type: array
+                      items:
+                        type: string
+                        maxLength: 200
+                      maxItems: 50
+                      description: "`fast` mode: job ids that keep their earlier passing result."
+                    hazardPaths:
+                      type: array
+                      items:
+                        type: string
+                        maxLength: 200
+                      maxItems: 50
+                      description: Globs whose overlap always forces a full re-run. Defaults to migrations directories.
+                    mergeCheckJobs:
+                      type: array
+                      items:
+                        type: string
+                        maxLength: 200
+                      maxItems: 50
+                      description: ci.yaml job ids run on the would-be merge commit (current base plus PR head) when a native PR's base moved onto its files since its checks ran. Passing lets the merge proceed, and a merge attempted while they run arms auto-merge. Empty means the PR must be updated first.
+                    autoUpdatePrs:
+                      type: boolean
+                      description: When the default branch moves onto files an open native PR changes, run Update branch on the PR so its checks re-run against the new base.
+                  description: Merged over the stored value; `null` clears it.
                 noGuardrails:
                   type: object
                   nullable: true
@@ -59344,6 +59418,42 @@ paths:
                       maxItems: 100
                       description: Globs that force a full run when a changed file matches. Added to the built-in defaults (lockfiles, manifests, test-runner config, `.agent-hub/ci.yaml`, Dockerfiles, compose files, migrations).
                   description: "Merged over the stored value; `null` clears it. `mode: dynamic` is rejected with `400` unless `ciOnPush.enabled` is on, and turning `ciOnPush` off while dynamic is on is rejected the same way."
+                baseDrift:
+                  type: object
+                  nullable: true
+                  properties:
+                    mode:
+                      type: string
+                      enum:
+                        - full
+                        - fast
+                        - off
+                      description: What Finalize does when the base moves onto files the branch touches while checks run, and whether native PR merges re-check it. `full` (default) re-runs review and every job, `fast` keeps `reuseJobs` results unless the overlap is a same-file or `hazardPaths` collision, `off` skips both the push-time and merge-time checks. Unknown values read as `full`.
+                    reuseJobs:
+                      type: array
+                      items:
+                        type: string
+                        maxLength: 200
+                      maxItems: 50
+                      description: "`fast` mode: job ids that keep their earlier passing result."
+                    hazardPaths:
+                      type: array
+                      items:
+                        type: string
+                        maxLength: 200
+                      maxItems: 50
+                      description: Globs whose overlap always forces a full re-run. Defaults to migrations directories.
+                    mergeCheckJobs:
+                      type: array
+                      items:
+                        type: string
+                        maxLength: 200
+                      maxItems: 50
+                      description: ci.yaml job ids run on the would-be merge commit (current base plus PR head) when a native PR's base moved onto its files since its checks ran. Passing lets the merge proceed, and a merge attempted while they run arms auto-merge. Empty means the PR must be updated first.
+                    autoUpdatePrs:
+                      type: boolean
+                      description: When the default branch moves onto files an open native PR changes, run Update branch on the PR so its checks re-run against the new base.
+                  description: Merged over the stored value; `null` clears it.
                 noGuardrails:
                   type: object
                   nullable: true

@@ -1223,6 +1223,77 @@ describe('branch protection', () => {
       .expect(200);
   });
 
+  it('refuses a validated PR once main gains a sibling migration; update + checks clears it', async () => {
+    const { id, branch, work } = await hostedProjectWithBranch();
+    const bare = gitHostRepoPath(id);
+    mkdirSync(path.join(work, '.agent-hub'), { recursive: true });
+    writeFileSync(
+      path.join(work, '.agent-hub', 'ci.yaml'),
+      'version: 2\non: [push]\njobs:\n  unit:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo ok\n',
+    );
+    mkdirSync(path.join(work, 'training', 'migrations'), { recursive: true });
+    writeFileSync(path.join(work, 'training', 'migrations', '0029_certificates.py'), 'a\n');
+    git(work, 'add -A');
+    git(work, 'commit -m "add 0029 certificates"');
+    git(work, `push origin ${branch}`);
+
+    await authedPatch(`/api/projects/${id}`)
+      .send({ branchProtection: { requiredChecks: true } })
+      .expect(200);
+    await postPulls(id).send({ headBranch: branch, title: 'Certificates' }).expect(201);
+
+    const { stmts } = await import('../db.js');
+    const seedValidatedRun = (sha: string) => {
+      const runId = `fin-${uuidv4().slice(0, 8)}`;
+      stmts!.insertFinalizeRun.run(
+        runId,
+        'card-x',
+        null,
+        id,
+        branch,
+        sha,
+        `test|${runId}`,
+        'queued',
+        null,
+        'ui_button',
+        null,
+        'user',
+        'Test',
+        't@example.com',
+        null,
+        Date.now(),
+        'full',
+      );
+      stmts!.markFinalizeRunReadyToPush.run(sha, runId);
+    };
+    seedValidatedRun(git(bare, `rev-parse refs/heads/${branch}`));
+
+    // Another PR lands its own 0029 on main after this one was validated.
+    git(work, 'checkout main');
+    mkdirSync(path.join(work, 'training', 'migrations'), { recursive: true });
+    writeFileSync(path.join(work, 'training', 'migrations', '0029_trainer_cleanup.py'), 'b\n');
+    git(work, 'add -A');
+    git(work, 'commit -m "add 0029 trainer cleanup"');
+    git(work, 'push origin main');
+
+    const res = await authedPost('/api/pr/merge')
+      .send({ prUrl: `/projects/${id}/pulls/1` })
+      .expect(409);
+    expect(res.body.error).toMatch(
+      /since this PR's checks ran, main changed training\/migrations\//,
+    );
+    const detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+    expect(detail.body.pr.merge_blocked_reason).toMatch(/Update the branch/);
+
+    // Update branch → new head built on the current main; once its checks
+    // pass the merge goes through.
+    const updated = await authedPost(`/api/projects/${id}/pulls/1/update-branch`).expect(200);
+    seedValidatedRun(updated.body.headSha);
+    await authedPost('/api/pr/merge')
+      .send({ prUrl: `/projects/${id}/pulls/1` })
+      .expect(200);
+  });
+
   it('changes-requested blocks merge even without other gates tripping', async () => {
     const { id, branch } = await hostedProjectWithBranch();
     await authedPatch(`/api/projects/${id}`)

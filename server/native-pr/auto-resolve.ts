@@ -16,6 +16,9 @@
  *   - `review`: a `changes_requested` verdict landing on the PR.
  *   - `conflict`: the PR head changed, or its base branch moved, and a
  *     merge-tree probe says the two no longer merge cleanly.
+ *   - `merge_check`: the project's merge-check jobs failed on this PR merged
+ *     into the current base (native-pr/merge-drift.ts). The PR's own checks
+ *     can be green; the break only exists in combination with the base.
  *
  * Dedup is one dispatch per (PR, head sha). A changes-requested review that
  * lands while that session exists is forwarded into it rather than dropped.
@@ -37,7 +40,8 @@ const BASE_MOVED_SCAN_LIMIT = 200;
 export type AutoResolveTrigger =
   | { kind: 'ci'; headSha: string; reason: string }
   | { kind: 'review'; reviewer: string; body: string }
-  | { kind: 'conflict'; reason: string };
+  | { kind: 'conflict'; reason: string }
+  | { kind: 'merge_check'; headSha: string; baseBranch: string; reason: string };
 
 export interface AutoResolveDeps {
   stmts: Stmts;
@@ -120,14 +124,30 @@ function triggerLabel(trigger: AutoResolveTrigger): string {
       return `${trigger.reviewer} requested changes`;
     case 'conflict':
       return `the PR no longer merges cleanly (${trigger.reason})`;
+    case 'merge_check':
+      return (
+        `merge checks failed on this PR combined with the current ${trigger.baseBranch} ` +
+        `(${trigger.reason})`
+      );
   }
 }
 
 function preambleFor(trigger: AutoResolveTrigger): string {
+  const mergeCheckNote =
+    trigger.kind === 'merge_check'
+      ? [
+          '',
+          `The PR's own checks may be green. The failure only appears once ${trigger.baseBranch}'s`,
+          `newer commits are combined with this branch, so first merge or rebase the current`,
+          `${trigger.baseBranch} into it, then reproduce and fix (for example two migrations with the`,
+          'same number, or a size budget both changes together exceed).',
+        ]
+      : [];
   return [
     '## Auto-resolve',
     '',
     `This session was started automatically because ${triggerLabel(trigger)}.`,
+    ...mergeCheckNote,
     'Other checks may still be running. Do not stop at the problem that triggered this session:',
     'resolve merge conflicts with the base branch, fix failing tests/CI, and address requested',
     'review changes, then commit. Finalize pushes the result back to this PR.',
@@ -176,7 +196,9 @@ async function admit(
     const headSha = detail.headSha;
     if (!headSha) return { outcome: 'not_open' };
 
-    if (trigger.kind === 'ci') {
+    if (trigger.kind === 'merge_check') {
+      if (trigger.headSha !== headSha) return { outcome: 'stale_head' };
+    } else if (trigger.kind === 'ci') {
       // A newer push already superseded the red head; its own CI decides.
       if (trigger.headSha !== headSha) return { outcome: 'stale_head' };
       if (!hasFailingCheck(detail.checks)) return { outcome: 'no_signal' };
@@ -311,6 +333,25 @@ export function autoResolveOnChecksFailed(
     project,
     open.number,
     { kind: 'ci', headSha: args.headSha, reason: args.reason },
+    deps,
+  );
+}
+
+/** Merge checks for an open PR failed against the current base: resolve it. */
+export function autoResolveOnMergeChecksFailed(
+  project: Project,
+  args: { prNumber: number; headSha: string; baseBranch: string; reason: string },
+  deps: AutoResolveDeps,
+): Promise<AutoResolveResult> {
+  return maybeAutoResolvePr(
+    project,
+    args.prNumber,
+    {
+      kind: 'merge_check',
+      headSha: args.headSha,
+      baseBranch: args.baseBranch,
+      reason: args.reason,
+    },
     deps,
   );
 }

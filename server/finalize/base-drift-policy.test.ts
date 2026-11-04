@@ -24,7 +24,15 @@ describe('resolveBaseDriftPolicy', () => {
       mode: 'full',
       reuseJobs: [],
       hazardPaths: [...DEFAULT_BASE_DRIFT_HAZARD_PATHS],
+      mergeCheckJobs: [],
+      autoUpdatePrs: false,
     });
+  });
+
+  it('carries merge-check jobs and auto-update through', () => {
+    expect(
+      resolveBaseDriftPolicy({ mergeCheckJobs: ['backend-checks', ' '], autoUpdatePrs: true }),
+    ).toMatchObject({ mergeCheckJobs: ['backend-checks'], autoUpdatePrs: true });
   });
 
   it('reads an unknown mode as full so a bad value never relaxes the gate', () => {
@@ -119,6 +127,17 @@ describe('parseBaseDriftPatch', () => {
       ok: true,
       value: { mode: 'fast', reuseJobs: ['e2e'] },
     });
+  });
+
+  it('accepts merge-check jobs and the auto-update flag', () => {
+    expect(
+      parseBaseDriftPatch({ mergeCheckJobs: ['backend-checks', 'frontend'], autoUpdatePrs: true }),
+    ).toEqual({
+      ok: true,
+      value: { mergeCheckJobs: ['backend-checks', 'frontend'], autoUpdatePrs: true },
+    });
+    expect(parseBaseDriftPatch({ autoUpdatePrs: 'yes' }).ok).toBe(false);
+    expect(parseBaseDriftPatch({ mergeCheckJobs: 'backend-checks' }).ok).toBe(false);
   });
 
   it('rejects an unknown mode and non-string lists', () => {

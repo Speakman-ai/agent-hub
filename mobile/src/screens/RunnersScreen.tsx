@@ -14,6 +14,7 @@ import { relativeTime } from '../utils/time';
 import ProjectScreenHeader from '../components/ProjectScreenHeader';
 import FinalizeSection from '../components/FinalizeSection';
 import TestSelectionSection from '../components/settings/TestSelectionSection';
+import BaseDriftSection from '../components/settings/BaseDriftSection';
 import {
   DefaultBranchHealthBanner,
   TestSelectionManifestView,
@@ -98,6 +99,10 @@ export default function RunnersScreen({ route, navigation }: any) {
     const updated = await api.updateProject(projectId, { testSelection: patch });
     if (updated?.id) setProject(updated);
   };
+  const saveBaseDrift = async (patch: Record<string, unknown>) => {
+    const updated = await api.updateProject(projectId, { baseDrift: patch });
+    if (updated?.id) setProject(updated);
+  };
   const openDetail = async (run: any) => {
     setSelectedRun(run);
     setDetail(null);
@@ -139,6 +144,10 @@ export default function RunnersScreen({ route, navigation }: any) {
             refreshKey={defaultBranchHealthRefreshKey(runs)}
             onOpenCard={(cardId) => navigation.navigate('Kanban', { projectId, project, cardId })}
           />
+        ) : null}
+
+        {projectId ? (
+          <BaseDriftSection settings={project?.baseDrift} onSave={saveBaseDrift} />
         ) : null}
 
         {projectId ? (

@@ -26,7 +26,7 @@ import { TestSelectionComponent } from './finalize.openapi.js';
 
 const DEFAULT_LIMIT = 30;
 const MAX_LIMIT = 100;
-const TRIGGERS = new Set(['all', 'ui_button', 'agent_block', 'git_push', 'pr_push']);
+const TRIGGERS = new Set(['all', 'ui_button', 'agent_block', 'git_push', 'pr_push', 'merge_check']);
 const STATS_RANGES = new Set(['all', '24h']);
 
 const jsonContent = <T extends z.ZodTypeAny>(schema: T) => ({
@@ -103,7 +103,9 @@ registerPath({
   request: {
     params: z.object({ projectId: z.string() }),
     query: z.object({
-      trigger: z.enum(['all', 'ui_button', 'agent_block', 'git_push', 'pr_push']).optional(),
+      trigger: z
+        .enum(['all', 'ui_button', 'agent_block', 'git_push', 'pr_push', 'merge_check'])
+        .optional(),
       limit: z.coerce.number().int().min(1).max(MAX_LIMIT).optional(),
     }),
   },

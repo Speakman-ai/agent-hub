@@ -41,6 +41,16 @@ import {
   toggleAlwaysRunJob,
 } from '@shared/utils/testSelection';
 import {
+  AUTO_UPDATE_HINT,
+  BASE_DRIFT_OPTIONS,
+  MERGE_CHECK_HINT,
+  baseDriftFormDirty,
+  baseDriftFormFromSettings,
+  baseDriftListsPatch,
+  baseDriftMode,
+  type BaseDriftForm,
+} from '@shared/utils/baseDrift';
+import {
   NOT_SELECTED_REASON,
   defaultBranchHealthRefreshKey,
   findSelectionInstance,
@@ -82,6 +92,8 @@ function triggerBadge(trigger: any) {
     return { label: 'push', cls: 'border-sky-500/25 bg-sky-500/10 text-sky-300' };
   if (trigger === 'pr_push')
     return { label: 'pr ci', cls: 'border-amber-500/25 bg-amber-500/10 text-amber-300' };
+  if (trigger === 'merge_check')
+    return { label: 'merge check', cls: 'border-teal-500/25 bg-teal-500/10 text-teal-300' };
   if (trigger === 'agent_block')
     return { label: 'auto', cls: 'border-purple-500/25 bg-purple-500/10 text-purple-300' };
   return { label: 'finalize', cls: 'border-gray-600/40 bg-gray-700/30 text-gray-300' };
@@ -685,38 +697,21 @@ export function RunRow({ projectId, run, onRerun = null, onStop = null }: any) {
   );
 }
 
-const BASE_DRIFT_OPTIONS = [
-  { value: 'full', label: 'Full: re-run review and every job' },
-  { value: 'fast', label: 'Fast: re-run review, keep slow job results' },
-  { value: 'off', label: 'Off: push without re-running' },
-];
-
-const DEFAULT_HAZARD_PATHS = ['**/migrations/**', '**/db/migrate/**'];
-
-function splitList(text: string): string[] {
-  return text
-    .split(/[\n,]/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
 /**
  * What Finalize does when main moves onto files this branch also touches
- * while review and checks run. Mirrors `server/finalize/base-drift-policy.ts`.
+ * while review and checks run, and how a PR that waited while main moved
+ * clears the merge-time check. Mirrors `server/finalize/base-drift-policy.ts`.
  */
 export function BaseDriftSettings({ value, onSave, saving }: any) {
-  const mode = value?.mode === 'fast' || value?.mode === 'off' ? value.mode : 'full';
-  const storedReuse = (value?.reuseJobs ?? []).join(', ');
-  const storedHazard = (
-    Array.isArray(value?.hazardPaths) ? value.hazardPaths : DEFAULT_HAZARD_PATHS
-  ).join(', ');
-  const [reuseText, setReuseText] = useState(storedReuse);
-  const [hazardText, setHazardText] = useState(storedHazard);
+  const mode = baseDriftMode(value);
+  const stored = baseDriftFormFromSettings(value);
+  const [form, setForm] = useState<BaseDriftForm>(stored);
+  const storedKey = JSON.stringify(stored);
 
-  useEffect(() => setReuseText(storedReuse), [storedReuse]);
-  useEffect(() => setHazardText(storedHazard), [storedHazard]);
+  useEffect(() => setForm(JSON.parse(storedKey)), [storedKey]);
 
-  const dirty = reuseText !== storedReuse || hazardText !== storedHazard;
+  const dirty = baseDriftFormDirty(form, value);
+  const autoUpdate = value?.autoUpdatePrs === true;
 
   return (
     <div className="space-y-2" data-testid="base-drift-settings">
@@ -726,7 +721,7 @@ export function BaseDriftSettings({ value, onSave, saving }: any) {
         </span>
         <p className="text-xs text-gray-500">
           Finalize normally rebases and re-runs review and every job, because the earlier results
-          were checked against older code.
+          were checked against older code. The same check runs again when a PR merges.
         </p>
       </div>
       <select
@@ -748,50 +743,93 @@ export function BaseDriftSettings({ value, onSave, saving }: any) {
           will see the failure.
         </p>
       )}
-      {mode === 'fast' && (
+      {mode !== 'off' && (
         <div className="space-y-2">
+          {mode === 'fast' && (
+            <label className="block text-xs">
+              <span className="text-gray-300">Jobs that keep their earlier result</span>
+              <input
+                type="text"
+                value={form.reuseText}
+                disabled={saving}
+                onChange={(e) => setForm((f) => ({ ...f, reuseText: e.target.value }))}
+                placeholder="e2e"
+                data-testid="base-drift-reuse-jobs"
+                className="mt-1 w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-gray-200 disabled:opacity-50"
+              />
+              <span className="text-gray-500">
+                Job ids from ci.yaml, comma separated. Everything else re-runs. With none listed,
+                fast behaves like full.
+              </span>
+            </label>
+          )}
+          {mode === 'fast' && (
+            <label className="block text-xs">
+              <span className="text-gray-300">
+                Always re-run everything when these paths overlap
+              </span>
+              <input
+                type="text"
+                value={form.hazardText}
+                disabled={saving}
+                onChange={(e) => setForm((f) => ({ ...f, hazardText: e.target.value }))}
+                data-testid="base-drift-hazard-paths"
+                className="mt-1 w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-gray-200 disabled:opacity-50"
+              />
+              <span className="text-gray-500">
+                Globs, comma separated. A file changed on both main and this branch also triggers a
+                full re-run.
+              </span>
+            </label>
+          )}
           <label className="block text-xs">
-            <span className="text-gray-300">Jobs that keep their earlier result</span>
+            <span className="text-gray-300">Merge checks</span>
             <input
               type="text"
-              value={reuseText}
+              value={form.mergeCheckText}
               disabled={saving}
-              onChange={(e) => setReuseText(e.target.value)}
-              placeholder="e2e"
-              data-testid="base-drift-reuse-jobs"
+              onChange={(e) => setForm((f) => ({ ...f, mergeCheckText: e.target.value }))}
+              placeholder="backend-checks"
+              data-testid="base-drift-merge-check-jobs"
               className="mt-1 w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-gray-200 disabled:opacity-50"
             />
-            <span className="text-gray-500">
-              Job ids from ci.yaml, comma separated. Everything else re-runs. With none listed, fast
-              behaves like full.
-            </span>
-          </label>
-          <label className="block text-xs">
-            <span className="text-gray-300">Always re-run everything when these paths overlap</span>
-            <input
-              type="text"
-              value={hazardText}
-              disabled={saving}
-              onChange={(e) => setHazardText(e.target.value)}
-              data-testid="base-drift-hazard-paths"
-              className="mt-1 w-full bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-gray-200 disabled:opacity-50"
-            />
-            <span className="text-gray-500">
-              Globs, comma separated. A file changed on both main and this branch also triggers a
-              full re-run.
-            </span>
+            <span className="text-gray-500">{MERGE_CHECK_HINT}</span>
           </label>
           <button
             type="button"
             disabled={saving || !dirty}
-            onClick={() =>
-              onSave({ reuseJobs: splitList(reuseText), hazardPaths: splitList(hazardText) })
-            }
+            onClick={() => onSave(baseDriftListsPatch(form))}
             data-testid="base-drift-save"
             className="px-3 py-1 rounded-lg text-xs bg-emerald-700 hover:bg-emerald-600 text-white disabled:opacity-40"
           >
             Save
           </button>
+          <div className="flex items-center justify-between gap-3 pt-1">
+            <div className="flex-1 min-w-0">
+              <span className="text-xs text-gray-300">
+                Update open PRs when main changes their files
+              </span>
+              <p className="text-xs text-gray-500">{AUTO_UPDATE_HINT}</p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={autoUpdate}
+              aria-label="Update open PRs when main changes their files"
+              onClick={() => onSave({ autoUpdatePrs: !autoUpdate })}
+              disabled={saving}
+              data-testid="base-drift-auto-update"
+              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 disabled:opacity-50 ${
+                autoUpdate ? 'bg-emerald-600' : 'bg-gray-600'
+              }`}
+            >
+              <span
+                className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                  autoUpdate ? 'translate-x-4' : 'translate-x-0.5'
+                }`}
+              />
+            </button>
+          </div>
         </div>
       )}
     </div>

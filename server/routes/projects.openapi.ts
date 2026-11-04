@@ -76,6 +76,35 @@ const TestSelectionSettingsSchema = registerComponent(
     .openapi({ description: 'Finalize dynamic test selection setting.' }),
 );
 
+const BaseDriftSettingsSchema = registerComponent(
+  'BaseDriftSettings',
+  z
+    .object({
+      mode: z.enum(['full', 'fast', 'off']).optional().openapi({
+        description:
+          'What Finalize does when the base moves onto files the branch touches while checks run, and whether native PR merges re-check it. `full` (default) re-runs review and every job, `fast` keeps `reuseJobs` results unless the overlap is a same-file or `hazardPaths` collision, `off` skips both the push-time and merge-time checks. Unknown values read as `full`.',
+      }),
+      reuseJobs: z
+        .array(z.string().max(200))
+        .max(50)
+        .optional()
+        .openapi({ description: '`fast` mode: job ids that keep their earlier passing result.' }),
+      hazardPaths: z.array(z.string().max(200)).max(50).optional().openapi({
+        description:
+          'Globs whose overlap always forces a full re-run. Defaults to migrations directories.',
+      }),
+      mergeCheckJobs: z.array(z.string().max(200)).max(50).optional().openapi({
+        description:
+          "ci.yaml job ids run on the would-be merge commit (current base plus PR head) when a native PR's base moved onto its files since its checks ran. Passing lets the merge proceed, and a merge attempted while they run arms auto-merge. Empty means the PR must be updated first.",
+      }),
+      autoUpdatePrs: z.boolean().optional().openapi({
+        description:
+          'When the default branch moves onto files an open native PR changes, run Update branch on the PR so its checks re-run against the new base.',
+      }),
+    })
+    .openapi({ description: 'Base-drift policy for Finalize pushes and native PR merges.' }),
+);
+
 // ProjectDetail — minimal partial schema documenting only the fields
 // callers should be able to rely on at the OpenAPI contract layer. The
 // full Project shape (agents, githubWorkflow, prEnv, ...) is huge and
@@ -101,6 +130,7 @@ export const ProjectDetailComponent = registerComponent(
           'GitHub repo in `owner/repo` form (e.g. `Speakman-ai/agent-hub`). Empty/null when the project has no GitHub remote.',
       }),
       testSelection: TestSelectionSettingsSchema.optional(),
+      baseDrift: BaseDriftSettingsSchema.optional(),
     })
     .passthrough()
     .openapi({
@@ -791,6 +821,9 @@ export const ProjectUpdateRequestSchema = z
     testSelection: TestSelectionSettingsSchema.nullable().optional().openapi({
       description:
         'Merged over the stored value; `null` clears it. `mode: dynamic` is rejected with `400` unless `ciOnPush.enabled` is on, and turning `ciOnPush` off while dynamic is on is rejected the same way.',
+    }),
+    baseDrift: BaseDriftSettingsSchema.nullable().optional().openapi({
+      description: 'Merged over the stored value; `null` clears it.',
     }),
     noGuardrails: z.object({ enabled: z.boolean().optional() }).nullable().optional().openapi({
       description:

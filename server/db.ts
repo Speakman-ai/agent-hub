@@ -7451,6 +7451,13 @@ function initDb(dataDir: string): void {
     getFinalizeRunByIdempotencyKey: db.prepare(
       'SELECT * FROM finalize_runs WHERE idempotency_key = ? LIMIT 1',
     ),
+    // Newest merge-check run for one (PR head, base tip): keys are
+    // `<prefix>|<attempt uuid>` so a cancelled attempt can be retried.
+    getLatestFinalizeRunByIdempotencyPrefix: db.prepare(
+      `SELECT * FROM finalize_runs
+        WHERE project_id = ? AND substr(idempotency_key, 1, length(?) + 1) = ? || '|'
+        ORDER BY started_at DESC, rowid DESC LIMIT 1`,
+    ),
     // Insert a fresh finalize_runs row. The orchestrator owns the only
     // call-site — every other module mutates an existing row by id. UNIQUE
     // on `idempotency_key` enforces the §4 dedup contract at the DB layer.

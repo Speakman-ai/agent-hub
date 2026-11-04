@@ -40,6 +40,8 @@ import {
   handleHostedRepoPush,
   setChecksPassedHook,
   setPrChecksFailedHook,
+  setMergeChecksFailedHook,
+  runMergeCheck,
 } from './git-host/push-ci.js';
 import { startDefaultBranchWatcher } from './git-host/default-branch-watcher.js';
 import { maybeRunPushSecurityScan } from './security-audit/on-push.js';
@@ -65,10 +67,12 @@ import { tryAutoMergeArmedNativePr } from './native-pr/auto-merge-armed.js';
 import { startScheduledAutoMergeTicker } from './native-pr/scheduled-auto-merge.js';
 import { maybeRunPrAutoReview } from './native-pr/auto-review.js';
 import { prActorLabel } from './native-pr/author-user.js';
+import { autoUpdateDriftedPrs } from './native-pr/auto-update.js';
 import {
   autoResolveOnBaseMoved,
   autoResolveOnChecksFailed,
   autoResolveOnHeadChanged,
+  autoResolveOnMergeChecksFailed,
   maybeAutoResolvePr,
   type AutoResolveDeps,
 } from './native-pr/auto-resolve.js';
@@ -1023,8 +1027,10 @@ app.use(
           syncNativePrEnvironment(project, open.number);
           void autoResolveOnHeadChanged(project, open, autoResolveDeps());
         }
-        // The pushed branch may be the base of open PRs that now conflict.
+        // The pushed branch may be the base of open PRs that now conflict,
+        // or that it moved onto (auto-update re-runs their checks).
         void autoResolveOnBaseMoved(project, branch, autoResolveDeps());
+        void autoUpdateDriftedPrs(project, branch, { stmts: stmts!, nativePr });
         if (open) {
           void maybeRunPrAutoReview(
             project,
@@ -1337,6 +1343,21 @@ const nativePr = createNativePrService({
   hasPreviewEnvironmentConfig: hasPreviewConfigAtSha,
   getPrEnvironment: (project, number) =>
     prEnvironments.pin().get(project.id, { source: 'native', prNumber: number }),
+  // The base moved onto this PR's files since its checks ran: run the
+  // project's merge-check jobs on the would-be merge commit.
+  startMergeCheck: ({ project, row, headSha, baseTip, jobs, idempotencyKeyPrefix }) =>
+    runMergeCheck(
+      project,
+      {
+        prNumber: row.number,
+        headBranch: row.head_branch,
+        headSha,
+        baseTip,
+        jobs,
+        idempotencyKeyPrefix,
+      },
+      { stmts: stmts!, broadcast },
+    ),
   afterBaseBranchMoved: async ({ project, baseBranch }) => {
     // Native merges and reverts move the base branch via `update-ref` — no
     // post-receive hook fires — so EVERY downstream reaction to "default
@@ -1363,6 +1384,7 @@ const nativePr = createNativePrService({
     // sweep is the backstop).
     requestReleaseGateSweep('base-branch-moved');
     void autoResolveOnBaseMoved(project, baseBranch, autoResolveDeps());
+    void autoUpdateDriftedPrs(project, baseBranch, { stmts: stmts!, nativePr });
     await notifyMirrorPush(project, [`refs/heads/${baseBranch}`], { broadcast });
   },
   // "Update branch" merged the base into a PR head via `update-ref`, so no
@@ -3019,6 +3041,20 @@ setChecksPassedHook(({ project, branch }) => {
 // the remaining jobs only delays it.
 setPrChecksFailedHook(({ project, branch, headSha, reason }) => {
   void autoResolveOnChecksFailed(project, { branch, headSha, reason }, autoResolveDeps());
+});
+
+// Merge checks failed on a PR combined with the current base: the break only
+// exists together with newer base commits, so hand it to auto-resolve.
+setMergeChecksFailedHook(({ project, prNumber, headSha, reason }) => {
+  const row = stmts!.getPullRequestByNumber.get(project.id, prNumber) as
+    | { base_branch: string }
+    | undefined;
+  if (!row) return;
+  void autoResolveOnMergeChecksFailed(
+    project,
+    { prNumber, headSha, baseBranch: row.base_branch, reason },
+    autoResolveDeps(),
+  );
 });
 
 // CI on push for GitHub-hosted projects: poll each origin's default branch

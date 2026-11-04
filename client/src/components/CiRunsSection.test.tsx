@@ -525,9 +525,42 @@ describe('CiRunsSection', () => {
         baseDrift: {
           reuseJobs: ['e2e', 'smoke'],
           hazardPaths: ['**/migrations/**', '**/db/migrate/**'],
+          mergeCheckJobs: [],
         },
       }),
     );
+  });
+
+  it('saves merge-check jobs and toggles auto-update of open PRs', async () => {
+    (api.updateProject as any).mockResolvedValue({});
+    render(<CiRunsSection project={hostedProject} />);
+    const jobs = await screen.findByTestId('base-drift-merge-check-jobs');
+    // Full mode hides the fast-only fields.
+    expect(screen.queryByTestId('base-drift-reuse-jobs')).toBeNull();
+    fireEvent.change(jobs, { target: { value: 'backend-checks, frontend-build' } });
+    fireEvent.click(screen.getByTestId('base-drift-save'));
+    await waitFor(() =>
+      expect(api.updateProject).toHaveBeenCalledWith('proj-1', {
+        baseDrift: expect.objectContaining({
+          mergeCheckJobs: ['backend-checks', 'frontend-build'],
+        }),
+      }),
+    );
+    const toggle = screen.getByTestId('base-drift-auto-update');
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(api.updateProject).toHaveBeenCalledWith('proj-1', {
+        baseDrift: { autoUpdatePrs: true },
+      }),
+    );
+  });
+
+  it('off mode hides merge checks and auto-update', async () => {
+    render(<CiRunsSection project={{ ...hostedProject, baseDrift: { mode: 'off' } }} />);
+    await screen.findByTestId('base-drift-mode');
+    expect(screen.queryByTestId('base-drift-merge-check-jobs')).toBeNull();
+    expect(screen.queryByTestId('base-drift-auto-update')).toBeNull();
   });
 
   it('turns on dynamic selection while CI on push is off', async () => {

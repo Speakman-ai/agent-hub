@@ -1099,3 +1099,201 @@ describe('push CI test inventory', () => {
     expect(recordTestInventory).not.toHaveBeenCalled();
   });
 });
+
+describe('merge checks', () => {
+  const TWO_JOB_CI = [
+    'version: 2',
+    'on: [push]',
+    'jobs:',
+    '  backend-checks:',
+    '    runs-on: ubuntu-24.04',
+    '    steps:',
+    '      - run: echo checks',
+    '  e2e:',
+    '    runs-on: ubuntu-24.04',
+    '    steps:',
+    '      - run: echo e2e',
+  ].join('\n');
+
+  /** Feature branch adds `branchFile`; main then gains `baseFile`. */
+  async function seedDrift(branchFile: string, baseFile: string) {
+    const { project } = await seedHostedProject({ ciYaml: TWO_JOB_CI });
+    const bare = gitHostRepoPath(project.id);
+    const work = path.join(os.tmpdir(), `pushci-mc-${uuidv4().slice(0, 8)}`);
+    execSync(`git clone --quiet "${bare}" "${work}"`, { stdio: 'pipe' });
+    git(work, 'config user.email "t@example.com"');
+    git(work, 'config user.name "T"');
+    git(work, 'checkout -b feature');
+    mkdirSync(path.dirname(path.join(work, branchFile)), { recursive: true });
+    writeFileSync(path.join(work, branchFile), 'feature\n');
+    git(work, 'add -A');
+    git(work, 'commit -m feature');
+    git(work, 'push origin feature');
+    const headSha = git(work, 'rev-parse HEAD');
+    git(work, 'checkout main');
+    mkdirSync(path.dirname(path.join(work, baseFile)), { recursive: true });
+    writeFileSync(path.join(work, baseFile), 'main\n');
+    git(work, 'add -A');
+    git(work, 'commit -m "main moves"');
+    git(work, 'push origin main');
+    const baseTip = git(work, 'rev-parse HEAD');
+    return { project, headSha, baseTip };
+  }
+
+  function latestMergeCheckRun(project: Project, prefix: string) {
+    return stmts.getLatestFinalizeRunByIdempotencyPrefix.get(project.id, prefix, prefix) as
+      | FinalizeRunRow
+      | undefined;
+  }
+
+  it('runs only the flagged jobs on the would-be merge commit and reports success for the PR head', async () => {
+    const { startMergeCheckRun } = await import('./push-ci.js');
+    const { project, headSha, baseTip } = await seedDrift(
+      'training/migrations/0029_a.py',
+      'training/migrations/0029_b.py',
+    );
+    const passed = vi.fn();
+    setChecksPassedHook(passed);
+    const runJobPhase = vi.fn(async (_deps: unknown, opts: Record<string, unknown>) => {
+      const wt = String(opts.worktreePath);
+      // The checked-out commit merges the current main tip with the PR head.
+      expect(git(wt, 'rev-parse HEAD^1')).toBe(baseTip);
+      expect(git(wt, 'rev-parse HEAD^2')).toBe(headSha);
+      expect(existsSync(path.join(wt, 'training/migrations/0029_a.py'))).toBe(true);
+      expect(existsSync(path.join(wt, 'training/migrations/0029_b.py'))).toBe(true);
+      expect(Object.keys((opts.config as { jobs: object }).jobs)).toEqual(['backend-checks']);
+      return { status: 'success' as const, stepResults: [], activeSecondsBilled: 1 };
+    });
+    const prefix = `merge-check|${project.id}|${headSha}|${baseTip}`;
+    try {
+      const { started, done } = await startMergeCheckRun(
+        project,
+        {
+          prNumber: 7,
+          headBranch: 'feature',
+          headSha,
+          baseTip,
+          jobs: ['backend-checks'],
+          idempotencyKeyPrefix: prefix,
+        },
+        { stmts, broadcast: () => {}, runJobPhase: runJobPhase as never, mergeSecrets: () => {} },
+      );
+      expect(started).toBe(true);
+      await done;
+    } finally {
+      setChecksPassedHook(null);
+    }
+    expect(runJobPhase).toHaveBeenCalledTimes(1);
+    expect(latestMergeCheckRun(project, prefix)).toMatchObject({
+      status: 'succeeded',
+      trigger_source: 'merge_check',
+    });
+    expect(passed).toHaveBeenCalledWith(
+      expect.objectContaining({ branch: 'feature', headSha, trigger: 'merge_check' }),
+    );
+  });
+
+  it('a failing merge check fires the merge-checks-failed hook with the PR head', async () => {
+    const { startMergeCheckRun, setMergeChecksFailedHook } = await import('./push-ci.js');
+    const { project, headSha, baseTip } = await seedDrift('app/a.py', 'app/b.py');
+    const failed = vi.fn();
+    const prFailed = vi.fn();
+    setMergeChecksFailedHook(failed);
+    setPrChecksFailedHook(prFailed);
+    const prefix = `merge-check|${project.id}|${headSha}|${baseTip}`;
+    try {
+      const { done } = await startMergeCheckRun(
+        project,
+        {
+          prNumber: 9,
+          headBranch: 'feature',
+          headSha,
+          baseTip,
+          jobs: ['backend-checks'],
+          idempotencyKeyPrefix: prefix,
+        },
+        {
+          stmts,
+          broadcast: () => {},
+          runJobPhase: vi.fn(async (_d: unknown, opts: Record<string, unknown>) => {
+            (opts.onInstanceFailed as (a: { jobId: string; matrixKey: string }) => void)({
+              jobId: 'backend-checks',
+              matrixKey: '',
+            });
+            return { status: 'failure' as const, stepResults: [], activeSecondsBilled: 1 };
+          }) as never,
+          mergeSecrets: () => {},
+        },
+      );
+      await done;
+    } finally {
+      setMergeChecksFailedHook(null);
+      setPrChecksFailedHook(null);
+    }
+    expect(latestMergeCheckRun(project, prefix)?.status).toBe('failed');
+    expect(failed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prNumber: 9,
+        branch: 'feature',
+        headSha,
+        reason: 'job backend-checks failed',
+      }),
+    );
+    // PR-CI auto-resolve must not see the synthetic merge commit.
+    expect(prFailed).not.toHaveBeenCalled();
+  });
+
+  it('fails without running anything when any configured job is missing from ci.yaml', async () => {
+    const { startMergeCheckRun, setMergeChecksFailedHook } = await import('./push-ci.js');
+    const { project, headSha, baseTip } = await seedDrift('app/a.py', 'app/b.py');
+    const failed = vi.fn();
+    setMergeChecksFailedHook(failed);
+    const runJobPhase = vi.fn();
+    const prefix = `merge-check|${project.id}|${headSha}|${baseTip}|mixed`;
+    try {
+      const { done } = await startMergeCheckRun(
+        project,
+        {
+          prNumber: 12,
+          headBranch: 'feature',
+          headSha,
+          baseTip,
+          // e2e exists; backend-check (typo) does not. e2e alone must not pass.
+          jobs: ['e2e', 'backend-check'],
+          idempotencyKeyPrefix: prefix,
+        },
+        { stmts, broadcast: () => {}, runJobPhase: runJobPhase as never, mergeSecrets: () => {} },
+      );
+      await done;
+    } finally {
+      setMergeChecksFailedHook(null);
+    }
+    expect(runJobPhase).not.toHaveBeenCalled();
+    expect(latestMergeCheckRun(project, prefix)).toMatchObject({
+      status: 'failed',
+      failure_reason: 'ci_config_invalid',
+    });
+    // A settings mistake is not something a PR resolve session can fix.
+    expect(failed).not.toHaveBeenCalled();
+  });
+
+  it('does not start when the PR conflicts with the base', async () => {
+    const { startMergeCheckRun } = await import('./push-ci.js');
+    const { project, headSha, baseTip } = await seedDrift('src.txt', 'src.txt');
+    const runJobPhase = vi.fn();
+    const { started } = await startMergeCheckRun(
+      project,
+      {
+        prNumber: 11,
+        headBranch: 'feature',
+        headSha,
+        baseTip,
+        jobs: ['backend-checks'],
+        idempotencyKeyPrefix: `merge-check|${project.id}|${headSha}|${baseTip}`,
+      },
+      { stmts, broadcast: () => {}, runJobPhase: runJobPhase as never, mergeSecrets: () => {} },
+    );
+    expect(started).toBe(false);
+    expect(runJobPhase).not.toHaveBeenCalled();
+  });
+});

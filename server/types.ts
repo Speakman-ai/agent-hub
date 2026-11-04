@@ -3026,6 +3026,7 @@ export interface Stmts {
    * check before it spends INSERT bandwidth.
    */
   getFinalizeRunByIdempotencyKey: Stmt;
+  getLatestFinalizeRunByIdempotencyPrefix: Stmt;
   /**
    * Insert a new `finalize_runs` row. The orchestrator is the only
    * caller — every other module mutates by id. Mirrors the §4 schema
@@ -3781,6 +3782,10 @@ export interface Project {
     mode?: 'full' | 'fast' | 'off';
     reuseJobs?: string[];
     hazardPaths?: string[];
+    /** ci.yaml jobs run on the would-be merge commit when a PR's base drifted. */
+    mergeCheckJobs?: string[];
+    /** Update open PR branches as soon as the base moves onto their files. */
+    autoUpdatePrs?: boolean;
   };
   /**
    * Finalize dynamic test selection. `full` (default) runs every ci.yaml job

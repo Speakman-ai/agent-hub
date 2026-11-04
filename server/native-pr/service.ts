@@ -41,6 +41,14 @@ import { parseCiConfig } from '../finalize/ci-config.js';
 import { expandJobInstances } from '../finalize/ci-config-jobs.js';
 import { isKnownHubUserId, prActorLabel } from './author-user.js';
 import { NativePrError } from './errors.js';
+import {
+  inspectMergeBaseDrift,
+  MERGE_CHECKS_RUNNING,
+  mergeCheckBlockReason,
+  mergeCheckRunKey,
+  mergeCheckStateFromRun,
+  updateBranchBlockReason,
+} from './merge-drift.js';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { mapWithConcurrency } from '../git-host/recent-pushes.js';
@@ -138,6 +146,12 @@ export interface NativePrServiceDeps {
     body: string;
     reviewer: string;
   }) => void;
+  /**
+   * Starts merge checks for a PR whose base drifted onto its files (see
+   * merge-drift.ts). Called only from `merge()`, never from list/detail reads.
+   * Omitted means merge checks never start and drifted PRs stay blocked.
+   */
+  startMergeCheck?: StartMergeCheck;
   /** Fired after an open PR is closed without merging. Tears down the PR environment. */
   afterPrClosed?: (args: { project: Project; row: PullRequestRow }) => void;
   /** Fired after a closed PR is reopened. Re-queues the PR environment. */
@@ -629,6 +643,7 @@ async function mergeBlockedReason(
   project: Project,
   row: PullRequestRow,
   repoPath: string,
+  opts: { startMergeCheck?: StartMergeCheck } = {},
 ): Promise<string | null> {
   const prot = project.branchProtection;
   if (!prot || (!prot.requiredChecks && !prot.requiredReview)) return null;
@@ -648,10 +663,13 @@ async function mergeBlockedReason(
     }
   }
 
+  // No ci.yaml at the head commit → the checks requirement is vacuous (there
+  // is nothing configured to run).
+  const ciConfigText =
+    prot.requiredChecks && !validated ? await ciConfigTextAtCommit(repoPath, headSha) : null;
+  const hasChecks = Boolean(prot.requiredChecks) && (validated || ciConfigText !== null);
+
   if (prot.requiredChecks && !validated) {
-    // No ci.yaml at the head commit → the requirement is vacuous (there
-    // is nothing configured to run).
-    const ciConfigText = await ciConfigTextAtCommit(repoPath, headSha);
     if (ciConfigText !== null) {
       const checks = checksForSha(stmts, project.id, headSha);
       const blocked = requiredChecksBlockReasonFromRows(
@@ -662,8 +680,55 @@ async function mergeBlockedReason(
     }
   }
 
+  // Validation above is pinned to the head sha, not to the base it ran
+  // against; re-check that the base has not since moved onto this PR's files.
+  if (hasChecks) {
+    const drift = await inspectMergeBaseDrift({
+      repoPath,
+      baseBranch: row.base_branch,
+      headSha,
+      baseDrift: project.baseDrift,
+      onWarn: (message) => console.warn(`[native-pr] ${project.id}#${row.number}: ${message}`),
+    });
+    if (drift.kind === 'stale') {
+      const jobs = drift.policy.mergeCheckJobs;
+      if (jobs.length === 0) return updateBranchBlockReason(row.base_branch, drift.overlap);
+
+      const keyPrefix = mergeCheckRunKey(project.id, headSha, drift.baseTip, jobs);
+      const run = stmts.getLatestFinalizeRunByIdempotencyPrefix.get(
+        project.id,
+        keyPrefix,
+        keyPrefix,
+      ) as { status: string; failure_reason: string | null } | undefined;
+      let state = mergeCheckStateFromRun(run);
+      if (state === 'passed') return null;
+      if (state === 'none' && opts.startMergeCheck) {
+        const started = await opts.startMergeCheck({
+          project,
+          row,
+          headSha,
+          baseTip: drift.baseTip,
+          jobs,
+          idempotencyKeyPrefix: keyPrefix,
+        });
+        if (started) state = 'running';
+      }
+      return mergeCheckBlockReason(state, row.base_branch, drift.overlap, run?.failure_reason);
+    }
+  }
+
   return null;
 }
+
+/** Starts a merge-check run; resolves false when nothing could be started. */
+export type StartMergeCheck = (args: {
+  project: Project;
+  row: PullRequestRow;
+  headSha: string;
+  baseTip: string;
+  jobs: string[];
+  idempotencyKeyPrefix: string;
+}) => Promise<boolean>;
 
 /** Kanban card linked to this PR (cards store pr_url on link/ship). */
 function linkedCardFor(
@@ -1060,8 +1125,21 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
         return { ok: false as const, status: 409, error: `PR #${number} is ${row.status}` };
       }
 
-      const blocked = await mergeBlockedReason(stmts, project, row, repoPath);
+      const blocked = await mergeBlockedReason(stmts, project, row, repoPath, {
+        startMergeCheck: deps.startMergeCheck,
+      });
       if (blocked) {
+        // A merge waiting on merge checks finishes on its own: arm auto-merge
+        // so the checks-passed hook completes it, like GitHub's merge queue.
+        if (blocked.includes(MERGE_CHECKS_RUNNING) && row.auto_merge !== 1) {
+          stmts.setPullRequestAutoMerge.run(1, Date.now(), row.id);
+          broadcast({
+            type: 'native_pr_update',
+            projectId: project.id,
+            prNumber: number,
+            action: 'auto_merge_enabled',
+          });
+        }
         return { ok: false as const, status: 409, error: blocked };
       }
 

@@ -103,8 +103,34 @@ export type ChecksPassedHook = (args: {
   project: Project;
   branch: string;
   headSha: string;
-  trigger: 'git_push' | 'pr_push';
+  trigger: CiTrigger;
 }) => void;
+
+/**
+ * `merge_check` runs a project's `baseDrift.mergeCheckJobs` on the commit a
+ * native PR merge would create, when the base moved onto the PR's files since
+ * its checks ran (native-pr/merge-drift.ts).
+ */
+export type CiTrigger = 'git_push' | 'pr_push' | 'merge_check';
+
+/**
+ * Fired when a merge-check run fails on real test results (not infra). The
+ * branch / headSha are the PR's head, not the synthetic merge commit.
+ */
+export type MergeChecksFailedHook = (args: {
+  project: Project;
+  prNumber: number;
+  branch: string;
+  headSha: string;
+  reason: string;
+}) => void;
+
+let mergeChecksFailedHook: MergeChecksFailedHook | null = null;
+
+/** Register (or clear with `null`) the merge-checks-failed hook. Wired once at boot. */
+export function setMergeChecksFailedHook(fn: MergeChecksFailedHook | null): void {
+  mergeChecksFailedHook = fn;
+}
 
 let checksPassedHook: ChecksPassedHook | null = null;
 
@@ -134,7 +160,7 @@ export function setPrChecksFailedHook(fn: PrChecksFailedHook | null): void {
 
 function firePrChecksFailed(
   project: Project,
-  trigger: 'git_push' | 'pr_push',
+  trigger: CiTrigger,
   branch: string,
   headSha: string,
   reason: string,
@@ -618,6 +644,129 @@ export function rerunCiRun(
   );
 }
 
+const MERGE_CHECK_REF_PREFIX = 'refs/agent-hub/merge-checks';
+/** Merge checks queued or running, by idempotency-key prefix (PR head, base tip, job set). */
+const inflightMergeChecks = new Set<string>();
+
+/**
+ * Run a project's merge-check jobs on the commit merging PR `prNumber` would
+ * create: a two-parent commit of the current base tip and the PR head, built
+ * with `merge-tree` so no branch moves. A ref under
+ * `refs/agent-hub/merge-checks/` keeps the commit alive for the runner clone.
+ *
+ * Results land as a `merge_check` run keyed by
+ * `idempotencyKeyPrefix|<attempt>`. Success fires the checks-passed hook for
+ * the PR head (armed auto-merge retries); a failure fires the merge-checks
+ * failed hook (auto-resolve). Returns false when nothing was started.
+ */
+export async function runMergeCheck(
+  project: Project,
+  args: MergeCheckArgs,
+  deps: PushCiDeps,
+): Promise<boolean> {
+  return (await startMergeCheckRun(project, args, deps)).started;
+}
+
+export interface MergeCheckArgs {
+  prNumber: number;
+  headBranch: string;
+  headSha: string;
+  baseTip: string;
+  jobs: string[];
+  idempotencyKeyPrefix: string;
+}
+
+/** {@link runMergeCheck}, plus a promise that settles when the run finishes. */
+export async function startMergeCheckRun(
+  project: Project,
+  args: MergeCheckArgs,
+  deps: PushCiDeps,
+): Promise<{ started: boolean; done: Promise<void> }> {
+  const none = { started: false, done: Promise.resolve() };
+  if (project.gitHost !== 'agenthub' || args.jobs.length === 0) return none;
+  if (realRunnerDisabled(deps)) return none;
+  const dataDir = deps.dataDir ?? config.dataDir;
+  if (!hostedRepoExists(project.id, dataDir)) return none;
+  const bare = gitHostRepoPath(project.id, dataDir);
+  if (inflightMergeChecks.has(args.idempotencyKeyPrefix)) {
+    return { started: true, done: Promise.resolve() };
+  }
+  inflightMergeChecks.add(args.idempotencyKeyPrefix);
+
+  let mergeSha: string;
+  try {
+    const { stdout: tree } = await execFileP(
+      'git',
+      ['-C', bare, 'merge-tree', '--write-tree', args.baseTip, args.headSha],
+      { timeout: 60_000 },
+    );
+    const identity = {
+      GIT_AUTHOR_NAME: 'Agent Hub CI',
+      GIT_AUTHOR_EMAIL: 'ci@agent-hub.local',
+      GIT_COMMITTER_NAME: 'Agent Hub CI',
+      GIT_COMMITTER_EMAIL: 'ci@agent-hub.local',
+    };
+    const { stdout: commit } = await execFileP(
+      'git',
+      [
+        '-C',
+        bare,
+        'commit-tree',
+        tree.split('\n')[0]!.trim(),
+        '-p',
+        args.baseTip,
+        '-p',
+        args.headSha,
+        '-m',
+        `Merge check for PR #${args.prNumber}`,
+      ],
+      { timeout: 30_000, env: { ...process.env, ...identity } },
+    );
+    mergeSha = commit.trim();
+    await execFileP(
+      'git',
+      ['-C', bare, 'update-ref', `${MERGE_CHECK_REF_PREFIX}/${args.prNumber}`, mergeSha],
+      { timeout: 30_000 },
+    );
+  } catch (err: unknown) {
+    // merge-tree exits 1 on a conflict; the conflict path (auto-resolve,
+    // mergeable:false) owns that case, so there is nothing to check here.
+    console.warn(
+      `[push-ci] merge check for ${project.id}#${args.prNumber} not started: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    inflightMergeChecks.delete(args.idempotencyKeyPrefix);
+    return none;
+  }
+
+  const defaultBranch =
+    (await hostedRepoDefaultBranch(project.id, dataDir).catch(() => null)) ?? 'main';
+  const mode = resolvePushConcurrency(project, 'ci');
+  const done = enqueueInGroup(
+    ciGroupKey(project.id, `${MERGE_CHECK_REF_PREFIX}/${args.prNumber}`),
+    { supersede: false, mode, headSha: mergeSha },
+    (signal) =>
+      runCiForSha(project, deps, dataDir, {
+        repoDir: bare,
+        branch: `merge-check/${args.headBranch}`,
+        defaultBranch,
+        headSha: mergeSha,
+        trigger: 'merge_check',
+        skipWhenNoConfig: false,
+        idempotencyKey: `${args.idempotencyKeyPrefix}|${uuidv4()}`,
+        mergeCheck: {
+          jobs: args.jobs,
+          prNumber: args.prNumber,
+          prBranch: args.headBranch,
+          prHeadSha: args.headSha,
+        },
+        signal,
+      }).finally(() => inflightMergeChecks.delete(args.idempotencyKeyPrefix)),
+  );
+  return { started: true, done };
+}
+
 /** Shared engine: run ci.yaml jobs for one commit, record results. */
 async function runCiForSha(
   project: Project,
@@ -630,13 +779,19 @@ async function runCiForSha(
     /** The repo's default branch, when known. Gates the test-inventory write. */
     defaultBranch?: string;
     headSha: string;
-    trigger: 'git_push' | 'pr_push';
+    trigger: CiTrigger;
     /** PR trigger: missing config skips silently instead of failing. */
     skipWhenNoConfig: boolean;
     /** Override for re-runs — the default key dedupes one run per sha. */
     idempotencyKey?: string;
     /** Run only this job from the config (per-job re-run). */
     jobFilter?: string;
+    /**
+     * Merge checks: run only these jobs (ids missing from the config are
+     * skipped), and report hook results against the PR head rather than the
+     * synthetic merge commit.
+     */
+    mergeCheck?: { jobs: string[]; prNumber: number; prBranch: string; prHeadSha: string };
     /** Tripped when a newer push to the branch cancels this run. */
     signal?: CancelSignal;
   },
@@ -739,6 +894,7 @@ async function runCiForSha(
       failure_reason: 'superseded',
     });
   };
+  let firstFailedJob: string | null = null;
   const fail = (reason: string, detail: string): void => {
     console.warn(`[push-ci] run=${runId} failed: ${reason} — ${detail}`);
     deps.stmts.failFinalizeRun.run('failed', reason, runId);
@@ -750,7 +906,27 @@ async function runCiForSha(
       status: 'failed',
       failure_reason: reason,
     });
-    if (reason !== 'infra_error') firePrChecksFailed(project, trigger, branch, headSha, reason);
+    if (reason === 'infra_error') return;
+    firePrChecksFailed(project, trigger, branch, headSha, reason);
+    // A bad merge-check job list is a project setting, not something a
+    // resolve session on the PR can fix; the block reason surfaces it.
+    if (args.mergeCheck && reason !== 'ci_config_invalid') {
+      try {
+        mergeChecksFailedHook?.({
+          project,
+          prNumber: args.mergeCheck.prNumber,
+          branch: args.mergeCheck.prBranch,
+          headSha: args.mergeCheck.prHeadSha,
+          reason: firstFailedJob ?? reason,
+        });
+      } catch (err: unknown) {
+        console.warn(
+          `[push-ci] mergeChecksFailedHook threw for ${project.id}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
   };
 
   try {
@@ -768,6 +944,20 @@ async function runCiForSha(
       return;
     }
     let ciConfig = parsed.config;
+    if (args.mergeCheck) {
+      // Every configured job must exist: a passing subset must never stand in
+      // for a misspelled or removed job and clear the merge.
+      const configured = ciConfig.jobs ?? {};
+      const missing = args.mergeCheck.jobs.filter((id) => !Object.hasOwn(configured, id));
+      if (missing.length > 0) {
+        fail('ci_config_invalid', `merge-check jobs not in ci.yaml: ${missing.join(', ')}`);
+        return;
+      }
+      const jobs = Object.fromEntries(
+        Object.entries(configured).filter(([id]) => args.mergeCheck!.jobs.includes(id)),
+      );
+      ciConfig = { ...ciConfig, jobs } as typeof ciConfig;
+    }
     if (args.jobFilter) {
       const job = ciConfig.jobs?.[args.jobFilter];
       if (!job) {
@@ -808,14 +998,11 @@ async function runCiForSha(
         ...(ciRunnerClass ? { runnerClass: ciRunnerClass } : {}),
         ...(signal ? { signal } : {}),
         ...(collectInventory ? { onJunitReport: (r) => junitReports.push(r) } : {}),
-        onInstanceFailed: ({ jobId, matrixKey }) =>
-          firePrChecksFailed(
-            project,
-            trigger,
-            branch,
-            headSha,
-            `job ${jobId}${matrixKey ? ` (${matrixKey})` : ''} failed`,
-          ),
+        onInstanceFailed: ({ jobId, matrixKey }) => {
+          const what = `job ${jobId}${matrixKey ? ` (${matrixKey})` : ''} failed`;
+          firstFailedJob ??= what;
+          firePrChecksFailed(project, trigger, branch, headSha, what);
+        },
       },
     );
 
@@ -899,7 +1086,12 @@ async function runCiForSha(
       // Checks for this head just went green — let a deferred native
       // Auto-Merge complete. Never let a hook error fail the CI run.
       try {
-        checksPassedHook?.({ project, branch, headSha, trigger });
+        checksPassedHook?.({
+          project,
+          branch: args.mergeCheck?.prBranch ?? branch,
+          headSha: args.mergeCheck?.prHeadSha ?? headSha,
+          trigger,
+        });
       } catch (err: unknown) {
         console.warn(
           `[push-ci] checksPassedHook threw for ${project.id} ${branch}@${shortSha}: ${
@@ -937,4 +1129,5 @@ async function runCiForSha(
 /** Test seam: drop queued chains between tests. */
 export function __clearPushCiQueues(): void {
   groups.clear();
+  inflightMergeChecks.clear();
 }
