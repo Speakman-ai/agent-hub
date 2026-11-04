@@ -127,6 +127,11 @@ class FakeSessionEnv implements SessionEnv {
   throwOnSpawn: Error | null = null;
   /** When set, the NEXT spawned proc is created already-exited with this result. */
   preExitNextSpawn: SessionEnvExit | null = null;
+  /**
+   * Scripted spawns, consumed in order: each proc writes `stderr` and exits
+   * after the caller has attached its listeners.
+   */
+  scriptedSpawns: Array<{ stderr?: string; exit: SessionEnvExit }> = [];
   readonly worktreeSharing = 'host-shared' as const;
   readonly worktreeIo: SessionWorktreeIo = new HostWorktreeIo('/fake/worktree');
   private readonly mappings = new Map<number, SessionEnvPortMapping>();
@@ -152,6 +157,13 @@ class FakeSessionEnv implements SessionEnv {
       // synchronously — the already-exited contract the runner must handle.
       proc.exit(this.preExitNextSpawn);
       this.preExitNextSpawn = null;
+    }
+    const scripted = this.scriptedSpawns.shift();
+    if (scripted) {
+      queueMicrotask(() => {
+        if (scripted.stderr) proc.emitStderr(scripted.stderr);
+        proc.exit(scripted.exit);
+      });
     }
     this.proc = proc;
     return proc;
@@ -1117,6 +1129,140 @@ describe('DevServerRuntime lifecycle', () => {
       n: number;
     };
     expect(groups.n).toBe(0);
+  });
+
+  describe('Docker address-pool exhaustion', () => {
+    const POOL_ERROR =
+      'failed to create network session-abc_default: Error response from daemon: could not find an available, non-overlapping IPv4 address pool among the defaults to assign to the network\n';
+    const OLD = '2026-09-05 03:40:53.209207056 +0000 UTC';
+
+    function makePoolDocker(idle: string[]) {
+      const calls: string[][] = [];
+      const run: SysboxRunFn = async (argv): Promise<SysboxRunResult> => {
+        calls.push(argv);
+        if (argv[1] === 'network' && argv[2] === 'ls' && argv.includes('dangling=true')) {
+          return {
+            ok: true,
+            stdout: idle.map((n) => `id-${n}\t${n}\t${OLD}\n`).join(''),
+            stderr: '',
+          };
+        }
+        return { ok: true, stdout: '', stderr: '' };
+      };
+      return { run, calls };
+    }
+
+    it('removes idle networks and retries the build once', async () => {
+      const docker = makePoolDocker(['st-canc-net']);
+      const notifyLog = vi.fn();
+      const h = makeHarness({
+        runDocker: docker.run,
+        notifyLog,
+        envSetup: (env) => {
+          env.scriptedSpawns = [
+            { stderr: POOL_ERROR, exit: { code: 1, signal: null } },
+            { exit: { code: 0, signal: null } },
+          ];
+        },
+      });
+
+      await h.runtime.start(
+        'session-pool-build',
+        makeProject({ buildCommand: './run_app_preview --build-only', startCommand: 'serve' }),
+        '/worktree',
+      );
+
+      expect(h.envs[0].spawnCalls.map((c) => c.command)).toEqual([
+        './run_app_preview --build-only',
+        './run_app_preview --build-only',
+        'serve',
+      ]);
+      expect(docker.calls).toContainEqual(['docker', 'network', 'rm', 'id-st-canc-net']);
+      expect(notifyLog).toHaveBeenCalledWith(
+        expect.objectContaining({ line: expect.stringContaining('st-canc-net') }),
+      );
+    });
+
+    it('diagnoses a failed retry from the retry output, not the handled pool error', async () => {
+      const docker = makePoolDocker(['st-canc-net']);
+      const h = makeHarness({
+        runDocker: docker.run,
+        envSetup: (env) => {
+          env.scriptedSpawns = [
+            { stderr: POOL_ERROR, exit: { code: 1, signal: null } },
+            { stderr: 'tsc: type error\n', exit: { code: 2, signal: null } },
+          ];
+        },
+      });
+
+      const err = await h.runtime
+        .start('session-pool-retry-fail', makeProject({ buildCommand: 'build' }), '/worktree')
+        .catch((e: Error) => e);
+
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toMatch(/build failed/);
+      expect((err as Error).message).not.toMatch(/address pool/);
+      expect(h.envs[0].spawnCalls).toHaveLength(2);
+    });
+
+    it('does not retry when nothing was idle', async () => {
+      const docker = makePoolDocker([]);
+      const h = makeHarness({
+        runDocker: docker.run,
+        envSetup: (env) => {
+          env.scriptedSpawns = [{ stderr: POOL_ERROR, exit: { code: 1, signal: null } }];
+        },
+      });
+
+      await expect(
+        h.runtime.start('session-pool-none', makeProject({ buildCommand: 'build' }), '/worktree'),
+      ).rejects.toThrow(/no free network address pool/);
+      expect(h.envs[0].spawnCalls).toHaveLength(1);
+    });
+
+    it('does not reclaim on a build failure with another cause', async () => {
+      const docker = makePoolDocker(['st-canc-net']);
+      const h = makeHarness({
+        runDocker: docker.run,
+        envSetup: (env) => {
+          env.scriptedSpawns = [
+            { stderr: 'npm ERR! missing script\n', exit: { code: 1, signal: null } },
+          ];
+        },
+      });
+
+      await expect(
+        h.runtime.start('session-other-fail', makeProject({ buildCommand: 'build' }), '/worktree'),
+      ).rejects.toThrow(/build failed/);
+      expect(docker.calls.some((c) => c.includes('dangling=true'))).toBe(false);
+    });
+
+    it('reclaims after a start-command failure and tells the user to start again', async () => {
+      const clock = new FakeClock();
+      const notifyStatus = vi.fn();
+      const docker = makePoolDocker(['st-canc-net']);
+      const h = makeHarness({
+        clock,
+        fetchImpl: async () => {
+          throw new Error('ECONNREFUSED');
+        },
+        readyTimeoutMs: 5,
+        notifyStatus,
+        runDocker: docker.run,
+      });
+
+      await h.runtime.start('session-pool-start', makeProject(), '/worktree');
+      h.envs[0].proc?.emitStderr(POOL_ERROR);
+      await flushMicrotasks(80);
+
+      expect(docker.calls).toContainEqual(['docker', 'network', 'rm', 'id-st-canc-net']);
+      expect(notifyStatus).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 'failed',
+          error: expect.stringContaining('removed 1 idle Docker network(s)'),
+        }),
+      );
+    });
   });
 
   it('releases reserved rows when SessionEnv construction fails', async () => {

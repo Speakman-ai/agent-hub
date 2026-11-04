@@ -75,7 +75,11 @@ import {
   DEFAULT_STOP_COMMAND_TIMEOUT_MS,
   STOP_PROCESS_NAME,
 } from './dev-server-stop-command.js';
-import { withBootDiagnostic } from './preview-boot-diagnostics.js';
+import { diagnosePreviewBootFailure, withBootDiagnostic } from './preview-boot-diagnostics.js';
+import {
+  previewNetworkReclaimEnabled,
+  reclaimIdleDockerNetworks,
+} from './docker-network-reclaim.js';
 import {
   composeProjectNameForSession,
   reapComposeStack,
@@ -774,6 +778,59 @@ export class DevServerRuntime {
     } catch (err) {
       this.logger.warn(`${tag} compose stack reap threw: ${(err as Error).message}`);
       return null;
+    }
+  }
+
+  /** Record one boot line in the tail and stream it to watchers. */
+  private appendBootLine(
+    record: ActiveDevServer,
+    processName: string,
+    line: string,
+    stream: 'stdout' | 'stderr',
+  ): void {
+    appendPreviewLogTailLine(record.tail, line, this.logTailLines);
+    if (!this.notifyLog) return;
+    try {
+      this.notifyLog({
+        sessionId: record.sessionId,
+        groupId: record.groupId,
+        processName,
+        line,
+        stream,
+      });
+    } catch (err) {
+      this.logger.warn(`[dev-server ${record.groupId}] notifyLog threw: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * When the boot log shows Docker address-pool exhaustion, remove idle
+   * networks (see `docker-network-reclaim.ts`) and return how many were
+   * freed. Zero when the log shows another cause, reclaim is off, or nothing
+   * was idle.
+   */
+  private async reclaimNetworksAfterPoolExhaustion(record: ActiveDevServer): Promise<number> {
+    if (!this.runDocker || !previewNetworkReclaimEnabled()) return 0;
+    if (diagnosePreviewBootFailure(record.tail)?.code !== 'docker_network_pool_exhausted') return 0;
+    const tag = `[dev-server ${record.groupId}]`;
+    try {
+      const { removed } = await reclaimIdleDockerNetworks({
+        run: this.runDocker,
+        log: (m) => this.logger.log(`${tag} ${m}`),
+        warn: (m) => this.logger.warn(`${tag} ${m}`),
+      });
+      if (removed.length > 0) {
+        this.appendBootLine(
+          record,
+          BUILD_PROCESS_NAME,
+          `[preview] Docker had no free network address pool. Removed ${removed.length} idle network(s) no container uses: ${removed.join(', ')}`,
+          'stdout',
+        );
+      }
+      return removed.length;
+    } catch (err) {
+      this.logger.warn(`${tag} network reclaim threw: ${(err as Error).message}`);
+      return 0;
     }
   }
 
@@ -1540,34 +1597,42 @@ export class DevServerRuntime {
     // the command would only repeat work. A non-zero build exit fails the
     // start: the project declared the build a hard prerequisite of the server.
     if (cfg.buildCommand && !opts.skipBuild) {
+      const buildCommand = cfg.buildCommand;
       try {
-        const buildResult = await runDevServerBuild({
-          env,
-          buildCommand: cfg.buildCommand,
-          cwd: cfg.cwd,
-          spawnEnv,
-          onLine: (line, stream) => {
-            appendPreviewLogTailLine(record.tail, line, this.logTailLines);
-            if (this.notifyLog) {
-              try {
-                this.notifyLog({
-                  sessionId,
-                  groupId,
-                  processName: BUILD_PROCESS_NAME,
-                  line,
-                  stream,
-                });
-              } catch (err) {
-                this.logger.warn(
-                  `[dev-server ${groupId}] notifyLog threw: ${(err as Error).message}`,
-                );
-              }
-            }
-          },
-        });
-        if (buildResult.exit.code !== 0 || buildResult.exit.error || buildResult.exit.signal) {
+        // Lines of the latest attempt only, so a retry's failure is diagnosed
+        // from its own output rather than the error the reclaim handled.
+        let attemptLines: string[] = [];
+        const runBuild = () => {
+          attemptLines = [];
+          return runDevServerBuild({
+            env,
+            buildCommand,
+            cwd: cfg.cwd,
+            spawnEnv,
+            onLine: (line, stream) => {
+              appendPreviewLogTailLine(attemptLines, line, this.logTailLines);
+              this.appendBootLine(record, BUILD_PROCESS_NAME, line, stream);
+            },
+          });
+        };
+        const buildFailed = (exit: Awaited<ReturnType<typeof runDevServerBuild>>['exit']) =>
+          exit.code !== 0 || !!exit.error || !!exit.signal;
+        let buildResult = await runBuild();
+        // A full Docker address pool fails at `compose up` no matter how often
+        // the user retries. Free idle networks and run the build once more.
+        if (
+          buildFailed(buildResult.exit) &&
+          (await this.reclaimNetworksAfterPoolExhaustion(record)) > 0
+        ) {
+          this.appendBootLine(record, BUILD_PROCESS_NAME, '[preview] Retrying build…', 'stdout');
+          buildResult = await runBuild();
+        }
+        if (buildFailed(buildResult.exit)) {
           throw new Error(
-            withBootDiagnostic(`build failed: ${describeBuildExit(buildResult.exit)}`, record.tail),
+            withBootDiagnostic(
+              `build failed: ${describeBuildExit(buildResult.exit)}`,
+              attemptLines,
+            ),
           );
         }
       } catch (err) {
@@ -2237,6 +2302,15 @@ export class DevServerRuntime {
     // compose-up) buried in the boot log, so the reason names the self-serve
     // fix instead of a bare exit/timeout. No-op when nothing matches.
     if (record) reason = withBootDiagnostic(reason, record.tail);
+    // A start command that runs `compose up` hits pool exhaustion here rather
+    // than in the build. The process is already gone, so free the networks
+    // and let the user start again instead of sending them to the host.
+    if (record && current === 'starting') {
+      const freed = await this.reclaimNetworksAfterPoolExhaustion(record);
+      if (freed > 0) {
+        reason += ` Agent Hub removed ${freed} idle Docker network(s) no container used; start the preview again.`;
+      }
+    }
     // Tear down the whole env, not only the top-level process handle. A
     // health timeout can leave grandchildren alive; SessionEnv.dispose
     // owns the process-group SIGTERM → SIGKILL grace and port release.
