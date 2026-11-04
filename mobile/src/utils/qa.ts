@@ -268,6 +268,12 @@ export function runDuration(run: QaRun, now: Date = new Date()): string | null {
   return `${s}s`;
 }
 
+/** True while the latest run is queued or running; the server refuses deletes then. */
+export function isRunActive(detail: Pick<QaPlanDetail, 'runs'>): boolean {
+  const latest = detail.runs[0];
+  return !!latest && (latest.status === 'queued' || latest.status === 'running');
+}
+
 /**
  * Why the case list cannot change right now, or null when it can. Mirrors the
  * server's freeze rule: signed-off plans and plans with an active run.

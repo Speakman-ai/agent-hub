@@ -107,6 +107,11 @@ export function caseListLockReason(detail: Pick<QaPlanDetailWire, 'plan' | 'runs
   return null;
 }
 
+function isRunActive(detail: Pick<QaPlanDetailWire, 'runs'>): boolean {
+  const latest = detail.runs[0];
+  return !!latest && (latest.status === 'queued' || latest.status === 'running');
+}
+
 export interface QaPlanDetailsDraft {
   title: string;
   goal: string;
@@ -1178,6 +1183,24 @@ export default function QaPlanDetail({
     if (await act(() => api.updateQaPlan(projectId, planId, patch))) setEditingDetails(false);
   };
 
+  const runActive = detail ? isRunActive(detail) : false;
+
+  const deletePlan = async () => {
+    if (!plan) return;
+    const cases = detail.cases.length;
+    const message = `Delete "${plan.title}" and its ${cases} test case${cases === 1 ? '' : 's'}? Run history is deleted too. This cannot be undone.`;
+    if (!window.confirm(message)) return;
+    setBusy(true);
+    setActionError(null);
+    try {
+      await api.deleteQaPlan(projectId, planId);
+      onBack();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : 'Failed to delete the QA plan');
+      setBusy(false);
+    }
+  };
+
   const confirmApprovalLoss = (): boolean =>
     !plan?.approved ||
     window.confirm('This plan is approved. Changing its cases revokes approval. Continue?');
@@ -1308,6 +1331,18 @@ export default function QaPlanDetail({
                       Approve
                     </button>
                   ))}
+                <button
+                  type="button"
+                  data-testid="qa-plan-delete"
+                  aria-label="Delete plan"
+                  disabled={busy || runActive}
+                  title={runActive ? 'Cancel the active run before deleting' : 'Delete this plan'}
+                  onClick={() => void deletePlan()}
+                  className="inline-flex items-center gap-1 rounded-md border border-gray-700 px-2.5 py-1 text-xs text-gray-300 hover:border-red-800 hover:text-red-400 disabled:opacity-60"
+                >
+                  <Trash2 size={12} />
+                  Delete
+                </button>
               </div>
             </div>
             {editingDetails ? (

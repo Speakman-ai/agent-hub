@@ -990,6 +990,8 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(input),
     }),
+  deleteQaPlan: (projectId: string, planId: string) =>
+    fetchJSON(qaPlanPath(projectId, planId), { method: 'DELETE' }),
   deleteQaCase: (projectId: string, planId: string, caseId: string) =>
     fetchJSON(`${qaPlanPath(projectId, planId)}/cases/${encodeURIComponent(caseId)}`, {
       method: 'DELETE',

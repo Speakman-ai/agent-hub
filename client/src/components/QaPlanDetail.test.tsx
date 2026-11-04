@@ -9,6 +9,7 @@ const mutations = {
   addQaCase: vi.fn(),
   updateQaCase: vi.fn(),
   deleteQaCase: vi.fn(),
+  deleteQaPlan: vi.fn(),
   reorderQaCases: vi.fn(),
   openQaAuthoringSession: vi.fn(),
   troubleshootQaResult: vi.fn(),
@@ -27,6 +28,7 @@ vi.mock('../utils/api', () => ({
     addQaCase: (...a: unknown[]) => mutations.addQaCase(...a),
     updateQaCase: (...a: unknown[]) => mutations.updateQaCase(...a),
     deleteQaCase: (...a: unknown[]) => mutations.deleteQaCase(...a),
+    deleteQaPlan: (...a: unknown[]) => mutations.deleteQaPlan(...a),
     reorderQaCases: (...a: unknown[]) => mutations.reorderQaCases(...a),
     openQaAuthoringSession: (...a: unknown[]) => mutations.openQaAuthoringSession(...a),
     troubleshootQaResult: (...a: unknown[]) => mutations.troubleshootQaResult(...a),
@@ -1210,5 +1212,56 @@ describe('QaPlanDetail plan details', () => {
     await waitFor(() =>
       expect(mutations.updateQaPlan).toHaveBeenCalledWith('proj', 'p1', { title: 'Renamed' }),
     );
+  });
+});
+
+describe('QaPlanDetail delete plan', () => {
+  const renderDetail = (d: QaPlanDetailWire) => {
+    getQaPlan.mockResolvedValue(d);
+    const onBack = vi.fn();
+    render(<QaPlanDetail projectId="proj" planId="p1" onBack={onBack} />);
+    return onBack;
+  };
+
+  it('deletes the plan after confirming and returns to the list', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const onBack = renderDetail(detail({ cases: [qaCase('c1'), qaCase('c2')] }));
+    fireEvent.click(await screen.findByTestId('qa-plan-delete'));
+    expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/its 2 test cases/));
+    await waitFor(() => expect(mutations.deleteQaPlan).toHaveBeenCalledWith('proj', 'p1'));
+    await waitFor(() => expect(onBack).toHaveBeenCalled());
+    confirm.mockRestore();
+  });
+
+  it('does nothing when the confirm is dismissed', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const onBack = renderDetail(detail());
+    fireEvent.click(await screen.findByTestId('qa-plan-delete'));
+    expect(confirm).toHaveBeenCalledWith(
+      expect.stringMatching(/^Delete "Checkout plan" and its 0 test cases\?/),
+    );
+    expect(mutations.deleteQaPlan).not.toHaveBeenCalled();
+    expect(onBack).not.toHaveBeenCalled();
+    confirm.mockRestore();
+  });
+
+  it('is disabled while a run is active', async () => {
+    renderDetail(detail({ runs: [run('r1', { status: 'running', finishedAt: null })] }));
+    expect(await screen.findByTestId('qa-plan-delete')).toBeDisabled();
+  });
+
+  it('stays on the plan and shows the error when the delete fails', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    mutations.deleteQaPlan.mockRejectedValue(new Error('QA run 1 is running; cancel it first'));
+    const onBack = renderDetail(detail());
+    fireEvent.click(await screen.findByTestId('qa-plan-delete'));
+    expect(await screen.findByText(/cancel it first/)).toBeInTheDocument();
+    expect(onBack).not.toHaveBeenCalled();
+    confirm.mockRestore();
+  });
+
+  it('can delete a signed-off plan', async () => {
+    renderDetail(detail({ plan: { ...detail().plan, status: 'done' } }));
+    expect(await screen.findByTestId('qa-plan-delete')).toBeEnabled();
   });
 });

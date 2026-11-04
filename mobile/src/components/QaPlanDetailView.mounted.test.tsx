@@ -36,9 +36,11 @@ const updateQaCase = vi.fn(async () => ({}));
 const getQaPlanCalls: string[] = [];
 let planOverrides: Record<string, unknown> = {};
 let runs: unknown[] = [];
+let noCases = false;
 const troubleshootQaResult = vi.fn(async () => ({ sessionId: 's7', agentId: 'p1-dev' }));
 const updateQaPlan = vi.fn(async () => ({}));
 const overrideQaResult = vi.fn(async () => ({}));
+const deleteQaPlan = vi.fn(async (): Promise<unknown> => ({ ok: true }));
 const getProjectBranches = vi.fn(async () => ({
   branches: [{ name: 'main' }, { name: 'release' }],
 }));
@@ -72,7 +74,9 @@ vi.mock('../utils/api', () => ({
           ...planOverrides,
         },
         links: { epic: null, card: null },
-        cases: [{ id: 'c1', planId: 'plan-1', position: 0, version: 1, ...savedCase }],
+        cases: noCases
+          ? []
+          : [{ id: 'c1', planId: 'plan-1', position: 0, version: 1, ...savedCase }],
         runs,
         signOffBlocker: null,
         autoRerun: null,
@@ -84,6 +88,7 @@ vi.mock('../utils/api', () => ({
     updateQaCase,
     troubleshootQaResult,
     overrideQaResult,
+    deleteQaPlan,
   },
 }));
 
@@ -393,5 +398,93 @@ describe('QaPlanDetailView plan details', () => {
     expect(tree.root.findByProps({ testID: 'qa-plan-details-title' }).props.editable).toBe(true);
     tree.unmount();
     planOverrides = {};
+  });
+});
+
+describe('QaPlanDetailView delete plan', () => {
+  /** Answer the next Alert.alert by pressing the button with this label. */
+  const answerAlert = async (label: string) => {
+    const { Alert } = await import('react-native');
+    (Alert.alert as any).mockImplementationOnce(
+      (_t: string, _m: string, buttons: { text: string; onPress: () => void }[]) =>
+        buttons.find((b) => b.text === label)!.onPress(),
+    );
+    return Alert.alert as any;
+  };
+
+  const mount = async (onDeleted = vi.fn()) => {
+    let tree: any;
+    await act(async () => {
+      tree = TestRenderer.create(
+        <QaPlanDetailView projectId="p1" planId="plan-1" onDeleted={onDeleted} />,
+      );
+    });
+    await flush();
+    return { tree, onDeleted };
+  };
+
+  it('deletes after confirming and calls onDeleted', async () => {
+    runs = [];
+    deleteQaPlan.mockClear();
+    const alert = await answerAlert('Delete');
+    const { tree, onDeleted } = await mount();
+    await act(async () => {
+      tree.root.findByProps({ testID: 'qa-plan-delete' }).props.onPress();
+    });
+    await flush();
+    expect(alert).toHaveBeenLastCalledWith(
+      'Delete plan?',
+      expect.stringMatching(/its 1 test case\?/),
+      expect.any(Array),
+    );
+    expect(deleteQaPlan).toHaveBeenCalledWith('p1', 'plan-1');
+    expect(onDeleted).toHaveBeenCalled();
+    tree.unmount();
+  });
+
+  it('keeps the plan when the confirm is cancelled', async () => {
+    runs = [];
+    deleteQaPlan.mockClear();
+    noCases = true;
+    const alert = await answerAlert('Cancel');
+    const { tree, onDeleted } = await mount();
+    await act(async () => {
+      tree.root.findByProps({ testID: 'qa-plan-delete' }).props.onPress();
+    });
+    await flush();
+    noCases = false;
+    expect(alert).toHaveBeenLastCalledWith(
+      'Delete plan?',
+      expect.stringMatching(/^Delete "Plan" and its 0 test cases\?/),
+      expect.any(Array),
+    );
+    expect(deleteQaPlan).not.toHaveBeenCalled();
+    expect(onDeleted).not.toHaveBeenCalled();
+    tree.unmount();
+  });
+
+  it('shows the server error and stays on the plan when the delete fails', async () => {
+    runs = [];
+    deleteQaPlan.mockClear();
+    deleteQaPlan.mockRejectedValueOnce(new Error('QA run 2 is running; cancel it first'));
+    await answerAlert('Delete');
+    const { tree, onDeleted } = await mount();
+    await act(async () => {
+      tree.root.findByProps({ testID: 'qa-plan-delete' }).props.onPress();
+    });
+    await flush();
+    expect(tree.root.findByProps({ testID: 'qa-detail-error' }).props.children).toMatch(
+      /cancel it first/,
+    );
+    expect(onDeleted).not.toHaveBeenCalled();
+    tree.unmount();
+  });
+
+  it('disables delete while a run is active', async () => {
+    runs = [{ id: 'r1', planId: 'plan-1', iteration: 1, scope: 'full', status: 'running' }];
+    const { tree } = await mount();
+    expect(tree.root.findByProps({ testID: 'qa-plan-delete' }).props.disabled).toBe(true);
+    tree.unmount();
+    runs = [];
   });
 });

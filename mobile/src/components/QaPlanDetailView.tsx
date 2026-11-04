@@ -19,6 +19,7 @@ import {
   autoRerunDescription,
   caseEditPatch,
   caseListLockReason,
+  isRunActive,
   caseVerdictLabel,
   moveCaseIds,
   parseMaxIterations,
@@ -107,7 +108,7 @@ function Button({
   label: string;
   onPress: () => void;
   disabled?: boolean;
-  tone?: 'primary' | 'secondary' | 'success';
+  tone?: 'primary' | 'secondary' | 'success' | 'danger';
   testID?: string;
 }) {
   return (
@@ -122,7 +123,13 @@ function Button({
         disabled && styles.disabled,
       ]}
     >
-      <Text style={[styles.buttonText, tone !== 'secondary' && styles.buttonTextStrong]}>
+      <Text
+        style={[
+          styles.buttonText,
+          tone !== 'secondary' && tone !== 'danger' && styles.buttonTextStrong,
+          tone === 'danger' && styles.buttonTextDanger,
+        ]}
+      >
         {label}
       </Text>
     </TouchableOpacity>
@@ -603,12 +610,15 @@ export interface QaPlanDetailViewProps extends QaLinkHandlers {
   /** Message from the list, e.g. the authoring chat failed to open after create. */
   notice?: string | null;
   onOpenSession?: (agentId: string | null, sessionId: string) => void;
+  /** Called after the plan is deleted, so the screen can return to the list. */
+  onDeleted?: () => void;
 }
 
 export default function QaPlanDetailView({
   projectId,
   planId,
   notice,
+  onDeleted,
   onOpenEpic,
   onOpenCard,
   onOpenSession,
@@ -809,6 +819,27 @@ export default function QaPlanDetailView({
     void act(() => api.startQaRun(projectId, planId, scope));
   };
 
+  const runActive = isRunActive(detail);
+
+  const deletePlan = async () => {
+    const count = detail.cases.length;
+    const ok = await confirm(
+      'Delete plan?',
+      `Delete "${plan.title}" and its ${count} test case${count === 1 ? '' : 's'}? Run history is deleted too. This cannot be undone.`,
+      'Delete',
+    );
+    if (!ok) return;
+    setBusy(true);
+    setActionError(null);
+    try {
+      await api.deleteQaPlan(projectId, planId);
+      onDeleted?.();
+    } catch (e: any) {
+      setActionError(e?.message || 'Failed to delete the QA plan');
+      setBusy(false);
+    }
+  };
+
   const signOff = async () => {
     if (await confirm('Sign off?', 'Sign off this plan and move it to Done?', 'Sign off')) {
       void act(() => api.signOffQaPlan(projectId, planId));
@@ -885,6 +916,13 @@ export default function QaPlanDetailView({
             />
           )
         ) : null}
+        <Button
+          label="Delete"
+          tone="danger"
+          testID="qa-plan-delete"
+          disabled={busy || runActive}
+          onPress={() => void deletePlan()}
+        />
       </View>
 
       {editingDetails ? (
@@ -1088,6 +1126,7 @@ const styles = StyleSheet.create({
   buttonSuccess: { backgroundColor: colors.emerald700, borderColor: colors.emerald700 },
   buttonText: { fontSize: 12, color: colors.gray300 },
   buttonTextStrong: { color: colors.white },
+  buttonTextDanger: { color: colors.red400 },
   disabled: { opacity: 0.5 },
   link: { fontSize: 13, color: colors.blue400 },
   goal: { fontSize: 13, color: colors.gray400 },

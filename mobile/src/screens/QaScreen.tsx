@@ -245,6 +245,11 @@ export default function QaScreen({ route, navigation }: any) {
           planId={selectedPlanId}
           notice={detailNotice}
           onOpenSession={openSession}
+          onDeleted={() => {
+            setSelectedPlanId(null);
+            setDetailNotice(null);
+            navigation?.setParams?.({ planId: undefined });
+          }}
           {...links}
         />
       </SafeAreaView>

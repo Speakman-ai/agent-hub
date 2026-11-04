@@ -2956,6 +2956,8 @@ export const api = {
       `${qaPlanPath(projectId, planId)}/cases/${encodeURIComponent(caseId)}`,
       { method: 'PATCH', body: JSON.stringify(input) },
     ),
+  deleteQaPlan: (projectId: string, planId: string) =>
+    fetchJSON<{ ok: true }>(qaPlanPath(projectId, planId), { method: 'DELETE' }),
   deleteQaCase: (projectId: string, planId: string, caseId: string) =>
     fetchJSON<{ ok: true; plan: QaPlanWire }>(
       `${qaPlanPath(projectId, planId)}/cases/${encodeURIComponent(caseId)}`,
