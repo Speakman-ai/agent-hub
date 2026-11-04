@@ -825,7 +825,7 @@ export default function QaPlanDetailView({
     const count = detail.cases.length;
     const ok = await confirm(
       'Delete plan?',
-      `Delete "${plan.title}" and its ${count} test case${count === 1 ? '' : 's'}? Run history is deleted too. This cannot be undone.`,
+      `Delete "${plan.title}" and its ${count} test case${count === 1 ? '' : 's'}? ${runActive ? 'The active run is cancelled and r' : 'R'}un history is deleted too. This cannot be undone.`,
       'Delete',
     );
     if (!ok) return;
@@ -920,7 +920,7 @@ export default function QaPlanDetailView({
           label="Delete"
           tone="danger"
           testID="qa-plan-delete"
-          disabled={busy || runActive}
+          disabled={busy}
           onPress={() => void deletePlan()}
         />
       </View>

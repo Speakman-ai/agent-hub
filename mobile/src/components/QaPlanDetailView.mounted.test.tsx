@@ -466,7 +466,7 @@ describe('QaPlanDetailView delete plan', () => {
   it('shows the server error and stays on the plan when the delete fails', async () => {
     runs = [];
     deleteQaPlan.mockClear();
-    deleteQaPlan.mockRejectedValueOnce(new Error('QA run 2 is running; cancel it first'));
+    deleteQaPlan.mockRejectedValueOnce(new Error('Network error'));
     await answerAlert('Delete');
     const { tree, onDeleted } = await mount();
     await act(async () => {
@@ -474,16 +474,24 @@ describe('QaPlanDetailView delete plan', () => {
     });
     await flush();
     expect(tree.root.findByProps({ testID: 'qa-detail-error' }).props.children).toMatch(
-      /cancel it first/,
+      /Network error/,
     );
     expect(onDeleted).not.toHaveBeenCalled();
     tree.unmount();
   });
 
-  it('disables delete while a run is active', async () => {
+  it('keeps delete enabled while a run is active', async () => {
     runs = [{ id: 'r1', planId: 'plan-1', iteration: 1, scope: 'full', status: 'running' }];
+    deleteQaPlan.mockClear();
+    await answerAlert('Delete');
     const { tree } = await mount();
-    expect(tree.root.findByProps({ testID: 'qa-plan-delete' }).props.disabled).toBe(true);
+    const button = tree.root.findByProps({ testID: 'qa-plan-delete' });
+    expect(button.props.disabled).toBe(false);
+    await act(async () => {
+      button.props.onPress();
+    });
+    await flush();
+    expect(deleteQaPlan).toHaveBeenCalledWith('p1', 'plan-1');
     tree.unmount();
     runs = [];
   });

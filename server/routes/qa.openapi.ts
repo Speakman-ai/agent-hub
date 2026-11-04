@@ -459,11 +459,11 @@ registerPath({
   path: `${BASE}/{planId}`,
   tags: TAGS,
   summary: 'Delete a QA plan and its history',
+  description: 'A queued or running run is cancelled and its session stopped first.',
   request: { params: planParams },
   responses: {
     200: ok('Deleted.', z.object({ ok: z.boolean() })),
     404: notFound,
-    409: err('A run is queued or running.'),
   },
 });
 

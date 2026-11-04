@@ -1188,7 +1188,7 @@ export default function QaPlanDetail({
   const deletePlan = async () => {
     if (!plan) return;
     const cases = detail.cases.length;
-    const message = `Delete "${plan.title}" and its ${cases} test case${cases === 1 ? '' : 's'}? Run history is deleted too. This cannot be undone.`;
+    const message = `Delete "${plan.title}" and its ${cases} test case${cases === 1 ? '' : 's'}? ${runActive ? 'The active run is cancelled and r' : 'R'}un history is deleted too. This cannot be undone.`;
     if (!window.confirm(message)) return;
     setBusy(true);
     setActionError(null);
@@ -1335,8 +1335,8 @@ export default function QaPlanDetail({
                   type="button"
                   data-testid="qa-plan-delete"
                   aria-label="Delete plan"
-                  disabled={busy || runActive}
-                  title={runActive ? 'Cancel the active run before deleting' : 'Delete this plan'}
+                  disabled={busy}
+                  title="Delete this plan"
                   onClick={() => void deletePlan()}
                   className="inline-flex items-center gap-1 rounded-md border border-gray-700 px-2.5 py-1 text-xs text-gray-300 hover:border-red-800 hover:text-red-400 disabled:opacity-60"
                 >

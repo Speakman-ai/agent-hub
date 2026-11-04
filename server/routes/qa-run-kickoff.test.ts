@@ -303,6 +303,14 @@ describe('run kickoff', () => {
     expect(getStmts().getQaPlan.get(planId)!.status).toBe('in_progress');
   });
 
+  it('deleting a plan mid-run cancels the run and stops its session', async () => {
+    const { base } = await approvedPlan();
+    const started = (await request(app).post(`${base}/runs`).send({}).expect(201)).body;
+    await request(app).delete(base).expect(200);
+    expect(handleCancel).toHaveBeenCalledWith(started.sessionId);
+    await request(app).get(base).expect(404);
+  });
+
   it('cancelling a run stops its session', async () => {
     const { base } = await approvedPlan();
     const started = (await request(app).post(`${base}/runs`).send({}).expect(201)).body;

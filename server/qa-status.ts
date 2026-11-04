@@ -207,18 +207,17 @@ export function updateQaPlan(planId: string, patch: QaPlanPatch): QaPlanRow {
   })();
 }
 
-/** Delete a plan and its history. Refused while a run is queued or running. */
-export function deleteQaPlan(planId: string): void {
-  getDb().transaction(() => {
+/**
+ * Delete a plan and its history. A queued or running run is cancelled first;
+ * it is returned so the caller can stop the run's session.
+ */
+export function deleteQaPlan(planId: string): QaRunRow | undefined {
+  return getDb().transaction(() => {
     requirePlan(planId);
     const run = activeRun(planId);
-    if (run) {
-      throw new QaStatusError(
-        'run_active',
-        `QA run ${run.iteration} is ${run.status}; cancel it first`,
-      );
-    }
+    if (run) getStmts().setQaRunStatus.run({ status: 'cancelled', id: run.id });
     getStmts().deleteQaPlan.run(planId);
+    return run;
   })();
 }
 

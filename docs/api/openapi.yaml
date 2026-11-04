@@ -60753,6 +60753,7 @@ paths:
     delete:
       tags: *a10
       summary: Delete a QA plan and its history
+      description: A queued or running run is cancelled and its session stopped first.
       parameters:
         - schema:
             type: string
@@ -60778,12 +60779,6 @@ paths:
                   - ok
         "404":
           description: Project, plan, case, or run not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/QaErrorResponse"
-        "409":
-          description: A run is queued or running.
           content:
             application/json:
               schema:

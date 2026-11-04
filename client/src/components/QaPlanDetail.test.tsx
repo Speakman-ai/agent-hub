@@ -1245,17 +1245,23 @@ describe('QaPlanDetail delete plan', () => {
     confirm.mockRestore();
   });
 
-  it('is disabled while a run is active', async () => {
+  it('stays enabled while a run is active and warns the run is cancelled', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     renderDetail(detail({ runs: [run('r1', { status: 'running', finishedAt: null })] }));
-    expect(await screen.findByTestId('qa-plan-delete')).toBeDisabled();
+    const button = await screen.findByTestId('qa-plan-delete');
+    expect(button).toBeEnabled();
+    fireEvent.click(button);
+    expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/active run is cancelled/));
+    await waitFor(() => expect(mutations.deleteQaPlan).toHaveBeenCalledWith('proj', 'p1'));
+    confirm.mockRestore();
   });
 
   it('stays on the plan and shows the error when the delete fails', async () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
-    mutations.deleteQaPlan.mockRejectedValue(new Error('QA run 1 is running; cancel it first'));
+    mutations.deleteQaPlan.mockRejectedValue(new Error('Network error'));
     const onBack = renderDetail(detail());
     fireEvent.click(await screen.findByTestId('qa-plan-delete'));
-    expect(await screen.findByText(/cancel it first/)).toBeInTheDocument();
+    expect(await screen.findByText(/Network error/)).toBeInTheDocument();
     expect(onBack).not.toHaveBeenCalled();
     confirm.mockRestore();
   });

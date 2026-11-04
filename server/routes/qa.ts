@@ -346,6 +346,12 @@ export default function createQaRoutes(deps: RouteDeps): Router {
   const emit = (projectId: string, planId: string, extra: Record<string, unknown> = {}) =>
     broadcast({ type: 'qa_update', projectId, planId, ...extra });
 
+  /** Stop a cancelled run's session so the agent stops driving the target. */
+  const stopRunSession = (sessionId: string) => {
+    deps.handleCancel?.(sessionId);
+    maybeArchiveQaRunSession({ stmts: getStmts(), broadcast }, { sessionId });
+  };
+
   /** Map lifecycle errors to HTTP; rethrow anything else. */
   const guard =
     (fn: (req: Request, res: Response) => void) =>
@@ -552,7 +558,8 @@ export default function createQaRoutes(deps: RouteDeps): Router {
     guard((req, res) => {
       const plan = loadPlan(req, res);
       if (!plan) return;
-      deleteQaPlan(plan.id);
+      const cancelled = deleteQaPlan(plan.id);
+      if (cancelled?.session_id) stopRunSession(cancelled.session_id);
       emit(plan.project_id, plan.id, { action: 'plan_deleted' });
       res.json({ ok: true });
     }),
@@ -839,13 +846,7 @@ export default function createQaRoutes(deps: RouteDeps): Router {
   // Cancelling also stops the run's session, so the agent stops driving the target.
   runAction('cancel', 'run_cancelled', (runId) => {
     const cancelled = cancelQaRun(runId);
-    if (cancelled.session_id) {
-      deps.handleCancel?.(cancelled.session_id);
-      maybeArchiveQaRunSession(
-        { stmts: getStmts(), broadcast },
-        { sessionId: cancelled.session_id },
-      );
-    }
+    if (cancelled.session_id) stopRunSession(cancelled.session_id);
     return cancelled;
   });
 

@@ -319,12 +319,9 @@ describe('plans', () => {
     });
   });
 
-  it('refuses to delete a plan with an active run, then deletes after cancel', async () => {
+  it('deletes a plan with an active run', async () => {
     const { planId } = await approvedPlan();
-    const run = (await request(app).post(`${base}/${planId}/runs`).send({}).expect(201)).body.run;
-    const refused = await request(app).delete(`${base}/${planId}`).expect(409);
-    expect(refused.body.code).toBe('run_active');
-    await request(app).post(`${base}/${planId}/runs/${run.id}/cancel`).expect(200);
+    await request(app).post(`${base}/${planId}/runs`).send({}).expect(201);
     await request(app).delete(`${base}/${planId}`).expect(200);
     await request(app).get(`${base}/${planId}`).expect(404);
   });
