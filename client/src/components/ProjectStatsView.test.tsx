@@ -157,7 +157,7 @@ describe('ProjectStatsView session history', () => {
       />,
     );
     await waitFor(() => expect(screen.getByText('Add history table')).toBeTruthy());
-    expect(getProjectSessionHistory).toHaveBeenCalledWith('p1');
+    expect(getProjectSessionHistory).toHaveBeenCalledWith('p1', { limit: 100 });
     expect(screen.getByText('AH-42')).toBeTruthy();
     expect(screen.getByText('#9')).toBeTruthy();
     expect(screen.getByText('merged')).toBeTruthy();

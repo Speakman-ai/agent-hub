@@ -21,6 +21,9 @@ export interface SessionHistoryRow {
   shipped_at: string | null;
 }
 
+// The server caps the history at 100 rows; ask for all of them.
+const SESSION_HISTORY_LIMIT = 100;
+
 const PR_STATUS_CLASS: Record<string, string> = {
   merged: 'text-violet-300',
   open: 'text-emerald-300',
@@ -187,7 +190,9 @@ export default function SessionHistoryTable({
     setLoading(true);
     setError(null);
     try {
-      const data = (await api.getProjectSessionHistory(projectId)) as {
+      const data = (await api.getProjectSessionHistory(projectId, {
+        limit: SESSION_HISTORY_LIMIT,
+      })) as {
         sessions: SessionHistoryRow[];
       };
       setRows(data?.sessions ?? []);

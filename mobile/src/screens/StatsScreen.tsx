@@ -29,6 +29,9 @@ interface ProjectStats {
   top_model: string | null;
 }
 
+// The server caps the history at 100 rows; ask for all of them.
+const SESSION_HISTORY_LIMIT = 100;
+
 const METRICS: Array<{ key: string; label: string; color: string }> = [
   { key: 'prs_merged', label: 'PRs merged', color: colors.emerald400 },
   { key: 'support_tickets_resolved', label: 'Support resolved', color: colors.blue400 },
@@ -178,7 +181,9 @@ export default function StatsScreen({ route, navigation }: any) {
     setHistoryError(null);
     (async () => {
       try {
-        const data = (await api.getProjectSessionHistory(projectId)) as {
+        const data = (await api.getProjectSessionHistory(projectId, {
+          limit: SESSION_HISTORY_LIMIT,
+        })) as {
           sessions: SessionHistoryRow[];
         };
         if (!cancelled) setHistory(data?.sessions ?? []);
