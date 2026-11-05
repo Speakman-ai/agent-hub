@@ -32,6 +32,15 @@ import {
 } from '../utils/todos';
 import { todoOriginLabel, todoOriginDeepLink } from '@shared/utils/captureTodo';
 import { buildTodoSessionSeed } from '@shared/utils/sessionSeed';
+import {
+  applyTodoView,
+  isTodoViewActive,
+  DEFAULT_TODO_VIEW,
+  TODO_SORT_OPTIONS,
+  TODO_DATE_FILTER_OPTIONS,
+  TODO_PRIORITY_FILTER_OPTIONS,
+  type TodoViewOptions,
+} from '@shared/utils/todoView';
 import PromoteTodoModal from '../components/PromoteTodoModal';
 import LinkTodoModal from '../components/LinkTodoModal';
 import StartSessionModal from '../components/StartSessionModal';
@@ -119,6 +128,83 @@ function PrioritySelect({
   );
 }
 
+function ViewChips<V extends string>({
+  options,
+  value,
+  onChange,
+  testIDPrefix,
+}: {
+  options: { value: V; label: string }[];
+  value: V;
+  onChange: (v: V) => void;
+  testIDPrefix: string;
+}) {
+  return (
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipRow}>
+      {options.map((o) => {
+        const active = o.value === value;
+        return (
+          <TouchableOpacity
+            key={o.value}
+            onPress={() => onChange(o.value)}
+            testID={`${testIDPrefix}-${o.value}`}
+            accessibilityLabel={o.label}
+            accessibilityState={{ selected: active }}
+            style={[styles.viewChip, active && styles.viewChipActive]}
+          >
+            <Text style={[styles.viewChipText, active && styles.viewChipTextActive]}>
+              {o.label}
+            </Text>
+          </TouchableOpacity>
+        );
+      })}
+    </ScrollView>
+  );
+}
+
+function TodoViewControls({
+  view,
+  onChange,
+}: {
+  view: TodoViewOptions;
+  onChange: (view: TodoViewOptions) => void;
+}) {
+  return (
+    <View style={styles.viewControls} testID="todos-view-toolbar">
+      <TextInput
+        style={styles.searchInput}
+        value={view.query}
+        onChangeText={(query) => onChange({ ...view, query })}
+        placeholder="Search subject or detail…"
+        placeholderTextColor={colors.gray600}
+        accessibilityLabel="Search todos"
+        testID="todos-search"
+        autoCapitalize="none"
+        autoCorrect={false}
+        clearButtonMode="while-editing"
+      />
+      <ViewChips
+        options={TODO_PRIORITY_FILTER_OPTIONS}
+        value={view.priority}
+        onChange={(priority) => onChange({ ...view, priority })}
+        testIDPrefix="todos-filter-priority"
+      />
+      <ViewChips
+        options={TODO_DATE_FILTER_OPTIONS}
+        value={view.date}
+        onChange={(date) => onChange({ ...view, date })}
+        testIDPrefix="todos-filter-date"
+      />
+      <ViewChips
+        options={TODO_SORT_OPTIONS.map((o) => ({ ...o, label: `Sort: ${o.label}` }))}
+        value={view.sort}
+        onChange={(sort) => onChange({ ...view, sort })}
+        testIDPrefix="todos-sort"
+      />
+    </View>
+  );
+}
+
 export default function TodosScreen({ navigation }: any) {
   const sidebar = useContext(SidebarContext);
   const { lastUserTodoEvent, setActiveAgentId, setActiveSessionId } = useApp();
@@ -186,6 +272,16 @@ export default function TodosScreen({ navigation }: any) {
     const split = splitTodos(todos);
     return { open: sortOpenTodos(split.open), done: split.done };
   }, [todos]);
+
+  // Search / filter / sort apply to display only. Manual reorder works over the
+  // unfiltered priority order, so the up/down arrows hide while a view is active.
+  const [view, setView] = useState<TodoViewOptions>(DEFAULT_TODO_VIEW);
+  const viewActive = isTodoViewActive(view);
+  const visibleOpen = useMemo(() => applyTodoView(open, view), [open, view]);
+  const visibleDone = useMemo(
+    () => (viewActive ? applyTodoView(done, view) : done),
+    [done, view, viewActive],
+  );
 
   const addTodo = useCallback(async () => {
     const title = newTitle.trim();
@@ -389,16 +485,35 @@ export default function TodosScreen({ navigation }: any) {
           </View>
         ) : (
           <>
+            <TodoViewControls view={view} onChange={setView} />
+            {viewActive ? (
+              <View style={styles.viewSummary}>
+                <Text style={styles.viewSummaryText} testID="todos-view-count">
+                  Showing {visibleOpen.length} of {open.length} open
+                </Text>
+                <TouchableOpacity
+                  onPress={() => setView(DEFAULT_TODO_VIEW)}
+                  testID="todos-view-clear"
+                >
+                  <Text style={styles.viewClearText}>Clear filters</Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
             <View style={styles.listCard} testID="todos-open">
-              {open.length === 0 ? (
-                <Text style={styles.allCaughtUp}>All caught up. No open todos.</Text>
+              {visibleOpen.length === 0 ? (
+                <Text style={styles.allCaughtUp} testID="todos-open-empty">
+                  {open.length === 0
+                    ? 'All caught up. No open todos.'
+                    : 'No open todos match these filters.'}
+                </Text>
               ) : (
-                open.map((todo) => (
+                visibleOpen.map((todo) => (
                   <TodoRow
                     key={todo.id}
                     todo={todo}
                     isFirst={isPriorityBandEdge(open, todo, 'up')}
                     isLast={isPriorityBandEdge(open, todo, 'down')}
+                    canReorder={!viewActive}
                     editing={editingId === todo.id}
                     onStartEdit={() => setEditingId(todo.id)}
                     onCancelEdit={() => setEditingId(null)}
@@ -419,7 +534,7 @@ export default function TodosScreen({ navigation }: any) {
               )}
             </View>
 
-            {done.length > 0 ? (
+            {visibleDone.length > 0 ? (
               <View style={{ marginTop: 20 }}>
                 <TouchableOpacity
                   style={styles.doneToggle}
@@ -431,11 +546,11 @@ export default function TodosScreen({ navigation }: any) {
                     size={14}
                     color={colors.gray400}
                   />
-                  <Text style={styles.doneToggleText}>Completed ({done.length})</Text>
+                  <Text style={styles.doneToggleText}>Completed ({visibleDone.length})</Text>
                 </TouchableOpacity>
                 {showDone ? (
                   <View style={styles.listCard} testID="todos-done">
-                    {done.map((todo) => (
+                    {visibleDone.map((todo) => (
                       <TodoRow
                         key={todo.id}
                         todo={todo}
@@ -510,6 +625,7 @@ export function TodoRow({
   todo,
   isFirst,
   isLast,
+  canReorder = true,
   editing,
   onStartEdit,
   onCancelEdit,
@@ -742,22 +858,26 @@ export function TodoRow({
           >
             <HubIcon name="Bot" size={15} color={colors.gray500} />
           </TouchableOpacity>
-          <TouchableOpacity
-            onPress={onMoveUp}
-            disabled={isFirst}
-            style={[styles.iconButton, isFirst && styles.disabled]}
-            accessibilityLabel="Move up"
-          >
-            <HubIcon name="ChevronUp" size={16} color={colors.gray500} />
-          </TouchableOpacity>
-          <TouchableOpacity
-            onPress={onMoveDown}
-            disabled={isLast}
-            style={[styles.iconButton, isLast && styles.disabled]}
-            accessibilityLabel="Move down"
-          >
-            <HubIcon name="ChevronDown" size={16} color={colors.gray500} />
-          </TouchableOpacity>
+          {canReorder ? (
+            <>
+              <TouchableOpacity
+                onPress={onMoveUp}
+                disabled={isFirst}
+                style={[styles.iconButton, isFirst && styles.disabled]}
+                accessibilityLabel="Move up"
+              >
+                <HubIcon name="ChevronUp" size={16} color={colors.gray500} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={onMoveDown}
+                disabled={isLast}
+                style={[styles.iconButton, isLast && styles.disabled]}
+                accessibilityLabel="Move down"
+              >
+                <HubIcon name="ChevronDown" size={16} color={colors.gray500} />
+              </TouchableOpacity>
+            </>
+          ) : null}
           <TouchableOpacity
             onPress={onStartEdit}
             style={styles.iconButton}
@@ -779,6 +899,59 @@ export function TodoRow({
 }
 
 const styles = StyleSheet.create({
+  viewControls: {
+    marginBottom: 10,
+    gap: 6,
+  },
+  searchInput: {
+    backgroundColor: colors.gray900,
+    borderWidth: 1,
+    borderColor: colors.gray800,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    color: colors.white,
+    fontSize: 13,
+  },
+  chipRow: {
+    flexGrow: 0,
+  },
+  viewChip: {
+    borderWidth: 1,
+    borderColor: colors.gray800,
+    backgroundColor: colors.gray900,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    marginRight: 6,
+  },
+  viewChipActive: {
+    borderColor: colors.blue500,
+    backgroundColor: colors.gray800,
+  },
+  viewChipText: {
+    color: colors.gray500,
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  viewChipTextActive: {
+    color: colors.gray200,
+  },
+  viewSummary: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+    paddingHorizontal: 2,
+  },
+  viewSummaryText: {
+    color: colors.gray500,
+    fontSize: 12,
+  },
+  viewClearText: {
+    color: colors.blue400,
+    fontSize: 12,
+  },
   container: {
     flex: 1,
     backgroundColor: colors.gray950,

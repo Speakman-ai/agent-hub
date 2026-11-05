@@ -40,6 +40,7 @@ function renderRow(todo: any, over: any = {}) {
       todo={todo}
       isFirst={over.isFirst ?? false}
       isLast={over.isLast ?? false}
+      canReorder={over.canReorder ?? true}
       editing={over.editing ?? false}
       onStartEdit={noop}
       onCancelEdit={noop}
@@ -69,6 +70,16 @@ describe('TodosScreen — TodoRow mobile parity', () => {
     // Done rows hide the up/down reorder affordances.
     expect(html).not.toContain('data-name="ChevronUp"');
     expect(html).not.toContain('data-name="Pencil"');
+  });
+
+  it('hides reorder controls on an open todo while a search/filter/sort view is active', () => {
+    const html = renderRow(
+      { id: '3', title: 'Filtered', status: 'open', dueAt: null },
+      { canReorder: false },
+    );
+    expect(html).not.toContain('data-name="ChevronUp"');
+    expect(html).not.toContain('data-name="ChevronDown"');
+    expect(html).toContain('data-name="Pencil"');
   });
 
   it('shows a due badge for a dated todo', () => {

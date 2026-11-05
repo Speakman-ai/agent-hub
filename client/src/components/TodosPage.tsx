@@ -15,6 +15,7 @@ import {
   ArrowUpRight,
   Link2,
   MessageSquarePlus,
+  Search,
 } from 'lucide-react';
 import PromoteTodoModal from './PromoteTodoModal';
 import LinkTodoModal from './LinkTodoModal';
@@ -36,6 +37,18 @@ import {
   isoToDateInput,
 } from '../utils/todos';
 import { todoOriginLabel, todoOriginDeepLink } from '@shared/utils/captureTodo';
+import {
+  applyTodoView,
+  isTodoViewActive,
+  DEFAULT_TODO_VIEW,
+  TODO_SORT_OPTIONS,
+  TODO_DATE_FILTER_OPTIONS,
+  TODO_PRIORITY_FILTER_OPTIONS,
+  type TodoViewOptions,
+  type TodoSortKey,
+  type TodoDateFilter,
+  type TodoViewPriority,
+} from '@shared/utils/todoView';
 
 /**
  * Cross-project personal Todos pane (spec NAV-PLACEMENT). A per-user, global
@@ -97,6 +110,7 @@ export default function TodosPage({
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showDone, setShowDone] = useState(false);
+  const [view, setView] = useState<TodoViewOptions>(DEFAULT_TODO_VIEW);
   const [promoteTarget, setPromoteTarget] = useState<UserTodoWire | null>(null);
   const [linkTarget, setLinkTarget] = useState<UserTodoWire | null>(null);
   // "Start session with this todo as context": the todo whose context seeds the
@@ -145,6 +159,15 @@ export default function TodosPage({
     const split = splitTodos(todos);
     return { open: sortOpenTodos(split.open), done: split.done };
   }, [todos]);
+
+  // Search / filter / sort apply to display only. Manual reorder works over the
+  // unfiltered priority order, so the up/down arrows hide while a view is active.
+  const viewActive = isTodoViewActive(view);
+  const visibleOpen = useMemo(() => applyTodoView(open, view), [open, view]);
+  const visibleDone = useMemo(
+    () => (viewActive ? applyTodoView(done, view) : done),
+    [done, view, viewActive],
+  );
 
   const addTodo = useCallback(async () => {
     const title = newTitle.trim();
@@ -364,21 +387,43 @@ export default function TodosPage({
           </div>
         ) : (
           <>
+            <TodoViewToolbar view={view} onChange={setView} />
+            {viewActive && (
+              <div className="mb-2 flex items-center justify-between text-xs text-gray-500 px-1">
+                <span data-testid="todos-view-count">
+                  Showing {visibleOpen.length} of {open.length} open
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setView(DEFAULT_TODO_VIEW)}
+                  data-testid="todos-view-clear"
+                  className="text-blue-400 hover:text-blue-300"
+                >
+                  Clear filters
+                </button>
+              </div>
+            )}
             <div
               data-testid="todos-open"
               className="bg-gray-900 border border-gray-800 rounded-xl divide-y divide-gray-800"
             >
-              {open.length === 0 ? (
-                <div className="px-4 py-6 text-center text-xs text-gray-600">
-                  All caught up. No open todos.
+              {visibleOpen.length === 0 ? (
+                <div
+                  data-testid="todos-open-empty"
+                  className="px-4 py-6 text-center text-xs text-gray-600"
+                >
+                  {open.length === 0
+                    ? 'All caught up. No open todos.'
+                    : 'No open todos match these filters.'}
                 </div>
               ) : (
-                open.map((todo, index) => (
+                visibleOpen.map((todo, index) => (
                   <TodoRow
                     key={todo.id}
                     todo={todo}
                     isFirst={index === 0}
-                    isLast={index === open.length - 1}
+                    isLast={index === visibleOpen.length - 1}
+                    canReorder={!viewActive}
                     editing={editingId === todo.id}
                     onStartEdit={() => setEditingId(todo.id)}
                     onCancelEdit={() => setEditingId(null)}
@@ -399,7 +444,7 @@ export default function TodosPage({
               )}
             </div>
 
-            {done.length > 0 && (
+            {visibleDone.length > 0 && (
               <div className="mt-6">
                 <button
                   type="button"
@@ -408,19 +453,20 @@ export default function TodosPage({
                   className="inline-flex items-center gap-1.5 text-xs font-semibold text-gray-400 uppercase tracking-wider hover:text-gray-200 mb-2"
                 >
                   {showDone ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
-                  Completed ({done.length})
+                  Completed ({visibleDone.length})
                 </button>
                 {showDone && (
                   <div
                     data-testid="todos-done"
                     className="bg-gray-900 border border-gray-800 rounded-xl divide-y divide-gray-800"
                   >
-                    {done.map((todo) => (
+                    {visibleDone.map((todo) => (
                       <TodoRow
                         key={todo.id}
                         todo={todo}
                         isFirst
                         isLast
+                        canReorder
                         editing={false}
                         onStartEdit={() => {}}
                         onCancelEdit={() => {}}
@@ -484,6 +530,8 @@ interface TodoRowProps {
   todo: UserTodoWire;
   isFirst: boolean;
   isLast: boolean;
+  /** False while search/filter/sort is active, since reorder acts on the unfiltered order. */
+  canReorder: boolean;
   editing: boolean;
   onStartEdit: () => void;
   onCancelEdit: () => void;
@@ -507,6 +555,7 @@ function TodoRow({
   todo,
   isFirst,
   isLast,
+  canReorder,
   editing,
   onStartEdit,
   onCancelEdit,
@@ -742,24 +791,28 @@ function TodoRow({
           >
             <MessageSquarePlus size={15} />
           </button>
-          <button
-            type="button"
-            onClick={onMoveUp}
-            disabled={isFirst}
-            aria-label="Move up"
-            className="p-1 rounded-md text-gray-500 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-30 disabled:hover:bg-transparent"
-          >
-            <ChevronUp size={15} />
-          </button>
-          <button
-            type="button"
-            onClick={onMoveDown}
-            disabled={isLast}
-            aria-label="Move down"
-            className="p-1 rounded-md text-gray-500 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-30 disabled:hover:bg-transparent"
-          >
-            <ChevronDown size={15} />
-          </button>
+          {canReorder && (
+            <>
+              <button
+                type="button"
+                onClick={onMoveUp}
+                disabled={isFirst}
+                aria-label="Move up"
+                className="p-1 rounded-md text-gray-500 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-30 disabled:hover:bg-transparent"
+              >
+                <ChevronUp size={15} />
+              </button>
+              <button
+                type="button"
+                onClick={onMoveDown}
+                disabled={isLast}
+                aria-label="Move down"
+                className="p-1 rounded-md text-gray-500 hover:text-gray-200 hover:bg-gray-800 disabled:opacity-30 disabled:hover:bg-transparent"
+              >
+                <ChevronDown size={15} />
+              </button>
+            </>
+          )}
           <button
             type="button"
             onClick={onStartEdit}
@@ -778,6 +831,78 @@ function TodoRow({
       >
         <Trash2 size={15} />
       </button>
+    </div>
+  );
+}
+
+const SELECT_CLASS =
+  'bg-gray-900 border border-gray-800 rounded-lg px-2 py-1.5 text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-blue-500';
+
+function TodoViewToolbar({
+  view,
+  onChange,
+}: {
+  view: TodoViewOptions;
+  onChange: (view: TodoViewOptions) => void;
+}) {
+  return (
+    <div className="mb-3 flex flex-col sm:flex-row gap-2" data-testid="todos-view-toolbar">
+      <div className="relative flex-1">
+        <Search
+          size={14}
+          className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-600 pointer-events-none"
+        />
+        <input
+          type="search"
+          value={view.query}
+          onChange={(e) => onChange({ ...view, query: e.target.value })}
+          placeholder="Search subject or detail…"
+          aria-label="Search todos"
+          data-testid="todos-search"
+          className="w-full bg-gray-900 border border-gray-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
+        />
+      </div>
+      <select
+        value={view.priority}
+        onChange={(e) =>
+          onChange({ ...view, priority: e.target.value as TodoViewPriority | 'all' })
+        }
+        aria-label="Filter by urgency"
+        data-testid="todos-filter-priority"
+        className={SELECT_CLASS}
+      >
+        {TODO_PRIORITY_FILTER_OPTIONS.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+      <select
+        value={view.date}
+        onChange={(e) => onChange({ ...view, date: e.target.value as TodoDateFilter })}
+        aria-label="Filter by do date"
+        data-testid="todos-filter-date"
+        className={SELECT_CLASS}
+      >
+        {TODO_DATE_FILTER_OPTIONS.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+      <select
+        value={view.sort}
+        onChange={(e) => onChange({ ...view, sort: e.target.value as TodoSortKey })}
+        aria-label="Sort todos"
+        data-testid="todos-sort"
+        className={SELECT_CLASS}
+      >
+        {TODO_SORT_OPTIONS.map((o) => (
+          <option key={o.value} value={o.value}>
+            Sort: {o.label}
+          </option>
+        ))}
+      </select>
     </div>
   );
 }

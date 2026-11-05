@@ -267,6 +267,51 @@ describe('TodosPage — priority chip & sort', () => {
   });
 });
 
+describe('TodosPage — search, filter & sort', () => {
+  const seed = () =>
+    mockApi.listTodos.mockResolvedValue({
+      todos: [
+        todo({ id: 'a', title: 'Zebra task', notes: 'quarterly report', priority: 'urgent' }),
+        todo({ id: 'b', title: 'Apple task', priority: 'low' }),
+        todo({ id: 'c', title: 'Mango task', priority: 'high' }),
+      ],
+    });
+  const titles = () =>
+    screen.getAllByTestId('todo-row').map((r) => within(r).getByTitle(/task/).textContent);
+
+  it('searches subject and detail', async () => {
+    seed();
+    render(<TodosPage />);
+    await screen.findByText('Apple task');
+    fireEvent.change(screen.getByTestId('todos-search'), { target: { value: 'QUARTERLY' } });
+    expect(titles()).toEqual(['Zebra task']);
+    expect(screen.getByTestId('todos-view-count')).toHaveTextContent('Showing 1 of 3 open');
+  });
+
+  it('filters by urgency and shows a no-match state', async () => {
+    seed();
+    render(<TodosPage />);
+    await screen.findByText('Apple task');
+    fireEvent.change(screen.getByTestId('todos-filter-priority'), { target: { value: 'high' } });
+    expect(titles()).toEqual(['Mango task']);
+    fireEvent.change(screen.getByTestId('todos-filter-date'), { target: { value: 'overdue' } });
+    expect(screen.getByTestId('todos-open-empty')).toHaveTextContent('No open todos match');
+    fireEvent.click(screen.getByTestId('todos-view-clear'));
+    expect(titles()).toEqual(['Zebra task', 'Mango task', 'Apple task']);
+  });
+
+  it('sorts by subject and hides reorder arrows while a view is active', async () => {
+    seed();
+    render(<TodosPage />);
+    await screen.findByText('Apple task');
+    expect(titles()).toEqual(['Zebra task', 'Mango task', 'Apple task']);
+    expect(screen.getAllByLabelText('Move up').length).toBe(3);
+    fireEvent.change(screen.getByTestId('todos-sort'), { target: { value: 'title' } });
+    expect(titles()).toEqual(['Apple task', 'Mango task', 'Zebra task']);
+    expect(screen.queryAllByLabelText('Move up')).toHaveLength(0);
+  });
+});
+
 describe('TodosPage — do-date time window & link badge', () => {
   it('renders the do-date with an optional time window', async () => {
     mockApi.listTodos.mockResolvedValue({
