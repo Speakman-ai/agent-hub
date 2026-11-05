@@ -171,6 +171,8 @@ import {
   settleSessionRetarget,
 } from '../session-retarget.js';
 import { sessionIsLockedAfterFinalizePush } from '../finalize/post-push-session-lock.js';
+import { maybeAutoPushReadyFinalizeRun } from '../finalize/automation-runner.js';
+import { parseFinalizeAutomation, shouldAutoPushAfterReady } from '../finalize/automation.js';
 import type { SessionRetargetOutcomeSchema } from './sessions.openapi.js';
 import { kickoffSeededTurn } from '../seeded-session-kickoff.js';
 import {
@@ -1938,6 +1940,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
 
     const session = stmts.getSession.get(sessionId) as SessionRow;
+    pushParkedRunAfterLevelRaise(sessionId, parsed.finalize_automation);
     const enriched = enrichSessionWithAgents(
       session,
       stmts,
@@ -1948,6 +1951,29 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     deps.broadcast({ type: 'session-updated', session: enriched });
     res.json(enriched);
   });
+
+  /**
+   * Picking Push / Auto Merge does not start a run, but a full run already
+   * parked at ready_to_push has passed review and checks, so it is pushed now. Otherwise
+   * the run, validated under a lower level, would sit until someone pressed
+   * Push by hand: auto-push only fires when a run first parks.
+   */
+  function pushParkedRunAfterLevelRaise(sessionId: string, level: string | undefined): void {
+    if (level === undefined || !shouldAutoPushAfterReady(parseFinalizeAutomation(level))) return;
+    const latest = stmts.getLatestFinalizeRunForSession.get(sessionId) as
+      | FinalizeRunRow
+      | undefined;
+    // A checks-only or review-only run parks at ready_to_push after one phase;
+    // only a full run has passed both gates.
+    if (latest?.status !== 'ready_to_push' || latest.mode !== 'full') return;
+    void maybeAutoPushReadyFinalizeRun({ sessionId, runId: latest.id }).catch((err: unknown) => {
+      console.warn(
+        `[sessions] auto-push after level change failed session=${sessionId} run=${latest.id}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    });
+  }
 
   /**
    * Link (or unlink) a Design Studio design to this session. When linked, the

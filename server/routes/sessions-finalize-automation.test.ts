@@ -5,10 +5,12 @@ import type { RouteDeps, SessionRow } from '../types.js';
 
 const mocks = vi.hoisted(() => ({
   maybeAutoStartFinalizeForSession: vi.fn(async () => undefined),
+  maybeAutoPushReadyFinalizeRun: vi.fn(async () => undefined),
 }));
 
 vi.mock('../finalize/automation-runner.js', () => ({
   maybeAutoStartFinalizeForSession: mocks.maybeAutoStartFinalizeForSession,
+  maybeAutoPushReadyFinalizeRun: mocks.maybeAutoPushReadyFinalizeRun,
 }));
 
 const { default: createSessionRoutes } = await import('./sessions.js');
@@ -42,7 +44,13 @@ function makeSession(overrides: Partial<SessionRow> = {}): SessionRow {
   };
 }
 
-function makeApp(options: { session?: Partial<SessionRow>; activeTaskStatus?: string } = {}) {
+function makeApp(
+  options: {
+    session?: Partial<SessionRow>;
+    activeTaskStatus?: string;
+    latestRun?: { id: string; status: string; mode: string };
+  } = {},
+) {
   const session = makeSession(options.session);
   const stmts = {
     updateSessionFinalizeAutomation: {
@@ -50,10 +58,11 @@ function makeApp(options: { session?: Partial<SessionRow>; activeTaskStatus?: st
         session.finalize_automation = level;
       }),
     },
+    updateSessionName: { run: vi.fn() },
     getSession: { get: vi.fn(() => session) },
     getSessionAgents: { all: vi.fn(() => []) },
     getKanbanCardBySession: { get: vi.fn(() => undefined) },
-    getLatestFinalizeRunForSession: { get: vi.fn(() => undefined) },
+    getLatestFinalizeRunForSession: { get: vi.fn(() => options.latestRun) },
     getActiveTask: {
       get: vi.fn(() =>
         options.activeTaskStatus ? { status: options.activeTaskStatus } : undefined,
@@ -148,5 +157,58 @@ describe('PATCH /api/sessions/:sessionId finalize_automation', () => {
 
     expect(res.body.finalize_automation).toBe('manual');
     expect(mocks.maybeAutoStartFinalizeForSession).not.toHaveBeenCalled();
+  });
+
+  // Regression: a run parked at ready_to_push under Build/Review stayed parked
+  // after the operator switched to Auto Merge, because auto-push only fired at
+  // the moment the run first parked.
+  it.each(['push', 'merge'] as const)(
+    'pushes a full run already parked at ready_to_push when switching to %s',
+    async (level) => {
+      const { app } = makeApp({
+        session: { finalize_automation: 'review' },
+        latestRun: { id: 'run-1', status: 'ready_to_push', mode: 'full' },
+      });
+
+      await request(app)
+        .patch('/api/sessions/sess-1')
+        .send({ finalize_automation: level })
+        .expect(200);
+
+      expect(mocks.maybeAutoPushReadyFinalizeRun).toHaveBeenCalledWith({
+        sessionId: 'sess-1',
+        runId: 'run-1',
+      });
+      expect(mocks.maybeAutoStartFinalizeForSession).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['review', { id: 'run-1', status: 'ready_to_push', mode: 'full' }],
+    ['manual', { id: 'run-1', status: 'ready_to_push', mode: 'full' }],
+    ['merge', { id: 'run-1', status: 'running', mode: 'full' }],
+    ['merge', { id: 'run-1', status: 'pushed', mode: 'full' }],
+    ['merge', { id: 'run-1', status: 'ready_to_push', mode: 'checks' }],
+    ['merge', { id: 'run-1', status: 'ready_to_push', mode: 'review' }],
+  ] as const)('does not push when switching to %s with latest run %o', async (level, run) => {
+    const { app } = makeApp({ latestRun: { ...run } });
+
+    await request(app)
+      .patch('/api/sessions/sess-1')
+      .send({ finalize_automation: level })
+      .expect(200);
+
+    expect(mocks.maybeAutoPushReadyFinalizeRun).not.toHaveBeenCalled();
+  });
+
+  it('does not push when the PATCH leaves the automation level unchanged', async () => {
+    const { app } = makeApp({
+      session: { finalize_automation: 'merge' },
+      latestRun: { id: 'run-1', status: 'ready_to_push', mode: 'full' },
+    });
+
+    await request(app).patch('/api/sessions/sess-1').send({ name: 'Renamed' }).expect(200);
+
+    expect(mocks.maybeAutoPushReadyFinalizeRun).not.toHaveBeenCalled();
   });
 });
