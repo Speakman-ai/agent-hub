@@ -268,6 +268,19 @@ function initDb(dataDir: string): void {
     );
     CREATE INDEX IF NOT EXISTS idx_session_agents_session ON session_agents(session_id);
 
+    -- Idempotency-Key replay for session create / reply (request-idempotency.ts).
+    CREATE TABLE IF NOT EXISTS request_idempotency (
+      scope TEXT NOT NULL,
+      route TEXT NOT NULL,
+      key TEXT NOT NULL,
+      payload_hash TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      -- What the request produced besides the session (a reply's message id).
+      result_id TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (scope, route, key)
+    );
+
     CREATE TABLE IF NOT EXISTS active_tasks (
       session_id TEXT PRIMARY KEY,
       message_id TEXT NOT NULL,

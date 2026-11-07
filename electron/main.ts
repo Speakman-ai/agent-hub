@@ -30,7 +30,7 @@ import {
   renameSync,
 } from 'fs';
 import { createServerConnectionStore } from './server-connections.js';
-import { createNotificationHandlers } from './notifications.js';
+import { createNotificationHandlers, showNotification } from './notifications.js';
 import { resolvePermissionRequest } from './media-permission.js';
 import { saveDesignPdfWithDialog } from './save-design-pdf-dialog.js';
 import { mergeElectronServerPath } from './merge-server-path.js';
@@ -44,6 +44,7 @@ import {
 import { resolveEffectiveArch } from './effective-arch.js';
 import { probeInstallerUrl } from './release-asset-probe.js';
 import { probeRemoteConnection } from './remote-connection-probe.js';
+import { startWowBridge, wowInstallRoots, type HubTarget } from './wow-bridge.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -172,6 +173,23 @@ function installMediaPermissionHandler() {
 function isRemoteMode() {
   const config = readConnectionConfig();
   return config.mode === 'remote' && !!config.remoteUrl;
+}
+
+/** Where the WoW bridge launches sessions: the connected remote hub, else the bundled server. */
+function wowBridgeTarget(): HubTarget {
+  const config = readConnectionConfig();
+  if (isRemoteMode()) {
+    const baseUrl = config.remoteUrl.replace(/\/+$/, '');
+    return {
+      baseUrl,
+      headers: remoteAuthHeaders({
+        connection: config,
+        authRecord: readAuthToken(),
+        requestUrl: baseUrl,
+      }),
+    };
+  }
+  return { baseUrl: `http://localhost:${process.env.AGENT_HUB_PORT || 3051}`, headers: {} };
 }
 
 // Server boot
@@ -725,6 +743,14 @@ app.whenReady().then(async () => {
   }
 
   createWindow();
+
+  startWowBridge({
+    roots: wowInstallRoots(process.platform, process.env, app.getPath('home')),
+    statePath: path.join(USER_DATA, 'wow-bridge.json'),
+    getTarget: wowBridgeTarget,
+    notify: (title, body, type) => showNotification({ title, body, type, mainWindow }),
+    log: (msg) => console.log(msg),
+  });
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

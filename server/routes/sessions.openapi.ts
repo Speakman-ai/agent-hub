@@ -331,6 +331,14 @@ export const SessionComputerToolRequestSchema = z.object({
   enabled: z.boolean({ error: 'enabled must be a boolean or null' }).nullable(),
 });
 
+/** Optional `Idempotency-Key` header for routes that start work. */
+export const IdempotencyKeyHeaders = z.object({
+  'idempotency-key': z.string().optional().openapi({
+    description:
+      'Retry-safe request id (1-200 chars of A-Z a-z 0-9 . _ : -). Repeating a request with the same key returns the original result instead of doing the work twice. Kept for 7 days.',
+  }),
+});
+
 export const CreateSessionRequestSchema = z.object({
   name: z.string().optional(),
   engine: z.string().optional(),
@@ -747,14 +755,21 @@ registerPath({
     "Defaults the engine and model to the agent's configured engine/model. Sessions are created with a per-session git worktree. Organization agents must use POST /api/organizations/{organizationId}/agents/{agentId}/sessions for their private workflow sessions.",
   request: {
     params: agentIdParams,
+    headers: IdempotencyKeyHeaders,
     body: { content: jsonContent(CreateSessionRequestSchema) },
   },
   responses: {
-    200: { description: 'New session.', content: jsonContent(SessionComponent) },
-    400: errorResponse('Validation failed.'),
+    200: {
+      description:
+        'New session, or with a reused Idempotency-Key the session the first attempt created (`Idempotent-Replayed: true`).',
+      content: jsonContent(SessionComponent),
+    },
+    400: errorResponse('Validation failed, or a malformed Idempotency-Key.'),
     403: errorResponse(
       'Organization agents require the scoped workflow session endpoint; reviewer sessions cannot be started manually.',
     ),
+    409: errorResponse('The session created under this Idempotency-Key has since been deleted.'),
+    422: errorResponse('The Idempotency-Key was already used with a different request.'),
   },
 });
 

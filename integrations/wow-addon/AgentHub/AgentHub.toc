@@ -1,0 +1,10 @@
+## Interface: 16001
+## Title: Agent Hub
+## Notes: Your Agent Hub sessions in game. Needs the Agent Hub desktop app running on this PC.
+## Author: Agent Hub
+## Version: 1.1.0
+## SavedVariables: AgentHubDB
+
+Data.lua
+AgentHub.lua
+UI.lua

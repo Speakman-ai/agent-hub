@@ -13428,6 +13428,68 @@ components:
         - updatedAt
         - revision
       description: A personal reminder that fires into the notification inbox.
+    MeSessionsErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope for /api/me/sessions.
+    MeRecentSession:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        agentId:
+          type: string
+        agentName:
+          type: string
+        projectId:
+          type: string
+        projectName:
+          type: string
+        state:
+          type: string
+          description: Resolved session lifecycle state (working, needs_input, idle, pushed, ...).
+        updatedAt:
+          type: string
+        lastReply:
+          type: string
+          nullable: true
+          description: Latest assistant message, truncated to maxChars.
+        messages:
+          type: array
+          items:
+            type: object
+            properties:
+              role:
+                type: string
+                enum:
+                  - user
+                  - assistant
+              content:
+                type: string
+              createdAt:
+                type: string
+            required:
+              - role
+              - content
+              - createdAt
+      required:
+        - id
+        - name
+        - agentId
+        - agentName
+        - projectId
+        - projectName
+        - state
+        - updatedAt
+        - lastReply
+        - messages
+      description: One of the caller’s sessions with its status and latest reply.
     MemoryErrorResponse:
       type: object
       properties:
@@ -26884,6 +26946,13 @@ paths:
           description: Agent ID.
           name: agentId
           in: path
+        - schema:
+            type: string
+            description: "Retry-safe request id (1-200 chars of A-Z a-z 0-9 . _ : -). Repeating a request with the same key returns the original result instead of doing the work twice. Kept for 7 days."
+          required: false
+          description: "Retry-safe request id (1-200 chars of A-Z a-z 0-9 . _ : -). Repeating a request with the same key returns the original result instead of doing the work twice. Kept for 7 days."
+          name: idempotency-key
+          in: header
       requestBody:
         content:
           application/json:
@@ -26926,19 +26995,31 @@ paths:
                   description: When true, mark the session as a Simple view chat (`simple_chat = 1`). Clients keep these chats out of the full Hub sidebar and list them in the Simple view.
       responses:
         "200":
-          description: New session.
+          description: "New session, or with a reused Idempotency-Key the session the first attempt created (`Idempotent-Replayed: true`)."
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Session"
         "400":
-          description: Validation failed.
+          description: Validation failed, or a malformed Idempotency-Key.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/SessionErrorResponse"
         "403":
           description: Organization agents require the scoped workflow session endpoint; reviewer sessions cannot be started manually.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "409":
+          description: The session created under this Idempotency-Key has since been deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "422":
+          description: The Idempotency-Key was already used with a different request.
           content:
             application/json:
               schema:
@@ -47914,6 +47995,140 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MeRemindersErrorResponse"
+  /api/me/sessions/recent:
+    get:
+      tags:
+        - Sessions
+      summary: List the caller's most recently active sessions across all agents
+      description: Sessions owned by the caller on projects they can view, newest activity first, with resolved state and the latest assistant reply. Archived, hidden, SideBar and cron sessions are left out.
+      parameters:
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+            description: How many sessions to return, newest activity first (1-50, default 20).
+          required: false
+          description: How many sessions to return, newest activity first (1-50, default 20).
+          name: limit
+          in: query
+        - schema:
+            type: integer
+            nullable: true
+            minimum: 0
+            maximum: 10
+            default: 0
+            description: Also return each session's last N user/assistant messages (0-10, default 0).
+          required: false
+          description: Also return each session's last N user/assistant messages (0-10, default 0).
+          name: messages
+          in: query
+        - schema:
+            type: integer
+            minimum: 50
+            maximum: 20000
+            default: 2000
+            description: Truncate each returned message body to this many characters (default 2000).
+          required: false
+          description: Truncate each returned message body to this many characters (default 2000).
+          name: maxChars
+          in: query
+      responses:
+        "200":
+          description: Recent sessions.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/MeRecentSession"
+                required:
+                  - sessions
+        "400":
+          description: Invalid query.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeSessionsErrorResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeSessionsErrorResponse"
+  /api/me/sessions/{sessionId}/reply:
+    post:
+      tags:
+        - Sessions
+      summary: Send a message to one of your sessions
+      description: Runs `content` as the next user turn, exactly as if typed in the chat box. When the session is busy the message is queued and runs when the current turn ends. Responds 202 only once the message is stored (immediately or in the queue).
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: sessionId
+          in: path
+        - schema:
+            type: string
+            description: "Retry-safe request id (1-200 chars of A-Z a-z 0-9 . _ : -). Repeating a request with the same key returns the original result instead of doing the work twice. Kept for 7 days."
+          required: false
+          description: "Retry-safe request id (1-200 chars of A-Z a-z 0-9 . _ : -). Repeating a request with the same key returns the original result instead of doing the work twice. Kept for 7 days."
+          name: idempotency-key
+          in: header
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                content:
+                  type: string
+                  minLength: 1
+                  maxLength: 50000
+              required:
+                - content
+      responses:
+        "202":
+          description: "Accepted; `queued` is true when it waits behind a running turn. A reused Idempotency-Key returns `Idempotent-Replayed: true` and does not send again."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId:
+                    type: string
+                  queued:
+                    type: boolean
+                required:
+                  - sessionId
+                  - queued
+        "400":
+          description: Validation failed, or a malformed Idempotency-Key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeSessionsErrorResponse"
+        "404":
+          description: Session not found, not yours, or its agent no longer exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeSessionsErrorResponse"
+        "422":
+          description: The Idempotency-Key was already used with a different message.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeSessionsErrorResponse"
+        "503":
+          description: "Not accepted, so nothing was stored: the chat handler is unavailable or declined the message, or an earlier attempt with this Idempotency-Key is still in flight (see Retry-After). Safe to retry with the same key."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeSessionsErrorResponse"
   /api/memory/reconcile:
     post:
       tags:

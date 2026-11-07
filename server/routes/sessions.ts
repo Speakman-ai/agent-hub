@@ -208,6 +208,14 @@ import {
   readCodexModelsCacheForUser,
   resolveSelectableCodexModels,
 } from '../codex-model-capability.js';
+import {
+  IDEMPOTENT_REPLAY_HEADER,
+  idempotencyScope,
+  lookupIdempotent,
+  payloadHash,
+  readIdempotencyKey,
+  recordIdempotent,
+} from '../request-idempotency.js';
 import { canViewProject } from '../project-visibility.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
 import {
@@ -514,6 +522,8 @@ export function summarizeTranscript(
 
 type SessionRetargetResult = z.infer<typeof SessionRetargetOutcomeSchema>;
 
+const CREATE_SESSION_ROUTE = 'POST /api/agents/:agentId/sessions';
+
 export default function createSessionRoutes(deps: RouteDeps): Router {
   const {
     stmts,
@@ -701,6 +711,32 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   router.post('/api/agents/:agentId/sessions', (req: Request, res: Response) => {
     const parsed = parseBody(CreateSessionRequestSchema, req, res);
     if (!parsed) return;
+    // A retry with the same Idempotency-Key gets the session the first attempt
+    // created. Lookup and record both happen synchronously below, before any await.
+    const idem = readIdempotencyKey(req);
+    if ('error' in idem) return res.status(400).json({ error: idem.error });
+    const idemScope = idempotencyScope(req);
+    const idemHash = payloadHash({ agentId: String(req.params.agentId), body: parsed });
+    if (idem.key) {
+      const prior = lookupIdempotent(idemScope, CREATE_SESSION_ROUTE, idem.key, idemHash);
+      if (prior.kind === 'mismatch') {
+        return res
+          .status(422)
+          .json({ error: 'This Idempotency-Key was already used with a different request' });
+      }
+      if (prior.kind === 'replay') {
+        const priorRow = stmts.getSession.get(prior.sessionId) as SessionRow | undefined;
+        if (!priorRow || priorRow.deleted_at) {
+          return res
+            .status(409)
+            .json({ error: 'The session this request created no longer exists' });
+        }
+        res.set(IDEMPOTENT_REPLAY_HEADER, 'true');
+        return res.json(
+          enrichSessionForClient(priorRow, stmts, findAgent(priorRow.agent_id)?.project ?? null),
+        );
+      }
+    }
     const id = uuidv4();
     // `autoTitle` hands the name to the automatic title flow: it is cleaned up
     // like a first-message title now, and a later LLM upgrade, substantive user
@@ -775,49 +811,66 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
     // QA sessions are read-only on code: no worktree means no commit path.
     const useWorktree = qaAgent ? 0 : defaultSessionUseWorktreeFlag(found?.project);
-    stmts.createSession.run(id, req.params.agentId, name, engine, model, useWorktree, 0, 1);
-    setSessionOwner(id, ownerUid);
-    if (autoTitle) stmts.updateSessionNameWithTitleSource.run(name, 'auto', id);
-    if (parsed.simpleChat === true) stmts.markSessionSimpleChat.run(id);
     // Optional opening user message (e.g. an email/todo context block, or chat
     // messages sent to an agent). With `autoStart` it runs as the first turn
     // right away (handleChat stores the message itself, below). Otherwise it is
     // pre-stored and the first-turn history bootstrap feeds it to the CLI when
-    // the user sends their follow-up.
+    // the user sends their follow-up. A retry-safe (Idempotency-Key) create
+    // queues it instead, so it is stored in the same commit as the session.
     const seed = parsed.seedMessage?.trim();
-    const autoStartSeed = Boolean(seed && parsed.autoStart && handleChat);
-    if (seed && !autoStartSeed) {
-      stmts.addMessage.run(uuidv4(), id, 'user', seed, null, null, null, null, null, null, null);
-      stmts.touchSession.run(id);
-    }
-    if (isWorkflowProject(found?.project)) {
-      stmts.updateSessionMode.run(
-        requestedMode ?? defaultSessionModeForProject(found?.project),
-        id,
-      );
-    } else if (requestedMode !== undefined && requestedMode !== 'chat') {
-      stmts.updateSessionMode.run(requestedMode, id);
-    }
-    if (requestedMode === 'autopilot') {
-      markSessionFinalizeAutomation(stmts, id, 'push');
-    }
-    if (
-      !isWorkflowProject(found?.project) &&
-      found?.project?.id &&
-      (requestedMode === undefined || isShippingCompatibleSessionMode(requestedMode))
-    ) {
-      // Apply this user's per-project default Finalize automation level (if any)
-      // to the new ad-hoc session. No stored preference → leave NULL, which the
-      // session resolves to the global default ('manual'). Board-assigned and
-      // autonomous-dispatch sessions are created elsewhere and keep their own
-      // escalation rules (see assignedFinalizeAutomationLevel).
-      const userDefault = getUserProjectDefaultFinalizeAutomation(
-        stmts,
-        ownerUid,
-        found.project.id,
-      );
-      if (userDefault) markSessionFinalizeAutomation(stmts, id, userDefault);
-    }
+    const queueSeed = Boolean(idem.key && seed && parsed.autoStart);
+    const autoStartSeed = !queueSeed && Boolean(seed && parsed.autoStart && handleChat);
+    // Everything that defines the new session commits together with its
+    // Idempotency-Key record: a crash can neither leave a session the key
+    // doesn't know about (a retry would create a second one) nor a recorded
+    // session missing its prompt or mode.
+    getDb().transaction(() => {
+      stmts.createSession.run(id, req.params.agentId, name, engine, model, useWorktree, 0, 1);
+      setSessionOwner(id, ownerUid);
+      if (idem.key) recordIdempotent(idemScope, CREATE_SESSION_ROUTE, idem.key, idemHash, id);
+      if (autoTitle) stmts.updateSessionNameWithTitleSource.run(name, 'auto', id);
+      if (parsed.simpleChat === true) stmts.markSessionSimpleChat.run(id);
+      if (queueSeed && seed) {
+        // Stored and queued like a message sent while a turn runs; the queue
+        // drain (here, at boot, and on the periodic sweep) runs it as the
+        // first turn, so a crash after commit still delivers the prompt.
+        const seedId = uuidv4();
+        stmts.addMessage.run(seedId, id, 'user', seed, null, null, null, null, null, null, null);
+        stmts.enqueueMessage.run(seedId, id, agentIdParam, seed, null, 0, 0);
+        stmts.touchSession.run(id);
+      } else if (seed && !autoStartSeed) {
+        stmts.addMessage.run(uuidv4(), id, 'user', seed, null, null, null, null, null, null, null);
+        stmts.touchSession.run(id);
+      }
+      if (isWorkflowProject(found?.project)) {
+        stmts.updateSessionMode.run(
+          requestedMode ?? defaultSessionModeForProject(found?.project),
+          id,
+        );
+      } else if (requestedMode !== undefined && requestedMode !== 'chat') {
+        stmts.updateSessionMode.run(requestedMode, id);
+      }
+      if (requestedMode === 'autopilot') {
+        markSessionFinalizeAutomation(stmts, id, 'push');
+      }
+      if (
+        !isWorkflowProject(found?.project) &&
+        found?.project?.id &&
+        (requestedMode === undefined || isShippingCompatibleSessionMode(requestedMode))
+      ) {
+        // Apply this user's per-project default Finalize automation level (if any)
+        // to the new ad-hoc session. No stored preference → leave NULL, which the
+        // session resolves to the global default ('manual'). Board-assigned and
+        // autonomous-dispatch sessions are created elsewhere and keep their own
+        // escalation rules (see assignedFinalizeAutomationLevel).
+        const userDefault = getUserProjectDefaultFinalizeAutomation(
+          stmts,
+          ownerUid,
+          found.project.id,
+        );
+        if (userDefault) markSessionFinalizeAutomation(stmts, id, userDefault);
+      }
+    })();
     const session = stmts.getSession.get(id) as SessionRow;
     const sessionWire = enrichSessionForClient(session, stmts, found?.project ?? null);
     deps.broadcast({ type: 'session_created', agentId: req.params.agentId, session: sessionWire });
@@ -845,6 +898,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         },
       });
     }
+    if (queueSeed) deps.drainSessionQueue?.(id);
     if (autoStartSeed && seed) {
       void handleChat(null, {
         type: 'chat',
