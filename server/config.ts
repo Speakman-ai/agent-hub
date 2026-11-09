@@ -227,7 +227,7 @@ const DEFAULT_ENGINE_VALID_MODELS: Record<string, string[]> = {
   // Keep Claude model IDs and labels aligned with the web and mobile pickers.
   'claude-code': [
     'claude-opus-5-5',
-    'claude-fable-5-1',
+    'claude-fable-5-2',
     // Sonnet 5.5 (API id `claude-sonnet-5-5`, released 2026-09-28). The retired
     // Sonnet and Opus ids keep display labels for historical sessions in
     // TopBar.tsx / systemBannerModel.ts / mobile engineOptions.ts.

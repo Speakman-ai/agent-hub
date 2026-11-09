@@ -32,11 +32,12 @@ const ENGINE_OPTIONS = [
 
 const MODEL_LABELS = {
   'claude-opus-5-5': { label: 'Opus 5.5', short: 'Opus 5.5' },
-  'claude-fable-5-1': { label: 'Fable 5.1', short: 'Fable' },
+  'claude-fable-5-2': { label: 'Fable 5.2', short: 'Fable' },
   'claude-sonnet-5-5': { label: 'Sonnet 5.5', short: 'Sonnet 5.5' },
   // Retired from selection but retained so historical sessions/crons still
   // render a clean label instead of a title-cased id.
   'claude-opus-5': { label: 'Opus 5', short: 'Opus' },
+  'claude-fable-5-1': { label: 'Fable 5.1', short: 'Fable' },
   'claude-fable-5': { label: 'Fable 5', short: 'Fable' },
   'claude-opus-4-8': { label: 'Opus 4.8', short: 'Opus 4.8' },
   'claude-opus-4-7': { label: 'Opus 4.7', short: 'Opus 4.7' },
@@ -113,7 +114,7 @@ function fallbackModelsForEngine(engine: any) {
       'grok-composer-2.5-fast',
     ];
   if (engine === 'muse-code') return ['muse-spark-1.3', 'muse-spark-1.2', 'muse-spark-1.1'];
-  return ['claude-opus-5-5', 'claude-fable-5-1', 'claude-sonnet-5-5'];
+  return ['claude-opus-5-5', 'claude-fable-5-2', 'claude-sonnet-5-5'];
 }
 
 export default function TopBar({

@@ -35,10 +35,10 @@ function renderTopBar(overrides: any = {}) {
 describe('<TopBar /> engine picker', () => {
   it.each([
     undefined,
-    { engineValidModels: { 'claude-code': ['claude-opus-5-5', 'claude-fable-5-1'] } },
+    { engineValidModels: { 'claude-code': ['claude-opus-5-5', 'claude-fable-5-2'] } },
   ])('offers Opus 5.5 with and without server model configuration (%j)', (modelConfig) => {
     const onModelChange = vi.fn();
-    renderTopBar({ modelConfig, onModelChange, sessionModel: 'claude-fable-5-1' });
+    renderTopBar({ modelConfig, onModelChange, sessionModel: 'claude-fable-5-2' });
     fireEvent.click(screen.getByTitle(/^Model: /));
     fireEvent.click(screen.getByText('Opus 5.5'));
     expect(onModelChange).toHaveBeenCalledWith('claude-opus-5-5');
@@ -48,9 +48,10 @@ describe('<TopBar /> engine picker', () => {
     const onModelChange = vi.fn();
     renderTopBar({ onModelChange, sessionModel: 'claude-opus-5-5' });
     fireEvent.click(screen.getByTitle(/^Model: /));
-    for (const retired of ['Opus 5', 'Opus 4.8', 'Opus 4.7', 'Opus 4.6', 'Sonnet 5']) {
+    for (const retired of ['Opus 5', 'Opus 4.8', 'Opus 4.7', 'Opus 4.6', 'Sonnet 5', 'Fable 5.1']) {
       expect(screen.queryByText(retired)).toBeNull();
     }
+    expect(screen.getByText('Fable 5.2')).toBeTruthy();
     fireEvent.click(screen.getByText('Sonnet 5.5'));
     expect(onModelChange).toHaveBeenCalledWith('claude-sonnet-5-5');
   });

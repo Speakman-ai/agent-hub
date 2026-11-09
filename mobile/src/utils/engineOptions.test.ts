@@ -96,15 +96,20 @@ describe('mobile engine picker constants', () => {
     expect(opus5.short).toBe('Opus 5.5');
     expect(ENGINE_DEFAULT_MODELS['claude-code']).toBe('claude-opus-5-5');
   });
-  it('exposes claude-fable-5-1 for claude-code with a Fable 5.1 label and drops retired claude-fable-5', () => {
+  it('exposes claude-fable-5-2 for claude-code with a Fable 5.2 label and drops retired Fable ids', () => {
     const models = ENGINE_MODELS['claude-code'];
     const ids = models.map((m: any) => m.id);
-    expect(ids).toContain('claude-fable-5-1');
+    expect(ids).toContain('claude-fable-5-2');
+    expect(ids).not.toContain('claude-fable-5-1');
     expect(ids).not.toContain('claude-fable-5');
-    const fable = models.find((m: any) => m.id === 'claude-fable-5-1');
-    expect(fable.label).toBe('Fable 5.1');
+    const fable = models.find((m: any) => m.id === 'claude-fable-5-2');
+    expect(fable.label).toBe('Fable 5.2');
     expect(fable.short).toBe('Fable');
   });
+  it('renders a clean historical label for the retired claude-fable-5-1', () => {
+    expect(modelDisplay('claude-fable-5-1').label).toBe('Fable 5.1');
+  });
+
   it('renders a clean historical label for the retired claude-fable-5', () => {
     const out = modelDisplay('claude-fable-5');
     expect(out.label).toBe('Fable 5');
