@@ -36,9 +36,10 @@ import {
   getProjectAwsMonitoringProfile,
   getProjectAwsSsoProfiles,
   scrubAwsCredentialEnv,
+  ensurePrivateAwsSsoCache,
 } from '../project-aws-spawn.js';
 import {
-  checkAwsSsoStatusAcrossHomes,
+  checkAwsSsoStatusForCaller,
   runAwsStsIdentity,
   spawnAwsSsoLogin,
 } from '../aws-sso-identity.js';
@@ -260,7 +261,7 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
           });
           return;
         }
-        const out = await checkAwsSsoStatusAcrossHomes({
+        const out = await checkAwsSsoStatusForCaller({
           userId,
           configPath: files.configPath,
           credentialsPath: files.credentialsPath,
@@ -331,7 +332,16 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
         throw err;
       }
 
-      const existing = getActiveAwsSsoLogin();
+      const userId = resolveAwsProbeUserId(req, { stmts, findAgent, projectId: project.id });
+      const files = writeProjectAwsFiles(project.id, profiles);
+      const env = awsSpawnEnv(userId, files);
+      // A user's login must land in their own token cache, never the shared one.
+      const isolation = ensurePrivateAwsSsoCache(env, userId);
+      if (!isolation.ok) {
+        res.status(503).json({ ok: false, profile, error: isolation.reason });
+        return;
+      }
+      const existing = getActiveAwsSsoLogin(userId);
       if (existing) {
         try {
           killProcessGroup(existing.proc, 'SIGTERM');
@@ -342,18 +352,15 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
         // The deferred `close` handler for `existing.proc` will see a
         // different proc in the slot and skip the redundant reset via
         // the identity guard.
-        clearActiveAwsSsoLogin();
+        clearActiveAwsSsoLogin(userId);
       }
 
-      const userId = resolveAwsProbeUserId(req, { stmts, findAgent, projectId: project.id });
-      const files = writeProjectAwsFiles(project.id, profiles);
-      const env = awsSpawnEnv(userId, files);
       const loginId = Date.now().toString(36);
 
       const proc = spawnAwsSsoLogin(env, profile);
       trackChild(proc);
 
-      setActiveAwsSsoLogin({ loginId, proc, projectId: project.id, profile });
+      setActiveAwsSsoLogin(userId, { loginId, proc, projectId: project.id, profile });
 
       let allOutput = '';
       let urlSent = false;
@@ -383,7 +390,7 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
       proc.stderr?.on('data', onData);
 
       proc.on('close', (code) => {
-        clearActiveAwsSsoLoginIfOwner(proc);
+        clearActiveAwsSsoLoginIfOwner(userId, proc);
         if (responded) return;
         if (code === 0) {
           finish({ ok: true, loginId, profile, completed: true, output: allOutput.slice(-2000) });
@@ -401,7 +408,7 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
       });
 
       proc.on('error', (err) => {
-        clearActiveAwsSsoLoginIfOwner(proc);
+        clearActiveAwsSsoLoginIfOwner(userId, proc);
         finish({ ok: false, loginId, profile, error: err.message }, 500);
       });
 
@@ -421,7 +428,7 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
         } catch {
           /* already dead */
         }
-        clearActiveAwsSsoLoginIfOwner(proc);
+        clearActiveAwsSsoLoginIfOwner(userId, proc);
         finish({
           ok: false,
           loginId,

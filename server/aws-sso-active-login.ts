@@ -1,23 +1,23 @@
 /**
- * Identity-guarded slot for the single in-flight `aws sso login --no-browser`
- * spawn. Extracted from `routes/project-aws.ts` so race-guard semantics
- * do not require the whole route stack.
+ * Identity-guarded slots for in-flight `aws sso login --no-browser` spawns,
+ * one per token-cache owner. Extracted from `routes/project-aws.ts` so
+ * race-guard semantics do not require the whole route stack.
  *
  * Background: an `aws sso login --no-browser` spawn returns the device URL
  * via stdout, then keeps running while the user finishes the device flow in
- * a browser. We allow at most one such proc per server: a second login
- * request kills the previous proc and registers its replacement. The
- * previous proc's `close`/`error` event then fires AFTER its replacement is
- * already in the slot — naively resetting the slot from that deferred
- * handler would wipe the replacement's registration and let a third
- * request bypass the "kill the old one first" guard, leaving two `aws
- * sso login` processes racing on `~/.aws/sso/cache`.
+ * a browser. Each owner (a Hub user, or the shared host HOME) gets at most
+ * one such proc: a second login request from the same owner kills their
+ * previous proc and registers its replacement. Logins from different users
+ * write to different `~/.aws/sso/cache` trees, so they never displace each
+ * other.
  *
- * The fix is to guard the reset on identity: a deferred handler may only
- * clear the slot if it still owns it.
+ * The previous proc's `close`/`error` event fires AFTER its replacement is
+ * already in the slot, so a deferred handler may only clear the slot if it
+ * still owns it. Otherwise it would wipe the replacement's registration and
+ * let a third request bypass the "kill the old one first" guard, leaving two
+ * `aws sso login` processes racing on the same token cache.
  *
- * State is intentionally module-scoped — there is one server, one slot.
- * Tests that want a clean slot call `__resetActiveAwsSsoLoginForTests()`.
+ * Tests that want clean slots call `__resetActiveAwsSsoLoginForTests()`.
  */
 
 import type { ChildProcess } from 'child_process';
@@ -29,31 +29,40 @@ export interface ActiveAwsSsoLogin {
   profile: string;
 }
 
-let active: ActiveAwsSsoLogin | null = null;
+const HOST_OWNER = '\u0000host';
+const active = new Map<string, ActiveAwsSsoLogin>();
 
-export function getActiveAwsSsoLogin(): ActiveAwsSsoLogin | null {
-  return active;
+/** Slot key for a login owner; null means the shared host HOME. */
+function ownerKey(ownerUserId: string | null): string {
+  const id = ownerUserId?.trim();
+  return id ? `user:${id}` : HOST_OWNER;
 }
 
-/** Register a freshly-spawned login as the new active proc. */
-export function setActiveAwsSsoLogin(entry: ActiveAwsSsoLogin): void {
-  active = entry;
+export function getActiveAwsSsoLogin(ownerUserId: string | null): ActiveAwsSsoLogin | null {
+  return active.get(ownerKey(ownerUserId)) ?? null;
 }
 
-/** Unconditionally clear the slot — call after killing the previous proc. */
-export function clearActiveAwsSsoLogin(): void {
-  active = null;
+/** Register a freshly-spawned login as the owner's active proc. */
+export function setActiveAwsSsoLogin(ownerUserId: string | null, entry: ActiveAwsSsoLogin): void {
+  active.set(ownerKey(ownerUserId), entry);
+}
+
+/** Unconditionally clear the owner's slot — call after killing the previous proc. */
+export function clearActiveAwsSsoLogin(ownerUserId: string | null): void {
+  active.delete(ownerKey(ownerUserId));
 }
 
 /**
- * Clear the slot only if the supplied proc is still the registered one.
- * Deferred `close` / `error` / timeout handlers MUST use this — using
- * the unconditional clear from a deferred handler would wipe a successor
- * registration and break the kill-the-old-one-first contract.
+ * Clear the owner's slot only if the supplied proc is still the registered
+ * one. Deferred `close` / `error` / timeout handlers MUST use this.
  */
-export function clearActiveAwsSsoLoginIfOwner(proc: ChildProcess): boolean {
-  if (active && active.proc === proc) {
-    active = null;
+export function clearActiveAwsSsoLoginIfOwner(
+  ownerUserId: string | null,
+  proc: ChildProcess,
+): boolean {
+  const key = ownerKey(ownerUserId);
+  if (active.get(key)?.proc === proc) {
+    active.delete(key);
     return true;
   }
   return false;
@@ -61,5 +70,5 @@ export function clearActiveAwsSsoLoginIfOwner(proc: ChildProcess): boolean {
 
 /** Reset for tests. */
 export function __resetActiveAwsSsoLoginForTests(): void {
-  active = null;
+  active.clear();
 }

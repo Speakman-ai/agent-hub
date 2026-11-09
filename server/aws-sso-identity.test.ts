@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { checkAwsSsoStatusAcrossHomes, type AwsSsoIdentity } from './aws-sso-identity.js';
+import { checkAwsSsoStatusForCaller, type AwsSsoIdentity } from './aws-sso-identity.js';
 import { hostCliHomePath } from './host-cli-home.js';
 import { perUserHomePath } from './per-user-home.js';
 
@@ -39,10 +39,10 @@ function runnerFor(goodHomes: string[]) {
   return { run, probed };
 }
 
-describe('checkAwsSsoStatusAcrossHomes', () => {
+describe('checkAwsSsoStatusForCaller', () => {
   it('break-glass (userId null) authenticates under host HOME → homeSource host, single probe', async () => {
     const { run, probed } = runnerFor([HOST_HOME]);
-    const res = await checkAwsSsoStatusAcrossHomes({
+    const res = await checkAwsSsoStatusForCaller({
       userId: null,
       configPath: '/cfg',
       profile: 'agenthub',
@@ -60,7 +60,7 @@ describe('checkAwsSsoStatusAcrossHomes', () => {
 
   it('JWT user authenticates under their own per-user HOME → homeSource caller, single probe', async () => {
     const { run, probed } = runnerFor([HOME_A]);
-    const res = await checkAwsSsoStatusAcrossHomes({
+    const res = await checkAwsSsoStatusForCaller({
       userId: USER_A,
       configPath: '/cfg',
       profile: 'agenthub',
@@ -74,25 +74,11 @@ describe('checkAwsSsoStatusAcrossHomes', () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
-  it('JWT user empty per-user HOME but token in host HOME → falls back, homeSource host', async () => {
+  it('user with no token of their own stays logged out even when the host HOME has one', async () => {
+    // Regression: the probe used to fall back to the shared host HOME, so any
+    // user reported the operator's SSO identity as their own login.
     const { run, probed } = runnerFor([HOST_HOME]);
-    const res = await checkAwsSsoStatusAcrossHomes({
-      userId: USER_A,
-      configPath: '/cfg',
-      profile: 'agenthub',
-      dataDir: DATA_DIR,
-      run,
-      buildEnv: fakeBuildEnv,
-    });
-    expect(res.ok).toBe(true);
-    expect(res.homeSource).toBe('host');
-    // Caller HOME probed first, then host HOME.
-    expect(probed).toEqual([HOME_A, HOST_HOME]);
-  });
-
-  it('neither caller nor host HOME authenticates → loggedIn false, homeSource per-user', async () => {
-    const { run, probed } = runnerFor([]);
-    const res = await checkAwsSsoStatusAcrossHomes({
+    const res = await checkAwsSsoStatusForCaller({
       userId: USER_A,
       configPath: '/cfg',
       profile: 'agenthub',
@@ -102,15 +88,13 @@ describe('checkAwsSsoStatusAcrossHomes', () => {
     });
     expect(res.ok).toBe(false);
     expect(res.needsLogin).toBe(true);
-    expect(res.homeSource).toBe('per-user');
-    expect(probed).toEqual([HOME_A, HOST_HOME]);
+    expect(res.homeSource).toBe('caller');
+    expect(probed).toEqual([HOME_A]);
   });
 
-  it('SECURITY: never probes another user’s per-user HOME even if it holds a valid token', async () => {
-    // Only USER_B has a valid token. USER_A queries status. The function must
-    // NOT discover B's token (that would leak B's account/ARN as A's identity).
+  it('never probes another user’s per-user HOME even if it holds a valid token', async () => {
     const { run, probed } = runnerFor([HOME_B]);
-    const res = await checkAwsSsoStatusAcrossHomes({
+    const res = await checkAwsSsoStatusForCaller({
       userId: USER_A,
       configPath: '/cfg',
       profile: 'agenthub',
@@ -119,15 +103,12 @@ describe('checkAwsSsoStatusAcrossHomes', () => {
       buildEnv: fakeBuildEnv,
     });
     expect(res.ok).toBe(false);
-    expect(res.homeSource).toBe('per-user');
-    // Only A's HOME and the shared host HOME were ever probed.
-    expect(probed).toEqual([HOME_A, HOST_HOME]);
-    expect(probed).not.toContain(HOME_B);
+    expect(probed).toEqual([HOME_A]);
   });
 
   it('break-glass failure does not double-probe and reports homeSource host', async () => {
     const { run, probed } = runnerFor([]);
-    const res = await checkAwsSsoStatusAcrossHomes({
+    const res = await checkAwsSsoStatusForCaller({
       userId: null,
       configPath: '/cfg',
       profile: 'agenthub',
@@ -141,12 +122,12 @@ describe('checkAwsSsoStatusAcrossHomes', () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
-  it('per-user HOME that resolves to the host HOME is treated as host (no second probe)', async () => {
-    // Simulate buildSpawnEnv falling back to the host HOME for a userId (FS
-    // error path): the env builder returns HOST_HOME even with a userId.
+  it('fails closed when an owning user’s HOME resolves to the host HOME, even with a valid host token', async () => {
+    // buildSpawnEnv falls back to the host HOME when the per-user HOME cannot
+    // be created. The operator's token must not be reported as the user's.
     const fallbackBuildEnv = (_userId: string | null): NodeJS.ProcessEnv => ({ HOME: HOST_HOME });
-    const { run, probed } = runnerFor([]);
-    const res = await checkAwsSsoStatusAcrossHomes({
+    const { run, probed } = runnerFor([HOST_HOME]);
+    const res = await checkAwsSsoStatusForCaller({
       userId: USER_A,
       configPath: '/cfg',
       profile: 'agenthub',
@@ -154,9 +135,12 @@ describe('checkAwsSsoStatusAcrossHomes', () => {
       run,
       buildEnv: fallbackBuildEnv,
     });
-    expect(res.homeSource).toBe('host');
-    expect(probed).toEqual([HOST_HOME]);
-    expect(run).toHaveBeenCalledTimes(1);
+    expect(res.ok).toBe(false);
+    expect(res.account).toBeUndefined();
+    expect(res.homeSource).toBe('caller');
+    expect(res.error).toMatch(/per-user HOME is unavailable/);
+    expect(probed).toEqual([]);
+    expect(run).not.toHaveBeenCalled();
   });
 
   it('threads AWS_CONFIG_FILE into the probe env', async () => {
@@ -165,7 +149,7 @@ describe('checkAwsSsoStatusAcrossHomes', () => {
       seen.push(env.AWS_CONFIG_FILE);
       return { ...FAIL };
     });
-    await checkAwsSsoStatusAcrossHomes({
+    await checkAwsSsoStatusForCaller({
       userId: USER_A,
       configPath: '/path/to/aws.config',
       profile: 'agenthub',
@@ -173,16 +157,16 @@ describe('checkAwsSsoStatusAcrossHomes', () => {
       run,
       buildEnv: fakeBuildEnv,
     });
-    expect(seen).toEqual(['/path/to/aws.config', '/path/to/aws.config']);
+    expect(seen).toEqual(['/path/to/aws.config']);
   });
 
-  it('threads AWS_SHARED_CREDENTIALS_FILE into every probe env when provided', async () => {
+  it('threads AWS_SHARED_CREDENTIALS_FILE into the probe env when provided', async () => {
     const seen: Array<string | undefined> = [];
     const run = vi.fn(async (env: NodeJS.ProcessEnv): Promise<AwsSsoIdentity> => {
       seen.push(env.AWS_SHARED_CREDENTIALS_FILE);
       return { ...FAIL };
     });
-    await checkAwsSsoStatusAcrossHomes({
+    await checkAwsSsoStatusForCaller({
       userId: USER_A,
       configPath: '/path/to/aws.config',
       credentialsPath: '/path/to/aws.credentials',
@@ -191,7 +175,7 @@ describe('checkAwsSsoStatusAcrossHomes', () => {
       run,
       buildEnv: fakeBuildEnv,
     });
-    expect(seen).toEqual(['/path/to/aws.credentials', '/path/to/aws.credentials']);
+    expect(seen).toEqual(['/path/to/aws.credentials']);
   });
 
   it('scrubs direct AWS credential env vars that would override the profile files', async () => {
@@ -207,7 +191,7 @@ describe('checkAwsSsoStatusAcrossHomes', () => {
       seen.push({ ...env });
       return { ...FAIL };
     });
-    await checkAwsSsoStatusAcrossHomes({
+    await checkAwsSsoStatusForCaller({
       userId: USER_A,
       configPath: '/path/to/aws.config',
       credentialsPath: '/path/to/aws.credentials',

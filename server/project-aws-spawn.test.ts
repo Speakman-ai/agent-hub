@@ -1,5 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readlinkSync } from 'fs';
+import {
+  mkdtempSync,
+  readdirSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+  existsSync,
+  lstatSync,
+  symlinkSync,
+} from 'fs';
 import os from 'os';
 import path from 'path';
 import type { Project } from './types.js';
@@ -8,10 +17,29 @@ vi.mock('./config.js', () => ({
   default: { dataDir: '' },
 }));
 
+const fsControl = vi.hoisted(() => ({
+  unlinkError: null as NodeJS.ErrnoException | null,
+  rmError: null as NodeJS.ErrnoException | null,
+}));
+vi.mock('fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs')>();
+  return {
+    ...actual,
+    rmSync: (p: import('fs').PathLike, o?: import('fs').RmOptions) => {
+      if (fsControl.rmError) throw fsControl.rmError;
+      actual.rmSync(p, o);
+    },
+    unlinkSync: (p: import('fs').PathLike) => {
+      if (fsControl.unlinkError) throw fsControl.unlinkError;
+      actual.unlinkSync(p);
+    },
+  };
+});
+
 const {
   getProjectAwsDefaultProfile,
   getProjectAwsMonitoringProfile,
-  linkAwsSsoHostCacheIntoSpawnHome,
+  ensurePrivateAwsSsoCache,
   mergeProjectAwsSpawnEnv,
   projectHasAwsSsoProfiles,
   scrubAwsCredentialEnv,
@@ -51,7 +79,7 @@ describe('project-aws-spawn', () => {
     const env: NodeJS.ProcessEnv = { HOME: path.join(tmpDataDir, 'user-home') };
     mkdirSync(env.HOME!, { recursive: true, mode: 0o700 });
 
-    const written = mergeProjectAwsSpawnEnv(env, project);
+    const written = mergeProjectAwsSpawnEnv(env, project, { ownerUserId: null });
 
     expect(written).toContain(path.join('project-aws-config', 'agent-hub', 'config'));
     expect(env.AWS_CONFIG_FILE).toBe(written);
@@ -80,7 +108,7 @@ describe('project-aws-spawn', () => {
       AWS_PROFILE: 'other-project',
     };
 
-    mergeProjectAwsSpawnEnv(env, project);
+    mergeProjectAwsSpawnEnv(env, project, { ownerUserId: null });
 
     expect(env.AWS_ACCESS_KEY_ID).toBeUndefined();
     expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
@@ -109,7 +137,10 @@ describe('project-aws-spawn', () => {
     } as unknown as Project;
     const prewritten = path.join(tmpDataDir, 'existing-config');
     const env: NodeJS.ProcessEnv = {};
-    const returned = mergeProjectAwsSpawnEnv(env, project, { configPath: prewritten });
+    const returned = mergeProjectAwsSpawnEnv(env, project, {
+      ownerUserId: null,
+      configPath: prewritten,
+    });
     expect(returned).toContain(path.join('project-aws-config', 'agent-hub', 'config'));
     expect(env.AWS_CONFIG_FILE).toBe(returned);
   });
@@ -131,6 +162,7 @@ describe('project-aws-spawn', () => {
     const prewrittenCredentials = path.join(tmpDataDir, 'existing-credentials');
     const env: NodeJS.ProcessEnv = {};
     const returned = mergeProjectAwsSpawnEnv(env, project, {
+      ownerUserId: null,
       configPath: prewrittenConfig,
       credentialsPath: prewrittenCredentials,
     });
@@ -152,21 +184,262 @@ describe('project-aws-spawn', () => {
     expect(env).toEqual({});
   });
 
-  it('linkAwsSsoHostCacheIntoSpawnHome links host SSO cache when per-user cache is empty', () => {
-    const hostHome = path.join(tmpDataDir, 'host-creds', 'home');
-    const hostCache = path.join(hostHome, '.aws', 'sso', 'cache');
-    mkdirSync(hostCache, { recursive: true, mode: 0o700 });
-    writeFileSync(path.join(hostCache, 'token.json'), '{"accessToken":"x"}', { mode: 0o600 });
+  describe('ensurePrivateAwsSsoCache', () => {
+    afterEach(() => {
+      fsControl.unlinkError = null;
+      fsControl.rmError = null;
+    });
 
-    const userHome = path.join(tmpDataDir, 'per-user-creds', 'u1', 'home');
-    mkdirSync(userHome, { recursive: true, mode: 0o700 });
-    const env: NodeJS.ProcessEnv = { HOME: userHome };
+    const SSO_PROJECT = {
+      id: 'agent-hub',
+      awsSsoProfiles: {
+        dev: {
+          sso_start_url: 'https://example.awsapps.com/start',
+          sso_region: 'us-east-1',
+          sso_account_id: '111111111111',
+          sso_role_name: 'Admin',
+          region: 'us-east-1',
+        },
+      },
+    } as unknown as Project;
 
-    linkAwsSsoHostCacheIntoSpawnHome(env, tmpDataDir);
+    /** Role credentials the CLI derived from the operator's token while linked. */
+    function seedDerivedRoleCreds(home: string): string {
+      const cliCache = path.join(home, '.aws', 'cli', 'cache');
+      mkdirSync(cliCache, { recursive: true, mode: 0o700 });
+      writeFileSync(
+        path.join(cliCache, 'abc123.json'),
+        '{"Credentials":{"AccessKeyId":"ASIAOPERATOR"},"ProviderType":"sso"}',
+      );
+      return cliCache;
+    }
 
-    const userCache = path.join(userHome, '.aws', 'sso', 'cache');
-    expect(existsSync(userCache)).toBe(true);
-    expect(readlinkSync(userCache)).toBe(hostCache);
+    function seedHostCache(): string {
+      const hostCache = path.join(tmpDataDir, 'host-creds', 'home', '.aws', 'sso', 'cache');
+      mkdirSync(hostCache, { recursive: true, mode: 0o700 });
+      writeFileSync(path.join(hostCache, 'token.json'), '{"accessToken":"operator"}');
+      return hostCache;
+    }
+
+    function userHome(id: string): string {
+      const home = path.join(tmpDataDir, 'per-user-creds', id, 'home');
+      mkdirSync(path.join(home, '.aws', 'sso'), { recursive: true, mode: 0o700 });
+      return home;
+    }
+
+    function linkToHost(home: string, hostCache: string): string {
+      const userCache = path.join(home, '.aws', 'sso', 'cache');
+      symlinkSync(hostCache, userCache, 'dir');
+      return userCache;
+    }
+
+    it('does not hand a user the host SSO token when their own cache is empty', () => {
+      // Regression: spawns used to symlink the host cache into an empty
+      // per-user HOME, so every user ran as the operator's SSO login.
+      seedHostCache();
+      const home = userHome('u1');
+      expect(ensurePrivateAwsSsoCache({ HOME: home }, 'u1', tmpDataDir)).toEqual({
+        ok: true,
+        detached: false,
+      });
+      expect(existsSync(path.join(home, '.aws', 'sso', 'cache'))).toBe(false);
+    });
+
+    it('removes an existing link to the host cache and leaves the host token intact', () => {
+      const hostCache = seedHostCache();
+      const home = userHome('u1');
+      const userCache = linkToHost(home, hostCache);
+
+      expect(ensurePrivateAwsSsoCache({ HOME: home }, 'u1', tmpDataDir)).toEqual({
+        ok: true,
+        detached: true,
+      });
+      expect(existsSync(userCache)).toBe(false);
+      expect(existsSync(path.join(hostCache, 'token.json'))).toBe(true);
+    });
+
+    it("keeps a user's own cache directory", () => {
+      seedHostCache();
+      const home = userHome('u1');
+      const userCache = path.join(home, '.aws', 'sso', 'cache');
+      mkdirSync(userCache);
+      writeFileSync(path.join(userCache, 'mine.json'), '{}');
+
+      expect(ensurePrivateAwsSsoCache({ HOME: home }, 'u1', tmpDataDir).ok).toBe(true);
+      expect(lstatSync(userCache).isDirectory()).toBe(true);
+      expect(existsSync(path.join(userCache, 'mine.json'))).toBe(true);
+    });
+
+    it('passes for the host itself (no owning user)', () => {
+      seedHostCache();
+      const hostHome = path.join(tmpDataDir, 'host-creds', 'home');
+      expect(ensurePrivateAwsSsoCache({ HOME: hostHome }, null, tmpDataDir).ok).toBe(true);
+    });
+
+    it("fails closed when an owning user's HOME resolved to the host HOME", () => {
+      seedHostCache();
+      const hostHome = path.join(tmpDataDir, 'host-creds', 'home');
+      const res = ensurePrivateAwsSsoCache({ HOME: hostHome }, 'u1', tmpDataDir);
+      expect(res.ok).toBe(false);
+    });
+
+    it('fails closed when the shared link cannot be removed', () => {
+      const hostCache = seedHostCache();
+      const home = userHome('u1');
+      const userCache = linkToHost(home, hostCache);
+      fsControl.unlinkError = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+
+      const res = ensurePrivateAwsSsoCache({ HOME: home }, 'u1', tmpDataDir);
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.reason).toMatch(/EACCES/);
+      expect(lstatSync(userCache).isSymbolicLink()).toBe(true);
+    });
+
+    it('clears role credentials derived from the shared token before removing the link', () => {
+      // Regression: the CLI reuses ~/.aws/cli/cache role credentials until they
+      // expire without rereading the SSO token, so removing only the link kept
+      // the user running as the operator's principal.
+      const hostCache = seedHostCache();
+      const home = userHome('u1');
+      linkToHost(home, hostCache);
+      const cliCache = seedDerivedRoleCreds(home);
+
+      expect(ensurePrivateAwsSsoCache({ HOME: home }, 'u1', tmpDataDir)).toEqual({
+        ok: true,
+        detached: true,
+      });
+      expect(existsSync(cliCache)).toBe(false);
+      expect(existsSync(path.join(home, '.aws', 'sso', 'cache'))).toBe(false);
+      expect(readdirSync(hostCache)).toEqual(['token.json']);
+    });
+
+    it('fails closed and keeps the link when derived credentials cannot be cleared', () => {
+      const hostCache = seedHostCache();
+      const home = userHome('u1');
+      const userCache = linkToHost(home, hostCache);
+      seedDerivedRoleCreds(home);
+      fsControl.rmError = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+
+      const res = ensurePrivateAwsSsoCache({ HOME: home }, 'u1', tmpDataDir);
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.reason).toMatch(/cached role credentials/);
+      // The link stays, so the next attempt still sees the taint and retries.
+      expect(lstatSync(userCache).isSymbolicLink()).toBe(true);
+      fsControl.rmError = null;
+      expect(ensurePrivateAwsSsoCache({ HOME: home }, 'u1', tmpDataDir).ok).toBe(true);
+    });
+
+    it("leaves a user's own derived credentials alone when nothing was shared", () => {
+      seedHostCache();
+      const home = userHome('u1');
+      const cliCache = seedDerivedRoleCreds(home);
+      expect(ensurePrivateAwsSsoCache({ HOME: home }, 'u1', tmpDataDir).ok).toBe(true);
+      expect(existsSync(path.join(cliCache, 'abc123.json'))).toBe(true);
+    });
+
+    it("fails closed when the user's whole ~/.aws resolves to the host's", () => {
+      seedHostCache();
+      const home = path.join(tmpDataDir, 'per-user-creds', 'u1', 'home');
+      mkdirSync(home, { recursive: true });
+      symlinkSync(
+        path.join(tmpDataDir, 'host-creds', 'home', '.aws'),
+        path.join(home, '.aws'),
+        'dir',
+      );
+      expect(ensurePrivateAwsSsoCache({ HOME: home }, 'u1', tmpDataDir).ok).toBe(false);
+    });
+
+    function seedHostCliCache(): string {
+      const hostCli = path.join(tmpDataDir, 'host-creds', 'home', '.aws', 'cli');
+      mkdirSync(path.join(hostCli, 'cache'), { recursive: true, mode: 0o700 });
+      writeFileSync(path.join(hostCli, 'cache', 'host-role.json'), '{"ProviderType":"sso"}');
+      return hostCli;
+    }
+
+    it("never deletes the host's role-credential cache through a linked ~/.aws/cli", () => {
+      // Regression: with the legacy SSO link present and ~/.aws/cli linked to
+      // the host's, the recursive cleanup followed the link into the host cache.
+      const hostCache = seedHostCache();
+      const hostCli = seedHostCliCache();
+      const home = userHome('u1');
+      const userCache = linkToHost(home, hostCache);
+      symlinkSync(hostCli, path.join(home, '.aws', 'cli'), 'dir');
+
+      const res = ensurePrivateAwsSsoCache({ HOME: home }, 'u1', tmpDataDir);
+      expect(res.ok).toBe(false);
+      expect(existsSync(path.join(hostCli, 'cache', 'host-role.json'))).toBe(true);
+      expect(lstatSync(userCache).isSymbolicLink()).toBe(true);
+    });
+
+    it("never deletes the host's role-credential cache through a linked ~/.aws/cli/cache", () => {
+      const hostCache = seedHostCache();
+      const hostCli = seedHostCliCache();
+      const home = userHome('u1');
+      linkToHost(home, hostCache);
+      mkdirSync(path.join(home, '.aws', 'cli'));
+      symlinkSync(path.join(hostCli, 'cache'), path.join(home, '.aws', 'cli', 'cache'), 'dir');
+
+      expect(ensurePrivateAwsSsoCache({ HOME: home }, 'u1', tmpDataDir).ok).toBe(false);
+      expect(existsSync(path.join(hostCli, 'cache', 'host-role.json'))).toBe(true);
+    });
+
+    it('fails closed when ~/.aws/sso is a link', () => {
+      seedHostCache();
+      const home = path.join(tmpDataDir, 'per-user-creds', 'u1', 'home');
+      mkdirSync(path.join(home, '.aws'), { recursive: true });
+      symlinkSync(
+        path.join(tmpDataDir, 'host-creds', 'home', '.aws', 'sso'),
+        path.join(home, '.aws', 'sso'),
+        'dir',
+      );
+      expect(ensurePrivateAwsSsoCache({ HOME: home }, 'u1', tmpDataDir).ok).toBe(false);
+    });
+
+    it('fails closed when the SSO cache links somewhere other than the host cache', () => {
+      const elsewhere = path.join(tmpDataDir, 'elsewhere');
+      mkdirSync(elsewhere);
+      const home = userHome('u1');
+      symlinkSync(elsewhere, path.join(home, '.aws', 'sso', 'cache'), 'dir');
+      expect(ensurePrivateAwsSsoCache({ HOME: home }, 'u1', tmpDataDir).ok).toBe(false);
+    });
+
+    it('fails closed when the per-user HOME itself resolves inside the host HOME', () => {
+      seedHostCache();
+      const home = path.join(tmpDataDir, 'per-user-creds', 'u1', 'home');
+      mkdirSync(path.dirname(home), { recursive: true });
+      symlinkSync(path.join(tmpDataDir, 'host-creds', 'home'), home, 'dir');
+      expect(ensurePrivateAwsSsoCache({ HOME: home }, 'u1', tmpDataDir).ok).toBe(false);
+    });
+
+    it('mergeProjectAwsSpawnEnv strips AWS from a spawn whose shared link cannot be removed', () => {
+      const hostCache = seedHostCache();
+      const home = userHome('u1');
+      linkToHost(home, hostCache);
+      fsControl.unlinkError = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      const env: NodeJS.ProcessEnv = { HOME: home };
+
+      expect(mergeProjectAwsSpawnEnv(env, SSO_PROJECT, { ownerUserId: 'u1' })).toBeNull();
+      expect(env.AWS_CONFIG_FILE).toBe(os.devNull);
+      expect(env.AWS_SHARED_CREDENTIALS_FILE).toBe(os.devNull);
+      expect(env.AWS_PROFILE).toBeUndefined();
+      expect(env.AGENT_HUB_AWS_PROFILE_NAMES).toBeUndefined();
+      expect(env.AGENT_HUB_AWS_DISABLED_REASON).toMatch(/EACCES/);
+    });
+
+    it("mergeProjectAwsSpawnEnv strips AWS when an owner's HOME fell back to the host HOME", () => {
+      seedHostCache();
+      const env: NodeJS.ProcessEnv = { HOME: path.join(tmpDataDir, 'host-creds', 'home') };
+      expect(mergeProjectAwsSpawnEnv(env, SSO_PROJECT, { ownerUserId: 'u1' })).toBeNull();
+      expect(env.AWS_CONFIG_FILE).toBe(os.devNull);
+    });
+
+    it('mergeProjectAwsSpawnEnv keeps AWS for a private cache', () => {
+      const home = userHome('u1');
+      const env: NodeJS.ProcessEnv = { HOME: home };
+      expect(mergeProjectAwsSpawnEnv(env, SSO_PROJECT, { ownerUserId: 'u1' })).toBeTruthy();
+      expect(env.AWS_CONFIG_FILE).toContain('project-aws-config');
+      expect(env.AGENT_HUB_AWS_PROFILE_NAMES).toBe('dev');
+    });
   });
 });
 
@@ -198,7 +471,7 @@ describe('project-aws default profile export', () => {
     } as unknown as Project;
     const env: NodeJS.ProcessEnv = {};
 
-    mergeProjectAwsSpawnEnv(env, project);
+    mergeProjectAwsSpawnEnv(env, project, { ownerUserId: null });
 
     expect(env.AWS_PROFILE).toBe('prod');
   });
@@ -210,7 +483,7 @@ describe('project-aws default profile export', () => {
     } as unknown as Project;
     const env: NodeJS.ProcessEnv = { AWS_PROFILE: 'inherited' };
 
-    mergeProjectAwsSpawnEnv(env, project);
+    mergeProjectAwsSpawnEnv(env, project, { ownerUserId: null });
 
     expect(env.AWS_PROFILE).toBeUndefined();
   });
@@ -223,7 +496,7 @@ describe('project-aws default profile export', () => {
     } as unknown as Project;
     const env: NodeJS.ProcessEnv = {};
 
-    mergeProjectAwsSpawnEnv(env, project);
+    mergeProjectAwsSpawnEnv(env, project, { ownerUserId: null });
 
     expect(env.AWS_PROFILE).toBeUndefined();
   });
@@ -261,7 +534,7 @@ describe('project-aws default profile export', () => {
     } as unknown as Project;
     const env: NodeJS.ProcessEnv = {};
 
-    mergeProjectAwsSpawnEnv(env, project);
+    mergeProjectAwsSpawnEnv(env, project, { ownerUserId: null });
 
     expect(env.AWS_PROFILE).toBeUndefined();
   });

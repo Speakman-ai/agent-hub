@@ -2058,7 +2058,11 @@ export const ptyHost = new PtyHost({
       env: () => sessionEnvManager.ensure(sessionId),
       // Same project AWS profiles the agent's spawns get, so `aws --profile
       // <name>` in the Terminal tab resolves instead of erroring out.
-      shellEnv: (env) => buildTerminalShellEnv(found.project, { envKind: env.kind }),
+      shellEnv: (env) =>
+        buildTerminalShellEnv(found.project, {
+          envKind: env.kind,
+          ownerUserId: session.owner_user_id ?? null,
+        }),
     });
   },
 });

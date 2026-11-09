@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readdirSync, symlinkSync } from 'fs';
+import { lstatSync, readlinkSync, realpathSync, rmSync, unlinkSync } from 'fs';
+import os from 'os';
 import path from 'path';
 import type { Project } from './types.js';
 import config from './config.js';
@@ -36,16 +37,12 @@ export function getProjectAwsMonitoringProfile(project: Project): string | null 
   return name ? name : null;
 }
 
-function awsSsoCacheHasTokens(cacheDir: string): boolean {
-  try {
-    if (!existsSync(cacheDir)) return false;
-    return readdirSync(cacheDir).some((name) => name.endsWith('.json'));
-  } catch {
-    return false;
-  }
-}
-
 export interface MergeProjectAwsSpawnEnvOpts {
+  /**
+   * User whose per-user HOME the spawn runs under, or null when the spawn has
+   * no owning user (it then runs under the host HOME).
+   */
+  ownerUserId: string | null;
   /**
    * When the caller already wrote the project config (e.g. chat codex argv
    * planning), pass the path here to avoid a second `writeFileSync`.
@@ -74,63 +71,172 @@ export function scrubAwsCredentialEnv(env: NodeJS.ProcessEnv): void {
   for (const key of AWS_AMBIENT_CREDENTIAL_KEYS) delete env[key];
 }
 
-/**
- * When a Codex spawn uses per-user HOME but AWS SSO login ran under break-glass
- * (host HOME), link the host SSO cache into the spawn HOME. Call only for
- * Codex spawns — other engines either use host HOME (Claude fallback) or the
- * same per-user HOME as the Hub SSO login API. Best-effort; never throws.
- */
-export function linkAwsSsoHostCacheIntoSpawnHome(
-  env: NodeJS.ProcessEnv,
-  dataDir: string = config.dataDir,
-): void {
-  const home = env.HOME?.trim();
-  if (!home) return;
-  const userCache = path.join(home, '.aws', 'sso', 'cache');
-  // If userCache already exists (including a stale symlink to an expired host
-  // cache), we do not replace it — operators must remove ~/.aws/sso/cache under
-  // the per-user HOME and re-run Hub SSO login to refresh tokens.
-  if (awsSsoCacheHasTokens(userCache)) return;
+export type AwsSsoCacheIsolation = { ok: true; detached: boolean } | { ok: false; reason: string };
 
-  const hostCache = path.join(hostCliHomePath(dataDir), '.aws', 'sso', 'cache');
-  if (!awsSsoCacheHasTokens(hostCache)) return;
+type EntryKind = 'missing' | 'dir' | 'link' | 'other';
 
+function entryKind(p: string): EntryKind {
   try {
-    mkdirSync(path.dirname(userCache), { recursive: true, mode: 0o700 });
-    if (existsSync(userCache)) return;
-    const linkType = process.platform === 'win32' ? 'junction' : 'dir';
-    symlinkSync(hostCache, userCache, linkType);
+    const st = lstatSync(p);
+    if (st.isSymbolicLink()) return 'link';
+    return st.isDirectory() ? 'dir' : 'other';
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
-    if (code === 'EEXIST') return;
-    const summary = (err as Error).message
-      .replace(/[\r\n|]+/g, ' ')
-      .trim()
-      .slice(0, 200);
-    console.warn(
-      `[project-aws] link host SSO cache into spawn HOME failed (${code ?? 'unknown'}): ${summary}`,
-    );
+    if (code === 'ENOENT' || code === 'ENOTDIR') return 'missing';
+    throw err;
   }
 }
 
+function isWithin(child: string, parent: string): boolean {
+  const rel = path.relative(parent, child);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+function realpathOrSelf(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
+function refuse(reason: string): AwsSsoCacheIsolation {
+  return { ok: false, reason: `${reason} Refusing to run AWS until this is fixed.` };
+}
+
+function isolationFailure(err: unknown, what: string): AwsSsoCacheIsolation {
+  const code = (err as NodeJS.ErrnoException).code;
+  const summary = (err as Error).message
+    .replace(/[\r\n|]+/g, ' ')
+    .trim()
+    .slice(0, 200);
+  console.warn(`[project-aws] ${what} failed (${code ?? 'unknown'}): ${summary}`);
+  return refuse(
+    `Could not separate your AWS credentials from the shared host login (${what}: ${code ?? 'unknown'}).`,
+  );
+}
+
 /**
- * Point spawned CLIs at a generated config ini for this project's SSO
- * profiles. SSO tokens still live under the user's HOME. Env-only — no
- * filesystem side effects (see `linkAwsSsoHostCacheIntoSpawnHome` for Codex).
+ * SSO credentials belong to the user who signed in, so an owning user's AWS
+ * work must run against AWS state that lives in their own per-user HOME and
+ * was never shared with the host. Two caches matter:
  *
- * @returns Config file path when profiles are configured, else null.
+ *   - `~/.aws/sso/cache`: the SSO access token.
+ *   - `~/.aws/cli/cache`: role credentials the CLI derived from that token,
+ *     reused until they expire without rereading the token.
+ *
+ * Invariant: the HOME does not resolve into the host HOME, and every
+ * directory on the way to those caches (`.aws`, `.aws/sso`, `.aws/cli`, and
+ * the caches themselves) is a real directory, not a link. Anything else could
+ * read the host's credentials or, during cleanup, delete them, so it fails
+ * closed rather than being repaired.
+ *
+ * The single exception is the link spawns used to create from
+ * `~/.aws/sso/cache` to the host cache. That HOME is tainted: its derived CLI
+ * cache was filled from the host's token. Repair clears the derived cache
+ * first, then removes the link (only the link, never the host cache), so a
+ * failure part-way leaves the link and the next call retries.
+ *
+ * Returns `ok: false` whenever the invariant cannot be established; callers
+ * must then not run AWS for that user. A null owner is the host itself and
+ * always passes. Never throws.
+ */
+export function ensurePrivateAwsSsoCache(
+  env: NodeJS.ProcessEnv,
+  ownerUserId: string | null,
+  dataDir: string = config.dataDir,
+): AwsSsoCacheIsolation {
+  if (!ownerUserId?.trim()) return { ok: true, detached: false };
+  const home = env.HOME?.trim();
+  const hostHome = hostCliHomePath(dataDir);
+  if (!home || isWithin(realpathOrSelf(home), realpathOrSelf(hostHome))) {
+    return refuse('Your per-user HOME is unavailable, so AWS SSO would use the shared host login.');
+  }
+  const userAws = path.join(home, '.aws');
+  const ssoCache = path.join(userAws, 'sso', 'cache');
+  const cliCache = path.join(userAws, 'cli', 'cache');
+  const hostCache = path.join(hostHome, '.aws', 'sso', 'cache');
+
+  let ssoCacheKind: EntryKind;
+  let cliCacheKind: EntryKind;
+  try {
+    for (const dir of [userAws, path.join(userAws, 'sso'), path.join(userAws, 'cli')]) {
+      const kind = entryKind(dir);
+      if (kind !== 'missing' && kind !== 'dir') {
+        return refuse(`${dir} is not a private directory.`);
+      }
+    }
+    ssoCacheKind = entryKind(ssoCache);
+    cliCacheKind = entryKind(cliCache);
+  } catch (err) {
+    return isolationFailure(err, 'inspect AWS directories');
+  }
+
+  if (cliCacheKind !== 'missing' && cliCacheKind !== 'dir') {
+    return refuse(`${cliCache} is not a private directory.`);
+  }
+  if (ssoCacheKind === 'missing' || ssoCacheKind === 'dir') return { ok: true, detached: false };
+  if (ssoCacheKind !== 'link') return refuse(`${ssoCache} is not a private directory.`);
+
+  let target: string;
+  try {
+    target = path.resolve(path.dirname(ssoCache), readlinkSync(ssoCache));
+  } catch (err) {
+    return isolationFailure(err, 'inspect SSO cache link');
+  }
+  if (target !== path.resolve(hostCache)) {
+    return refuse(`${ssoCache} links to ${target} instead of being a private directory.`);
+  }
+
+  // Parents were verified as real directories above, so the recursive delete
+  // stays inside this user's HOME.
+  try {
+    if (cliCacheKind === 'dir') rmSync(cliCache, { recursive: true, force: true });
+  } catch (err) {
+    return isolationFailure(err, 'clear cached role credentials');
+  }
+  try {
+    unlinkSync(ssoCache);
+  } catch (err) {
+    return isolationFailure(err, 'remove shared SSO cache link');
+  }
+  return { ok: true, detached: true };
+}
+
+/**
+ * Point every AWS profile source at the null device so the CLI and SDKs
+ * resolve no profile, and therefore never read an SSO token cache.
+ */
+export function disableProjectAwsSpawnEnv(env: NodeJS.ProcessEnv, reason: string): void {
+  scrubAwsCredentialEnv(env);
+  env.AWS_CONFIG_FILE = os.devNull;
+  env.AWS_SHARED_CREDENTIALS_FILE = os.devNull;
+  delete env.AGENT_HUB_AWS_PROFILE_NAMES;
+  env.AGENT_HUB_AWS_DISABLED_REASON = reason;
+}
+
+/**
+ * Point spawned CLIs at a generated config ini for this project's profiles,
+ * and keep the owner's SSO state private (`ensurePrivateAwsSsoCache`). When
+ * that cannot be guaranteed the spawn gets no AWS access at all
+ * (`disableProjectAwsSpawnEnv`) and this returns null.
+ *
+ * `opts.ownerUserId` is required so every spawn site states whose HOME the
+ * spawn runs under; pass null only for spawns with no owning user.
+ *
+ * @returns Config file path when profiles are configured and usable, else null.
  */
 export function mergeProjectAwsSpawnEnv(
   base: NodeJS.ProcessEnv,
   project: Project,
-  opts?: MergeProjectAwsSpawnEnvOpts,
+  opts: MergeProjectAwsSpawnEnvOpts,
 ): string | null {
   const profiles = getProjectAwsSsoProfiles(project);
   const names = Object.keys(profiles);
   if (names.length === 0) return null;
   try {
     const written =
-      opts?.configPath?.trim() && opts.credentialsPath?.trim()
+      opts.configPath?.trim() && opts.credentialsPath?.trim()
         ? { configPath: opts.configPath.trim(), credentialsPath: opts.credentialsPath.trim() }
         : writeProjectAwsFiles(project.id, profiles);
     const { configPath, credentialsPath } = written;
@@ -146,6 +252,12 @@ export function mergeProjectAwsSpawnEnv(
       getProjectAwsDefaultProfile(project),
     );
     if (defaultProfile) base.AWS_PROFILE = defaultProfile;
+    const isolation = ensurePrivateAwsSsoCache(base, opts.ownerUserId);
+    if (!isolation.ok) {
+      console.warn(`[project-aws] AWS disabled for spawn: ${isolation.reason}`);
+      disableProjectAwsSpawnEnv(base, isolation.reason);
+      return null;
+    }
     return configPath;
   } catch (err) {
     const summary = (err as Error).message
@@ -163,6 +275,3 @@ export function mergeProjectAwsSpawnEnv(
 export function projectHasAwsSsoProfiles(project: Project): boolean {
   return Object.keys(getProjectAwsSsoProfiles(project)).length > 0;
 }
-
-/** @deprecated Use {@link linkAwsSsoHostCacheIntoSpawnHome}. */
-export const ensureAwsSsoCacheInSpawnHome = linkAwsSsoHostCacheIntoSpawnHome;

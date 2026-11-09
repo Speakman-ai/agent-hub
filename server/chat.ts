@@ -407,7 +407,6 @@ import {
   getProjectAwsSsoProfiles,
   getProjectAwsMonitoringProfile,
   projectHasAwsSsoProfiles,
-  linkAwsSsoHostCacheIntoSpawnHome,
 } from './project-aws-spawn.js';
 import { resolveProjectAwsMonitoringProfile } from './project-aws-profiles.js';
 import { effectiveSessionPrBaseBranch } from './kanban-pr-base.js';
@@ -5013,17 +5012,16 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             extraSkills: serverAgentSkills,
           });
           mergeProjectSecretsSpawnEnv(base, { projectId: project.id, sessionId });
-          mergeProjectAwsSpawnEnv(base, project, projectAwsFiles);
+          mergeProjectAwsSpawnEnv(base, project, {
+            ...projectAwsFiles,
+            ownerUserId: ownerId ?? null,
+          });
         }
         applySessionGitGuards(base, session!.worktree_path, {
           noGuardrails: sessionRunsWithoutGuardrails(project as Project, session),
         });
         return base;
       })();
-
-      if (engine === 'codex-cli' && spawnEnv.AGENT_HUB_AWS_PROFILE_NAMES) {
-        linkAwsSsoHostCacheIntoSpawnHome(spawnEnv);
-      }
 
       // Merge allowlisted caller-supplied env vars (e.g. DEV_HUB_API_KEY from
       // autonomous-dispatch for cross-hub cards). See `mergeAllowlistedExtraEnv`.

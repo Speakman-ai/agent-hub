@@ -210,9 +210,9 @@ const SsoStatusResponse = registerComponent(
         account: z.string().optional(),
         arn: z.string().optional(),
         userId: z.string().optional(),
-        homeSource: z.enum(['caller', 'host', 'per-user']).openapi({
+        homeSource: z.enum(['caller', 'host']).openapi({
           description:
-            "Which HOME's SSO token cache produced this identity: 'caller' (the requesting user's per-user HOME), 'host' (the shared break-glass/operator HOME), or 'per-user' (the caller's per-user HOME for a not-logged-in result).",
+            "Whose SSO token cache produced this identity: 'caller' (the requesting user's own login) or 'host' (the shared operator HOME, used only when the request has no owning user). A user's status never reflects another login; when their private cache cannot be guaranteed, the status reports logged out with an error instead of probing.",
         }),
       }),
       z.object({
@@ -221,9 +221,9 @@ const SsoStatusResponse = registerComponent(
         credentialType: z.literal('sso').optional(),
         error: z.string().optional(),
         needsLogin: z.boolean().optional(),
-        homeSource: z.enum(['caller', 'host', 'per-user']).openapi({
+        homeSource: z.enum(['caller', 'host']).openapi({
           description:
-            "Which HOME the caller should log into to authenticate this profile: 'per-user' (the requesting user's own HOME) or 'host' (the shared break-glass/operator HOME). Run POST /aws-sso/login under that HOME. (Not the last-probed HOME — both caller and host caches were checked and neither held a valid token.)",
+            "Whose SSO token cache was checked: 'caller' (the requesting user's own login) or 'host' (the shared operator HOME, used only when the request has no owning user). POST /aws-sso/login as the same caller writes the token this status reads.",
         }),
       }),
       z.object({
@@ -356,7 +356,7 @@ registerPath({
   tags: ['Projects'],
   summary: 'Check whether an AWS profile can authenticate',
   description:
-    "Runs `aws sts get-caller-identity --profile <name>` against the project's rendered AWS config and credentials files. SSO profiles report whether cached SSO tokens can authenticate. Static profiles report whether the stored project credentials can authenticate.",
+    "Runs `aws sts get-caller-identity --profile <name>` against the project's rendered AWS config and credentials files. SSO profiles report whether the requesting user's own cached SSO token can authenticate; each user logs in separately and never sees another user's login. Static profiles report whether the stored project credentials can authenticate.",
   request: {
     params: ProjectIdParam,
     query: z.object({
@@ -387,7 +387,7 @@ registerPath({
   tags: ['Projects'],
   summary: 'Start a browser-less AWS SSO device-authorization flow',
   description:
-    'Spawns `aws sso login --profile <name> --no-browser` server-side, watches its output for the IAM Identity Center device URL, and returns the URL to the caller. The user then opens that URL in their own browser to complete the device flow; once they do, the cached SSO token at `~/.aws/sso/cache` becomes valid and subsequent `GET /aws-sso/status` calls report `loggedIn: true`.\n\nOnly one login proc runs per server at a time: a second request kills the previous proc before spawning a new one. The 30-second URL-extraction timeout also kills the proc so no orphaned `aws` processes accumulate.',
+    "Spawns `aws sso login --profile <name> --no-browser` server-side, watches its output for the IAM Identity Center device URL, and returns the URL to the caller. The user then opens that URL in their own browser to complete the device flow; once they do, the SSO token is cached under the requesting user's own HOME, so that user's sessions and `GET /aws-sso/status` calls see it and other users' do not.\n\nEach user has at most one login proc in flight: a second request from the same user kills their previous proc before spawning a new one, and never touches another user's login. The 30-second URL-extraction timeout also kills the proc so no orphaned `aws` processes accumulate.",
   request: {
     params: ProjectIdParam,
     body: { content: jsonContent(SsoLoginRequest) },
@@ -410,6 +410,11 @@ registerPath({
     500: {
       description:
         'Login proc failed — exited non-zero, errored on spawn, or timed out without surfacing a device URL.',
+      content: jsonContent(SsoLoginResponse),
+    },
+    503: {
+      description:
+        "The caller's private SSO token cache cannot be guaranteed (their per-user HOME is unavailable, or a link to the shared host cache could not be removed). No login is started, so the token never lands in the shared cache.",
       content: jsonContent(SsoLoginResponse),
     },
   },

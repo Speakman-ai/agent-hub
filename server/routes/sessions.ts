@@ -476,7 +476,9 @@ export function summarizeTranscript(
         projectId: skillCredentialMerge.project.id,
         sessionId: null,
       });
-      mergeProjectAwsSpawnEnv(spawnEnv, skillCredentialMerge.project);
+      mergeProjectAwsSpawnEnv(spawnEnv, skillCredentialMerge.project, {
+        ownerUserId: summaryOwnerId,
+      });
     }
     if (engine === 'codex-cli') {
       const promptArg = args.pop();

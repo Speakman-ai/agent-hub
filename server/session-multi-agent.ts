@@ -609,7 +609,7 @@ You are an **advisory participant** in a multi-agent session. The primary agent 
       project: sessionProject,
     });
     mergeProjectSecretsSpawnEnv(spawnEnv, { projectId: sessionProject.id, sessionId });
-    mergeProjectAwsSpawnEnv(spawnEnv, sessionProject);
+    mergeProjectAwsSpawnEnv(spawnEnv, sessionProject, { ownerUserId: actingUserId ?? null });
   }
 
   let failed = false;

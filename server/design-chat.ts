@@ -19,11 +19,7 @@ import path from 'path';
 import { resolveSessionCliSpawnEnv } from './per-user-cli-spawn.js';
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
 import { mergeProjectSecretsSpawnEnv } from './project-secrets-spawn.js';
-import {
-  mergeProjectAwsSpawnEnv,
-  projectHasAwsSsoProfiles,
-  linkAwsSsoHostCacheIntoSpawnHome,
-} from './project-aws-spawn.js';
+import { mergeProjectAwsSpawnEnv, projectHasAwsSsoProfiles } from './project-aws-spawn.js';
 import { DESIGN_SKILL_PRINCIPAL_AGENT_ID } from './design-skill-principal.js';
 import { getWsAuthUserId, type AuthStampedWs } from './session-ownership.js';
 import { appendDesignMessage, listDesignMessages, listDesignFiles } from './designs-store.js';
@@ -295,7 +291,7 @@ export async function handleDesignChat(
         projectId: linkedProject.id,
         sessionId: `design:${designId}`,
       });
-      mergeProjectAwsSpawnEnv(spawnEnv, linkedProject);
+      mergeProjectAwsSpawnEnv(spawnEnv, linkedProject, { ownerUserId: designOwnerId });
     }
 
     if (engine === 'cursor-agent') {
@@ -383,10 +379,6 @@ export async function handleDesignChat(
     let errorOutput = '';
     let spawnErrored = false;
     let codexThreadPersisted = !!(engine === 'codex-cli' && design.engine_session_id);
-
-    if (engine === 'codex-cli' && spawnEnv.AGENT_HUB_AWS_PROFILE_NAMES) {
-      linkAwsSsoHostCacheIntoSpawnHome(spawnEnv);
-    }
 
     let finalTextOut: string;
     try {

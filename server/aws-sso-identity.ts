@@ -1,30 +1,25 @@
 /**
- * AWS SSO identity probing with HOME-aware fallback.
+ * AWS SSO identity probing, scoped to the caller's own HOME.
  *
  * The AWS CLI keys its SSO **token cache** off `$HOME/.aws/sso/cache`.
  * `AWS_CONFIG_FILE` only relocates the profile config, never the token cache.
- * So whichever HOME a spawn runs under decides which cached token it sees.
+ * So whichever HOME a probe runs under decides which cached token it sees.
  *
- * Agent Hub resolves HOME differently depending on who calls `/aws-sso/status`:
- *   - Break-glass `x-api-key` (the documented operator flow): no `authUserId`,
- *     so `buildSpawnEnv({ userId: null })` keeps the shared host HOME
+ * Agent Hub resolves HOME per caller:
+ *   - Break-glass `x-api-key` with no owning user: the shared host HOME
  *     (`<dataDir>/host-creds/home`).
- *   - JWT user: HOME is pinned to that user's per-user HOME
+ *   - A Hub user: that user's per-user HOME
  *     (`<dataDir>/per-user-creds/<userId>/home`).
  *
- * These HOMEs have separate `~/.aws/sso/cache` directories. A status check run
- * under one HOME can report `loggedIn:false` while a valid token sits in
- * another. `checkAwsSsoStatusAcrossHomes` reconciles the common split: probe
- * the caller HOME first, then fall back to the shared host HOME ONLY.
- *
- * SECURITY: never enumerate other users' per-user HOMEs. Probing a different
- * user's cached token could report `loggedIn:true` off their identity, leaking
- * that token's account/ARN and giving the caller a false-positive identity.
+ * SSO credentials belong to the person who signed in, so a user's status is
+ * read from their own HOME only. There is no fallback to the host HOME: a
+ * token an operator left there is someone else's identity, and reporting it
+ * as the user's login would hand every user the same AWS principal.
  */
 import { spawn, type ChildProcess } from 'child_process';
 import config, { buildSpawnEnv } from './config.js';
 import type { AppConfig } from './types.js';
-import { hostCliHomePath } from './host-cli-home.js';
+import { ensurePrivateAwsSsoCache } from './project-aws-spawn.js';
 
 export interface AwsSsoIdentity {
   ok: boolean;
@@ -35,8 +30,11 @@ export interface AwsSsoIdentity {
   needsLogin?: boolean;
 }
 
-/** Which HOME's token cache produced the reported identity. */
-export type AwsHomeSource = 'caller' | 'host' | 'per-user';
+/**
+ * Which HOME's token cache the status describes: `caller` for a user's own
+ * per-user HOME, `host` for the shared operator HOME (no owning user).
+ */
+export type AwsHomeSource = 'caller' | 'host';
 
 export interface AwsSsoStatusResult extends AwsSsoIdentity {
   homeSource: AwsHomeSource;
@@ -78,64 +76,33 @@ function scrubAwsCredentialEnv(env: NodeJS.ProcessEnv): void {
 }
 
 /**
- * Probe the caller HOME, then fall back to the shared host HOME ONLY.
- *
- * Resolution:
- *   1. Probe the caller-resolved HOME (cheap, preserves old semantics).
- *      - `homeSource: 'caller'` when the caller has a per-user HOME.
- *      - `homeSource: 'host'` when the caller already used the shared host HOME
- *        (break-glass `x-api-key`, or a per-user HOME that fell back to host).
- *   2. If the caller HOME did not authenticate AND it was a *per-user* HOME,
- *      fall back to the shared host HOME (`hostCliHomePath`) and ONLY that HOME.
- *      A success here is reported as `homeSource: 'host'`.
- *   3. If neither authenticates, return the caller (per-user) result with
- *      `homeSource: 'per-user'` — that is the HOME the caller owns and should
- *      log into.
- *
- * Never probes any other user's per-user HOME.
+ * Probe the caller's own HOME and nothing else. Never reads the shared host
+ * HOME on behalf of a user, and never another user's per-user HOME.
  */
-export async function checkAwsSsoStatusAcrossHomes(
+export async function checkAwsSsoStatusForCaller(
   opts: CheckAwsSsoStatusOpts,
   cfg: AppConfig = config,
 ): Promise<AwsSsoStatusResult> {
   const dataDir = opts.dataDir ?? cfg.dataDir;
   const run = opts.run ?? runAwsStsIdentity;
   const buildEnv = opts.buildEnv ?? ((userId: string | null) => buildSpawnEnv(cfg, { userId }));
-  const hostHome = hostCliHomePath(dataDir);
 
-  const callerEnv = buildEnv(opts.userId);
-  scrubAwsCredentialEnv(callerEnv);
-  callerEnv.AWS_CONFIG_FILE = opts.configPath;
-  if (opts.credentialsPath) callerEnv.AWS_SHARED_CREDENTIALS_FILE = opts.credentialsPath;
-  const callerHome = (callerEnv.HOME ?? '').trim();
-  // When there is no owning user, or the per-user HOME resolution fell back to
-  // the shared host HOME, the caller IS the host — there is no second HOME to
-  // try and a success/failure is attributable to the host token cache.
-  const callerIsHost = !opts.userId || callerHome === hostHome;
-
-  const primary = await run(callerEnv, opts.profile);
-  if (primary.ok) {
-    return { ...primary, homeSource: callerIsHost ? 'host' : 'caller' };
+  const env = buildEnv(opts.userId);
+  scrubAwsCredentialEnv(env);
+  env.AWS_CONFIG_FILE = opts.configPath;
+  if (opts.credentialsPath) env.AWS_SHARED_CREDENTIALS_FILE = opts.credentialsPath;
+  if (!opts.userId) {
+    const out = await run(env, opts.profile);
+    return { ...out, homeSource: 'host' };
   }
-  if (callerIsHost) {
-    return { ...primary, homeSource: 'host' };
+  // An owning user is only ever probed against their own cache. If that cannot
+  // be guaranteed, report logged out instead of reading the host token.
+  const isolation = ensurePrivateAwsSsoCache(env, opts.userId, dataDir);
+  if (!isolation.ok) {
+    return { ok: false, error: isolation.reason, needsLogin: false, homeSource: 'caller' };
   }
-
-  // Caller was a per-user HOME and did not authenticate. Fall back to ONLY the
-  // shared host/operator HOME — never another user's per-user tree.
-  const hostEnv = buildEnv(null);
-  scrubAwsCredentialEnv(hostEnv);
-  hostEnv.HOME = hostHome;
-  hostEnv.AWS_CONFIG_FILE = opts.configPath;
-  if (opts.credentialsPath) hostEnv.AWS_SHARED_CREDENTIALS_FILE = opts.credentialsPath;
-  const fallback = await run(hostEnv, opts.profile);
-  if (fallback.ok) {
-    return { ...fallback, homeSource: 'host' };
-  }
-
-  // Neither HOME authenticated. Surface the caller (per-user) result: that is
-  // the HOME the caller owns and the one they should log into.
-  return { ...primary, homeSource: 'per-user' };
+  const out = await run(env, opts.profile);
+  return { ...out, homeSource: 'caller' };
 }
 
 /**

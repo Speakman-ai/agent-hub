@@ -192,7 +192,9 @@ export function runClaude(
         projectId: options.skillCredentialMerge.project.id,
         sessionId: null,
       });
-      mergeProjectAwsSpawnEnv(heartbeatEnv, options.skillCredentialMerge.project);
+      mergeProjectAwsSpawnEnv(heartbeatEnv, options.skillCredentialMerge.project, {
+        ownerUserId: options.skillCredentialMerge?.ownerId ?? null,
+      });
     }
 
     const proc = spawn(CLAUDE_BIN, args, {
@@ -464,7 +466,7 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
           // system-initiated, not a missing value. See mergeProjectSecretsSpawnEnv.
           mergeProjectSecretsSpawnEnv(cronEnv, { projectId: cronProject.id, sessionId: null });
         }
-        mergeProjectAwsSpawnEnv(cronEnv, cronProject);
+        mergeProjectAwsSpawnEnv(cronEnv, cronProject, { ownerUserId: cronOwnerId ?? null });
       }
       return cronEnv;
     };
@@ -1082,7 +1084,7 @@ export async function dispatchBackgroundCustomAgent(
         engine,
       });
       mergeProjectSecretsSpawnEnv(env, { projectId: project.id, sessionId: null });
-      mergeProjectAwsSpawnEnv(env, project);
+      mergeProjectAwsSpawnEnv(env, project, { ownerUserId: ownerUserId ?? null });
       return env;
     };
 

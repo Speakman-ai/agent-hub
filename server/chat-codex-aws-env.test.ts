@@ -48,7 +48,7 @@ describe('codex chat AWS SSO spawn contract', () => {
     };
     mkdirSync(env.HOME!, { recursive: true, mode: 0o700 });
 
-    mergeProjectAwsSpawnEnv(env, project);
+    mergeProjectAwsSpawnEnv(env, project, { ownerUserId: null });
 
     expect(env.AWS_CONFIG_FILE).toContain('project-aws-config/agent-hub/config');
     expect(env.AGENT_HUB_AWS_PROFILE_NAMES).toBe('dev');

@@ -23,51 +23,51 @@ describe('aws-sso-active-login slot', () => {
   });
 
   it('starts empty', () => {
-    expect(getActiveAwsSsoLogin()).toBeNull();
+    expect(getActiveAwsSsoLogin(null)).toBeNull();
   });
 
   it('round-trips a registration', () => {
     const proc = makeFakeProc('A');
-    setActiveAwsSsoLogin({ loginId: 'a', proc, projectId: 'p1', profile: 'dev' });
-    expect(getActiveAwsSsoLogin()?.proc).toBe(proc);
-    expect(getActiveAwsSsoLogin()?.loginId).toBe('a');
+    setActiveAwsSsoLogin(null, { loginId: 'a', proc, projectId: 'p1', profile: 'dev' });
+    expect(getActiveAwsSsoLogin(null)?.proc).toBe(proc);
+    expect(getActiveAwsSsoLogin(null)?.loginId).toBe('a');
   });
 
   it('clearActiveAwsSsoLogin wipes the slot', () => {
-    setActiveAwsSsoLogin({
+    setActiveAwsSsoLogin(null, {
       loginId: 'a',
       proc: makeFakeProc('A'),
       projectId: 'p1',
       profile: 'dev',
     });
-    clearActiveAwsSsoLogin();
-    expect(getActiveAwsSsoLogin()).toBeNull();
+    clearActiveAwsSsoLogin(null);
+    expect(getActiveAwsSsoLogin(null)).toBeNull();
   });
 
   describe('clearActiveAwsSsoLoginIfOwner — identity guard', () => {
     it('clears the slot when the supplied proc owns it', () => {
       const procA = makeFakeProc('A');
-      setActiveAwsSsoLogin({ loginId: 'a', proc: procA, projectId: 'p1', profile: 'dev' });
-      const cleared = clearActiveAwsSsoLoginIfOwner(procA);
+      setActiveAwsSsoLogin(null, { loginId: 'a', proc: procA, projectId: 'p1', profile: 'dev' });
+      const cleared = clearActiveAwsSsoLoginIfOwner(null, procA);
       expect(cleared).toBe(true);
-      expect(getActiveAwsSsoLogin()).toBeNull();
+      expect(getActiveAwsSsoLogin(null)).toBeNull();
     });
 
     it('is a no-op when a different proc owns the slot', () => {
       const procA = makeFakeProc('A');
       const procB = makeFakeProc('B');
-      setActiveAwsSsoLogin({ loginId: 'b', proc: procB, projectId: 'p1', profile: 'dev' });
-      const cleared = clearActiveAwsSsoLoginIfOwner(procA);
+      setActiveAwsSsoLogin(null, { loginId: 'b', proc: procB, projectId: 'p1', profile: 'dev' });
+      const cleared = clearActiveAwsSsoLoginIfOwner(null, procA);
       expect(cleared).toBe(false);
       // Crucial: the registration of B must survive A's deferred reset.
-      expect(getActiveAwsSsoLogin()?.proc).toBe(procB);
-      expect(getActiveAwsSsoLogin()?.loginId).toBe('b');
+      expect(getActiveAwsSsoLogin(null)?.proc).toBe(procB);
+      expect(getActiveAwsSsoLogin(null)?.loginId).toBe('b');
     });
 
     it('is a no-op when the slot is already empty', () => {
-      const cleared = clearActiveAwsSsoLoginIfOwner(makeFakeProc('A'));
+      const cleared = clearActiveAwsSsoLoginIfOwner(null, makeFakeProc('A'));
       expect(cleared).toBe(false);
-      expect(getActiveAwsSsoLogin()).toBeNull();
+      expect(getActiveAwsSsoLogin(null)).toBeNull();
     });
 
     /**
@@ -88,19 +88,47 @@ describe('aws-sso-active-login slot', () => {
       const procB = makeFakeProc('B');
 
       // (1) Register A.
-      setActiveAwsSsoLogin({ loginId: 'a', proc: procA, projectId: 'p1', profile: 'dev' });
-      expect(getActiveAwsSsoLogin()?.proc).toBe(procA);
+      setActiveAwsSsoLogin(null, { loginId: 'a', proc: procA, projectId: 'p1', profile: 'dev' });
+      expect(getActiveAwsSsoLogin(null)?.proc).toBe(procA);
 
       // (2) New request kills A and registers B.
-      clearActiveAwsSsoLogin(); // eager clear before the next setActive call
-      setActiveAwsSsoLogin({ loginId: 'b', proc: procB, projectId: 'p1', profile: 'dev' });
-      expect(getActiveAwsSsoLogin()?.proc).toBe(procB);
+      clearActiveAwsSsoLogin(null); // eager clear before the next setActive call
+      setActiveAwsSsoLogin(null, { loginId: 'b', proc: procB, projectId: 'p1', profile: 'dev' });
+      expect(getActiveAwsSsoLogin(null)?.proc).toBe(procB);
 
       // (3) procA's deferred close handler fires. Identity guard makes
       // it a no-op — procB's registration is preserved.
-      clearActiveAwsSsoLoginIfOwner(procA);
-      expect(getActiveAwsSsoLogin()?.proc).toBe(procB);
-      expect(getActiveAwsSsoLogin()?.loginId).toBe('b');
+      clearActiveAwsSsoLoginIfOwner(null, procA);
+      expect(getActiveAwsSsoLogin(null)?.proc).toBe(procB);
+      expect(getActiveAwsSsoLogin(null)?.loginId).toBe('b');
+    });
+  });
+
+  describe('per-user slots', () => {
+    it("one user's login never kills or clears another user's", () => {
+      const procA = makeFakeProc('A');
+      const procB = makeFakeProc('B');
+      setActiveAwsSsoLogin('user-a', {
+        loginId: 'a',
+        proc: procA,
+        projectId: 'p1',
+        profile: 'dev',
+      });
+      setActiveAwsSsoLogin('user-b', {
+        loginId: 'b',
+        proc: procB,
+        projectId: 'p1',
+        profile: 'dev',
+      });
+
+      expect(getActiveAwsSsoLogin('user-a')?.proc).toBe(procA);
+      expect(getActiveAwsSsoLogin('user-b')?.proc).toBe(procB);
+      expect(getActiveAwsSsoLogin(null)).toBeNull();
+
+      expect(clearActiveAwsSsoLoginIfOwner('user-b', procA)).toBe(false);
+      clearActiveAwsSsoLogin('user-a');
+      expect(getActiveAwsSsoLogin('user-a')).toBeNull();
+      expect(getActiveAwsSsoLogin('user-b')?.proc).toBe(procB);
     });
   });
 });

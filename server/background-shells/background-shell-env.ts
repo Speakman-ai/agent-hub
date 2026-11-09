@@ -19,9 +19,12 @@ export function buildBackgroundShellEnv(
     if (
       env.AGENT_HUB_CREDENTIAL_SCOPE !== 'organization' &&
       projectHasAwsSsoProfiles(project) &&
-      !mergeProjectAwsSpawnEnv(env, project)
+      !mergeProjectAwsSpawnEnv(env, project, { ownerUserId: session.owner_user_id ?? null })
     ) {
-      throw new Error('Could not prepare the project AWS profiles for this background shell');
+      throw new Error(
+        env.AGENT_HUB_AWS_DISABLED_REASON ??
+          'Could not prepare the project AWS profiles for this background shell',
+      );
     }
   }
   return env;

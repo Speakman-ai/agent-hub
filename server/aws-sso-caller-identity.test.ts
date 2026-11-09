@@ -2,7 +2,7 @@ import './test/setup.js';
 import { describe, it, expect, vi } from 'vitest';
 import type { Request } from 'express';
 import { resolveAwsProbeUserId, type AwsProbeContext } from './aws-sso-caller-identity.js';
-import { checkAwsSsoStatusAcrossHomes } from './aws-sso-identity.js';
+import { checkAwsSsoStatusForCaller } from './aws-sso-identity.js';
 import type { AgentLookup, AppConfig } from './types.js';
 
 /** Minimal Express-request stub: header map + optional auth fields. */
@@ -156,7 +156,7 @@ describe('resolveAwsProbeUserId', () => {
   });
 });
 
-describe('resolveAwsProbeUserId → checkAwsSsoStatusAcrossHomes (regression)', () => {
+describe('resolveAwsProbeUserId → checkAwsSsoStatusForCaller (regression)', () => {
   const cfg = { dataDir: '/data' } as AppConfig;
   const PER_USER_HOME = '/data/per-user-creds/owner-abc/home';
 
@@ -187,7 +187,7 @@ describe('resolveAwsProbeUserId → checkAwsSsoStatusAcrossHomes (regression)', 
     const userId = resolveAwsProbeUserId(req, ctx);
     expect(userId).toBe('owner-abc');
 
-    const out = await checkAwsSsoStatusAcrossHomes(
+    const out = await checkAwsSsoStatusForCaller(
       { userId, configPath: '/tmp/aws-config', profile: 'agenthub', run: runOwnerOnly, buildEnv },
       cfg,
     );
@@ -207,7 +207,7 @@ describe('resolveAwsProbeUserId → checkAwsSsoStatusAcrossHomes (regression)', 
     const userId = resolveAwsProbeUserId(req, ctx);
     expect(userId).toBeNull();
 
-    const out = await checkAwsSsoStatusAcrossHomes(
+    const out = await checkAwsSsoStatusForCaller(
       { userId, configPath: '/tmp/aws-config', profile: 'agenthub', run: runOwnerOnly, buildEnv },
       cfg,
     );

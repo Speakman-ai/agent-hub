@@ -452,7 +452,7 @@ export async function runReviewerTurn(
           projectId: reviewerProject.id,
           sessionId,
         });
-        mergeProjectAwsSpawnEnv(spawnEnv, reviewerProject);
+        mergeProjectAwsSpawnEnv(spawnEnv, reviewerProject, { ownerUserId: roomOwnerId ?? null });
       }
       return spawnEnv;
     };
