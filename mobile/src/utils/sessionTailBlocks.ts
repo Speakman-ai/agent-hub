@@ -17,6 +17,7 @@ import {
   extractForwardBlocks,
 } from '@shared/utils/extractForwardBlocks';
 import { extractCredentialRequestBlocks } from './credentialRequests';
+import { extractPollerBlocks } from '@shared/utils/sessionPoller';
 import { isScheduleWakeupTool } from '@shared/utils/scheduledWakeup';
 const EXPLORE_TOOLS = new Set(['Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch', 'NotebookRead']);
 /**
@@ -71,6 +72,15 @@ export function eventsToBlocks(events: any) {
             kind: 'credential_request',
             event: { type: 'credential_request', request },
           });
+        }
+        prose = strippedText;
+      }
+    }
+    if (prose.includes('agenthub:poller')) {
+      const { strippedText, pollers } = extractPollerBlocks(prose);
+      if (pollers.length > 0) {
+        for (const proposal of pollers) {
+          blocks.push({ kind: 'session_poller', event: { type: 'session_poller', proposal } });
         }
         prose = strippedText;
       }

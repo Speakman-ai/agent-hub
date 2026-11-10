@@ -50,6 +50,7 @@ import {
 } from './push.js';
 import { HUB_CHAT_MESSAGE_EVENT, mentionedUserIds } from './hub-chat-events.js';
 import { REMINDER_DUE_EVENT } from './reminders-events.js';
+import { SESSION_POLLER_NOTIFY_EVENT } from './session-pollers/session-poller-scheduler.js';
 import { DEFAULT_BRANCH_CI_FAILED_EVENT } from './finalize/default-branch-events.js';
 import { pushCategoryIdFor } from '../shared/utils/approvals.js';
 import { isLocalBundledServer } from './auth.js';
@@ -461,6 +462,26 @@ export function mapBroadcastToNotification(data: BroadcastData): NotificationInt
         },
         projectId: str(data.projectId) ?? null,
         sourceKey: `approval_requested:${approvalId}`,
+        recipients: owner ? { kind: 'users', userIds: [owner] } : { kind: 'session', sessionId },
+      };
+    }
+
+    case SESSION_POLLER_NOTIFY_EVENT: {
+      const sessionId = broadcastSessionId(data);
+      const pollerId = str(data.pollerId);
+      if (!sessionId || !pollerId) return null;
+      const owner = str(data.ownerUserId);
+      const kind = data.kind === 'complete' ? 'complete' : 'run';
+      const projectId = str(data.projectId) ?? null;
+      return {
+        category: 'session_poller',
+        pushEvent: null,
+        deviceScope: 'recipients',
+        title: str(data.title) ?? 'Poller update',
+        body: str(data.body) ?? '',
+        data: { sessionId, agentId: data.agentId, projectId, pollerId, type: 'session_poller' },
+        projectId,
+        sourceKey: `session_poller:${pollerId}:${kind === 'complete' ? 'complete' : `run:${String(data.runCount ?? '')}`}`,
         recipients: owner ? { kind: 'users', userIds: [owner] } : { kind: 'session', sessionId },
       };
     }

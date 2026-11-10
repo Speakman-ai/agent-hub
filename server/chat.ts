@@ -1,3 +1,4 @@
+import { SESSION_POLLER_PROMPT_GUIDANCE } from './session-pollers/session-poller-prompt.js';
 import { organizationSessionCwd } from './organization-sessions.js';
 import { agentComputerDenial, sessionDesktopComputerIdentity } from './session-computer-access.js';
 import { readOrganizationMemory } from './organization-memory.js';
@@ -593,6 +594,8 @@ interface InternalChatMessage extends ChatMessage {
    * `background-shells/background-shell-watcher.ts`.
    */
   _backgroundShellWake?: boolean;
+  /** This turn is a scheduled run of a session poller (`session-pollers/`). */
+  _sessionPollerRun?: boolean;
 }
 
 interface ProjectWithCommands extends Project {
@@ -1630,6 +1633,8 @@ Need a password, API key, or one-off login from the user mid-session? Do **not**
 
 After the user submits, retrieve with \`ah-api.sh POST "/api/sessions/$AGENT_HUB_SESSION_ID/credential-requests/<requestId>/consume"\` — re-consume the same \`requestId\` if you lost the value rather than re-asking.`;
   }
+
+  prompt += `\n\n${SESSION_POLLER_PROMPT_GUIDANCE}`;
 
   // Agents are flat ("full-stack" or otherwise dedicated) and coordinate via
   // plain chat or conference rooms. The Lead Response Contract still applies
@@ -3213,7 +3218,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         isAutoContinuation,
         skipUserMessagePersist: msg._skipUserMessagePersist,
         seedTurn: msg._seedTurn,
-        backgroundShellWake: msg._backgroundShellWake,
+        backgroundShellWake: msg._backgroundShellWake || msg._sessionPollerRun,
       });
 
       // Auto-rename while the title is still owned by the automatic title flow.

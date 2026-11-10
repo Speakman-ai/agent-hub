@@ -393,6 +393,21 @@ describe('eventsToBlocks — misc', () => {
     expect(blocks[1].text).toBe('Please sign in.');
     expect(blocks[1].text).not.toContain('agenthub:credential-request');
   });
+  it('extracts poller blocks from assistant text', () => {
+    const body = JSON.stringify({ pollerId: 'p1', task: 'Check dev', intervalMinutes: 30 });
+    const blocks = eventsToBlocks(
+      wrap([
+        {
+          type: 'assistant_text',
+          text: `Set up below.\n\n\`\`\`agenthub:poller\n${body}\n\`\`\``,
+          partial: false,
+        },
+      ]),
+    );
+    expect(blocks.map((b: any) => b.kind)).toEqual(['session_poller', 'text']);
+    expect(blocks[0].event.proposal).toMatchObject({ pollerId: 'p1', intervalMinutes: 30 });
+    expect(blocks[1].text).toBe('Set up below.');
+  });
   it('subagent tools', () => {
     const kinds = eventsToBlocks(
       wrap([

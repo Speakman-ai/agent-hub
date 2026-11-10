@@ -25,6 +25,7 @@ import SubagentCard from './SubagentCard';
 import AskUserQuestion from './AskUserQuestion';
 import SessionForwardCard from './SessionForwardCard';
 import CredentialRequestPrompt from './CredentialRequestPrompt';
+import SessionPollerCard from './SessionPollerCard';
 import BrowserActivityPanel from './BrowserActivityPanel';
 /** Inline thumbnails for images returned in a tool_result (e.g. reading a PNG). */
 function ToolResultImages({ images }: any) {
@@ -458,6 +459,10 @@ function SessionTail({
     () => blocks.filter((b: any) => b.kind === 'credential_request'),
     [blocks],
   );
+  const pollerBlocks = useMemo<any>(
+    () => blocks.filter((b: any) => b.kind === 'session_poller'),
+    [blocks],
+  );
   const browserPanel = hasBrowserTimeline ? (
     <BrowserActivityPanel
       timelineEntries={events ?? []}
@@ -480,6 +485,7 @@ function SessionTail({
       !events &&
       askBlocks.length === 0 &&
       credentialBlocks.length === 0 &&
+      pollerBlocks.length === 0 &&
       forwardBlocks.length === 0
     ) {
       if (eventsFetchFailed) {
@@ -528,6 +534,14 @@ function SessionTail({
             sessionId={message?.session_id}
             request={b.event.request}
             onSubmit={(text: any) => onCredentialSubmit?.(b.event.request.requestId, text)}
+          />
+        ))}
+        {pollerBlocks.map((b: any) => (
+          <SessionPollerCard
+            key={b.event.proposal.pollerId}
+            sessionId={message?.session_id}
+            proposal={b.event.proposal}
+            proposedAt={message?.created_at}
           />
         ))}
         {browserPanel}
@@ -593,6 +607,14 @@ function SessionTail({
           onSubmit={(text: any) => onCredentialSubmit?.(b.event.request.requestId, text)}
         />
       ))}
+      {pollerBlocks.map((b: any) => (
+        <SessionPollerCard
+          key={b.event.proposal.pollerId}
+          sessionId={message?.session_id}
+          proposal={b.event.proposal}
+          proposedAt={message?.created_at}
+        />
+      ))}
 
       {loading && <Text style={styles.loadingText}>Loading events...</Text>}
 
@@ -613,6 +635,7 @@ function SessionTail({
         const toggle = () => setExpandedBlocks((prev: any) => ({ ...prev, [idx]: !prev[idx] }));
         switch (block.kind) {
           case 'credential_request':
+          case 'session_poller':
             return null;
           case 'thinking': {
             const t = block.event?.text || '';

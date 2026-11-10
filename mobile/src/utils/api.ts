@@ -157,6 +157,11 @@ export const api = {
     }),
   closeSessionSidebar: (sessionId: string) =>
     fetchJSON(`/sessions/${sessionId}/sidebar`, { method: 'DELETE' }),
+  listSessionPollers: (sessionId: string) => fetchJSON(`/sessions/${sessionId}/pollers`),
+  startSessionPoller: (sessionId: string, body: Record<string, unknown>) =>
+    fetchJSON(`/sessions/${sessionId}/pollers`, { method: 'POST', body: JSON.stringify(body) }),
+  stopSessionPoller: (sessionId: string, id: string) =>
+    fetchJSON(`/sessions/${sessionId}/pollers/${encodeURIComponent(id)}/stop`, { method: 'POST' }),
   getSessionCredentialRequest: (sessionId: any, requestId: any) =>
     fetchJSON(`/sessions/${sessionId}/credential-requests/${encodeURIComponent(requestId)}`),
   submitSessionCredentialRequest: (sessionId: any, requestId: any, body: any) =>

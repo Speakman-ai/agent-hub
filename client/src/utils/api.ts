@@ -1,3 +1,4 @@
+import type { SessionPoller } from '@shared/utils/sessionPoller';
 import { createOrganizationApi } from '@shared/utils/organizations';
 import { createOrganizationAgentApi } from '@shared/utils/organization-agents';
 import { createOrganizationPortfolioApi } from '@shared/utils/organization-portfolio';
@@ -947,6 +948,18 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),
+  listSessionPollers: (sessionId: string) =>
+    fetchJSON<{ pollers: SessionPoller[] }>(`/sessions/${sessionId}/pollers`),
+  startSessionPoller: (sessionId: string, body: Record<string, unknown>) =>
+    fetchJSON<{ poller: SessionPoller; created: boolean }>(`/sessions/${sessionId}/pollers`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  stopSessionPoller: (sessionId: string, id: string) =>
+    fetchJSON<{ poller: SessionPoller }>(
+      `/sessions/${sessionId}/pollers/${encodeURIComponent(id)}/stop`,
+      { method: 'POST' },
+    ),
   getSessionCredentialRequest: (sessionId: string, requestId: string) =>
     fetchJSON(`/sessions/${sessionId}/credential-requests/${encodeURIComponent(requestId)}`),
   submitSessionCredentialRequest: (

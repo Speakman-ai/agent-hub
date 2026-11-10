@@ -46,6 +46,8 @@ import { formatSystemBannerModelLine } from '@shared/utils/systemBannerModel';
 import { extractCredentialRequestBlocks } from '../utils/credentialRequests';
 import AskUserQuestion from './AskUserQuestion';
 import SessionForwardCard from './SessionForwardCard';
+import SessionPollerCard from './SessionPollerCard';
+import { extractPollerBlocks } from '@shared/utils/sessionPoller';
 import ReviewDisputeCard from './ReviewDisputeCard';
 import { extractReviewDisputeBlocks } from '@shared/utils/extractReviewDisputeBlocks';
 import CredentialRequestPrompt from './CredentialRequestPrompt';
@@ -507,6 +509,15 @@ function SessionTail({
                     onOpenSession={onOpenSession}
                   />
                 );
+              case 'session_poller':
+                return (
+                  <SessionPollerCard
+                    key={`b${i}`}
+                    sessionId={message?.session_id}
+                    proposal={block.event.proposal}
+                    proposedAt={message?.created_at}
+                  />
+                );
               case 'credential_request':
                 return (
                   <CredentialRequestPrompt
@@ -627,6 +638,15 @@ export function eventsToBlocks(events: any) {
               request,
             },
           });
+        }
+        prose = strippedText;
+      }
+    }
+    if (prose.includes('agenthub:poller')) {
+      const { strippedText, pollers } = extractPollerBlocks(prose);
+      if (pollers.length > 0) {
+        for (const proposal of pollers) {
+          blocks.push({ kind: 'session_poller', event: { type: 'session_poller', proposal } });
         }
         prose = strippedText;
       }

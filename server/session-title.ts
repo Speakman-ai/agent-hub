@@ -215,8 +215,9 @@ export function pickInitialSessionTitle(
  * (e.g. "You left uncommitted changes on '<branch>'…") hijacks the session name
  * and the linked card / PR title derived from it.
  *
- * Background-shell wakes and progress check-ins are persisted like user turns
- * but are written by the Hub, so they must not title the session either.
+ * Background-shell wakes, progress check-ins and session poller runs are
+ * persisted like user turns but are written by the Hub, so they must not title
+ * the session either.
  */
 export function isRealUserTitleTurn(input: {
   fromQueue?: boolean;

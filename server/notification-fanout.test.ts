@@ -1024,3 +1024,45 @@ describe('mapBroadcastToNotification: needs-input credential card', () => {
     }
   });
 });
+
+describe('mapBroadcastToNotification: session pollers', () => {
+  it('sends a run update to the session owner with a per-run source key', () => {
+    const n = mapBroadcastToNotification({
+      type: 'session_poller_notify',
+      kind: 'run',
+      sessionId: 's1',
+      agentId: 'dev',
+      projectId: 'p1',
+      ownerUserId: 'u1',
+      pollerId: 'poll-1',
+      runCount: 3,
+      title: 'Poller run 3: Check dev',
+      body: 'Two new tickets.',
+    });
+    expect(n).toMatchObject({
+      category: 'session_poller',
+      title: 'Poller run 3: Check dev',
+      body: 'Two new tickets.',
+      sourceKey: 'session_poller:poll-1:run:3',
+      recipients: { kind: 'users', userIds: ['u1'] },
+      data: { sessionId: 's1', agentId: 'dev', pollerId: 'poll-1', type: 'session_poller' },
+    });
+  });
+
+  it('dedupes completion once per poller and falls back to session recipients', () => {
+    const n = mapBroadcastToNotification({
+      type: 'session_poller_notify',
+      kind: 'complete',
+      sessionId: 's1',
+      pollerId: 'poll-1',
+      title: 'Poller finished: Check dev',
+    });
+    expect(n).toMatchObject({
+      sourceKey: 'session_poller:poll-1:complete',
+      recipients: { kind: 'session', sessionId: 's1' },
+    });
+    expect(
+      mapBroadcastToNotification({ type: 'session_poller_notify', sessionId: 's1' }),
+    ).toBeNull();
+  });
+});

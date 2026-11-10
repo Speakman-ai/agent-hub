@@ -270,6 +270,9 @@ import createArtifactRoutes from './routes/artifacts.js';
 import createRoutineRoutes from './routes/routines.js';
 import { reconcileRoutineRunsOnBoot } from './routine-runs.js';
 import createBackgroundShellRoutes from './routes/background-shells.js';
+import createSessionPollerRoutes from './routes/session-pollers.js';
+import { SessionPollerStore } from './session-pollers/session-poller-store.js';
+import { SessionPollerScheduler } from './session-pollers/session-poller-scheduler.js';
 import createSessionDiscardRoutes from './routes/session-discard.js';
 import createSessionSidebarRoutes from './routes/session-sidebar.js';
 import createSessionContextUsageRoutes from './routes/session-context-usage.js';
@@ -1912,6 +1915,35 @@ const backgroundShellWatcher = new BackgroundShellWatcher({
       .all() as BackgroundShellRow[],
 });
 
+// Session pollers: user-confirmed recurring checks ("every 30 min check dev
+// for new tickets until 9am") that wake one session until their window ends.
+const sessionPollerStore = new SessionPollerStore(getDb());
+const sessionPollerScheduler = new SessionPollerScheduler({
+  store: sessionPollerStore,
+  getSession: (sessionId) => stmts!.getSession.get(sessionId) as SessionRow | undefined,
+  resolveProjectId: (session) => findAgent(session.agent_id)?.project?.id ?? null,
+  isSessionBusy: (sessionId) =>
+    isSessionChatBusy(
+      sessionId,
+      activeProcesses,
+      stmts!.getActiveTask.get(sessionId) as ActiveTaskRow | undefined,
+    ),
+  isSessionFinalizing: (sessionId) => Boolean(stmts!.getActiveFinalizeRunForSession.get(sessionId)),
+  isSessionAwaitingUserInput: (sessionId) =>
+    isAwaitingUserReply(stmts!.getMessages.all(sessionId) as MessageRow[]),
+  dispatchChat: (msg) => handleChat!(null, msg as unknown as ChatMessage),
+  getLatestAssistantText: (sessionId) => {
+    const messages = stmts!.getMessages.all(sessionId) as MessageRow[];
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'assistant') return messages[i].content;
+    }
+    return null;
+  },
+  broadcast: (event) => broadcast(event),
+  persistSystemMessage: (sessionId, content, meta) =>
+    persistWatchSystemMessage(sessionId, content, meta),
+});
+
 // The session's environment, owned by the session rather than by whichever
 // feature happened to start first. Preview, terminal, and session commands
 // all resolve the same env from here, so they share one filesystem, one set
@@ -2628,6 +2660,13 @@ app.use(
   createBackgroundShellRoutes({
     ...routeDeps,
     getBackgroundShellRuntime: () => backgroundShellRuntime,
+  }),
+);
+app.use(
+  createSessionPollerRoutes({
+    ...routeDeps,
+    getSessionPollerStore: () => sessionPollerStore,
+    kickSessionPollers: () => sessionPollerScheduler.tick(),
   }),
 );
 app.use(createFinalizeRoutes(routeDeps));
@@ -3441,6 +3480,8 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
     } catch (err) {
       console.error('[bg-watch] Boot resume failed:', (err as Error).message);
     }
+
+    sessionPollerScheduler.start();
 
     scheduleAll(allAgents());
 

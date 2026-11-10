@@ -4,6 +4,7 @@ import {
   reseedNeedsInputFromSessions,
   type NeedsInputMap,
 } from '@shared/utils/sessionState';
+import { SESSION_POLLER_WS_EVENT } from './utils/sessionPollers';
 import OrganizationsPage from './components/OrganizationsPage';
 import OrganizationComputerBar from './components/OrganizationComputerBar';
 import type { OrganizationChatTarget } from './components/OrganizationAgentsPanel';
@@ -3192,6 +3193,9 @@ export default function App({ initialView }: any = {}) {
         case 'clone-error':
         case 'clone-preview-defaults':
           window.dispatchEvent(new CustomEvent('clone-ws', { detail: data }));
+          break;
+        case 'session_poller_updated':
+          window.dispatchEvent(new CustomEvent(SESSION_POLLER_WS_EVENT, { detail: data }));
           break;
         case 'preview-defaults-detected':
           window.dispatchEvent(new CustomEvent('preview-defaults-ws', { detail: data }));

@@ -63,6 +63,13 @@ export const NOTIFICATION_SECTIONS = [
         description: 'A scheduled routine finished running, with its result',
         defaults: QUIET,
       },
+      {
+        id: 'session_poller',
+        label: 'Session pollers',
+        description: 'A poller you started in a session ran a check or finished',
+        // Each poller already asks whether to notify, so honor that choice loudly.
+        defaults: LOUD,
+      },
     ],
   },
   {

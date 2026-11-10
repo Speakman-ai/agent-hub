@@ -292,6 +292,32 @@ describe('eventsToBlocks — agenthub:ask recovery', () => {
     expect(blocks[1].text).not.toContain('agenthub:credential-request');
   });
 
+  it('extracts poller blocks from assistant text', () => {
+    const body = JSON.stringify({
+      pollerId: 'dev-tickets',
+      task: 'Check dev for new tickets',
+      intervalMinutes: 30,
+      until: 'tomorrow 09:00',
+    });
+    const blocks = eventsToBlocks([
+      {
+        seq: 1,
+        event: {
+          type: 'assistant_text',
+          text: `Here's the poller.\n\n\`\`\`agenthub:poller\n${body}\n\`\`\``,
+          partial: false,
+        },
+      },
+    ]);
+    expect(blocks.map((b: any) => b.kind)).toEqual(['session_poller', 'text']);
+    expect(blocks[0].event.proposal).toMatchObject({
+      pollerId: 'dev-tickets',
+      intervalMinutes: 30,
+      until: 'tomorrow 09:00',
+    });
+    expect(blocks[1].text).toBe("Here's the poller.");
+  });
+
   it('renders a picker for flat fenced envelope (askId + question at top level)', () => {
     const body = JSON.stringify({
       askId: 'preview-bootstrap-approval',

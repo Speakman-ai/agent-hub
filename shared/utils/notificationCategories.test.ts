@@ -30,6 +30,7 @@ describe('notification category catalog', () => {
         'approval_requested',
         'session_completed',
         'routine_run',
+        'session_poller',
       ],
       reminders: ['reminder'],
       code: [
@@ -62,6 +63,7 @@ describe('notification category catalog', () => {
       'browser_sign_in',
       'approval_requested',
       'reminder',
+      'session_poller',
       'review_assigned_to_you',
       'pr_environment_ready',
       'dm',

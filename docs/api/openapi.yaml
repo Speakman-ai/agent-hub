@@ -13160,6 +13160,7 @@ components:
             approval_requested: *a3
             session_completed: *a3
             routine_run: *a3
+            session_poller: *a3
             reminder: *a3
             ready_to_push: *a3
             pushed: *a3
@@ -13219,6 +13220,7 @@ components:
                     - approval_requested
                     - session_completed
                     - routine_run
+                    - session_poller
                     - reminder
                     - ready_to_push
                     - pushed
@@ -13252,6 +13254,7 @@ components:
                   - approval_requested
                   - session_completed
                   - routine_run
+                  - session_poller
                   - reminder
                   - ready_to_push
                   - pushed
@@ -17660,6 +17663,64 @@ components:
         - skippedSkills
         - ref
       description: The started session. Its first turn streams in the background.
+    SessionPoller:
+      type: object
+      properties:
+        id:
+          type: string
+        sessionId:
+          type: string
+        pollerId:
+          type: string
+          description: Id from the `agenthub:poller` block.
+        task:
+          type: string
+        intervalMinutes:
+          type: integer
+        durationMinutes:
+          type: integer
+        notifyEachRun:
+          type: boolean
+        notifyOnComplete:
+          type: boolean
+        status:
+          type: string
+          enum:
+            - active
+            - completed
+            - cancelled
+        runCount:
+          type: integer
+        startedAt:
+          type: string
+        endsAt:
+          type: string
+        nextRunAt:
+          type: string
+          nullable: true
+        lastRunAt:
+          type: string
+          nullable: true
+        finishedAt:
+          type: string
+          nullable: true
+      required:
+        - id
+        - sessionId
+        - pollerId
+        - task
+        - intervalMinutes
+        - durationMinutes
+        - notifyEachRun
+        - notifyOnComplete
+        - status
+        - runCount
+        - startedAt
+        - endsAt
+        - nextRunAt
+        - lastRunAt
+        - finishedAt
+      description: A recurring check that wakes one session until its window ends.
     SessionSidebarErrorResponse:
       type: object
       properties:
@@ -64818,6 +64879,154 @@ paths:
                     type: string
                 required:
                   - error
+  /api/sessions/{sessionId}/pollers:
+    get:
+      summary: List session pollers
+      tags:
+        - Sessions
+      parameters:
+        - schema:
+            type: string
+            description: Chat session id.
+          required: true
+          description: Chat session id.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Pollers for the session, oldest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pollers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SessionPoller"
+                required:
+                  - pollers
+        "404":
+          description: Session not found
+    post:
+      summary: Start a session poller
+      description: "Starts a poller confirmed on an `agenthub:poller` card. The first check runs right away. Repeating the same `pollerId` returns the existing poller with `created: false`."
+      tags:
+        - Sessions
+      parameters:
+        - schema:
+            type: string
+            description: Chat session id.
+          required: true
+          description: Chat session id.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                pollerId:
+                  type: string
+                  pattern: ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$
+                  description: Id from the `agenthub:poller` block; makes the create idempotent.
+                task:
+                  type: string
+                  minLength: 1
+                  maxLength: 2000
+                intervalMinutes:
+                  type: integer
+                  minimum: 0
+                  exclusiveMinimum: true
+                  maximum: 10080
+                durationMinutes:
+                  type: integer
+                  minimum: 0
+                  exclusiveMinimum: true
+                  maximum: 10080
+                notifyEachRun:
+                  type: boolean
+                  default: false
+                notifyOnComplete:
+                  type: boolean
+                  default: true
+              required:
+                - pollerId
+                - task
+                - intervalMinutes
+                - durationMinutes
+      responses:
+        "200":
+          description: A poller with this `pollerId` already existed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  poller:
+                    $ref: "#/components/schemas/SessionPoller"
+                  created:
+                    type: boolean
+                    enum:
+                      - false
+                required:
+                  - poller
+                  - created
+        "201":
+          description: Poller started.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  poller:
+                    $ref: "#/components/schemas/SessionPoller"
+                  created:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - poller
+                  - created
+        "400":
+          description: Invalid body
+        "404":
+          description: Session not found
+  /api/sessions/{sessionId}/pollers/{id}/stop:
+    post:
+      summary: Stop a session poller
+      tags:
+        - Sessions
+      parameters:
+        - schema:
+            type: string
+            description: Chat session id.
+          required: true
+          description: Chat session id.
+          name: sessionId
+          in: path
+        - schema:
+            type: string
+            description: Session poller id.
+          required: true
+          description: Session poller id.
+          name: id
+          in: path
+      responses:
+        "200":
+          description: The poller, now cancelled (or already finished).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  poller:
+                    $ref: "#/components/schemas/SessionPoller"
+                required:
+                  - poller
+        "404":
+          description: Session or poller not found
   /api/sessions/{sessionId}/sidebar:
     get:
       tags:
