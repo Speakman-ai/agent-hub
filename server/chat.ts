@@ -306,12 +306,15 @@ import { MAX_REACT_CONTROL_BLOCK_JSON_BYTES } from './agenthub-control-limits.js
 import { runCodeRagForUserTurn, MAX_CODE_RAG_CALLS_PER_SESSION } from './code-rag.js';
 import { runWebSearchForQuery } from './web-search.js';
 import {
-  pickTurnSessionTitle,
+  planTurnSessionTitle,
+  shouldRunCliTitleOnTurn,
   scheduleTitleUpgrade,
   shouldPersistTurnSessionTitlePick,
   titleSourceForPick,
   isRealUserTitleTurn,
 } from './session-title.js';
+import { createCliTitleCompleter } from './title-completer.js';
+import { isAutoCardTitle, syncAutoCardTitle } from './auto-title-sync.js';
 import { clipUtf8StringToMaxBytes } from './utf8-clip.js';
 import { applyAssistantTextChunk } from './assistant-stream-buffer.js';
 import { isSessionChatBusy } from './session-chat-busy.js';
@@ -3213,15 +3216,17 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         backgroundShellWake: msg._backgroundShellWake,
       });
 
-      // Auto-rename on every user turn while the title is still owned by the
-      // automatic title flow. Manual/card/hook titles are not clobbered.
+      // Auto-rename while the title is still owned by the automatic title flow.
+      // Manual/hook titles and human-named cards are not clobbered.
       if (session && isRealUserTurn) {
         let linkedCardTitle: string | null = null;
         try {
           const linkedCard = (stmts as Stmts).getKanbanCardBySession?.get(sessionId) as
             | KanbanCardRow
             | undefined;
-          linkedCardTitle = linkedCard?.title ?? null;
+          // A card Finalize derived from the session name follows the session,
+          // so it must not pin the session back to its own old name.
+          linkedCardTitle = linkedCard && !isAutoCardTitle(linkedCard) ? linkedCard.title : null;
         } catch {
           /* table missing — ignore */
         }
@@ -3229,15 +3234,22 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         const priorUserMessages = priorMessages
           .filter((m) => m.role === 'user')
           .map((m) => m.content);
-        const pick = pickTurnSessionTitle({
+        const titleOwner = getSessionOwner(sessionId);
+        const titleCompleter = shouldRunCliTitleOnTurn(priorUserMessages.length)
+          ? createCliTitleCompleter(config, titleOwner)
+          : null;
+        const plan = planTurnSessionTitle({
           currentTitle: session.name,
           currentTitleSource: session.title_source ?? null,
           content,
           priorUserMessages,
           explicitTitle: hookSpecificOutput?.sessionTitle ?? null,
           linkedCardTitle,
+          modelAvailable: Boolean(config.openaiApiKey) || Boolean(titleCompleter),
         });
+        const titleSyncDeps = { stmts: stmts as Stmts, broadcast };
 
+        const pick = plan.write;
         if (shouldPersistTurnSessionTitlePick(pick, session.name, session.title_source ?? null)) {
           const titleSource = titleSourceForPick(pick.source);
           stmts.updateSessionNameWithTitleSource.run(pick.title, titleSource, sessionId);
@@ -3249,51 +3261,57 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               session: enrichSessionForClient(session, stmts),
             });
           }
+          syncAutoCardTitle(titleSyncDeps, sessionId, pick.title);
+        } else if (plan.upgradeFrom && !session.title_source) {
+          // A placeholder name with no source is auto-owned; claim it so the
+          // guarded upgrade below can replace it.
+          stmts.updateSessionNameWithTitleSource.run(session.name, 'auto', sessionId);
+          session = stmts.getSession.get(sessionId) as SessionRow | undefined;
+        }
 
-          if (pick.usedHeuristic) {
-            const sessSnapshot = session;
-            const heuristicTitle = pick.title;
-            void scheduleTitleUpgrade({
-              sessionId,
-              heuristicTitle,
-              content,
-              // Whole-session transcript (oldest first, this turn last) so the
-              // upgraded title captures the session theme, not just this turn.
-              messages: [...priorUserMessages, content],
-              config: {
-                // No host Anthropic key — Claude auth is per-account. The
-                // LLM title upgrade uses the host OpenAI key when configured.
-                anthropicApiKey: null,
-                openaiApiKey: config.openaiApiKey ?? null,
-              },
-              getSessionName: (id) =>
-                (stmts.getSession.get(id) as SessionRow | undefined)?.name ?? null,
-              getSessionTitleSource: (id) =>
-                (stmts.getSession.get(id) as SessionRow | undefined)?.title_source ?? null,
-              updateSessionName: (title, id, expectedCurrentTitle) => {
-                const result = stmts.updateAutoSessionNameIfCurrent.run(
-                  title,
-                  id,
-                  expectedCurrentTitle,
-                ) as { changes?: number };
-                return (result.changes ?? 0) > 0;
-              },
-              onUpgrade: (newTitle) => {
-                if (!sessSnapshot) return;
-                broadcast({
-                  type: 'session-updated',
-                  session: enrichSessionForClient(
-                    {
-                      ...sessSnapshot,
-                      name: newTitle,
-                      title_source: 'auto',
-                    } as SessionRow,
-                    stmts,
-                  ),
-                });
-              },
-            });
-          }
+        if (plan.upgradeFrom && session) {
+          const sessSnapshot = session;
+          void scheduleTitleUpgrade({
+            sessionId,
+            heuristicTitle: plan.upgradeFrom,
+            content,
+            // Whole-session transcript (oldest first, this turn last) so the
+            // upgraded title captures the session theme, not just this turn.
+            messages: [...priorUserMessages, content],
+            config: {
+              // No host Anthropic key: Claude auth is per-account, so the
+              // keyless path runs on the session owner's own engine login.
+              anthropicApiKey: null,
+              openaiApiKey: config.openaiApiKey ?? null,
+            },
+            complete: titleCompleter,
+            getSessionName: (id) =>
+              (stmts.getSession.get(id) as SessionRow | undefined)?.name ?? null,
+            getSessionTitleSource: (id) =>
+              (stmts.getSession.get(id) as SessionRow | undefined)?.title_source ?? null,
+            updateSessionName: (title, id, expectedCurrentTitle) => {
+              const result = stmts.updateAutoSessionNameIfCurrent.run(
+                title,
+                id,
+                expectedCurrentTitle,
+              ) as { changes?: number };
+              return (result.changes ?? 0) > 0;
+            },
+            onUpgrade: (newTitle) => {
+              syncAutoCardTitle(titleSyncDeps, sessionId, newTitle);
+              broadcast({
+                type: 'session-updated',
+                session: enrichSessionForClient(
+                  {
+                    ...sessSnapshot,
+                    name: newTitle,
+                    title_source: 'auto',
+                  } as SessionRow,
+                  stmts,
+                ),
+              });
+            },
+          });
         }
       }
 

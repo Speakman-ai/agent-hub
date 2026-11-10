@@ -15,8 +15,9 @@ import type {
   Stmts,
 } from '../types.js';
 import { getOrCreateBoard } from '../routes/board.js';
-import { maybeRenameSessionForLinkedCard } from '../kanban-caller-session.js';
 import { enrichSessionForClient } from '../session-checkpoint-rewind.js';
+import { isLowSignalTitle, UNTITLED_SESSION_CARD_TITLE } from '../session-title.js';
+import { isAutoSessionTitle } from '../auto-title-sync.js';
 import type { AgentLookup } from '../types.js';
 
 export interface EnsureKanbanCardDeps {
@@ -40,8 +41,8 @@ function resolveInProgressColumnId(columns: KanbanColumnRow[]): string {
 
 function defaultCardTitle(session: SessionRow): string {
   const name = session.name?.trim();
-  if (name) return name.slice(0, 200);
-  return 'Session work';
+  if (name && !isLowSignalTitle(name)) return name.slice(0, 200);
+  return UNTITLED_SESSION_CARD_TITLE;
 }
 
 /**
@@ -87,9 +88,13 @@ export function ensureKanbanCardForSession(
     maxPos,
   );
 
+  // The title is derived from the session name, so it keeps following the
+  // session (and the shipped PR title) until a human names either one.
+  if (isAutoSessionTitle(session) || title === UNTITLED_SESSION_CARD_TITLE) {
+    deps.stmts.markKanbanCardTitleAuto.run(id);
+  }
   const card = deps.stmts.getKanbanCard.get(id) as KanbanCardRow;
   deps.broadcast({ type: 'kanban_update', projectId });
-  maybeRenameSessionForLinkedCard(deps.stmts, deps.broadcast, session.id, title);
 
   const refreshed = deps.stmts.getSession.get(session.id) as SessionRow | undefined;
   if (refreshed) {

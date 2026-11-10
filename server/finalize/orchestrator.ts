@@ -377,6 +377,8 @@ export interface PushAndCreatePrArgs {
 
 export interface PushAndCreatePrResult {
   prUrl: string;
+  /** Title the PR was created or refreshed with, when this run set it. */
+  title?: string;
 }
 
 export type PushAndCreatePrFn = (args: PushAndCreatePrArgs) => Promise<PushAndCreatePrResult>;

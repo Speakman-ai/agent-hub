@@ -147,3 +147,28 @@ describe('generateLlmPrSummary', () => {
     expect(out).toBeNull();
   });
 });
+
+describe('generateLlmPrSummary keyless fallback', () => {
+  it('runs on the completer when no API key is set', async () => {
+    const complete = vi.fn(
+      async () => '{"title":"Show time to ship per session","summary":"Adds it."}',
+    );
+    const out = await generateLlmPrSummary({
+      cardTitle: '92d3cc41-606c-42f1-9798-baf32245d1fa',
+      commits: [{ subject: 'feat(stats): time to ship' }],
+      complete,
+    });
+    expect(out?.title).toBe('Show time to ship per session');
+    // An ID card title is not passed to the model as the task.
+    const firstCall = complete.mock.calls[0] as unknown as [{ content: string }];
+    expect(firstCall[0].content).not.toContain('92d3cc41');
+  });
+
+  it('returns null when the completer reply is not usable', async () => {
+    const out = await generateLlmPrSummary({
+      commits: [{ subject: 'x y' }],
+      complete: vi.fn(async () => 'no json here'),
+    });
+    expect(out).toBeNull();
+  });
+});

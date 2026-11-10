@@ -18,7 +18,12 @@
  */
 
 import { clipUtf8StringToMaxBytes } from '../utf8-clip.js';
-import { DEFAULT_TITLE_ANTHROPIC_MODEL, DEFAULT_TITLE_OPENAI_MODEL } from '../session-title.js';
+import {
+  DEFAULT_TITLE_ANTHROPIC_MODEL,
+  DEFAULT_TITLE_OPENAI_MODEL,
+  isLowSignalTitle,
+  type TitleCompleter,
+} from '../session-title.js';
 
 /** Hard cap on the synthesized PR title (GitHub renders ~70 well). */
 const MAX_PR_TITLE_LEN = 70;
@@ -53,6 +58,11 @@ export interface LlmPrSummaryOptions {
   timeoutMs?: number;
   /** Injected fetch for tests. Defaults to `globalThis.fetch`. */
   fetchImpl?: typeof fetch;
+  /**
+   * Fallback when no API key is configured or the keyed call fails: the
+   * session owner's own engine login (see `title-completer.ts`).
+   */
+  complete?: TitleCompleter | null;
 }
 
 export interface LlmPrSummary {
@@ -86,7 +96,8 @@ export function buildPrSummaryInput(opts: LlmPrSummaryOptions): string {
   const parts: string[] = [];
   const cardTitle = (opts.cardTitle ?? '').replace(/\s+/g, ' ').trim();
   const cardDescription = (opts.cardDescription ?? '').trim();
-  if (cardTitle) parts.push(`Task title: ${cardTitle}`);
+  // An ID or placeholder title tells the model nothing and tempts it to echo.
+  if (cardTitle && !isLowSignalTitle(cardTitle)) parts.push(`Task title: ${cardTitle}`);
   if (cardDescription) {
     parts.push(`Task description:\n${clipUtf8StringToMaxBytes(cardDescription, 2_000)}`);
   }
@@ -170,12 +181,27 @@ export function parsePrSummaryResponse(text: string): LlmPrSummary | null {
 export async function generateLlmPrSummary(
   opts: LlmPrSummaryOptions,
 ): Promise<LlmPrSummary | null> {
+  const input = buildPrSummaryInput(opts);
+  if (!input.trim()) return null;
+  const keyed = await generateKeyedPrSummary(opts, input);
+  if (keyed && !isLowSignalTitle(keyed.title)) return keyed;
+  if (!opts.complete) return null;
+  try {
+    const raw = await opts.complete({ system: PR_SUMMARY_PROMPT, content: input });
+    const parsed = parsePrSummaryResponse(raw ?? '');
+    return parsed && !isLowSignalTitle(parsed.title) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function generateKeyedPrSummary(
+  opts: LlmPrSummaryOptions,
+  input: string,
+): Promise<LlmPrSummary | null> {
   const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
   if (typeof fetchImpl !== 'function') return null;
   if (!opts.anthropicApiKey && !opts.openaiApiKey) return null;
-
-  const input = buildPrSummaryInput(opts);
-  if (!input.trim()) return null;
 
   const timeoutMs = Math.max(500, opts.timeoutMs ?? 12_000);
   const controller = new AbortController();

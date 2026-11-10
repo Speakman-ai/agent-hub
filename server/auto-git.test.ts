@@ -2764,6 +2764,24 @@ describe('buildCardDescription', () => {
 });
 
 describe('buildPrTitle', () => {
+  it('skips a low-signal newest commit when the session title is an ID', () => {
+    expect(
+      buildPrTitle('92d3cc41-606c-42f1-9798-baf32245d1fa', [
+        'Cont',
+        'feat: add week toggle to stats',
+      ]),
+    ).toBe('feat: add week toggle to stats');
+  });
+
+  it('skips an ID-like session title for a multi-commit PR', () => {
+    expect(
+      buildPrTitle('f6210010-8f05-4b78-ae80-220f682ff276', [
+        'Address review nits',
+        'feat: add week toggle to stats',
+      ]),
+    ).toBe('Address review nits');
+  });
+
   it('passes short clean titles through unchanged', () => {
     expect(buildPrTitle('Add dark mode support')).toBe('Add dark mode support');
   });

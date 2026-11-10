@@ -1255,6 +1255,9 @@ export interface KanbanCardRow {
   source_type?: 'manual' | 'email' | 'calendar' | 'chat' | 'hub_chat' | 'todo' | 'log_issue' | null;
   source_id?: string | null;
   source_meta?: string | null;
+  /** 'auto' when the title was derived from the session name and may be
+   *  rewritten from a better session or PR title; NULL once a human sets it. */
+  title_source?: string | null;
   pr_url: string | null;
   review_status: 'awaiting_review' | 'reviewing' | 'approved' | 'changes_requested' | null;
   created_by: string | null;
@@ -2450,6 +2453,9 @@ export interface Stmts {
   updateSessionName: Stmt;
   updateSessionNameWithTitleSource: Stmt;
   updateAutoSessionNameIfCurrent: Stmt;
+  markKanbanCardTitleAuto: Stmt;
+  clearKanbanCardTitleSource: Stmt;
+  updateAutoKanbanCardTitle: Stmt;
   updateSessionMaxTurns: Stmt;
   updateSessionLinkedDesign: Stmt;
   updateSessionLinkedEpic: Stmt;

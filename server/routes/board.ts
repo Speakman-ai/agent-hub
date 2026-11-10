@@ -1510,6 +1510,8 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       hasPrBaseBranch ? (prBaseBranch ?? null) : (card.pr_base_branch ?? null),
       req.params.cardId,
     );
+    // A human-edited title is pinned; only derived titles follow the session.
+    if (title !== undefined && title !== card.title) stmts.clearKanbanCardTitleSource.run(card.id);
     const affectedEpicIds = new Set<string>();
     if (card.epic_id) affectedEpicIds.add(card.epic_id);
     if (nextEpicId) affectedEpicIds.add(nextEpicId);

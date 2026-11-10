@@ -855,6 +855,9 @@ function initDb(dataDir: string): void {
       source_type TEXT CHECK(source_type IS NULL OR source_type IN ('manual','email','calendar','todo','log_issue','chat','hub_chat')),
       source_id TEXT,
       source_meta TEXT,
+      -- 'auto' when the title was derived from the session name and may still
+      -- be rewritten when the session or its PR gets a better title.
+      title_source TEXT,
       created_by TEXT,
       -- Human-readable per-board sequence number (the "123" in "AH-123").
       -- Assigned by the kanban_card_assign_short_id trigger on insert; NULL only
@@ -3114,6 +3117,11 @@ function initDb(dataDir: string): void {
   db.exec(
     'CREATE INDEX IF NOT EXISTS idx_kanban_cards_source ON kanban_cards(source_type, source_id)',
   );
+  try {
+    db.prepare('SELECT title_source FROM kanban_cards LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN title_source TEXT');
+  }
 
   try {
     db.prepare('SELECT autonomous_model FROM kanban_epics LIMIT 1').get();
@@ -6245,6 +6253,15 @@ function initDb(dataDir: string): void {
         WHERE c.id IN (SELECT value FROM json_each(?))
           AND c.support_ticket_id IS NULL
           AND c.customer_report_id IS NULL`,
+    ),
+    markKanbanCardTitleAuto: db.prepare(
+      `UPDATE kanban_cards SET title_source = 'auto' WHERE id = ?`,
+    ),
+    clearKanbanCardTitleSource: db.prepare(
+      `UPDATE kanban_cards SET title_source = NULL WHERE id = ?`,
+    ),
+    updateAutoKanbanCardTitle: db.prepare(
+      `UPDATE kanban_cards SET title = ?, updated_at = datetime('now') WHERE id = ? AND title_source = 'auto'`,
     ),
     updateKanbanCard: db.prepare(
       `UPDATE kanban_cards SET title = ?, description = ?, priority = ?, assignee = ?, labels = ?, session_id = ?, github_issue_url = ?, pr_url = ?, epic_id = ?, phase_id = ?, assign_model = ?, assign_engine = ?, pr_base_branch = ?, updated_at = datetime('now') WHERE id = ?`,

@@ -5,6 +5,7 @@
  * run in `ready_to_push`. Performs phase 8 only when the
  * operator clicks **Push to GitHub**.
  */
+import { createPrTitleHooks } from './pr-title-hooks.js';
 import { settleSessionRetarget } from '../session-retarget.js';
 import {
   isSpikeSession,
@@ -1392,7 +1393,9 @@ export async function runSessionPushToGithub(
     args.resolveCurrentBranch ?? defaultResolveCurrentBranch,
   );
 
-  const pushFn = args.pushAndCreatePr ?? createPushAndCreatePr({ config: deps.config });
+  const pushFn =
+    args.pushAndCreatePr ??
+    createPushAndCreatePr({ config: deps.config, titleHooks: createPrTitleHooks(deps) });
   try {
     const baseBranch = await resolveFinalizeBaseBranchForCard({
       card,

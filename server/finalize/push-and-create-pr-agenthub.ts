@@ -21,6 +21,7 @@
 import { bareRepoPath } from '../native-pr/host.js';
 import { isHostedRepoUrl } from '../git-host/hosted-remote.js';
 import { readOriginPushUrls } from './branch-facts.js';
+import type { TitleCompleter } from '../session-title.js';
 import type { NativePrService } from '../native-pr/service.js';
 import {
   buildForceWithLeasePushArgs,
@@ -82,6 +83,7 @@ export async function pushAndCreateNativePr(
   nativePr: NativePrService,
   args: PushAndCreatePrArgs,
   config?: PrSummaryConfig,
+  complete?: TitleCompleter | null,
 ): Promise<PushAndCreatePrResult> {
   // Guard: the push must land on the Hub repo. A worktree whose origin
   // still points at GitHub (e.g. opt-in happened mid-session, before the
@@ -118,7 +120,16 @@ export async function pushAndCreateNativePr(
     collectPrCommits(args.worktreePath, args.baseBranch, process.env),
     collectPrDiffStat(args.worktreePath, args.baseBranch, process.env),
   ]);
-  const override = config ? await resolvePrSummaryOverride(args, commits, diffStat, config) : null;
+  const override =
+    config || complete
+      ? await resolvePrSummaryOverride(
+          args,
+          commits,
+          diffStat,
+          config ?? { openaiApiKey: null },
+          complete,
+        )
+      : null;
   const { title, body } = buildPrDetails(args, commits, diffStat, override);
 
   const { prUrl } = nativePr.createOrGetOpenPr({
@@ -130,5 +141,5 @@ export async function pushAndCreateNativePr(
     body,
     author: authorUserId,
   });
-  return { prUrl };
+  return { prUrl, title };
 }

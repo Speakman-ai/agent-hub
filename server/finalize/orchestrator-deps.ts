@@ -2,6 +2,7 @@
  * Build a production {@link OrchestratorDeps}
  * bundle from the route-layer {@link RouteDeps} singleton.
  */
+import { createPrTitleHooks } from './pr-title-hooks.js';
 import { getDb } from '../db.js';
 import { createCardLifecycle } from './card-lifecycle.js';
 import { createDispatchAndWaitForTurnEnd } from './dispatch-and-wait.js';
@@ -104,6 +105,7 @@ export function buildOrchestratorDeps(
     pushAndCreatePr: createPushAndCreatePr({
       config: routeDeps.config,
       nativePr: routeDeps.nativePr,
+      titleHooks: createPrTitleHooks(routeDeps),
     }),
     dispatchAndWaitForTurnEnd,
     spawnFixTurn,

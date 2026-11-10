@@ -50,3 +50,55 @@ describe('ensureKanbanCardForSession', () => {
     expect(stmts.createKanbanCard.run).not.toHaveBeenCalled();
   });
 });
+
+describe('ensureKanbanCardForSession titles', () => {
+  function stubStmts() {
+    const created: unknown[][] = [];
+    return {
+      created,
+      stmts: {
+        getKanbanCardBySession: { get: vi.fn(() => undefined) },
+        getKanbanBoard: { get: vi.fn(() => undefined) },
+        getKanbanCardsByColumn: { all: vi.fn(() => []) },
+        createKanbanCard: { run: vi.fn((...args: unknown[]) => created.push(args)) },
+        markKanbanCardTitleAuto: { run: vi.fn() },
+        getKanbanCard: { get: vi.fn((id: string) => ({ id, title: created[0]?.[3] })) },
+        getSession: { get: vi.fn(() => undefined) },
+        updateSessionName: { run: vi.fn() },
+      },
+    };
+  }
+
+  it('marks a card derived from an auto-named session as auto and leaves the session alone', () => {
+    const { stmts, created } = stubStmts();
+    ensureKanbanCardForSession(
+      { stmts: stmts as never, broadcast: vi.fn(), findAgent: () => null },
+      { projectId: 'proj-1', session: session({ title_source: 'auto' }) },
+    );
+    expect(created[0][3]).toBe('Lobby host start');
+    expect(stmts.markKanbanCardTitleAuto.run).toHaveBeenCalledTimes(1);
+    expect(stmts.updateSessionName.run).not.toHaveBeenCalled();
+  });
+
+  it('never copies a UUID session name into the card title', () => {
+    const { stmts, created } = stubStmts();
+    ensureKanbanCardForSession(
+      { stmts: stmts as never, broadcast: vi.fn(), findAgent: () => null },
+      {
+        projectId: 'proj-1',
+        session: session({ name: '92d3cc41-606c-42f1-9798-baf32245d1fa', title_source: 'auto' }),
+      },
+    );
+    expect(created[0][3]).toBe('Untitled session');
+    expect(stmts.markKanbanCardTitleAuto.run).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a card from a manually named session pinned', () => {
+    const { stmts } = stubStmts();
+    ensureKanbanCardForSession(
+      { stmts: stmts as never, broadcast: vi.fn(), findAgent: () => null },
+      { projectId: 'proj-1', session: session({ title_source: 'manual' }) },
+    );
+    expect(stmts.markKanbanCardTitleAuto.run).not.toHaveBeenCalled();
+  });
+});

@@ -281,11 +281,184 @@ function isAutoTitleForPriorUserMessage(title: string, priorUserMessages: string
 }
 
 const GENERIC_FOLLOW_UP_TITLE_RE =
-  /^(?:ok(?:ay)?|continue|go on|keep going|next|fix it|do it|yes|no|yep|nope|what about .+)\??$/i;
+  /^(?:ok(?:ay)?|continue|cont|go on|keep going|next|fix it|do it|yes|no|yep|nope|what about .+)\??$/i;
 
 function isGenericFollowUpTitle(title: string): boolean {
   return GENERIC_FOLLOW_UP_TITLE_RE.test(title.trim());
 }
+
+// A word is letters (any script, digits allowed alongside) joined at most by
+// internal hyphens or apostrophes. Anything else, such as a path, file name,
+// URL, snake_case name, key=value pair or email address, identifies something
+// rather than describing it, so it never counts toward a title.
+const WORD_TOKEN_RE = /^[\p{L}\p{M}\p{N}]+(?:['\u2019-][\p{L}\p{M}\p{N}]+)*$/u;
+// Word-shaped tokens that are still IDs: UUIDs and hex hashes (with a digit,
+// so words like "defaced" survive).
+const ID_SHAPED_WORD_RES: RegExp[] = [
+  /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i,
+  /^(?=[0-9a-f]*\d)[0-9a-f]{7,64}$/i,
+];
+// Sentence punctuation around a word, not part of it.
+const WORD_WRAPPER_RE = /^[("'`\u2018\u201c[]+|[)"'`\u2019\u201d\],.;:!?]+$/gu;
+
+/** Card title Finalize uses when the session has no usable name yet. */
+export const UNTITLED_SESSION_CARD_TITLE = 'Untitled session';
+
+const PLACEHOLDER_CONTENT_TITLES = new Set([
+  'new chat',
+  'untitled session',
+  'session work',
+  'untitled change',
+  'agent task completion',
+  '(image attached)',
+  '(file attached)',
+  '(media attached)',
+]);
+
+/** The token as a topic word (lowercased), or null when it is not one. */
+function contentWordOf(token: string): string | null {
+  const bare = token.replace(WORD_WRAPPER_RE, '');
+  if (!WORD_TOKEN_RE.test(bare) || !/\p{L}/u.test(bare)) return null;
+  if (ID_SHAPED_WORD_RES.some((re) => re.test(bare))) return null;
+  const word = bare.toLowerCase();
+  return CONVERSATIONAL_FILLER_WORDS.has(word) ? null : word;
+}
+
+/**
+ * True when a title names nothing a reader could recognise: an ID, hash, URL,
+ * or path, a placeholder, a generic follow-up ("continue", "fix it"), or fewer
+ * than two real words. Such titles are never written automatically, and a
+ * card or PR carrying one is treated as untitled.
+ */
+export function isLowSignalTitle(title: string | null | undefined): boolean {
+  const t = stripForwardedTitleMarkers(title).replace(/\s+/g, ' ').trim();
+  if (!t) return true;
+  if (PLACEHOLDER_CONTENT_TITLES.has(t.toLowerCase())) return true;
+  if (isPlaceholderSessionTitle(t)) return true;
+  if (isGenericFollowUpTitle(t)) return true;
+  // Scripts written without spaces between words carry a whole phrase in one
+  // token, so two of their characters already name something.
+  // Only word-shaped tokens count, so CJK text inside a path or URL does not.
+  const contentWords = t
+    .split(' ')
+    .map(contentWordOf)
+    .filter((word): word is string => word !== null);
+  const unspacedChars = contentWords.join('').match(UNSPACED_SCRIPT_CHAR_RE)?.length ?? 0;
+  if (unspacedChars >= 2) return false;
+  return contentWords.length < 2;
+}
+
+// Words that carry no topic on their own: acknowledgements, politeness,
+// go-ahead verbs, pronouns, and connectives. A title made only of these
+// ("go ahead", "sounds good", "thank you", "ok do that now") names nothing.
+const CONVERSATIONAL_FILLER_WORDS = new Set([
+  'a',
+  'again',
+  'ahead',
+  'alright',
+  'all',
+  'also',
+  'an',
+  'and',
+  'any',
+  'anything',
+  'are',
+  'awesome',
+  'be',
+  'but',
+  'can',
+  'carry',
+  'cont',
+  'continue',
+  'cool',
+  'could',
+  'did',
+  'do',
+  'does',
+  'done',
+  'else',
+  'fine',
+  'for',
+  'go',
+  'good',
+  'got',
+  'great',
+  'he',
+  'hello',
+  'hey',
+  'hi',
+  'i',
+  'is',
+  'it',
+  "it's",
+  'its',
+  'just',
+  'keep',
+  'let',
+  "let's",
+  'lets',
+  'lgtm',
+  'looks',
+  'me',
+  'more',
+  'much',
+  'my',
+  'nice',
+  'no',
+  'nope',
+  'now',
+  'of',
+  'ok',
+  'okay',
+  'on',
+  'one',
+  'perfect',
+  'please',
+  'pls',
+  'proceed',
+  'same',
+  'she',
+  'so',
+  'something',
+  'sounds',
+  'still',
+  'sure',
+  'thank',
+  'thanks',
+  'that',
+  "that's",
+  'the',
+  'them',
+  'then',
+  'there',
+  'these',
+  'they',
+  'thing',
+  'this',
+  'those',
+  'thx',
+  'to',
+  'too',
+  'try',
+  'ty',
+  'up',
+  'us',
+  'very',
+  'we',
+  'well',
+  'what',
+  'with',
+  'works',
+  'would',
+  'yeah',
+  'yep',
+  'yes',
+  'you',
+  'your',
+]);
+
+const UNSPACED_SCRIPT_CHAR_RE =
+  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Thai}\p{Script=Lao}\p{Script=Khmer}\p{Script=Myanmar}]/gu;
 
 /**
  * Decide whether the current user turn should automatically rename a session.
@@ -332,15 +505,18 @@ export function pickTurnSessionTitle(
     // Only heuristic titles carry the forwarded marker forward; an explicit
     // hint/card title is authoritative and replaces the marker.
     if (pick.source === 'heuristic') {
+      // An opening message like a pasted UUID or "cont" would otherwise become
+      // the session name, then the card title, then the PR title.
+      if (isLowSignalTitle(pick.title)) return null;
       pick.title = preserveForwardedTitleSuffix(pick.title, currentTitle);
     }
     return pick;
   }
 
   const rawHeuristic = deriveHeuristicTitle(input.content);
-  // Test generic-ness on the bare title so the forwarded marker never masks a
-  // "fix it" / "continue" follow-up that should be ignored.
-  if (isGenericFollowUpTitle(rawHeuristic)) return null;
+  // Test on the bare title so the forwarded marker never masks a "fix it" /
+  // "continue" follow-up that should be ignored.
+  if (isLowSignalTitle(rawHeuristic)) return null;
   const heuristicTitle = preserveForwardedTitleSuffix(rawHeuristic, currentTitle);
   if (heuristicTitle === currentTitle) return null;
 
@@ -349,6 +525,80 @@ export function pickTurnSessionTitle(
     source: 'heuristic',
     usedHeuristic: true,
   };
+}
+
+/**
+ * Whether this turn should ask a model for a whole-session title.
+ *
+ * A heuristic pick always qualifies. With no pick, the turn still qualifies
+ * when the title is auto-owned and says nothing (a placeholder, or an ID that
+ * an earlier version wrote), so a low-signal opening message still ends up
+ * with a real name.
+ */
+export function shouldUpgradeSessionTitle(input: {
+  pick: InitialSessionTitlePick | null;
+  currentTitle?: string | null;
+  currentTitleSource?: string | null;
+}): boolean {
+  if (input.pick) return input.pick.usedHeuristic;
+  const source = (input.currentTitleSource ?? '').trim();
+  const title = (input.currentTitle ?? '').trim();
+  if (source === 'auto') return isLowSignalTitle(title);
+  if (!source) return isPlaceholderSessionTitle(title);
+  return false;
+}
+
+export interface TurnSessionTitlePlan {
+  /** Title to write synchronously, or null to leave the name alone. */
+  write: InitialSessionTitlePick | null;
+  /**
+   * When set, ask a model for a whole-session title, replacing the name only
+   * if it still equals this value.
+   */
+  upgradeFrom: string | null;
+}
+
+/**
+ * Decide what a user turn does to the session name.
+ *
+ * The opening message gets a heuristic name right away. Later turns don't
+ * rename synchronously once the session has a real name: the latest message's
+ * first line describes that turn, not the session, so only the model's
+ * whole-session title may replace it. Without a model this turn, the name
+ * stays put.
+ */
+export function planTurnSessionTitle(
+  input: TurnSessionTitlePickInput & { modelAvailable: boolean },
+): TurnSessionTitlePlan {
+  const pick = pickTurnSessionTitle(input);
+  const currentTitle = (input.currentTitle ?? '').trim();
+  const isLaterTurn = (input.priorUserMessages ?? []).length > 0;
+  if (pick?.source === 'heuristic' && isLaterTurn && !isLowSignalTitle(currentTitle)) {
+    return { write: null, upgradeFrom: input.modelAvailable ? currentTitle : null };
+  }
+  if (pick) {
+    return {
+      write: pick,
+      upgradeFrom: pick.usedHeuristic && input.modelAvailable ? pick.title : null,
+    };
+  }
+  const upgrade =
+    input.modelAvailable &&
+    !!currentTitle &&
+    shouldUpgradeSessionTitle({
+      pick: null,
+      currentTitle,
+      currentTitleSource: input.currentTitleSource,
+    });
+  return { write: null, upgradeFrom: upgrade ? currentTitle : null };
+}
+
+/**
+ * Keyless model titling spawns a CLI, so it runs on the first three user turns
+ * and every fifth after that rather than on every message.
+ */
+export function shouldRunCliTitleOnTurn(priorUserMessageCount: number): boolean {
+  return priorUserMessageCount < 3 || priorUserMessageCount % 5 === 0;
 }
 
 /**
@@ -553,8 +803,17 @@ export function buildTitleTranscript(userMessages: readonly string[]): string {
 
 // LLM-backed title generation
 
+/**
+ * Fallback text completion used when no host API key is set (or the keyed call
+ * fails). Implemented by `title-completer.ts` on the session owner's engine
+ * login. Returns the raw reply or null; never throws.
+ */
+export type TitleCompleter = (input: { system: string; content: string }) => Promise<string | null>;
+
 export interface LlmTitleOptions {
   content: string;
+  /** Fallback when no API key is configured or the keyed call fails. */
+  complete?: TitleCompleter | null;
   /**
    * Ordered user messages for the session, oldest first (the latest turn
    * last). When 2+ messages are supplied the title is generated from the
@@ -640,6 +899,23 @@ export async function generateLlmTitle(opts: LlmTitleOptions): Promise<string | 
   }
   if (!content.trim()) return null;
 
+  const keyed = await generateKeyedLlmTitle(opts, content, systemPrompt);
+  if (keyed && !isLowSignalTitle(keyed)) return keyed;
+  if (!opts.complete) return null;
+  try {
+    const raw = await opts.complete({ system: systemPrompt, content });
+    const cleaned = sanitizeLlmTitle((raw ?? '').split(/\r?\n/).find((l) => l.trim()) ?? '');
+    return cleaned && !isLowSignalTitle(cleaned) ? cleaned : null;
+  } catch {
+    return null;
+  }
+}
+
+async function generateKeyedLlmTitle(
+  opts: LlmTitleOptions,
+  content: string,
+  systemPrompt: string,
+): Promise<string | null> {
   const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
   if (typeof fetchImpl !== 'function') return null;
   // Short-circuit before allocating the AbortController + timer when no key
@@ -731,6 +1007,8 @@ export interface ScheduleTitleUpgradeOptions {
     anthropicApiKey?: string | null;
     openaiApiKey?: string | null;
   };
+  /** Keyless fallback (session owner's engine login). */
+  complete?: TitleCompleter | null;
   /** Read the session's current `name` from storage. Return null if missing. */
   getSessionName: (sessionId: string) => string | null;
   /** Read the session's current title ownership, when the caller stores it. */
@@ -753,7 +1031,7 @@ export interface ScheduleTitleUpgradeOptions {
  */
 export async function scheduleTitleUpgrade(opts: ScheduleTitleUpgradeOptions): Promise<boolean> {
   const hasKey = Boolean(opts.config.anthropicApiKey || opts.config.openaiApiKey);
-  if (!hasKey) return false;
+  if (!hasKey && !opts.complete) return false;
   const generate = opts.generate ?? generateLlmTitle;
   try {
     const llmTitle = await generate({
@@ -761,6 +1039,7 @@ export async function scheduleTitleUpgrade(opts: ScheduleTitleUpgradeOptions): P
       messages: opts.messages ?? null,
       anthropicApiKey: opts.config.anthropicApiKey ?? null,
       openaiApiKey: opts.config.openaiApiKey ?? null,
+      complete: opts.complete ?? null,
     });
     // Keep the forwarded marker if the synchronous title we are upgrading had
     // one, so the LLM refinement still reads as a fork.

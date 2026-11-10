@@ -124,6 +124,7 @@ import {
 import { checkWorktreeChanges } from '../auto-git.js';
 import { hasPublishableChanges, makeNetDiffProbe } from '../finalize/net-diff.js';
 import { syncLinkedCardToSessionStatus } from '../session-card-status.js';
+import { createCliTitleCompleter } from '../title-completer.js';
 import {
   computeSessionChanges,
   computeFileDiff,
@@ -882,6 +883,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         heuristicTitle: name,
         content: seed,
         config: { anthropicApiKey: null, openaiApiKey: deps.config?.openaiApiKey ?? null },
+        complete: deps.config ? createCliTitleCompleter(deps.config, ownerUid) : null,
         getSessionName: (sid) =>
           (stmts.getSession.get(sid) as SessionRow | undefined)?.name ?? null,
         getSessionTitleSource: (sid) =>

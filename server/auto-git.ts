@@ -54,6 +54,10 @@ import { rebaseOntoBase } from './pre-push-rebase.js';
 import { handleGithubCardOnMerge } from './github-card-on-merge.js';
 import { findUnansweredAskIds } from '../shared/utils/awaitingInput.js';
 import { redactCardDescriptionForGit } from './pr-body-redaction.js';
+import { generateLlmPrSummary } from './finalize/pr-summary-llm.js';
+import { createCliTitleCompleter } from './title-completer.js';
+import { isLowSignalTitle } from './session-title.js';
+import { adoptShippedTitle } from './auto-title-sync.js';
 import {
   hasCommitNudgeSinceLastUser,
   shouldNudgeUncommittedCommit,
@@ -1099,6 +1103,7 @@ export function pickPrTitleFromCommits(
     if (!subject) continue;
     if (isGarbageTitle(subject)) continue;
     if (isGenericCommitSubject(subject)) continue;
+    if (isLowSignalTitle(subject)) continue;
     return subject;
   }
   return null;
@@ -1129,9 +1134,14 @@ export function buildPrTitle(
   // Single commit → its subject describes the whole change, so prefer it.
   // Several commits → the newest subject is just the last turn, so prefer the
   // session goal (rawTitle), falling back to a commit subject only when empty.
-  const rawTrimmed = (rawTitle ?? '').trim();
+  // An ID-like or placeholder card/session title names nothing; treat it as
+  // absent so a real commit subject wins.
+  const rawCandidate = (rawTitle ?? '').trim();
+  const rawTrimmed = isLowSignalTitle(rawCandidate) ? '' : rawCandidate;
   const multiCommit = (commits?.length ?? 0) > 1;
-  const source = multiCommit ? rawTrimmed || fromCommit : (fromCommit ?? rawTitle);
+  const source = multiCommit
+    ? rawTrimmed || fromCommit || rawCandidate
+    : (fromCommit ?? (rawTrimmed || rawCandidate));
   const normalized = (source ?? '').replace(/\s+/g, ' ').trim();
   if (!normalized) return 'Untitled change';
 
@@ -2213,7 +2223,18 @@ async function publishFromCheckout(
     // win over the card / session title — see buildPrTitle JSDoc for why.
     // buildPrTitle only uses subjects; passing CommitInfo[] is fine since the
     // signature accepts both shapes.
-    const prTitle = buildPrTitle(commitTitle, commits);
+    // A model title covers the whole change; it runs on the host key or, with
+    // none, on the session owner's own engine login. buildPrTitle is the
+    // fallback when neither produces a usable title.
+    const llmSummary = await generateLlmPrSummary({
+      cardTitle: rawTitle || null,
+      cardDescription: redactCardDescriptionForGit(card?.description) || null,
+      commits,
+      diffStat,
+      openaiApiKey: config.openaiApiKey ?? null,
+      complete: createCliTitleCompleter(config, getSessionOwner(sessionId)),
+    });
+    const prTitle = llmSummary?.title || buildPrTitle(commitTitle, commits);
     const prBody = buildPrBody({
       card,
       agentName: agent.name,
@@ -2222,6 +2243,12 @@ async function publishFromCheckout(
     });
 
     const broadcastAndMove = async (prUrl: string) => {
+      try {
+        adoptShippedTitle({ stmts: d.stmts, broadcast: d.broadcast }, sessionId, prTitle);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[auto-commit] Failed to adopt PR title for session ${sessionId}: ${msg}`);
+      }
       clearChangesReadyAndNotifyPrCreated({
         sessionId,
         agentId,

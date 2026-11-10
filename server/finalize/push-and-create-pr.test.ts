@@ -159,6 +159,15 @@ describe('buildPrDetails', () => {
     expect(body).not.toContain('## Original task');
   });
 
+  it('names a multi-commit PR after a commit, not an ID-like card title', () => {
+    const { title } = __test.buildPrDetails(
+      mkArgs({ title: '92d3cc41-606c-42f1-9798-baf32245d1fa' }),
+      [{ subject: 'Cont' }, { subject: 'feat(stats): show time to ship per session' }],
+      '',
+    );
+    expect(title).toBe('feat(stats): show time to ship per session');
+  });
+
   it('falls back to the card title for a multi-commit Summary when the card has no description', () => {
     const { title, body } = __test.buildPrDetails(
       mkArgs({ title: 'Add per-user GitHub login', description: null }),
@@ -318,7 +327,8 @@ describe('createPushAndCreatePr', () => {
       card: mkCard(),
       project: mkProject(),
     });
-    expect(result).toEqual({ prUrl: 'https://github.com/acme/proj/pull/7' });
+    expect(result.prUrl).toBe('https://github.com/acme/proj/pull/7');
+    expect(typeof result.title).toBe('string');
 
     // Nine execFile calls: git remote get-url (push-target lock), git
     // ls-remote (lease pin), git push, gh pr list, one git rev-parse base

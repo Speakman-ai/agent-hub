@@ -30,6 +30,8 @@ import type { NativePrService } from '../native-pr/service.js';
 import { pushAndCreateNativePr } from './push-and-create-pr-agenthub.js';
 import { assertWorktreeOriginMatchesProject } from './origin-guard.js';
 import { generateLlmPrSummary } from './pr-summary-llm.js';
+import type { PrTitleHooks } from './pr-title-hooks.js';
+import { isLowSignalTitle, type TitleCompleter } from '../session-title.js';
 import { redactCardDescriptionForGit } from '../pr-body-redaction.js';
 import type {
   PushAndCreatePrArgs,
@@ -58,9 +60,11 @@ export async function resolvePrSummaryOverride(
   commits: CommitInfo[],
   diffStat: string,
   config: PrSummaryConfig,
+  complete?: TitleCompleter | null,
 ): Promise<PrSummaryOverride | null> {
-  if (!config.openaiApiKey && !config.anthropicApiKey) return null;
+  if (!config.openaiApiKey && !config.anthropicApiKey && !complete) return null;
   return generateLlmPrSummary({
+    complete: complete ?? null,
     cardTitle: args.card.title ?? null,
     cardDescription: redactCardDescriptionForGit(args.card.description) || null,
     commits,
@@ -216,9 +220,15 @@ export function buildPrDetails(
   // `||` (not `??`) so an empty string always falls through to the next
   // source, ending at the raw card title — never an empty/"Untitled" PR name.
   const multiCommit = commits.length > 1;
+  // An ID-like or placeholder card title (a session named after a pasted UUID)
+  // names nothing, so the best commit subject wins over it.
+  const usableCardTitle = isLowSignalTitle(cardTitle) ? '' : cardTitle;
+  const bestSubject =
+    commits.map((c) => c.subject?.trim() ?? '').find((sub) => sub && !isLowSignalTitle(sub)) ??
+    firstSubject;
   const deterministicTitleSource = multiCommit
-    ? cardTitle || firstSubject
-    : firstSubject || cardTitle;
+    ? usableCardTitle || bestSubject
+    : firstSubject || usableCardTitle;
   const title = normalizeTitle(llmTitle || deterministicTitleSource || args.card.title);
   const sections: string[] = ['## Summary'];
 
@@ -308,8 +318,22 @@ export function createPushAndCreatePr(deps: {
   config: Pick<AppConfig, 'personalOAuth' | 'openaiApiKey'>;
   /** Required when any project opts into `gitHost: 'agenthub'`. */
   nativePr?: NativePrService;
+  /** Keyless PR titling and session/card title adoption. */
+  titleHooks?: PrTitleHooks;
 }): PushAndCreatePrFn {
   return async function pushAndCreatePr(args: PushAndCreatePrArgs): Promise<PushAndCreatePrResult> {
+    const result = await pushAndCreatePrInner(args);
+    if (result.title)
+      deps.titleHooks?.onPrTitle({ sessionId: args.sessionId, title: result.title });
+    return result;
+  };
+
+  async function pushAndCreatePrInner(args: PushAndCreatePrArgs): Promise<PushAndCreatePrResult> {
+    const complete =
+      deps.titleHooks?.titleCompleterFor({
+        sessionId: args.sessionId,
+        authorUserId: args.authorUserId,
+      }) ?? null;
     // Agent Hub-hosted projects push to the Hub's bare repo and create a
     // native PR — no GitHub token involved.
     if (args.project.gitHost === 'agenthub') {
@@ -318,7 +342,7 @@ export function createPushAndCreatePr(deps: {
           `project ${args.project.id} uses gitHost 'agenthub' but the native PR service is not wired`,
         );
       }
-      return pushAndCreateNativePr(deps.nativePr, args, deps.config);
+      return pushAndCreateNativePr(deps.nativePr, args, deps.config, complete);
     }
 
     // Prefer the session owner's personal GitHub token so the push and the
@@ -372,7 +396,7 @@ export function createPushAndCreatePr(deps: {
       collectPrCommits(args.worktreePath, args.baseBranch, env),
       collectPrDiffStat(args.worktreePath, args.baseBranch, env),
     ]);
-    const override = await resolvePrSummaryOverride(args, commits, diffStat, deps.config);
+    const override = await resolvePrSummaryOverride(args, commits, diffStat, deps.config, complete);
     const { title, body } = buildPrDetails(args, commits, diffStat, override);
 
     // gh pr create --base <baseBranch> --head <branch> --title <title> --body <body>
@@ -397,8 +421,8 @@ export function createPushAndCreatePr(deps: {
     if (!prUrl) {
       throw new Error(`gh pr create returned no parseable PR URL; stdout: ${stdout.slice(0, 500)}`);
     }
-    return { prUrl };
-  };
+    return { prUrl, title };
+  }
 }
 
 // Exported for tests.
