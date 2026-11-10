@@ -1,7 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import BugReportModal from './BugReportModal';
-import { BUG_REPORT_ENDPOINT, BUG_REPORT_PROJECT_ID } from '../utils/bugReport';
+import {
+  BUG_REPORT_ENDPOINT,
+  BUG_REPORT_PROJECT_ID,
+  MAX_BUG_REPORT_ATTACHMENTS,
+} from '../utils/bugReport';
 
 const replayMocks = vi.hoisted(() => ({
   flushSessionReplayRefWithReason: vi.fn(),
@@ -9,6 +13,12 @@ const replayMocks = vi.hoisted(() => ({
 
 vi.mock('../utils/sessionReplay', () => ({
   flushSessionReplayRefWithReason: replayMocks.flushSessionReplayRefWithReason,
+}));
+
+const captureMock = vi.hoisted(() => vi.fn());
+vi.mock('../utils/bugReport', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/bugReport')>()),
+  captureScreenshot: captureMock,
 }));
 
 // Polyfill a no-op Object URL API in jsdom for the preview image.
@@ -305,6 +315,115 @@ describe('BugReportModal', () => {
 
     await waitFor(() => {
       expect(screen.getByText(/intake rejected/i)).toBeInTheDocument();
+    });
+  });
+
+  describe('attachments', () => {
+    function okFetch() {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ ticketId: 't1', status: 'received' }), { status: 201 }),
+        );
+      vi.stubGlobal('fetch', fetchMock);
+      return fetchMock;
+    }
+
+    function renderModal() {
+      render(<BugReportModal isOpen onClose={() => {}} initialScreenshotBlob={makeBlob()} />);
+      fireEvent.change(screen.getByLabelText(/title/i), { target: { value: 'Broken upload' } });
+    }
+
+    async function submitAndGetForm(fetchMock: any): Promise<FormData> {
+      fireEvent.click(screen.getByRole('button', { name: /submit bug report/i }));
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      return fetchMock.mock.calls[0][1].body as FormData;
+    }
+
+    it('limits the file picker to the types the intake accepts', () => {
+      renderModal();
+      const accept = screen.getByTestId('bug-report-file-input').getAttribute('accept') || '';
+      expect(accept).toContain('application/pdf');
+      expect(accept).toContain('image/png');
+    });
+
+    it('submits multiple dropped files, including a PDF and a PNG', async () => {
+      const fetchMock = okFetch();
+      renderModal();
+      const pdf = new File(['%PDF-1.4'], 'spec.pdf', { type: 'application/pdf' });
+      const png = new File(['png'], 'error.png', { type: 'image/png' });
+      fireEvent.drop(screen.getByTestId('bug-report-dropzone'), {
+        dataTransfer: { files: [pdf, png] },
+      });
+      expect(screen.getByText('spec.pdf')).toBeInTheDocument();
+      expect(screen.getByText('error.png')).toBeInTheDocument();
+
+      const fd = await submitAndGetForm(fetchMock);
+      expect((fd.getAll('attachment') as File[]).map((f) => f.name)).toEqual([
+        'spec.pdf',
+        'error.png',
+      ]);
+    });
+
+    it('attaches an image pasted into the dialog', async () => {
+      const fetchMock = okFetch();
+      renderModal();
+      const img = new File(['png'], 'image.png', { type: 'image/png' });
+      fireEvent.paste(screen.getByLabelText(/description/i), { clipboardData: { files: [img] } });
+      const fd = await submitAndGetForm(fetchMock);
+      const [att] = fd.getAll('attachment') as File[];
+      expect(att!.name).toMatch(/^pasted-\d+-1\.png$/);
+      expect(att!.type).toBe('image/png');
+    });
+
+    it('adds extra screenshots as attachments without replacing the primary one', async () => {
+      const fetchMock = okFetch();
+      captureMock.mockResolvedValue(new Blob(['second'], { type: 'image/png' }));
+      renderModal();
+      fireEvent.click(screen.getByRole('button', { name: /add screenshot/i }));
+      await screen.findByText('screenshot-2.png');
+
+      const fd = await submitAndGetForm(fetchMock);
+      expect(fd.get('screenshot')).toBeInstanceOf(Blob);
+      expect((fd.getAll('attachment') as File[]).map((f) => f.name)).toEqual(['screenshot-2.png']);
+    });
+
+    it('tells the reporter when files past the cap are not added', () => {
+      renderModal();
+      const many = Array.from(
+        { length: MAX_BUG_REPORT_ATTACHMENTS + 2 },
+        (_, i) => new File(['x'], `f${i}.txt`, { type: 'text/plain' }),
+      );
+      fireEvent.drop(screen.getByTestId('bug-report-dropzone'), { dataTransfer: { files: many } });
+      expect(screen.getAllByRole('button', { name: /^remove /i })).toHaveLength(
+        MAX_BUG_REPORT_ATTACHMENTS,
+      );
+      expect(screen.getByText(/2 not added/)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /attach files/i })).toBeDisabled();
+    });
+
+    it('ignores files pasted or dropped while a submit is pending', async () => {
+      let resolveFetch: (r: Response) => void = () => {};
+      const fetchMock = vi.fn(() => new Promise<Response>((r) => (resolveFetch = r)));
+      vi.stubGlobal('fetch', fetchMock);
+      renderModal();
+      fireEvent.click(screen.getByRole('button', { name: /submit bug report/i }));
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+      const late = new File(['%PDF-1.4'], 'late.pdf', { type: 'application/pdf' });
+      fireEvent.drop(screen.getByTestId('bug-report-dropzone'), {
+        dataTransfer: { files: [late] },
+      });
+      fireEvent.paste(screen.getByLabelText(/description/i), {
+        clipboardData: { files: [new File(['png'], 'image.png', { type: 'image/png' })] },
+      });
+      expect(screen.queryByText('late.pdf')).not.toBeInTheDocument();
+      expect(screen.queryAllByRole('button', { name: /^remove /i })).toHaveLength(0);
+
+      resolveFetch(new Response(JSON.stringify({ ticketId: 't1' }), { status: 201 }));
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /submit bug report/i })).toBeInTheDocument(),
+      );
     });
   });
 });

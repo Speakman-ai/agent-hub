@@ -1,9 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Bug, Camera, Loader2, Paperclip, X } from 'lucide-react';
+import { Bug, Camera, ImagePlus, Loader2, Paperclip, X } from 'lucide-react';
 import { MAX_BUG_REPORT_ATTACHMENTS, captureScreenshot, submitBugReport } from '../utils/bugReport';
 import { flushSessionReplayRefWithReason } from '../utils/sessionReplay';
 
 const BUG_REPORT_REPLAY_FLUSH_TIMEOUT_MS = 30_000;
+
+// Matches the intake's byte-sniffed allowlist (server/support-ticket-attachments.ts)
+// so the OS picker offers only files the server will keep.
+export const BUG_REPORT_ATTACHMENT_ACCEPT =
+  'image/png,image/jpeg,image/webp,image/gif,application/pdf,video/mp4,video/quicktime,video/webm,application/zip,.zip,.txt,.log,.json,.har,.csv,.md';
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 const SEVERITIES = [
   { value: 'low', label: 'Low' },
@@ -34,6 +45,9 @@ export default function BugReportModal({
   const [error, setError] = useState<any>(null);
   const [hidden, setHidden] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
+  const [filesNotice, setFilesNotice] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [addingShot, setAddingShot] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Reset state whenever the modal is (re)opened.
@@ -49,6 +63,9 @@ export default function BugReportModal({
       setRetaking(false);
       setHidden(false);
       setFiles([]);
+      setFilesNotice(null);
+      setDragOver(false);
+      setAddingShot(false);
     }
   }, [isOpen, initialScreenshotBlob, initialScreenshotMissReason]);
 
@@ -65,6 +82,58 @@ export default function BugReportModal({
   }, [previewUrl]);
 
   if (!isOpen) return null;
+
+  // The submit handler has already captured `files`; anything added now would
+  // show in the list but never reach the report.
+  const addFiles = (picked: File[]) => {
+    if (!picked.length || submitting) return;
+    setFiles((cur) => {
+      const next = [...cur, ...picked];
+      const dropped = next.length - MAX_BUG_REPORT_ATTACHMENTS;
+      setFilesNotice(
+        dropped > 0
+          ? `Only ${MAX_BUG_REPORT_ATTACHMENTS} files can be attached; ${dropped} not added.`
+          : null,
+      );
+      return next.slice(0, MAX_BUG_REPORT_ATTACHMENTS);
+    });
+  };
+
+  // Pasting an image or file anywhere in the dialog attaches it. Plain text
+  // pastes fall through to the focused input untouched.
+  const handlePaste = (e: any) => {
+    const pasted: File[] = Array.from(e.clipboardData?.files || []);
+    if (!pasted.length) return;
+    if (submitting) {
+      e.preventDefault();
+      return;
+    }
+    e.preventDefault();
+    addFiles(
+      pasted.map((f, i) =>
+        f.name && f.name !== 'image.png'
+          ? f
+          : new File([f], `pasted-${Date.now()}-${i + 1}.png`, { type: f.type || 'image/png' }),
+      ),
+    );
+  };
+
+  const handleAddScreenshot = async () => {
+    setAddingShot(true);
+    setError(null);
+    setHidden(true);
+    try {
+      await new Promise((r: any) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const blob = await captureScreenshot();
+      const n = files.filter((f) => /^screenshot-\d+\.png$/.test(f.name)).length + 2;
+      addFiles([new File([blob], `screenshot-${n}.png`, { type: 'image/png' })]);
+    } catch (err: any) {
+      setError(`Screenshot failed: ${err?.message || String(err)}`);
+    } finally {
+      setHidden(false);
+      setAddingShot(false);
+    }
+  };
 
   const handleRetake = async () => {
     setRetaking(true);
@@ -147,6 +216,7 @@ export default function BugReportModal({
   }
 
   const canSubmit = !!title.trim() && !submitting;
+  const attachmentsFull = files.length >= MAX_BUG_REPORT_ATTACHMENTS;
 
   return (
     <div
@@ -171,7 +241,11 @@ export default function BugReportModal({
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-4 space-y-4 overflow-y-auto">
+        <form
+          onSubmit={handleSubmit}
+          onPaste={handlePaste}
+          className="p-4 space-y-4 overflow-y-auto"
+        >
           <div>
             <label htmlFor="bug-title" className="block text-sm text-gray-400 mb-1.5">
               Title <span className="text-rose-400">*</span>
@@ -259,41 +333,90 @@ export default function BugReportModal({
 
           <div>
             <div className="flex items-center justify-between mb-1.5">
-              <span className="text-sm text-gray-400">Files</span>
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={submitting || files.length >= MAX_BUG_REPORT_ATTACHMENTS}
-                className="flex items-center gap-1.5 text-xs text-gray-300 hover:text-white bg-gray-800 hover:bg-gray-700 border border-gray-600 rounded-md px-2 py-1 disabled:opacity-50"
-              >
-                <Paperclip size={12} />
-                Attach files
-              </button>
+              <span className="text-sm text-gray-400">Attachments</span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleAddScreenshot}
+                  disabled={addingShot || retaking || submitting || attachmentsFull}
+                  className="flex items-center gap-1.5 text-xs text-gray-300 hover:text-white bg-gray-800 hover:bg-gray-700 border border-gray-600 rounded-md px-2 py-1 disabled:opacity-50"
+                >
+                  {addingShot ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : (
+                    <ImagePlus size={12} />
+                  )}
+                  Add screenshot
+                </button>
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={submitting || attachmentsFull}
+                  className="flex items-center gap-1.5 text-xs text-gray-300 hover:text-white bg-gray-800 hover:bg-gray-700 border border-gray-600 rounded-md px-2 py-1 disabled:opacity-50"
+                >
+                  <Paperclip size={12} />
+                  Attach files
+                </button>
+              </div>
             </div>
             <input
               ref={fileInputRef}
               type="file"
               multiple
+              accept={BUG_REPORT_ATTACHMENT_ACCEPT}
               className="hidden"
               data-testid="bug-report-file-input"
               onChange={(e: any) => {
                 const picked: File[] = Array.from(e.target.files || []);
                 e.target.value = '';
-                setFiles((cur) => [...cur, ...picked].slice(0, MAX_BUG_REPORT_ATTACHMENTS));
+                addFiles(picked);
               }}
             />
+            <div
+              data-testid="bug-report-dropzone"
+              role="button"
+              tabIndex={0}
+              onClick={() => !attachmentsFull && !submitting && fileInputRef.current?.click()}
+              onKeyDown={(e: any) => {
+                if ((e.key === 'Enter' || e.key === ' ') && !attachmentsFull && !submitting) {
+                  e.preventDefault();
+                  fileInputRef.current?.click();
+                }
+              }}
+              onDragOver={(e: any) => {
+                e.preventDefault();
+                setDragOver(true);
+              }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={(e: any) => {
+                e.preventDefault();
+                setDragOver(false);
+                addFiles(Array.from(e.dataTransfer?.files || []));
+              }}
+              className={`rounded-lg border border-dashed px-3 py-3 text-center text-xs cursor-pointer ${
+                dragOver
+                  ? 'border-blue-500 bg-blue-500/10 text-blue-300'
+                  : 'border-gray-700 bg-gray-950/60 text-gray-500 hover:text-gray-300'
+              }`}
+            >
+              Drop PDFs, images, or logs here, paste an image, or click to browse.
+            </div>
             {files.length ? (
-              <ul className="space-y-1">
+              <ul className="space-y-1 mt-2">
                 {files.map((f, i) => (
                   <li
                     key={`${f.name}-${i}`}
                     className="flex items-center gap-2 rounded-md border border-gray-700 bg-gray-950/60 px-2 py-1 text-xs text-gray-300"
                   >
                     <span className="min-w-0 flex-1 truncate">{f.name}</span>
+                    <span className="shrink-0 text-gray-500">{formatBytes(f.size)}</span>
                     <button
                       type="button"
                       aria-label={`Remove ${f.name}`}
-                      onClick={() => setFiles((cur) => cur.filter((_, j) => j !== i))}
+                      onClick={() => {
+                        setFilesNotice(null);
+                        setFiles((cur) => cur.filter((_, j) => j !== i));
+                      }}
                       className="text-gray-500 hover:text-gray-200"
                     >
                       <X size={12} />
@@ -302,6 +425,7 @@ export default function BugReportModal({
                 ))}
               </ul>
             ) : null}
+            {filesNotice ? <p className="text-xs text-amber-400 mt-1">{filesNotice}</p> : null}
             <p className="text-xs text-gray-500 mt-1">
               Up to {MAX_BUG_REPORT_ATTACHMENTS} files, 25 MB each: images, PDF, video, zip, or text
               logs.

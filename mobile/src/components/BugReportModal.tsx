@@ -14,14 +14,21 @@ import {
 } from 'react-native';
 import Constants from 'expo-constants';
 import { colors } from '../theme/colors';
-import { MAX_BUG_REPORT_ATTACHMENTS, captureScreenshot, submitBugReport } from '../utils/bugReport';
+import {
+  MAX_BUG_REPORT_ATTACHMENTS,
+  appendScreenshotAttachment,
+  captureScreenshot,
+  submitBugReport,
+} from '../utils/bugReport';
 const SEVERITIES = ['low', 'medium', 'high', 'critical'];
 const TITLE_MAX = 200;
 export default function BugReportModal({
   visible,
+  hidden = false,
   onClose,
   screenshotUri,
   onRetakeScreenshot,
+  onAddScreenshot,
   projectId,
   agentId,
   sourceUrl = '',
@@ -38,7 +45,7 @@ export default function BugReportModal({
   React.useEffect(() => {
     setCurrentUri(screenshotUri);
   }, [screenshotUri]);
-  // Reset fields whenever the modal is hidden so the next open is fresh.
+  // Reset fields whenever the report is closed so the next open is fresh.
   React.useEffect(() => {
     if (!visible) {
       setTitle('');
@@ -69,6 +76,17 @@ export default function BugReportModal({
     }
   };
   const canSubmit = !submitting && title.trim().length > 0;
+  // Extra screenshots ride along as attachments; the primary one stays put.
+  const handleAddScreenshot = async () => {
+    setError(null);
+    try {
+      const uri = onAddScreenshot ? await onAddScreenshot() : await captureScreenshot();
+      if (!uri) return;
+      setFiles((cur) => appendScreenshotAttachment(cur, uri));
+    } catch (e: any) {
+      setError(e?.message || 'Failed to take screenshot');
+    }
+  };
   const handleRetake = async () => {
     // Briefly dismiss the modal so the screenshot doesn't include it.
     if (onRetakeScreenshot) {
@@ -116,7 +134,7 @@ export default function BugReportModal({
     }
   };
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+    <Modal visible={visible && !hidden} transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.overlay}>
         <View style={styles.sheet}>
           <View style={styles.header}>
@@ -195,7 +213,7 @@ export default function BugReportModal({
               <Text style={styles.retakeLabel}>Retake screenshot</Text>
             </TouchableOpacity>
 
-            <Text style={styles.label}>Files</Text>
+            <Text style={styles.label}>Attachments</Text>
             {files.map((f, i) => (
               <View key={`${f.name}-${i}`} style={styles.fileRow}>
                 <Text style={styles.fileName} numberOfLines={1}>
@@ -210,6 +228,14 @@ export default function BugReportModal({
                 </TouchableOpacity>
               </View>
             ))}
+            <TouchableOpacity
+              testID="bug-report-add-screenshot"
+              onPress={handleAddScreenshot}
+              disabled={submitting || files.length >= MAX_BUG_REPORT_ATTACHMENTS}
+              style={styles.retakeBtn}
+            >
+              <Text style={styles.retakeLabel}>Add screenshot</Text>
+            </TouchableOpacity>
             <TouchableOpacity
               testID="bug-report-attach-files"
               onPress={pickFiles}
@@ -235,6 +261,7 @@ export default function BugReportModal({
               <Text style={styles.cancelLabel}>Cancel</Text>
             </TouchableOpacity>
             <TouchableOpacity
+              testID="bug-report-submit"
               onPress={handleSubmit}
               disabled={!canSubmit}
               style={[styles.footerBtn, styles.submitBtn, !canSubmit && styles.submitBtnDisabled]}

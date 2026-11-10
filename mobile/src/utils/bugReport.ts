@@ -81,6 +81,27 @@ export async function captureScreenshot() {
 /** Mirrors the intake's cap on repeated `attachment` parts. */
 export const MAX_BUG_REPORT_ATTACHMENTS = 5;
 
+export interface BugReportFile {
+  uri: string;
+  name: string;
+  type?: string;
+}
+
+/**
+ * Append an extra screenshot as an attachment, named after the primary
+ * (`screenshot.png`) so the ticket reads screenshot-2.png, screenshot-3.png...
+ * Respects the attachment cap.
+ */
+export function appendScreenshotAttachment(
+  files: BugReportFile[],
+  uri: string,
+  max: number = MAX_BUG_REPORT_ATTACHMENTS,
+): BugReportFile[] {
+  if (files.length >= max) return files;
+  const n = files.filter((f) => /^screenshot-\d+\.png$/.test(f.name)).length + 2;
+  return [...files, { uri, name: `screenshot-${n}.png`, type: 'image/png' }];
+}
+
 export async function submitBugReport({
   screenshotUri,
   attachments,

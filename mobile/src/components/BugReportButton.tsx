@@ -20,6 +20,9 @@ export default function BugReportButton({
   const [visible, setVisible] = useState(false);
   const [screenshotUri, setScreenshotUri] = useState<any>(null);
   const [capturing, setCapturing] = useState(false);
+  // Hides the native Modal during a capture without closing the report, so
+  // the draft (title, description, attachments) survives.
+  const [hiddenForCapture, setHiddenForCapture] = useState(false);
   const openWithScreenshot = useCallback(async () => {
     if (capturing) return;
     setCapturing(true);
@@ -39,20 +42,22 @@ export default function BugReportButton({
       setCapturing(false);
     }
   }, [capturing]);
-  const handleRetake = useCallback(async () => {
+  const captureWithModalHidden = useCallback(async () => {
     // Briefly hide the modal so it isn't included in the capture.
-    setVisible(false);
+    setHiddenForCapture(true);
     // Give RN a tick to unmount the Modal overlay before capturing.
     await new Promise((r: any) => setTimeout(r, 250));
-    let uri = null;
     try {
-      uri = await captureScreenshot();
-      setScreenshotUri(uri);
+      return await captureScreenshot();
     } finally {
-      setVisible(true);
+      setHiddenForCapture(false);
     }
-    return uri;
   }, []);
+  const handleRetake = useCallback(async () => {
+    const uri = await captureWithModalHidden();
+    setScreenshotUri(uri);
+    return uri;
+  }, [captureWithModalHidden]);
   // Self-hosted builds without a configured intake endpoint don't phone home,
   // so there's no "Report a bug" control to offer. Checked after the hooks
   // above (a module constant, so hook order stays stable across renders).
@@ -74,9 +79,11 @@ export default function BugReportButton({
       </TouchableOpacity>
       <BugReportModal
         visible={visible}
+        hidden={hiddenForCapture}
         onClose={() => setVisible(false)}
         screenshotUri={screenshotUri}
         onRetakeScreenshot={handleRetake}
+        onAddScreenshot={captureWithModalHidden}
         projectId={projectId}
         agentId={agentId}
         sourceUrl={sourceUrl || ''}

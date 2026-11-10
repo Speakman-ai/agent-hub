@@ -17,6 +17,7 @@ const {
   submitBugReport,
   BUG_REPORT_PROJECT_ID,
   MAX_BUG_REPORT_ATTACHMENTS,
+  appendScreenshotAttachment,
   defaultReporterEmail,
   resolveBugReportEndpoint,
 } = await import('./bugReport');
@@ -168,5 +169,23 @@ describe('mobile submitBugReport', () => {
     });
 
     expect(lastFormData().get('reporter_email')).toBe('explicit@example.com');
+  });
+});
+
+describe('appendScreenshotAttachment', () => {
+  it('numbers extra screenshots after the primary and keeps other files', () => {
+    const pdf = { uri: 'file:///spec.pdf', name: 'spec.pdf', type: 'application/pdf' };
+    let files = appendScreenshotAttachment([pdf], 'file:///a.png');
+    files = appendScreenshotAttachment(files, 'file:///b.png');
+    expect(files.map((f) => f.name)).toEqual(['spec.pdf', 'screenshot-2.png', 'screenshot-3.png']);
+    expect(files[1]).toEqual({ uri: 'file:///a.png', name: 'screenshot-2.png', type: 'image/png' });
+  });
+
+  it('does not exceed the attachment cap', () => {
+    const full = Array.from({ length: MAX_BUG_REPORT_ATTACHMENTS }, (_, i) => ({
+      uri: `file:///${i}`,
+      name: `f${i}.txt`,
+    }));
+    expect(appendScreenshotAttachment(full, 'file:///x.png')).toBe(full);
   });
 });
