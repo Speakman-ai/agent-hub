@@ -81,4 +81,11 @@ describe('buildEnrichedPrompt — session poller guidance', () => {
     // End times stay in the user's words so the card can resolve them locally.
     expect(prompt).toContain('"until":"tomorrow 09:00"');
   });
+
+  it('steers chat schedules away from native schedulers and project crons', () => {
+    const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), { isFirstMessage: false });
+    expect(prompt).toContain('CronCreate');
+    expect(prompt).toContain('agent-hub-heartbeats-crons');
+    expect(prompt).toContain('is a poller even when each run should open forward sessions');
+  });
 });

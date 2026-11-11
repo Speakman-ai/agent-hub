@@ -300,3 +300,90 @@ export function formatPollerClock(date: Date, now: Date = new Date()): string {
     minute: '2-digit',
   });
 }
+
+/**
+ * The running pollers for one session, soonest next check first. A pushed
+ * update replaces the matching row, so the banner never shows a poller after
+ * it finishes or is cancelled elsewhere.
+ */
+export function activeSessionPollers(pollers: SessionPoller[]): SessionPoller[] {
+  return pollers
+    .filter((p) => p.status === 'active')
+    .sort((a, b) => (a.nextRunAt ?? a.endsAt).localeCompare(b.nextRunAt ?? b.endsAt));
+}
+
+/** Merge one pushed poller update into the list the banner holds. */
+export function mergeSessionPoller(
+  pollers: SessionPoller[],
+  update: SessionPoller,
+): SessionPoller[] {
+  const rest = pollers.filter((p) => p.id !== update.id);
+  return [...rest, update];
+}
+
+/**
+ * Banner state for one session. Three sources write it: list refreshes, WS
+ * pushes, and the result of a Cancel. Every write is stamped from one counter
+ * so a list that was requested before a write can't undo it.
+ */
+export interface PollerBannerState {
+  sessionId: string | null;
+  pollers: SessionPoller[];
+  /** Stamp of the last row write (push or cancel) applied to each poller id. */
+  writtenAt: Record<string, number>;
+  /** Request stamp of the newest list applied; older lists are dropped. */
+  listedAt: number;
+}
+
+export type PollerBannerAction =
+  | { type: 'write'; sessionId: string; poller: SessionPoller; stamp: number }
+  | { type: 'list'; sessionId: string; pollers: SessionPoller[]; stamp: number };
+
+export const EMPTY_POLLER_BANNER: PollerBannerState = {
+  sessionId: null,
+  pollers: [],
+  writtenAt: {},
+  listedAt: -1,
+};
+
+/**
+ * `stamp` comes from one counter the component bumps for every row write and
+ * reads when it sends a list request. A list keeps any row written after it
+ * was requested and drops out-of-order responses; a failed request dispatches
+ * nothing, so the last good state stays.
+ */
+export function pollerBannerReducer(
+  state: PollerBannerState,
+  action: PollerBannerAction,
+): PollerBannerState {
+  const base = state.sessionId === action.sessionId ? state : EMPTY_POLLER_BANNER;
+  if (action.type === 'write') {
+    return {
+      ...base,
+      sessionId: action.sessionId,
+      pollers: mergeSessionPoller(base.pollers, action.poller),
+      writtenAt: { ...base.writtenAt, [action.poller.id]: action.stamp },
+    };
+  }
+  if (action.stamp < base.listedAt) return base;
+  const newer = base.pollers.filter((p) => (base.writtenAt[p.id] ?? -1) >= action.stamp);
+  const keepIds = new Set(newer.map((p) => p.id));
+  const writtenAt: Record<string, number> = {};
+  for (const id of keepIds) writtenAt[id] = base.writtenAt[id];
+  return {
+    sessionId: action.sessionId,
+    pollers: [...action.pollers.filter((p) => !keepIds.has(p.id)), ...newer],
+    writtenAt,
+    listedAt: action.stamp,
+  };
+}
+
+/** One-line banner summary: "Every 30 min · 2 runs so far · next check 3:37 PM · ends 5:13 PM". */
+export function pollerBannerSummary(poller: SessionPoller, now: Date = new Date()): string {
+  const parts = [`Every ${formatPollerMinutes(poller.intervalMinutes)}`];
+  parts.push(`${poller.runCount} run${poller.runCount === 1 ? '' : 's'} so far`);
+  if (poller.nextRunAt)
+    parts.push(`next check ${formatPollerClock(new Date(poller.nextRunAt), now)}`);
+  parts.push(`ends ${formatPollerClock(new Date(poller.endsAt), now)}`);
+  return parts.join(' · ');
+}

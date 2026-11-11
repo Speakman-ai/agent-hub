@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import {
   AppState,
   View,
@@ -15,6 +15,8 @@ import {
   expectedPollerRuns,
   formatPollerClock,
   formatPollerMinutes,
+  EMPTY_POLLER_BANNER,
+  pollerBannerReducer,
   SESSION_POLLER_REFRESH_MS,
   parsePollerAnchor,
   planPollerSchedule,
@@ -60,22 +62,36 @@ export default function SessionPollerCard({
   const [durationEdited, setDurationEdited] = useState(false);
   const [notifyEachRun, setNotifyEachRun] = useState(proposal.notifyEachRun);
   const [notifyOnComplete, setNotifyOnComplete] = useState(proposal.notifyOnComplete);
-  const [poller, setPoller] = useState<SessionPoller | null>(null);
+  // List refreshes, pushes and Start/Stop results all write this; the shared
+  // reducer stops a slower refresh from undoing a newer write.
+  const [pollers, dispatch] = useReducer(pollerBannerReducer, EMPTY_POLLER_BANNER);
+  const stamp = useRef(0);
+  const poller =
+    (pollers.sessionId === sessionId &&
+      pollers.pollers.find((p) => p.pollerId === proposal.pollerId)) ||
+    null;
+  const setPoller = useCallback(
+    (next: SessionPoller | null | undefined) => {
+      if (next) dispatch({ type: 'write', sessionId, poller: next, stamp: ++stamp.current });
+    },
+    [sessionId],
+  );
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
   const refresh = useCallback(() => {
     if (!sessionId) return;
+    const mine = ++stamp.current;
     api
       .listSessionPollers(sessionId)
       .then((body: any) => {
         const list: SessionPoller[] = Array.isArray(body?.pollers) ? body.pollers : [];
-        setPoller(list.find((p) => p.pollerId === proposal.pollerId) ?? null);
+        dispatch({ type: 'list', sessionId, pollers: list, stamp: mine });
       })
       .catch(() => {})
       .finally(() => setLoaded(true));
-  }, [sessionId, proposal.pollerId]);
+  }, [sessionId]);
 
   useEffect(() => {
     refresh();
@@ -127,7 +143,7 @@ export default function SessionPollerCard({
         notifyEachRun,
         notifyOnComplete,
       });
-      setPoller(body?.poller ?? null);
+      setPoller(body?.poller);
     } catch (err: any) {
       setError(err?.message || 'Could not start the poller.');
     } finally {
@@ -141,7 +157,7 @@ export default function SessionPollerCard({
     setError('');
     try {
       const body: any = await api.stopSessionPoller(sessionId, poller.id);
-      setPoller(body?.poller ?? poller);
+      setPoller(body?.poller);
     } catch (err: any) {
       setError(err?.message || 'Could not stop the poller.');
     } finally {

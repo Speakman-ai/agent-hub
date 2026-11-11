@@ -70,6 +70,13 @@ describe('disableShadowedNativeToolsArgs', () => {
     expect(disableShadowedNativeToolsArgs()).toContain('AskUserQuestion');
   });
 
+  it('includes the native schedulers (replaced by the agenthub:poller block)', () => {
+    const args = disableShadowedNativeToolsArgs();
+    for (const tool of ['CronCreate', 'CronDelete', 'CronList', 'ScheduleWakeup']) {
+      expect(args).toContain(tool);
+    }
+  });
+
   it('optionally includes direct file mutation tools for Consult/workflow spawns', () => {
     expect(disableShadowedNativeToolsArgs({ codeMutationTools: true })).toEqual([
       '--disallowed-tools',

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  activeSessionPollers,
+  mergeSessionPoller,
+  EMPTY_POLLER_BANNER,
+  pollerBannerReducer,
+  pollerBannerSummary,
   expectedPollerRuns,
   extractPollerBlocks,
   formatPollerMinutes,
@@ -244,5 +249,95 @@ describe('pollerStartDurationMinutes', () => {
         now: new Date(2026, 10, 11, 9, 1),
       }),
     ).toBeNull();
+  });
+});
+
+describe('session poller banner helpers', () => {
+  const base = {
+    id: 'a',
+    sessionId: 's',
+    pollerId: 'p',
+    task: 't',
+    intervalMinutes: 30,
+    durationMinutes: 120,
+    notifyEachRun: false,
+    notifyOnComplete: true,
+    status: 'active',
+    runCount: 1,
+    startedAt: '2026-11-11T15:00:00.000Z',
+    endsAt: '2026-11-11T17:00:00.000Z',
+    nextRunAt: '2026-11-11T15:30:00.000Z',
+    lastRunAt: null,
+    finishedAt: null,
+  } as SessionPoller;
+
+  it('keeps only active pollers, soonest next check first', () => {
+    const later = { ...base, id: 'b', nextRunAt: '2026-11-11T16:00:00.000Z' };
+    const done = { ...base, id: 'c', status: 'cancelled' as const };
+    expect(activeSessionPollers([later, done, base]).map((p) => p.id)).toEqual(['a', 'b']);
+  });
+
+  it('replaces a poller by id when an update arrives', () => {
+    const merged = mergeSessionPoller([base], { ...base, status: 'completed' });
+    expect(merged).toHaveLength(1);
+    expect(activeSessionPollers(merged)).toEqual([]);
+  });
+
+  describe('pollerBannerReducer', () => {
+    const b = { ...base, id: 'b' };
+    const cancelled = { ...base, status: 'cancelled' as const };
+    const ids = (st: typeof EMPTY_POLLER_BANNER) =>
+      activeSessionPollers(st.pollers).map((p) => p.id);
+    const run = (...actions: Parameters<typeof pollerBannerReducer>[1][]) =>
+      actions.reduce(pollerBannerReducer, EMPTY_POLLER_BANNER);
+
+    it('a list requested before a push keeps the pushed row', () => {
+      const st = run(
+        { type: 'write', sessionId: 's', poller: base, stamp: 2 },
+        { type: 'list', sessionId: 's', pollers: [], stamp: 1 },
+      );
+      expect(ids(st)).toEqual(['a']);
+    });
+
+    it('a list requested before a cancel does not revive the poller', () => {
+      const st = run(
+        { type: 'list', sessionId: 's', pollers: [base], stamp: 1 },
+        { type: 'write', sessionId: 's', poller: cancelled, stamp: 3 },
+        { type: 'list', sessionId: 's', pollers: [base], stamp: 2 },
+      );
+      expect(ids(st)).toEqual([]);
+    });
+
+    it('a list requested after a write replaces it', () => {
+      const st = run(
+        { type: 'write', sessionId: 's', poller: base, stamp: 1 },
+        { type: 'list', sessionId: 's', pollers: [b], stamp: 2 },
+      );
+      expect(ids(st)).toEqual(['b']);
+    });
+
+    it('drops a list response older than the one already applied', () => {
+      const st = run(
+        { type: 'list', sessionId: 's', pollers: [b], stamp: 2 },
+        { type: 'list', sessionId: 's', pollers: [], stamp: 1 },
+      );
+      expect(ids(st)).toEqual(['b']);
+    });
+
+    it('starts over when the session changes', () => {
+      const st = run(
+        { type: 'write', sessionId: 's', poller: base, stamp: 1 },
+        { type: 'list', sessionId: 't', pollers: [], stamp: 2 },
+      );
+      expect(st.sessionId).toBe('t');
+      expect(ids(st)).toEqual([]);
+    });
+  });
+
+  it('summarises the schedule in one line', () => {
+    const now = new Date('2026-11-11T15:05:00.000Z');
+    expect(pollerBannerSummary(base, now)).toMatch(
+      /^Every 30 min · 1 run so far · next check .+ · ends .+$/,
+    );
   });
 });

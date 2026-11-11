@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { BellRing, Repeat, Square } from 'lucide-react';
 import { api } from '../utils/api';
 import {
   expectedPollerRuns,
   formatPollerMinutes,
+  EMPTY_POLLER_BANNER,
+  pollerBannerReducer,
   SESSION_POLLER_REFRESH_MS,
   parsePollerAnchor,
   planPollerSchedule,
@@ -57,22 +59,35 @@ export default function SessionPollerCard({
   const [durationEdited, setDurationEdited] = useState(false);
   const [notifyEachRun, setNotifyEachRun] = useState(proposal.notifyEachRun);
   const [notifyOnComplete, setNotifyOnComplete] = useState(proposal.notifyOnComplete);
-  const [poller, setPoller] = useState<SessionPoller | null>(null);
+  // List refreshes, pushes and Start/Stop results all write this; the shared
+  // reducer stops a slower refresh from undoing a newer write.
+  const [pollers, dispatch] = useReducer(pollerBannerReducer, EMPTY_POLLER_BANNER);
+  const stamp = useRef(0);
+  const poller =
+    (pollers.sessionId === sessionId &&
+      pollers.pollers.find((p) => p.pollerId === proposal.pollerId)) ||
+    null;
+  const setPoller = useCallback(
+    (next: SessionPoller | null | undefined) => {
+      if (next) dispatch({ type: 'write', sessionId, poller: next, stamp: ++stamp.current });
+    },
+    [sessionId],
+  );
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
   const refresh = useCallback(() => {
     if (!sessionId) return;
+    const mine = ++stamp.current;
     api
       .listSessionPollers(sessionId)
       .then((body) => {
-        const match = body?.pollers?.find((p) => p.pollerId === proposal.pollerId) ?? null;
-        setPoller(match);
+        dispatch({ type: 'list', sessionId, pollers: body?.pollers ?? [], stamp: mine });
       })
       .catch(() => {})
       .finally(() => setLoaded(true));
-  }, [sessionId, proposal.pollerId]);
+  }, [sessionId]);
 
   useEffect(() => {
     refresh();
@@ -109,7 +124,7 @@ export default function SessionPollerCard({
     };
     window.addEventListener(SESSION_POLLER_WS_EVENT, onUpdate);
     return () => window.removeEventListener(SESSION_POLLER_WS_EVENT, onUpdate);
-  }, [sessionId, proposal.pollerId]);
+  }, [sessionId, proposal.pollerId, setPoller]);
 
   const check = useMemo(
     () => checkPollerForm({ task, interval, duration }),

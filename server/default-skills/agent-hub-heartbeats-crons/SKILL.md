@@ -26,6 +26,16 @@ job-search monitoring, scheduled audits, etc.).
 Per-agent **heartbeats** are retired. Do not configure or run them. If a
 task used to be a heartbeat, create a project cron instead.
 
+## Not for "every N minutes, check this again" in a chat
+
+When a user in a session asks you to repeat a check on a schedule ("every
+30 min run this check again", "poll the deploy until 5pm"), do **not**
+create a cron. Emit an `agenthub:poller` fenced block instead (see the
+Session Pollers section of your system prompt). The user gets a card to
+Start, a running banner with Cancel at the top of the session, and each
+run lands back in that same session. Create a cron only when the user
+explicitly asks for a project cron or a standing job with no session.
+
 Full reference: **[references/heartbeats-crons.md](references/heartbeats-crons.md)**.
 Scripts live in the shared core tree (`agent-hub/scripts/`).
 

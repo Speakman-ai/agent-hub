@@ -191,6 +191,23 @@ describe('SessionPollerCard', () => {
     expect(screen.queryByText('Stop')).toBeNull();
   });
 
+  it('a refresh in flight during Stop does not revert the card to running', async () => {
+    (api.listSessionPollers as any).mockResolvedValueOnce({ pollers: [active] });
+    render(<SessionPollerCard sessionId="s-1" proposal={proposal} />);
+    await screen.findByText('Running · 0 runs so far');
+
+    let resolveList!: (v: unknown) => void;
+    (api.listSessionPollers as any).mockReturnValue(new Promise((res) => (resolveList = res)));
+    act(() => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    fireEvent.click(screen.getByText('Stop'));
+    await screen.findByText('Stopped after 0 runs');
+
+    await act(async () => resolveList({ pollers: [active] }));
+    expect(screen.getByText('Stopped after 0 runs')).toBeTruthy();
+  });
+
   it('shows the existing poller instead of the form after a reload', async () => {
     (api.listSessionPollers as any).mockResolvedValue({
       pollers: [{ ...active, status: 'completed', runCount: 38 }],

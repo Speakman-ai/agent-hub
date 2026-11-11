@@ -10,6 +10,7 @@ import StreamingMessage from '../components/StreamingMessage';
 import ThinkingIndicator from '../components/ThinkingIndicator';
 import MessageInput from '../components/MessageInput';
 import SessionApprovalCard from '../components/SessionApprovalCard';
+import SessionPollerBanner from '../components/SessionPollerBanner';
 import SessionEngineModelSheet from '../components/SessionEngineModelSheet';
 import AgentSwitcher from '../components/AgentSwitcher';
 import DelegationPanel from '../components/DelegationPanel';
@@ -732,6 +733,7 @@ export default function ChatScreen({
           }
         >
           <>
+            <SessionPollerBanner sessionId={activeSessionId ?? null} />
             {/* Messages */}
             <FlatList
               ref={flatListRef}

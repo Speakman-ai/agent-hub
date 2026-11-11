@@ -43,8 +43,20 @@
  *
  *   - `Skill`             → replaced by `<agenthub:skill>` block
  *   - `AskUserQuestion`   → replaced by `agenthub:ask` fenced block
+ *   - `CronCreate` / `CronDelete` / `CronList` / `ScheduleWakeup`
+ *                         → replaced by the `agenthub:poller` fenced block.
+ *     The native schedulers live inside the per-turn CLI process, so a
+ *     "every 30 min" job dies when the turn ends; seeing them, the model
+ *     concludes scheduling needs a project cron and never offers a poller.
  */
-export const SHADOWED_NATIVE_TOOLS = ['Skill', 'AskUserQuestion'] as const;
+export const SHADOWED_NATIVE_TOOLS = [
+  'Skill',
+  'AskUserQuestion',
+  'CronCreate',
+  'CronDelete',
+  'CronList',
+  'ScheduleWakeup',
+] as const;
 
 /**
  * Native Claude Code tools that can directly mutate the workspace. Consult and

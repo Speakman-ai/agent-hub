@@ -89,6 +89,7 @@ import SessionQaControl from './components/finalize/SessionQaControl';
 import FinalizeChecksLiveBlock from './components/finalize/FinalizeChecksLiveBlock';
 import ResolveSessionPrBanner from './components/ResolveSessionPrBanner';
 import SessionApprovalBanner from './components/SessionApprovalBanner';
+import SessionPollerBanner from './components/SessionPollerBanner';
 import { APPROVAL_WS_EVENT } from './components/ApprovalActions';
 import {
   inferPrUrlFromSessionTitle,
@@ -8399,6 +8400,7 @@ export default function App({ initialView }: any = {}) {
                       />
                     )}
                     <div className="flex flex-1 flex-col min-w-0 min-h-0 overflow-hidden">
+                      {activeSessionId && <SessionPollerBanner sessionId={activeSessionId} />}
                       {/* Messages */}
                       <RunInTerminalProvider onRun={runInTerminalHandler}>
                         <div
