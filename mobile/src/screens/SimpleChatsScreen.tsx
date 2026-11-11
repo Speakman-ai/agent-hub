@@ -15,8 +15,7 @@ import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import BrandLogo from '../components/BrandLogo';
-import HubIcon from '../components/HubIcon';
-import { useGoogleChatAvailable } from '../hooks/useGoogleChatAvailable';
+import SimpleHomeNav from '../components/SimpleHomeNav';
 import { serverAgentDisplayName, useServerAgentSettings } from '../utils/serverAgentInstance';
 import { groupSimpleChats } from '@shared/utils/simpleRosterGroups';
 import {
@@ -63,18 +62,6 @@ export default function SimpleChatsScreen() {
     setActiveSessionId,
   } = useApp();
   const settings = useServerAgentSettings();
-  const googleChatAvailable = useGoogleChatAvailable();
-  const homeLinks = [
-    { pane: 'chat', label: 'Chat', icon: 'MessageSquare' },
-    ...(googleChatAvailable
-      ? [{ pane: 'google-chat', label: 'Google Chat', icon: 'MessageCircle' }]
-      : []),
-    { pane: 'todos', label: 'Todos', icon: 'ListTodo' },
-    { pane: 'reminders', label: 'Reminders', icon: 'BellRing' },
-    { pane: 'calendar', label: 'Calendar', icon: 'CalendarDays' },
-    { pane: 'mail', label: 'Mail', icon: 'Mail' },
-    { pane: 'org', label: 'Server', icon: 'BarChart3' },
-  ];
   const serverName = serverAgentDisplayName(settings);
   const [query, setQuery] = useState('');
   const [savedOrder, setSavedOrder] = useState<string[]>([]);
@@ -399,20 +386,13 @@ export default function SimpleChatsScreen() {
 
   return (
     <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
-      <View style={styles.homeNav} testID="simple-home-nav">
-        {homeLinks.map((item) => (
-          <Pressable
-            key={item.pane}
-            testID={`simple-home-${item.pane}`}
-            accessibilityRole="button"
-            accessibilityLabel={item.label}
-            onPress={() => navigation.navigate('Hub', { pane: item.pane, tab: undefined })}
-            style={styles.homeIcon}
-          >
-            <HubIcon name={item.icon} size={18} color={colors.gray400} />
-          </Pressable>
-        ))}
-      </View>
+      <SimpleHomeNav
+        active="chats"
+        onSelect={(target) => {
+          if (target === 'chats') return;
+          navigation.navigate('Hub', { pane: target, tab: undefined });
+        }}
+      />
       <View style={styles.header}>
         <Text style={styles.title}>Chats</Text>
         <Text style={styles.subtitle}>Chat here. Hand off a build when you need one.</Text>
@@ -657,20 +637,6 @@ function ContactRow({
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.gray950 },
-  homeNav: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    paddingTop: 8,
-  },
-  homeIcon: {
-    width: 36,
-    height: 36,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 8,
-  },
   header: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 8 },
   orgHeader: {
     flexDirection: 'row',

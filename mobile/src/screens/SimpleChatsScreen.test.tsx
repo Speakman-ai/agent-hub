@@ -124,6 +124,12 @@ describe('SimpleChatsScreen', () => {
       'Chat',
     );
     expect(renderer.root.findAllByProps({ testID: 'simple-home-google-chat' })).toHaveLength(0);
+    expect(
+      renderer.root.findByProps({ testID: 'simple-home-chats' }).props.accessibilityState,
+    ).toEqual({ selected: true });
+    expect(
+      renderer.root.findByProps({ testID: 'simple-home-todos' }).props.accessibilityState,
+    ).toEqual({ selected: false });
     await act(async () => {
       renderer.root.findByProps({ testID: 'simple-home-todos' }).props.onPress();
     });

@@ -7,6 +7,8 @@ import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import BrandLogo from '../components/BrandLogo';
+import SimpleHomeNav from '../components/SimpleHomeNav';
+import { peekShellMode, readShellMode, type ShellMode } from '../utils/simpleShell';
 import DashboardHomeScreen from './DashboardHomeScreen';
 import DashboardScreen from './DashboardScreen';
 import TodosScreen from './TodosScreen';
@@ -141,6 +143,22 @@ export default function HubScreen({ navigation, route }: any) {
     }, [setHubFocused]),
   );
 
+  // Panes opened from the simple shell keep its toolbar instead of the full
+  // Hub header. The mode is re-read on focus: this screen stays mounted while
+  // the user switches shells.
+  const [shellMode, setShellMode] = useState<ShellMode>(() => peekShellMode() ?? 'hub');
+  useFocusEffect(
+    useCallback(() => {
+      let live = true;
+      void readShellMode().then((mode) => {
+        if (live) setShellMode(mode);
+      });
+      return () => {
+        live = false;
+      };
+    }, []),
+  );
+
   useEffect(() => {
     let cancelled = false;
     const req = api.getHubSession();
@@ -230,16 +248,26 @@ export default function HubScreen({ navigation, route }: any) {
 
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
-      <View style={styles.header}>
-        <TouchableOpacity
-          onPress={sidebar?.toggleSidebar}
-          style={styles.menuButton}
-          accessibilityLabel="Open menu"
-        >
-          <Text style={styles.menuIcon}>{'☰'}</Text>
-        </TouchableOpacity>
-        <BrandLogo size="sm" />
-      </View>
+      {shellMode === 'simple' ? (
+        <SimpleHomeNav
+          active={tab}
+          onSelect={(target) => {
+            if (target === 'chats') navigation.navigate('Simple');
+            else selectPane(target);
+          }}
+        />
+      ) : (
+        <View style={styles.header}>
+          <TouchableOpacity
+            onPress={sidebar?.toggleSidebar}
+            style={styles.menuButton}
+            accessibilityLabel="Open menu"
+          >
+            <Text style={styles.menuIcon}>{'☰'}</Text>
+          </TouchableOpacity>
+          <BrandLogo size="sm" />
+        </View>
+      )}
       <View style={styles.body}>
         <HubBody
           tab={tab}

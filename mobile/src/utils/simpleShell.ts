@@ -5,6 +5,7 @@ import {
   resolveSessionState,
   DEFAULT_SESSION_STATE,
 } from '@shared/utils/sessionState';
+import type { HubWorkspacePane } from '@shared/utils/hub';
 
 /**
  * Roles that stay off the simple contact list. The Server Agent is pinned
@@ -29,6 +30,27 @@ export const SIMPLE_ORG_ORDER_KEY = 'agenthub.simpleOrgOrder';
 export const SIMPLE_PROJECT_ORDER_KEY = 'agenthub.simpleProjectOrder';
 
 export type ShellMode = 'hub' | 'simple';
+
+/** `chats` is the simple contact list; every other target is a Hub pane. */
+export type SimpleHomeTarget = 'chats' | HubWorkspacePane;
+
+export type SimpleHomeLink = { target: SimpleHomeTarget; label: string; icon: string };
+
+/** The simple shell's top toolbar, in order. Google Chat shows once it is connected. */
+export function simpleHomeLinks(googleChatAvailable: boolean): SimpleHomeLink[] {
+  return [
+    { target: 'chats', label: 'Chats', icon: 'BotMessageSquare' },
+    { target: 'chat', label: 'Chat', icon: 'MessageSquare' },
+    ...(googleChatAvailable
+      ? [{ target: 'google-chat' as const, label: 'Google Chat', icon: 'MessageCircle' }]
+      : []),
+    { target: 'todos', label: 'Todos', icon: 'ListTodo' },
+    { target: 'reminders', label: 'Reminders', icon: 'BellRing' },
+    { target: 'calendar', label: 'Calendar', icon: 'CalendarDays' },
+    { target: 'mail', label: 'Mail', icon: 'Mail' },
+    { target: 'org', label: 'Server', icon: 'BarChart3' },
+  ];
+}
 export type SimpleContactStatus = 'working' | 'needs-you' | 'idle';
 
 export type SimpleAgent = {
@@ -119,16 +141,26 @@ export function simpleShellMustLeaveFor(
   return !isSimpleConsultSession(session);
 }
 
+// Last mode read or written, so a screen can render the right chrome on its
+// first frame instead of waiting on storage.
+let knownShellMode: ShellMode | null = null;
+
+export function peekShellMode(): ShellMode | null {
+  return knownShellMode;
+}
+
 export async function readShellMode(): Promise<ShellMode> {
   try {
     const value = await AsyncStorage.getItem(SHELL_MODE_KEY);
-    return value === 'simple' ? 'simple' : 'hub';
+    knownShellMode = value === 'simple' ? 'simple' : 'hub';
   } catch {
-    return 'hub';
+    knownShellMode = knownShellMode ?? 'hub';
   }
+  return knownShellMode;
 }
 
 export async function writeShellMode(mode: ShellMode): Promise<void> {
+  knownShellMode = mode;
   try {
     await AsyncStorage.setItem(SHELL_MODE_KEY, mode);
   } catch {

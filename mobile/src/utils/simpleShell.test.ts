@@ -29,6 +29,8 @@ import {
   takePreSimpleTarget,
   writeShellMode,
   readShellMode,
+  peekShellMode,
+  simpleHomeLinks,
 } from './simpleShell';
 
 const agent = (id: string, role = 'dev') => ({ id, name: id, role, projectName: 'Hub' });
@@ -131,5 +133,21 @@ describe('hubSidebarSessions', () => {
   it('returns the same array when nothing is filtered', () => {
     const rows = [{ id: 'a' }, { id: 'b', simple_chat: 0 }];
     expect(hubSidebarSessions(rows)).toBe(rows);
+  });
+});
+
+describe('simple shell toolbar', () => {
+  it('leads with Chats and adds Google Chat only once it is connected', () => {
+    const targets = simpleHomeLinks(false).map((link) => link.target);
+    expect(targets).toEqual(['chats', 'chat', 'todos', 'reminders', 'calendar', 'mail', 'org']);
+    expect(simpleHomeLinks(true).map((link) => link.target)).toContain('google-chat');
+    expect(simpleHomeLinks(false)[0]).toMatchObject({ label: 'Chats', icon: 'BotMessageSquare' });
+  });
+
+  it('remembers the last shell mode written so screens render it without waiting', async () => {
+    await writeShellMode('simple');
+    expect(peekShellMode()).toBe('simple');
+    await writeShellMode('hub');
+    expect(peekShellMode()).toBe('hub');
   });
 });
