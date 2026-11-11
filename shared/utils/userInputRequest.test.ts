@@ -3,6 +3,7 @@ import {
   findCredentialRequestIds,
   isAwaitingUserReply,
   textRequestsUserInput,
+  userInputKindsInText,
 } from './userInputRequest.js';
 
 const ASK = [
@@ -29,6 +30,53 @@ const CRED = [
   }),
   '```',
 ].join('\n');
+
+const FORWARD = '```agenthub:forward\n{"projectId":"app","agentId":"ada","prompt":"Fix it"}\n```';
+
+describe('userInputKindsInText', () => {
+  it('names each kind of request in the text', () => {
+    expect(userInputKindsInText(ASK)).toEqual(['ask']);
+    expect(userInputKindsInText(CRED)).toEqual(['credential']);
+    expect(userInputKindsInText(FORWARD)).toEqual(['forward']);
+    expect(userInputKindsInText(`${FORWARD}\n${ASK}`)).toEqual(['ask', 'forward']);
+    expect(userInputKindsInText('plain reply')).toEqual([]);
+  });
+});
+
+describe('isAwaitingUserReply ignoreKinds', () => {
+  const stamped = (kinds?: string[]) => [
+    { role: 'user', content: 'Scheduled poller check-in' },
+    {
+      role: 'assistant',
+      content: 'Two issues filed.',
+      metadata: JSON.stringify({ awaitingUserInput: true, awaitingUserInputKinds: kinds }),
+    },
+  ];
+
+  it('does not block on a forward-only stamp when forwards are ignored', () => {
+    const messages = stamped(['forward']);
+    expect(isAwaitingUserReply(messages)).toBe(true);
+    expect(isAwaitingUserReply(messages, { ignoreKinds: ['forward'] })).toBe(false);
+  });
+
+  it('still blocks when an ask rides along with the forward', () => {
+    expect(isAwaitingUserReply(stamped(['ask', 'forward']), { ignoreKinds: ['forward'] })).toBe(
+      true,
+    );
+  });
+
+  it('treats a stamp without kinds as blocking, since its kind is unknown', () => {
+    expect(isAwaitingUserReply(stamped(), { ignoreKinds: ['forward'] })).toBe(true);
+  });
+
+  it('applies ignoreKinds to fences still in the text', () => {
+    const messages = [{ role: 'assistant', content: FORWARD }];
+    expect(isAwaitingUserReply(messages, { ignoreKinds: ['forward'] })).toBe(false);
+    expect(
+      isAwaitingUserReply([{ role: 'assistant', content: CRED }], { ignoreKinds: ['forward'] }),
+    ).toBe(true);
+  });
+});
 
 describe('textRequestsUserInput', () => {
   it('detects an ask picker, a forward card, and a credential card', () => {

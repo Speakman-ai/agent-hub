@@ -279,7 +279,11 @@ import { isLocalBundledServer } from './auth.js';
 import { setSessionOwner, getWsAuthUserId, type AuthStampedWs } from './session-ownership.js';
 import { shouldResetResumeAttemptsOnTurnStart } from './resume-attempts.js';
 import { broadcastAwaitingInputForSession } from './awaiting-input.js';
-import { textRequestsUserInput } from '../shared/utils/userInputRequest.js';
+import {
+  textRequestsUserInput,
+  userInputKindsInText,
+  type UserInputKind,
+} from '../shared/utils/userInputRequest.js';
 import { recomputeSessionState } from './session-state.js';
 import { clearOwnActiveTaskAfterDisplacedClose } from './displaced-turn-cleanup.js';
 import { billSessionTurnDurationIfTaggedToFinalize } from './finalize/budget.js';
@@ -4813,6 +4817,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       // The parsers lift well-formed ask fences out of the text into
       // `ask_user_question` events, so the saved text alone can't show them.
       let askedUserThisTurn = false;
+      const userInputKindsThisTurn = new Set<UserInputKind>();
       let errorOutput = '';
       // Accumulates error payloads that arrive on *stdout* (as JSONL for Codex /
       // Gemini) so the close handler can surface a meaningful message even when
@@ -5555,6 +5560,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           !event.parentToolUseId
         ) {
           askedUserThisTurn = true;
+          userInputKindsThisTurn.add(event.type === 'session_forward' ? 'forward' : 'ask');
         }
 
         if (
@@ -7218,7 +7224,16 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // broadcast below). Only present when retrieval actually ran this turn.
         const assistantMetadataObj: Record<string, unknown> = {};
         if (wikiRagIndicator) assistantMetadataObj.wikiRag = wikiRagIndicator;
-        if (awaitingUserInput) assistantMetadataObj.awaitingUserInput = true;
+        if (awaitingUserInput) {
+          assistantMetadataObj.awaitingUserInput = true;
+          // Lets callers tell a question that needs an answer from a forward
+          // card that only needs a press (session pollers keep running).
+          for (const kind of userInputKindsInText(rawFinalContent))
+            userInputKindsThisTurn.add(kind);
+          if (userInputKindsThisTurn.size > 0) {
+            assistantMetadataObj.awaitingUserInputKinds = [...userInputKindsThisTurn].sort();
+          }
+        }
         const assistantMetadata =
           Object.keys(assistantMetadataObj).length > 0
             ? JSON.stringify(assistantMetadataObj)

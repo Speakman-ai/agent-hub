@@ -272,7 +272,10 @@ import { reconcileRoutineRunsOnBoot } from './routine-runs.js';
 import createBackgroundShellRoutes from './routes/background-shells.js';
 import createSessionPollerRoutes from './routes/session-pollers.js';
 import { SessionPollerStore } from './session-pollers/session-poller-store.js';
-import { SessionPollerScheduler } from './session-pollers/session-poller-scheduler.js';
+import {
+  isPollerBlockedByUserInput,
+  SessionPollerScheduler,
+} from './session-pollers/session-poller-scheduler.js';
 import createSessionDiscardRoutes from './routes/session-discard.js';
 import createSessionSidebarRoutes from './routes/session-sidebar.js';
 import createSessionContextUsageRoutes from './routes/session-context-usage.js';
@@ -1930,7 +1933,7 @@ const sessionPollerScheduler = new SessionPollerScheduler({
     ),
   isSessionFinalizing: (sessionId) => Boolean(stmts!.getActiveFinalizeRunForSession.get(sessionId)),
   isSessionAwaitingUserInput: (sessionId) =>
-    isAwaitingUserReply(stmts!.getMessages.all(sessionId) as MessageRow[]),
+    isPollerBlockedByUserInput(stmts!.getMessages.all(sessionId) as MessageRow[]),
   dispatchChat: (msg) => handleChat!(null, msg as unknown as ChatMessage),
   getLatestAssistantText: (sessionId) => {
     const messages = stmts!.getMessages.all(sessionId) as MessageRow[];

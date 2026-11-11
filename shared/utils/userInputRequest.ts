@@ -38,6 +38,25 @@ export function findCredentialRequestIds(text: string | null | undefined): strin
 }
 
 /**
+ * What a turn handed to the human. `ask` and `credential` need an answer
+ * before the conversation can go on; `forward` is a confirm-then-start card
+ * for a *different* session, so it needs a press, not a reply.
+ */
+export type UserInputKind = 'ask' | 'credential' | 'forward';
+
+/** Kinds of user-input request carried by `text`, in a stable order. */
+export function userInputKindsInText(text: string | null | undefined): UserInputKind[] {
+  if (typeof text !== 'string' || !text.includes('agenthub:')) return [];
+  const kinds: UserInputKind[] = [];
+  if (text.includes('agenthub:ask') && extractAskBlocks(text).asks.length > 0) kinds.push('ask');
+  if (findCredentialRequestIds(text).length > 0) kinds.push('credential');
+  if (text.includes('agenthub:forward') && extractForwardBlocks(text).forwards.length > 0) {
+    kinds.push('forward');
+  }
+  return kinds;
+}
+
+/**
  * True when assistant text hands control to the human: it carries a rendered
  * `agenthub:ask` picker, an `agenthub:forward` card, or an
  * `agenthub:credential-request` card. The host must stop driving the session
@@ -45,42 +64,67 @@ export function findCredentialRequestIds(text: string | null | undefined): strin
  * answer the agent just asked for.
  */
 export function textRequestsUserInput(text: string | null | undefined): boolean {
-  if (typeof text !== 'string' || !text.includes('agenthub:')) return false;
-  if (findCredentialRequestIds(text).length > 0) return true;
-  if (text.includes('agenthub:forward') && extractForwardBlocks(text).forwards.length > 0) {
-    return true;
-  }
-  if (!text.includes('agenthub:ask')) return false;
-  return extractAskBlocks(text).asks.length > 0;
+  return userInputKindsInText(text).length > 0;
 }
 
-function metadataFlagsUserInput(metadata: string | null | undefined): boolean {
-  if (typeof metadata !== 'string' || !metadata.includes('awaitingUserInput')) return false;
+const USER_INPUT_KINDS: ReadonlySet<string> = new Set(['ask', 'credential', 'forward']);
+
+/**
+ * The `awaitingUserInput` stamp on an assistant row. `kinds` is null for rows
+ * stamped before the chat handler recorded which kind it was.
+ */
+function metadataUserInput(metadata: string | null | undefined): {
+  flagged: boolean;
+  kinds: UserInputKind[] | null;
+} {
+  const none = { flagged: false, kinds: null };
+  if (typeof metadata !== 'string' || !metadata.includes('awaitingUserInput')) return none;
   try {
-    const parsed = JSON.parse(metadata) as { awaitingUserInput?: unknown };
-    return parsed?.awaitingUserInput === true;
+    const parsed = JSON.parse(metadata) as {
+      awaitingUserInput?: unknown;
+      awaitingUserInputKinds?: unknown;
+    };
+    if (parsed?.awaitingUserInput !== true) return none;
+    const raw = parsed.awaitingUserInputKinds;
+    const kinds = Array.isArray(raw)
+      ? (raw.filter((k) => typeof k === 'string' && USER_INPUT_KINDS.has(k)) as UserInputKind[])
+      : null;
+    return { flagged: true, kinds: kinds && kinds.length > 0 ? kinds : null };
   } catch {
-    return false;
+    return none;
   }
+}
+
+export interface AwaitingUserReplyOptions {
+  /**
+   * Request kinds that do not block the caller. A row stamped without kinds
+   * still counts as awaiting, since what it asked for is unknown.
+   */
+  ignoreKinds?: ReadonlyArray<UserInputKind>;
 }
 
 /**
  * True when the latest assistant message asked the user for input and no user
- * message has arrived since. The chat handler stamps `awaitingUserInput` on the
- * row's metadata because ask fences are lifted out of the saved text; the text
- * check covers credential cards and rows written before the stamp existed.
- * System rows (notices, cancel lines) are skipped so they cannot mask a
- * pending question.
+ * message has arrived since. The chat handler stamps `awaitingUserInput` (and
+ * `awaitingUserInputKinds`) on the row's metadata because ask and forward
+ * fences are lifted out of the saved text; the text check covers credential
+ * cards and rows written before the stamp existed. System rows (notices,
+ * cancel lines) are skipped so they cannot mask a pending question.
  */
 export function isAwaitingUserReply(
   messages: ReadonlyArray<MessageWithMetadataLike> | null | undefined,
+  options: AwaitingUserReplyOptions = {},
 ): boolean {
   if (!Array.isArray(messages)) return false;
+  const ignored = new Set<UserInputKind>(options.ignoreKinds ?? []);
+  const blocks = (kinds: UserInputKind[]) => kinds.some((k) => !ignored.has(k));
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     if (m?.role === 'user') return false;
     if (m?.role === 'assistant') {
-      return metadataFlagsUserInput(m.metadata) || textRequestsUserInput(m.content);
+      const stamp = metadataUserInput(m.metadata);
+      if (stamp.flagged && (stamp.kinds === null || blocks(stamp.kinds))) return true;
+      return blocks(userInputKindsInText(m.content));
     }
   }
   return false;

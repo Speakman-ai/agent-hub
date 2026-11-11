@@ -13,6 +13,11 @@ import {
   formatPollerMinutes,
   type SessionPoller,
 } from '../../shared/utils/sessionPoller.js';
+import {
+  isAwaitingUserReply,
+  type MessageWithMetadataLike,
+  type UserInputKind,
+} from '../../shared/utils/userInputRequest.js';
 import type { SessionPollerStore } from './session-poller-store.js';
 
 export const SESSION_POLLER_TICK_MS = 30_000;
@@ -20,6 +25,20 @@ export const SESSION_POLLER_UPDATED_EVENT = 'session_poller_updated';
 export const SESSION_POLLER_NOTIFY_EVENT = 'session_poller_notify';
 
 const PREVIEW_MAX = 200;
+
+/**
+ * Pending user-input kinds that do not defer a poller run. A run that posts a
+ * forward card (a common poller task: "file a card and give me a forward")
+ * would otherwise stop every later run until the user typed something.
+ */
+export const POLLER_NON_BLOCKING_INPUT_KINDS: readonly UserInputKind[] = ['forward'];
+
+/** Whether a session's pending user-input request should defer a poller run. */
+export function isPollerBlockedByUserInput(
+  messages: ReadonlyArray<MessageWithMetadataLike> | null | undefined,
+): boolean {
+  return isAwaitingUserReply(messages, { ignoreKinds: POLLER_NON_BLOCKING_INPUT_KINDS });
+}
 
 export interface PollerSessionLike {
   id: string;

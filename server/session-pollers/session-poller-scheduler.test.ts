@@ -6,6 +6,7 @@ import {
   SESSION_POLLER_NOTIFY_EVENT,
   SESSION_POLLER_UPDATED_EVENT,
   buildPollerRunPrompt,
+  isPollerBlockedByUserInput,
   pollerReplyPreview,
   type PollerSessionLike,
 } from './session-poller-scheduler.js';
@@ -269,5 +270,35 @@ describe('prompt helpers', () => {
     );
     expect(pollerReplyPreview('x'.repeat(300))).toHaveLength(200);
     expect(pollerReplyPreview('')).toBeNull();
+  });
+});
+
+describe('isPollerBlockedByUserInput', () => {
+  const afterRun = (metadata: Record<string, unknown>) => [
+    { role: 'user', content: 'Scheduled poller check-in (run 1 of about 12)' },
+    { role: 'assistant', content: 'Filed two cards.', metadata: JSON.stringify(metadata) },
+  ];
+
+  it('lets the next run fire after a run that only posted forward cards', () => {
+    // The run's reply carried forward cards, which the chat handler lifts out
+    // of the text and stamps as awaiting input. That held every later run.
+    expect(
+      isPollerBlockedByUserInput(
+        afterRun({ awaitingUserInput: true, awaitingUserInputKinds: ['forward'] }),
+      ),
+    ).toBe(false);
+  });
+
+  it('defers while an ask picker or credential card is open', () => {
+    expect(
+      isPollerBlockedByUserInput(
+        afterRun({ awaitingUserInput: true, awaitingUserInputKinds: ['ask'] }),
+      ),
+    ).toBe(true);
+    expect(
+      isPollerBlockedByUserInput(
+        afterRun({ awaitingUserInput: true, awaitingUserInputKinds: ['credential', 'forward'] }),
+      ),
+    ).toBe(true);
   });
 });

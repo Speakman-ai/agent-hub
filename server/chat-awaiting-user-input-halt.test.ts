@@ -244,7 +244,26 @@ describe('a turn that asks the user for input stops the session', () => {
     const messages = getStmts().getMessages.all(sessionId) as Row[];
     const assistant = messages.filter((m) => m.role === 'assistant');
     expect(assistant).toHaveLength(1);
-    expect(JSON.parse(assistant[0].metadata ?? '{}').awaitingUserInput).toBe(true);
+    const meta = JSON.parse(assistant[0].metadata ?? '{}');
+    expect(meta.awaitingUserInput).toBe(true);
+    expect(meta.awaitingUserInputKinds).toEqual(['ask']);
+  });
+
+  it('stamps a forward-card turn with its kind so pollers can tell it from a question', async () => {
+    const sessionId = seedSession();
+    const forward = [
+      'Filed a card.',
+      '```agenthub:forward',
+      JSON.stringify({ projectId: 'app', agentId: 'ada', name: 'Fix it', prompt: 'Fix it' }),
+      '```',
+    ].join('\n');
+    await runTurn(sessionId, 'Check intake.', [textLine(forward)]);
+    const messages = getStmts().getMessages.all(sessionId) as Row[];
+    const assistant = messages.filter((m) => m.role === 'assistant');
+    expect(assistant).toHaveLength(1);
+    const meta = JSON.parse(assistant[0].metadata ?? '{}');
+    expect(meta.awaitingUserInput).toBe(true);
+    expect(meta.awaitingUserInputKinds).toEqual(['forward']);
   });
 
   it('stops a run that keeps calling tools after requesting a credential', async () => {
