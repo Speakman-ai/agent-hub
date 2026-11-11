@@ -753,7 +753,16 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // `first_patched_version: null`, but 1.4.1 re-encodes the DigestInfo as
     // canonical DER and rejects anything else, which closes that path. Mobile
     // only, via @expo/cli -> @expo/code-signing-certificates (`^1.3.3`).
-    { pkg: 'node-forge', min: '1.4.1', advisory: 'GHSA-86w9-cpqp-85rv', only: ['mobile'] },
+    // 1.4.3 then fixed the forge.http header ReDoS, two TLS client handshake
+    // crashes, and Ed25519 accepting small-order public keys; `^1.3.3` admits
+    // it, so no override is needed.
+    {
+      pkg: 'node-forge',
+      min: '1.4.3',
+      advisory:
+        'GHSA-86w9-cpqp-85rv, GHSA-6cv4-p8m7-4r25, GHSA-j8rw-jp99-435v, GHSA-w4xr-hqv8-ch44, GHSA-6889-vf6x-f3g5',
+      only: ['mobile'],
+    },
     // Event-loop DoS through indexed source-map section offsets. postcss and
     // css-tree consume it (`^1.2.1`) in every workspace.
     { pkg: 'source-map-js', min: '1.2.2', advisory: 'GHSA-68fv-2mgg-jv7q' },
