@@ -53,6 +53,7 @@ function makeCfg(): AppConfig {
     browserMaxConcurrentContexts: 3,
     browserIdleTimeoutMs: 300_000,
     browserAllowDownloads: false,
+    browserAllowPrivateNetwork: false,
     browserBlockAdsTrackers: true,
     watchdog: {
       enabled: false,

@@ -91,3 +91,45 @@ describe('validateBrowserNavigationUrl — pinned-origin allowance (preview driv
     expect(validateBrowserNavigationUrl('http://localhost:4123/').ok).toBe(false);
   });
 });
+
+describe('validateBrowserNavigationUrl with allowPrivateNetwork', () => {
+  const opts = { allowPrivateNetwork: true };
+
+  it('blocks a LAN address by default', () => {
+    expect(validateBrowserNavigationUrl('http://192.168.50.30:3000').ok).toBe(false);
+  });
+
+  it('allows LAN, loopback, and localhost targets when enabled', () => {
+    for (const url of [
+      'http://192.168.50.30:3000',
+      'http://10.0.0.5/',
+      'http://127.0.0.1:3051/',
+      'http://localhost:5173/',
+      'http://[::1]:8080/',
+      'http://myapp.localhost/',
+    ]) {
+      expect(validateBrowserNavigationUrl(url, opts)).toEqual({
+        ok: true,
+        href: new URL(url).href,
+      });
+    }
+  });
+
+  it('still blocks cloud metadata endpoints', () => {
+    for (const url of [
+      'http://169.254.169.254/latest/meta-data/',
+      'http://metadata.google.internal/',
+      'http://[fd00:ec2::254]/',
+      'http://[::ffff:169.254.169.254]/',
+      'http://[::ffff:a9fe:a9fe]/',
+      'http://[::ffff:169.254.170.2]/',
+    ]) {
+      expect(validateBrowserNavigationUrl(url, opts).ok).toBe(false);
+    }
+  });
+
+  it('still enforces scheme and embedded-credential checks', () => {
+    expect(validateBrowserNavigationUrl('file:///etc/passwd', opts).ok).toBe(false);
+    expect(validateBrowserNavigationUrl('http://u:p@192.168.1.1/', opts).ok).toBe(false);
+  });
+});

@@ -667,6 +667,18 @@ const config: AppConfig = {
   browserAllowDownloads:
     envMeansTrue('AGENT_HUB_BROWSER_ALLOW_DOWNLOADS') ||
     coerceConfigBooleanLoose(fileConfig.browserAllowDownloads, false),
+  // Private/LAN/loopback targets for the host browser. On a single-user local
+  // install the operator owns the network, so default on there; hosted
+  // multi-user deployments default off (SSRF into the Hub's own network).
+  browserAllowPrivateNetwork: (() => {
+    const k = 'AGENT_HUB_BROWSER_ALLOW_PRIVATE_NETWORK' as const;
+    if (envMeansTrue(k)) return true;
+    if (envMeansFalse(k)) return false;
+    return coerceConfigBooleanLoose(
+      fileConfig.browserAllowPrivateNetwork,
+      process.env.AGENT_HUB_MODE === 'local',
+    );
+  })(),
   browserBlockAdsTrackers: envMeansFalse('AGENT_HUB_BROWSER_BLOCK_ADS')
     ? false
     : fileConfig.browserBlockAdsTrackers !== false,

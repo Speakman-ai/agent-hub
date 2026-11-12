@@ -4495,6 +4495,12 @@ export interface AppConfig {
   browserIdleTimeoutMs: number;
   /** When false, Playwright downloads are canceled at start. */
   browserAllowDownloads: boolean;
+  /**
+   * Let the host browser open loopback / LAN / private addresses. Defaults to
+   * true under `AGENT_HUB_MODE=local`, false otherwise. Cloud metadata
+   * endpoints stay blocked either way.
+   */
+  browserAllowPrivateNetwork: boolean;
   /** Block common ad/tracker third-party hosts at route level when true. */
   browserBlockAdsTrackers: boolean;
   /**

@@ -77,6 +77,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     browserMaxConcurrentContexts: 1,
     browserIdleTimeoutMs: 60000,
     browserAllowDownloads: false,
+    browserAllowPrivateNetwork: false,
     browserBlockAdsTrackers: false,
     allValidModels: [],
     ...overrides,

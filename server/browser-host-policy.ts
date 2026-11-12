@@ -8,15 +8,17 @@ import type { BrowserNavigationPolicyOpts } from './browser-navigation-url.js';
 
 /** Trust only the operator-configured Hub origin, never request headers or tool input. */
 export function browserNavigationPolicyFromConfig(): BrowserNavigationPolicyOpts {
+  const opts: BrowserNavigationPolicyOpts = {};
+  if (config.browserAllowPrivateNetwork) opts.allowPrivateNetwork = true;
   try {
     const url = new URL(config.publicUrl ?? '');
     if ((url.protocol === 'http:' || url.protocol === 'https:') && !url.username && !url.password) {
-      return { allowOrigins: [url.origin] };
+      opts.allowOrigins = [url.origin];
     }
   } catch {
-    // An unset or invalid public URL grants no private-network access.
+    // An unset or invalid public URL adds no allowlisted origin.
   }
-  return {};
+  return opts;
 }
 
 /** Substrings / suffixes aligned with known third-party ad and tracker CDN hosts. */

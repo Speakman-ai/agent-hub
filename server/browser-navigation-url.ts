@@ -28,7 +28,20 @@ export type BrowserNavigationUrlResult = { ok: true; href: string } | { ok: fals
  */
 export interface BrowserNavigationPolicyOpts {
   allowOrigins?: readonly string[];
+  /**
+   * Allow loopback, LAN, and other private targets (config
+   * `browserAllowPrivateNetwork`). Cloud metadata endpoints stay blocked.
+   */
+  allowPrivateNetwork?: boolean;
 }
+
+const CLOUD_METADATA_HOSTS = new Set([
+  '169.254.169.254',
+  '169.254.170.2',
+  'fd00:ec2::254',
+  'metadata.google.internal',
+  'metadata',
+]);
 
 /** True when `u`'s origin exactly matches an allowlisted origin. */
 function isAllowlistedOrigin(u: URL, opts?: BrowserNavigationPolicyOpts): boolean {
@@ -62,26 +75,23 @@ function normalizeHostnameForPolicy(hostname: string): string {
   return h;
 }
 
+/** IPv4 embedded in an IPv4-mapped IPv6 host (`::ffff:a.b.c.d` or `::ffff:hhhh:hhhh`). */
+function mappedIPv4(host: string): string | null {
+  const h = host.toLowerCase();
+  if (!h.startsWith('::ffff:')) return null;
+  const suff = h.slice('::ffff:'.length);
+  if (isIPv4(suff)) return suff;
+  const compact = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(suff);
+  if (!compact) return null;
+  const w32 = ((parseInt(compact[1], 16) & 0xffff) << 16) | (parseInt(compact[2], 16) & 0xffff);
+  return `${(w32 >>> 24) & 255}.${(w32 >>> 16) & 255}.${(w32 >>> 8) & 255}.${w32 & 255}`;
+}
+
 function isBlockedIPv6Host(host: string): boolean {
   const h = host.toLowerCase();
   if (h === '::1') return true;
-  if (h.startsWith('::ffff:')) {
-    const suff = h.slice('::ffff:'.length);
-    if (isIPv4(suff) && isBlockedDottedIPv4(suff)) return true;
-    // e.g. `::ffff:7f00:1` (normalized from `::ffff:127.0.0.1`) — last 32 bits as IPv4
-    const compact = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(suff);
-    if (compact) {
-      const hi = parseInt(compact[1], 16);
-      const lo = parseInt(compact[2], 16);
-      const w32 = ((hi & 0xffff) << 16) | (lo & 0xffff);
-      const a = (w32 >>> 24) & 255;
-      const b = (w32 >>> 16) & 255;
-      const c = (w32 >>> 8) & 255;
-      const d = w32 & 255;
-      const dotted = `${a}.${b}.${c}.${d}`;
-      if (isBlockedDottedIPv4(dotted)) return true;
-    }
-  }
+  const mapped = mappedIPv4(h);
+  if (mapped && isBlockedDottedIPv4(mapped)) return true;
   if (h.startsWith('fe80:')) return true;
   if (h.startsWith('fc') || h.startsWith('fd')) return true;
   if (h.startsWith('ff')) return true;
@@ -122,6 +132,13 @@ export function validateBrowserNavigationUrl(
   const host = normalizeHostnameForPolicy(u.hostname);
   if (!host) {
     return { ok: false, error: 'URL has an empty host' };
+  }
+
+  if (opts?.allowPrivateNetwork) {
+    if (CLOUD_METADATA_HOSTS.has(host) || CLOUD_METADATA_HOSTS.has(mappedIPv4(host) ?? '')) {
+      return { ok: false, error: 'Navigation to cloud metadata endpoints is not allowed' };
+    }
+    return { ok: true, href: u.href };
   }
 
   if (host === 'localhost' || host.endsWith('.localhost')) {

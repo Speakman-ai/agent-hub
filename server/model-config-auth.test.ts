@@ -71,6 +71,7 @@ function makeConfig(): AppConfig {
     browserMaxConcurrentContexts: 3,
     browserIdleTimeoutMs: 300_000,
     browserAllowDownloads: false,
+    browserAllowPrivateNetwork: false,
     browserBlockAdsTrackers: true,
     artifactsBucket: null,
     artifactsBucketRegion: null,
