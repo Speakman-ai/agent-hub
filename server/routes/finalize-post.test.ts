@@ -1279,11 +1279,20 @@ describe('resolveFinalizeAttempt', () => {
     }
   });
 
-  it('short-circuits ready_to_push (push it, do not re-run)', () => {
-    const ready = { id: 'r1', status: 'ready_to_push' } as FinalizeRunRow;
+  it('ui_button re-runs past a parked ready_to_push run (no 409)', () => {
     const r = resolveFinalizeAttempt({
       ...base,
       triggerSource: 'ui_button',
+      lookup: lookupFrom({ 1: { id: 'r1', status: 'ready_to_push' } as FinalizeRunRow }),
+    });
+    expect(r).toEqual({ kind: 'start', attempt: 2, idempotencyKey: keyOf(2) });
+  });
+
+  it('agent_block still reports ready_to_push instead of re-running', () => {
+    const ready = { id: 'r1', status: 'ready_to_push' } as FinalizeRunRow;
+    const r = resolveFinalizeAttempt({
+      ...base,
+      triggerSource: 'agent_block',
       lookup: lookupFrom({ 1: ready }),
     });
     expect(r).toEqual({ kind: 'ready_to_push', run: ready });

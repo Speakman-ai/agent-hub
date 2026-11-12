@@ -80,11 +80,12 @@ export type ResolveFinalizeAttemptResult =
  * we probe each attempt's idempotency key:
  *
  *   - no row at this attempt  → `start` here (a fresh run + bubble);
- *   - row is `ready_to_push`  → short-circuit, tell the caller to push;
  *   - row is non-terminal     → `in_flight`, never start a duplicate;
- *   - row is terminal (done)  → an explicit user trigger (`ui_button`)
- *     advances to the NEXT attempt so the re-run gets its own row/bubble;
- *     an automated trigger (`agent_block`) dedups onto the finished run.
+ *   - row is terminal or a parked `ready_to_push` → an explicit user
+ *     trigger (`ui_button`) advances to the NEXT attempt so the re-run gets
+ *     its own row/bubble; an automated trigger (`agent_block`) reuses a
+ *     finished run and reports `ready_to_push` for a parked one. Push reads
+ *     the latest run, so the new attempt supersedes the parked one.
  *
  * Uses the injected `lookup`; no DB of its own.
  */
@@ -110,7 +111,9 @@ export function resolveFinalizeAttempt(args: {
       return { kind: 'start', attempt, idempotencyKey };
     }
     if (existing.status === 'ready_to_push') {
-      return { kind: 'ready_to_push', run: existing };
+      if (args.triggerSource !== 'ui_button') return { kind: 'ready_to_push', run: existing };
+      lastTerminal = existing;
+      continue;
     }
     if (!TERMINAL_STATUSES.has(existing.status)) {
       return { kind: 'in_flight', run: existing };
