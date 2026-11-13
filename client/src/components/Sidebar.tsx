@@ -47,7 +47,10 @@ import {
   MessageCircle,
   FolderInput,
   ClipboardCheck,
+  Pin,
+  PinOff,
 } from 'lucide-react';
+import { isSessionPinned, pinnedSessionsFirst } from '@shared/utils/sessionPins';
 import { formatUnreadCount } from '../utils/googleChatPush';
 import { getServerBase } from '../utils/connection';
 import { useClientBuildVersion } from '../hooks/useClientBuildVersion';
@@ -138,6 +141,8 @@ export default function Sidebar({
   onClearAllSessions,
   onClearMergedSessions,
   onRenameSession,
+  /** Pin or unpin a session: `(sessionId, pinned) => void`. Hides the pin control when omitted. */
+  onTogglePinSession,
   onNavigate,
   /** Open an organization agent's chat. Organization agents are not project agents. */
   onOpenOrganizationChat,
@@ -624,8 +629,10 @@ export default function Sidebar({
   // render (new agent active, old `sessions` still in state) would show the old
   // agent's rows and feed them into the per-agent clear controls.
   const sessionsForAgent = (agentId: any) =>
-    hubSidebarSessions(
-      sessionsByAgentId[agentId] ?? (agentId === loadedSessionsAgentId ? sessions : []),
+    pinnedSessionsFirst(
+      hubSidebarSessions(
+        sessionsByAgentId[agentId] ?? (agentId === loadedSessionsAgentId ? sessions : []),
+      ),
     );
 
   const archivedForAgent = (agentId: any) =>
@@ -1920,6 +1927,14 @@ export default function Sidebar({
                                                     </span>
                                                   );
                                                 })()}
+                                                {isSessionPinned(session) && (
+                                                  <Pin
+                                                    size={10}
+                                                    className="flex-shrink-0 text-gray-500"
+                                                    aria-label="Pinned"
+                                                    data-testid={`session-pinned-icon-${session.id}`}
+                                                  />
+                                                )}
                                                 <span className="truncate">{session.name}</span>
                                                 {session.advisor_count > 0 && (
                                                   <span
@@ -1937,17 +1952,44 @@ export default function Sidebar({
                                               ⟳
                                             </span>
                                           ) : hoveredSession === session.id && !isEditing ? (
-                                            <button
-                                              type="button"
-                                              onClick={(e: any) => {
-                                                e.stopPropagation();
-                                                onDeleteSession(session.id);
-                                              }}
-                                              className="absolute right-1 top-1/2 -translate-y-1/2 z-10 p-1.5 text-gray-600 hover:text-red-400 text-xs rounded hover:bg-gray-700/80"
-                                              title="Delete session"
-                                            >
-                                              ✕
-                                            </button>
+                                            <div className="absolute right-1 top-1/2 -translate-y-1/2 z-10 flex items-center rounded bg-gray-800">
+                                              {onTogglePinSession && (
+                                                <button
+                                                  type="button"
+                                                  onClick={(e: any) => {
+                                                    e.stopPropagation();
+                                                    onTogglePinSession(
+                                                      session.id,
+                                                      !isSessionPinned(session),
+                                                    );
+                                                  }}
+                                                  className="p-1.5 text-gray-600 hover:text-gray-200 rounded hover:bg-gray-700/80"
+                                                  title={
+                                                    isSessionPinned(session)
+                                                      ? 'Unpin session'
+                                                      : 'Pin session to top'
+                                                  }
+                                                  data-testid={`session-pin-toggle-${session.id}`}
+                                                >
+                                                  {isSessionPinned(session) ? (
+                                                    <PinOff size={11} />
+                                                  ) : (
+                                                    <Pin size={11} />
+                                                  )}
+                                                </button>
+                                              )}
+                                              <button
+                                                type="button"
+                                                onClick={(e: any) => {
+                                                  e.stopPropagation();
+                                                  onDeleteSession(session.id);
+                                                }}
+                                                className="p-1.5 text-gray-600 hover:text-red-400 text-xs rounded hover:bg-gray-700/80"
+                                                title="Delete session"
+                                              >
+                                                ✕
+                                              </button>
+                                            </div>
                                           ) : null}
                                         </div>
                                       );

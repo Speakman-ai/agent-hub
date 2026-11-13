@@ -2220,3 +2220,61 @@ describe('Sidebar organization sections', () => {
     expect(onOpenOrganizationChat).not.toHaveBeenCalled();
   });
 });
+
+describe('Sidebar — pinned sessions', () => {
+  const rows = [
+    { id: 's-new', name: 'Newest' },
+    { id: 's-mid', name: 'Middle' },
+    { id: 's-old', name: 'Oldest', pinned_at: '2026-01-01 00:00:00' },
+  ];
+
+  it('lists pinned sessions first with a pin marker', () => {
+    render(<Sidebar {...buildProps({ sessions: rows, activeTaskSessionIds: {} })} />);
+    const list = screen.getByTestId('agent-sessions-list');
+    const names = within(list)
+      .getAllByText(/Newest|Middle|Oldest/)
+      .map((el) => el.textContent);
+    expect(names).toEqual(['Oldest', 'Newest', 'Middle']);
+    expect(within(list).getByTestId('session-pinned-icon-s-old')).toBeInTheDocument();
+    expect(within(list).queryByTestId('session-pinned-icon-s-new')).not.toBeInTheDocument();
+  });
+
+  it('drops a live-unpinned session back to its recency slot', () => {
+    const serverOrdered = [
+      {
+        id: 's-old',
+        name: 'Oldest',
+        updated_at: '2026-01-01 00:00:00',
+        pinned_at: '2026-01-05 00:00:00',
+      },
+      { id: 's-new', name: 'Newest', updated_at: '2026-01-03 00:00:00' },
+      { id: 's-mid', name: 'Middle', updated_at: '2026-01-02 00:00:00' },
+    ];
+    const { rerender } = render(
+      <Sidebar {...buildProps({ sessions: serverOrdered, activeTaskSessionIds: {} })} />,
+    );
+    const unpinned = serverOrdered.map((r) => (r.id === 's-old' ? { ...r, pinned_at: null } : r));
+    rerender(<Sidebar {...buildProps({ sessions: unpinned, activeTaskSessionIds: {} })} />);
+    const names = within(screen.getByTestId('agent-sessions-list'))
+      .getAllByText(/Newest|Middle|Oldest/)
+      .map((el) => el.textContent);
+    expect(names).toEqual(['Newest', 'Middle', 'Oldest']);
+  });
+
+  it('toggles the pin from the hover control', () => {
+    const onTogglePinSession = vi.fn();
+    render(
+      <Sidebar {...buildProps({ sessions: rows, activeTaskSessionIds: {}, onTogglePinSession })} />,
+    );
+    const list = screen.getByTestId('agent-sessions-list');
+    fireEvent.mouseEnter(within(list).getByText('Newest').closest('.group') as Element);
+    fireEvent.click(screen.getByTestId('session-pin-toggle-s-new'));
+    expect(onTogglePinSession).toHaveBeenCalledWith('s-new', true);
+
+    fireEvent.mouseEnter(within(list).getByText('Oldest').closest('.group') as Element);
+    const unpin = screen.getByTestId('session-pin-toggle-s-old');
+    expect(unpin).toHaveAttribute('title', 'Unpin session');
+    fireEvent.click(unpin);
+    expect(onTogglePinSession).toHaveBeenCalledWith('s-old', false);
+  });
+});

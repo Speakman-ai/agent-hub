@@ -2169,6 +2169,14 @@ export function AppProvider({ children }: any) {
     );
     return nextName;
   }, []);
+  const handleTogglePinSession = useCallback(async (sessionId: string, pinned: boolean) => {
+    const updated = await api.setSessionPinned(sessionId, pinned);
+    const pinnedAt: string | null = updated?.pinned_at ?? null;
+    setSessions((prev: any) =>
+      prev.map((s: any) => (s.id === sessionId ? { ...s, pinned_at: pinnedAt } : s)),
+    );
+    return pinnedAt;
+  }, []);
   const reloadAgentSessions = useCallback(async (agentId: string) => {
     const [live, archived] = await Promise.all([
       api.getSessions(agentId),
@@ -3031,6 +3039,7 @@ export function AppProvider({ children }: any) {
     skillImprovementCounts,
     activeReviews,
     handleRenameSession,
+    handleTogglePinSession,
     reloadAgentSessions,
     handleReorderProjects,
     changesReady,

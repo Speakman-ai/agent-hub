@@ -83,6 +83,10 @@ export const SessionComponent = registerComponent(
         description:
           'Codex reasoning ("thinking") preset: `high` (default) or `pro` (→ xhigh). NULL/absent on legacy rows and non-Codex sessions; treated as `high`.',
       }),
+      pinned_at: z.string().nullable().optional().openapi({
+        description:
+          'When the owner pinned the session to the top of the sidebar; null when unpinned. Session lists put pinned sessions first. Set via `PATCH /api/sessions/{sessionId}` with `pinned`.',
+      }),
       worktree_path: z.string().nullable().optional(),
       worktree_branch: z.string().nullable().optional(),
       worktree_checkout_branch: z.string().nullable().optional(),
@@ -385,6 +389,10 @@ export const PatchSessionRequestSchema = z.object({
   // other axis is mutated.
   session_mode: SessionModeSchema.optional(),
   ask_mode: z.boolean().optional(),
+  pinned: z
+    .boolean()
+    .optional()
+    .openapi({ description: 'Pin the session to the top of the sidebar, or unpin it.' }),
 });
 
 const EngineEnum = z.enum(

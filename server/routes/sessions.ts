@@ -1953,6 +1953,9 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       if (parsed.name) {
         stmts.updateSessionName.run(parsed.name, sessionId);
       }
+      if (parsed.pinned !== undefined) {
+        stmts.setSessionPinned.run(parsed.pinned ? 1 : 0, sessionId);
+      }
       if (parsed.max_turns !== undefined) {
         stmts.updateSessionMaxTurns.run(parsed.max_turns, sessionId);
       }

@@ -226,6 +226,11 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify({ name }),
     }),
+  setSessionPinned: (sessionId: string, pinned: boolean) =>
+    fetchJSON(`/sessions/${sessionId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ pinned }),
+    }),
   getSessionDetail: (sessionId: any) => fetchJSON(`/sessions/${sessionId}`),
   updateSession: (sessionId: any, data: any) =>
     fetchJSON(`/sessions/${sessionId}`, {

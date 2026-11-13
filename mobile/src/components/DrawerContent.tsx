@@ -14,6 +14,8 @@ import {
   TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Pin, PinOff } from 'lucide-react-native';
+import { isSessionPinned, pinnedSessionsFirst } from '@shared/utils/sessionPins';
 import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
 import { getOrgs, getActiveOrg } from '../utils/orgs';
@@ -97,6 +99,7 @@ export default function DrawerContent({ navigation }: any) {
     activeReviews,
     changesReady,
     handleRenameSession,
+    handleTogglePinSession,
     reloadAgentSessions,
     handleReorderProjects,
     handleOpenHandoffSession,
@@ -281,7 +284,9 @@ export default function DrawerContent({ navigation }: any) {
     setCollapsedAgents((prev: any) => ({ ...prev, [agentId]: !prev[agentId] }));
   };
   const sessionsForAgent = (agentId: string) =>
-    hubSidebarSessions(agentId === activeAgentId ? sessions : sessionsByAgentId[agentId] || []);
+    pinnedSessionsFirst(
+      hubSidebarSessions(agentId === activeAgentId ? sessions : sessionsByAgentId[agentId] || []),
+    );
   const archivedForAgent = (agentId: string) =>
     agentId === activeAgentId ? archivedSessions || [] : archivedByAgentId[agentId] || [];
   // Inactive agents' lists are fetched on every expand (the cache only fills
@@ -398,6 +403,22 @@ export default function DrawerContent({ navigation }: any) {
       }
     } catch (err: any) {
       Alert.alert('Rename failed', err?.message || 'Failed to rename session');
+    }
+  };
+  const togglePin = async (session: any) => {
+    try {
+      const pinnedAt = await handleTogglePinSession(session.id, !isSessionPinned(session));
+      const agentId = session.agent_id;
+      if (agentId && agentId !== activeAgentId) {
+        setSessionsByAgentId((prev) => ({
+          ...prev,
+          [agentId]: (prev[agentId] || []).map((row: any) =>
+            row.id === session.id ? { ...row, pinned_at: pinnedAt } : row,
+          ),
+        }));
+      }
+    } catch (err: any) {
+      Alert.alert('Pin failed', err?.message || 'Failed to update the pin');
     }
   };
   const runClear = async (agentId: string, action: 'clear-all' | 'clear-merged') => {
@@ -610,6 +631,13 @@ export default function DrawerContent({ navigation }: any) {
                       })}
                       testID={`session-state-icon-${session.id}`}
                     />
+                    {isSessionPinned(session) && (
+                      <Pin
+                        size={10}
+                        color={colors.gray500}
+                        testID={`session-pinned-icon-${session.id}`}
+                      />
+                    )}
                     <Text
                       style={[
                         styles.sessionName,
@@ -621,6 +649,19 @@ export default function DrawerContent({ navigation }: any) {
                     </Text>
                   </TouchableOpacity>
                 )}
+                <TouchableOpacity
+                  onPress={() => togglePin({ ...session, agent_id: session.agent_id || agent.id })}
+                  accessibilityLabel={isSessionPinned(session) ? 'Unpin session' : 'Pin session'}
+                  testID={`session-pin-toggle-${session.id}`}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 4 }}
+                  style={styles.sessionPin}
+                >
+                  {isSessionPinned(session) ? (
+                    <PinOff size={12} color={colors.gray400} />
+                  ) : (
+                    <Pin size={12} color={colors.gray600} />
+                  )}
+                </TouchableOpacity>
                 <TouchableOpacity
                   onPress={() => confirmDeleteSession(session.id, session, agent.id)}
                   accessibilityLabel="Delete session"
@@ -1647,6 +1688,9 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     paddingHorizontal: 8,
     paddingVertical: 4,
+  },
+  sessionPin: {
+    paddingHorizontal: 4,
   },
   sessionDelete: {
     color: colors.gray600,

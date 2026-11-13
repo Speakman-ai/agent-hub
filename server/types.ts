@@ -69,6 +69,8 @@ export interface SessionRow {
   hidden?: number;
   /** 1 = consult chat opened by the Simple view; the full Hub sidebar omits it. */
   simple_chat?: number;
+  /** When the owner pinned the session to the top of the sidebar; NULL when unpinned. */
+  pinned_at?: string | null;
   /** Claude Code session id the SideBar's first turn forks (`--fork-session`). */
   fork_from_engine_session_id?: string | null;
   /** Per-parent SideBar creation order (1, 2, …). */
@@ -2456,6 +2458,7 @@ export interface Stmts {
   markKanbanCardTitleAuto: Stmt;
   clearKanbanCardTitleSource: Stmt;
   updateAutoKanbanCardTitle: Stmt;
+  setSessionPinned: Stmt;
   updateSessionMaxTurns: Stmt;
   updateSessionLinkedDesign: Stmt;
   updateSessionLinkedEpic: Stmt;

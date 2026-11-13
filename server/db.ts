@@ -3461,6 +3461,13 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE sessions ADD COLUMN simple_chat INTEGER NOT NULL DEFAULT 0');
   }
 
+  // Set while the owner has the session pinned to the top of the sidebar.
+  try {
+    db.prepare('SELECT pinned_at FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN pinned_at TEXT DEFAULT NULL');
+  }
+
   try {
     db.prepare('SELECT card_kind FROM kanban_cards LIMIT 1').get();
   } catch {
@@ -5435,7 +5442,7 @@ function initDb(dataDir: string): void {
     // paths (WebSocket, checkpoint lookups, active-process cleanup) legitimately
     // need to look up a row regardless of archive status.
     getSessions: db.prepare(
-      'SELECT * FROM sessions WHERE agent_id = ? AND deleted_at IS NULL AND sidebar_parent_id IS NULL AND hidden = 0 ORDER BY updated_at DESC',
+      'SELECT * FROM sessions WHERE agent_id = ? AND deleted_at IS NULL AND sidebar_parent_id IS NULL AND hidden = 0 ORDER BY (pinned_at IS NOT NULL) DESC, updated_at DESC',
     ),
     getSession: db.prepare('SELECT * FROM sessions WHERE id = ?'),
     markSessionHidden: db.prepare('UPDATE sessions SET hidden = 1 WHERE id = ?'),
@@ -5461,6 +5468,11 @@ function initDb(dataDir: string): void {
     ),
     updateAutoSessionNameIfCurrent: db.prepare(
       "UPDATE sessions SET name = ?, title_source = 'auto', updated_at = datetime('now') WHERE id = ? AND name = ? AND title_source = 'auto'",
+    ),
+    // Pinning is a sidebar preference, so it leaves updated_at alone: a pin
+    // must not count as activity. Re-pinning keeps the original pin time.
+    setSessionPinned: db.prepare(
+      "UPDATE sessions SET pinned_at = CASE WHEN ? = 1 THEN COALESCE(pinned_at, datetime('now')) ELSE NULL END WHERE id = ?",
     ),
     updateSessionMaxTurns: db.prepare(
       "UPDATE sessions SET max_turns = ?, updated_at = datetime('now') WHERE id = ?",

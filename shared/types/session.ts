@@ -46,5 +46,7 @@ export interface SessionWire {
   linked_design_id?: string | null;
   worktree_branch?: string | null;
   use_worktree?: number;
+  /** Set while the session is pinned to the top of the sidebar. */
+  pinned_at?: string | null;
   [key: string]: unknown;
 }

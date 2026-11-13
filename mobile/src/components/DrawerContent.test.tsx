@@ -50,6 +50,7 @@ const testState = vi.hoisted(() => ({
     activeReviews: {},
     changesReady: {},
     handleRenameSession: vi.fn(),
+    handleTogglePinSession: vi.fn(),
     reloadAgentSessions: vi.fn(),
     handleReorderProjects: vi.fn(),
     handleOpenHandoffSession: vi.fn(),
@@ -74,6 +75,7 @@ vi.mock('react-native', () => ({
 vi.mock('react-native-safe-area-context', () => ({ SafeAreaView: nativeHost('SafeAreaView') }));
 // ProjectIcon renders lucide-react-native, which does not load under vitest.
 vi.mock('./ProjectIcon', () => ({ default: nativeHost('ProjectIcon') }));
+vi.mock('lucide-react-native', () => ({ Pin: nativeHost('Pin'), PinOff: nativeHost('PinOff') }));
 vi.mock('../context/AppContext', () => ({ useApp: () => testState.app }));
 vi.mock('../utils/api', () => ({ api: testState.api }));
 vi.mock('../utils/config', () => ({ getApiBaseUrl: () => '', getWsUrl: () => '' }));
@@ -631,5 +633,50 @@ describe('mobile DrawerContent Simple entry', () => {
     expect(nav.navigate).toHaveBeenCalledWith('Simple');
     app.sessions = [];
     app.activeSessionId = null;
+  });
+});
+
+describe('mobile DrawerContent pinned sessions', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    testState.cacheLoad.mockResolvedValue([]);
+    testState.cacheSaverFactory.mockImplementation(() => ({ save: vi.fn(), cancel: vi.fn() }));
+    testState.api.getHealth.mockResolvedValue({});
+    testState.api.getGoogleStatus.mockResolvedValue({ connected: false });
+    testState.api.getMySidebarCollapsedProjects.mockResolvedValue({
+      sidebarCollapsedProjects: [],
+    });
+    testState.navGroups = () => [];
+    testState.app.activeAgentId = 'agent-1';
+    (testState.app as any).sessions = [
+      { id: 'new', agent_id: 'agent-1', name: 'Newest' },
+      { id: 'old', agent_id: 'agent-1', name: 'Oldest', pinned_at: '2026-01-01 00:00:00' },
+    ];
+  });
+
+  it('lists pinned sessions first and toggles the pin', async () => {
+    testState.app.handleTogglePinSession.mockResolvedValue('2026-01-02 00:00:00');
+    const renderer = await renderDrawer(navigation());
+    await flush();
+    await TestRenderer.act(async () => {
+      renderer.root.findByProps({ accessibilityLabel: 'Expand Agent sessions' }).props.onPress();
+    });
+    await flush();
+    const list = renderer.root.findByProps({ testID: 'agent-sessions-list' });
+    const names = list
+      .findAll((n: any) => n.type === 'Text')
+      .flatMap((n: any) => [n.props.children].flat())
+      .filter((t: any) => t === 'Newest' || t === 'Oldest');
+    expect(names).toEqual(['Oldest', 'Newest']);
+    expect(list.findAllByProps({ testID: 'session-pinned-icon-old' }).length).toBeGreaterThan(0);
+
+    const toggle = list.findAll(
+      (n: any) => n.type === 'TouchableOpacity' && n.props.testID === 'session-pin-toggle-new',
+    )[0];
+    expect(toggle.props.accessibilityLabel).toBe('Pin session');
+    await TestRenderer.act(async () => {
+      await toggle.props.onPress();
+    });
+    expect(testState.app.handleTogglePinSession).toHaveBeenCalledWith('new', true);
   });
 });

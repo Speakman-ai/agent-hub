@@ -3073,6 +3073,11 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify({ name }),
     }),
+  setSessionPinned: (sessionId: string, pinned: boolean) =>
+    fetchJSON<SessionWire & Record<string, unknown>>(`/sessions/${sessionId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ pinned }),
+    }),
   /** Session detail with agents roster (executor + advisors). */
   getSessionDetail: (sessionId: string) =>
     fetchJSON<SessionWire & Record<string, unknown>>(`/sessions/${sessionId}`),

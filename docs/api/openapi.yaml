@@ -2678,6 +2678,10 @@ components:
             - pro
             - null
           description: 'Codex reasoning ("thinking") preset: `high` (default) or `pro` (→ xhigh). NULL/absent on legacy rows and non-Codex sessions; treated as `high`.'
+        pinned_at:
+          type: string
+          nullable: true
+          description: When the owner pinned the session to the top of the sidebar; null when unpinned. Session lists put pinned sessions first. Set via `PATCH /api/sessions/{sessionId}` with `pinned`.
         worktree_path:
           type: string
           nullable: true
@@ -27348,6 +27352,9 @@ paths:
                     - no-guardrails
                 ask_mode:
                   type: boolean
+                pinned:
+                  type: boolean
+                  description: Pin the session to the top of the sidebar, or unpin it.
       responses:
         "200":
           description: Updated session.

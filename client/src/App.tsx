@@ -5955,6 +5955,19 @@ export default function App({ initialView }: any = {}) {
     );
   };
 
+  const handleTogglePinSession = async (sessionId: string, pinned: boolean) => {
+    // Apply the response directly rather than waiting on the `session-updated`
+    // broadcast; the sidebar re-partitions pinned rows to the top on render.
+    try {
+      const updated = await api.setSessionPinned(sessionId, pinned);
+      const patch = (s: any) => ({ ...s, pinned_at: updated?.pinned_at ?? null });
+      setSessions((prev: any) => prev.map((s: any) => (s.id === sessionId ? patch(s) : s)));
+      setSessionsByAgentId((prev: any) => patchSessionInAgentCaches(prev, sessionId, patch));
+    } catch (err) {
+      console.warn('[sidebar] pin toggle failed', err);
+    }
+  };
+
   const handleDequeue = (messageId: any) => {
     if (activeSessionId) {
       // Removing a queued message only discards that message. The in-flight
@@ -7392,6 +7405,7 @@ export default function App({ initialView }: any = {}) {
                 deletingSessionIds={deletingSessionIds}
                 deletingBulk={deletingBulk}
                 onRenameSession={handleRenameSession}
+                onTogglePinSession={handleTogglePinSession}
                 onOpenOrganizationChat={handleOpenOrganizationChat}
                 hubPane={currentView === 'hub' ? hubPane : hubPaneFromLegacyView(currentView)}
                 onNavigate={(view: any, extra: any) => {
