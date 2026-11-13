@@ -352,15 +352,28 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // GHSA-5r4p-p66f-jhc7 (4.13.11): serveStatic decoded the request path a
     // second time, so encoded paths slipped past middleware scoped to static
     // routes. The floor moves to 4.13.11, which subsumes everything above.
+    //
+    // 4.13.16 closed five more: validator('form') skipped multipart bodies
+    // with extra parameters (GHSA-4h7h-rv7c-7m2v), csrf() let hyperlink
+    // auditing `text/ping` through (GHSA-46wx-v44x-9hh2), RegExpRouter skipped
+    // wildcard middleware for some route sets (GHSA-h7mg-cq63-vhpq), mount()
+    // forwarded paths past middleware scoped inside the prefix
+    // (GHSA-4m76-xfj5-7975), and the css helper missed a split closing tag
+    // (GHSA-3gg2-335m-rxc6). Both parents admit 4.13.x; plain re-resolve.
     {
       pkg: 'hono',
-      min: '4.13.11',
+      min: '4.13.16',
       advisory: [
         'GHSA-8j4g-w8fx-2239',
         'GHSA-gqvv-2mrq-wpjv',
         'GHSA-g6gw-c38x-mqfc',
         'GHSA-crvj-82cr-hjcx',
         'GHSA-5r4p-p66f-jhc7',
+        'GHSA-4h7h-rv7c-7m2v',
+        'GHSA-46wx-v44x-9hh2',
+        'GHSA-h7mg-cq63-vhpq',
+        'GHSA-4m76-xfj5-7975',
+        'GHSA-3gg2-335m-rxc6',
       ],
     },
     // GHSA-frvp-7c67-39w9: serve-static path traversal via encoded backslash.
@@ -371,7 +384,15 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // GHSA-rmxm-3fg6-px4f (2.1.3): serveStatic decoded the request path a
     // second time, so an encoded path could skip middleware mounted on the
     // static route. Range `>= 1.19.10, < 2.1.3`; it subsumes the 2.0.5 fix.
-    { pkg: '@hono/node-server', min: '2.1.3', advisory: 'GHSA-rmxm-3fg6-px4f' },
+    // 2.1.6 fixed an unhandled ECONNRESET during an async WebSocket upgrade
+    // that crashed the process (GHSA-qv5m-9pm6-hqp3) and backslashes parsed as
+    // path separators, bypassing path rules at a reverse proxy
+    // (GHSA-jpvv-r467-5p4w).
+    {
+      pkg: '@hono/node-server',
+      min: '2.1.6',
+      advisory: ['GHSA-rmxm-3fg6-px4f', 'GHSA-qv5m-9pm6-hqp3', 'GHSA-jpvv-r467-5p4w'],
+    },
     // GHSA-r4q5-vmmm-2653 (1.16.0): Authorization header leaked across a
     // cross-domain redirect. 1.16.1 closed two more stripping gaps: array-form
     // headers skipped the cross-origin strip (GHSA-q3jh-wrc6-jgq8), and an
@@ -734,7 +755,15 @@ describe('dependency security guards (high-severity advisory floors)', () => {
     // Client.list(). Vulnerable `<= 6.2.0`, no 5.x backport. Server-only, via
     // stagehand -> puppeteer-core -> @puppeteer/browsers -> proxy-agent ->
     // pac-proxy-agent -> get-uri (`^5.0.2`), so it is held by an override.
-    { pkg: 'basic-ftp', min: '6.2.1', advisory: 'GHSA-c475-qrg2-pj4r', only: ['server'] },
+    // 6.2.3: CR/LF in a password or resumed-download path threw an uncaught
+    // exception (GHSA-r4jh-29pc-gfqr). 6.2.4: a `__proto__` fact name in an
+    // MLSD listing crashed Client.list() (GHSA-5pm8-86m8-9m6r).
+    {
+      pkg: 'basic-ftp',
+      min: '6.2.4',
+      advisory: ['GHSA-c475-qrg2-pj4r', 'GHSA-r4jh-29pc-gfqr', 'GHSA-5pm8-86m8-9m6r'],
+      only: ['server'],
+    },
 
     // --- 22-finding audit (proxy-addr, compression, source-map-js, fast-copy) ---
     // Every one re-resolves inside its parents' declared ranges, so no override
@@ -1512,8 +1541,8 @@ describe('override-backed advisory floors', () => {
     {
       manifest: 'server',
       pkg: '@hono/node-server',
-      min: '2.1.3',
-      advisory: 'GHSA-rmxm-3fg6-px4f',
+      min: '2.1.6',
+      advisory: 'GHSA-jpvv-r467-5p4w',
       // @modelcontextprotocol/sdk declares `^1.19.9 || ^2.0.5` (>= 1.31), which
       // still admits a vulnerable 1.x; the override keeps the 2.x floor explicit.
       parentRange: '^1.19.9 || ^2.0.5',
@@ -1541,8 +1570,8 @@ describe('override-backed advisory floors', () => {
     {
       manifest: 'server',
       pkg: 'basic-ftp',
-      min: '6.2.1',
-      advisory: 'GHSA-c475-qrg2-pj4r',
+      min: '6.2.4',
+      advisory: 'GHSA-5pm8-86m8-9m6r',
       // get-uri 6.x (under pac-proxy-agent) declares `^5.0.2` and the fix only
       // exists on 6.x. The 6.0 break (separate transfer hosts refused by
       // default) is a hardening get-uri never relies on; it only calls
