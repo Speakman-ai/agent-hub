@@ -237,6 +237,53 @@ export function hasCalendarScope(status: any) {
   );
 }
 
+/** Persists whether the account/calendar filter chips are collapsed. */
+export const CALENDAR_FILTERS_COLLAPSED_KEY = 'agent-hub.calendar.filtersCollapsed';
+
+/** Stored values other than an explicit "false" keep the filters collapsed. */
+export function parseFiltersCollapsed(raw: string | null | undefined): boolean {
+  return raw !== 'false';
+}
+
+/**
+ * Text for the collapsed filter row, e.g. "9 of 20 calendars shown". Counts
+ * calendars when there are several to toggle, else linked accounts.
+ */
+export function calendarFilterSummary({
+  accounts,
+  hiddenAccounts,
+  sources,
+  visibility,
+  multiCalendar,
+}: {
+  accounts: LinkedGoogleAccount[];
+  hiddenAccounts: string[];
+  sources: AccountCalendars[];
+  visibility: CalendarVisibility;
+  multiCalendar: boolean;
+}): string {
+  if (multiCalendar) {
+    let shown = 0;
+    let total = 0;
+    for (const source of sources) {
+      const accountId = source.account.accountId;
+      for (const calendar of source.calendars) {
+        total += 1;
+        if (
+          !hiddenAccounts.includes(accountId) &&
+          isCalendarVisible(accountId, calendar, visibility)
+        ) {
+          shown += 1;
+        }
+      }
+    }
+    return `${shown} of ${total} calendars shown`;
+  }
+  const enabled = accounts.filter((a) => hasCalendarScope(a));
+  const shown = enabled.filter((a) => !hiddenAccounts.includes(a.accountId)).length;
+  return `${shown} of ${accounts.length} accounts shown`;
+}
+
 export function CalendarAgendaContent({
   loading,
   eventsLoading,
@@ -269,6 +316,8 @@ export function CalendarAgendaContent({
   onListPrev,
   onListNext,
   onListToday,
+  filtersCollapsed = false,
+  onToggleFilters,
 }: any) {
   const listMode = view === 'day' ? 'day' : 'week';
   const connected = !!status?.connected;
@@ -394,27 +443,52 @@ export function CalendarAgendaContent({
         </Text>
       ) : null}
 
-      {connected && multiAccount ? (
-        <CalendarAccountBar
-          accounts={accounts}
-          hiddenAccounts={hidden}
-          failedAccountIds={failedAccountIds}
-          onToggle={onToggleAccount}
-          onEnable={onEnableAccount}
-        />
+      {connected && (multiAccount || multiCalendar || needsListScope.length > 0) ? (
+        <TouchableOpacity
+          onPress={onToggleFilters}
+          style={styles.filterToggle}
+          accessibilityRole="button"
+          accessibilityState={{ expanded: !filtersCollapsed }}
+          accessibilityLabel={filtersCollapsed ? 'Show calendar filters' : 'Hide calendar filters'}
+        >
+          <Text style={styles.filterToggleText} numberOfLines={1}>
+            {filtersCollapsed ? '▸' : '▾'}{' '}
+            {calendarFilterSummary({
+              accounts,
+              hiddenAccounts: hidden,
+              sources,
+              visibility: calendarVisibility,
+              multiCalendar,
+            })}
+          </Text>
+        </TouchableOpacity>
       ) : null}
 
-      {connected && (multiCalendar || needsListScope.length > 0) ? (
-        <CalendarListBar
-          sources={sources}
-          visibility={calendarVisibility}
-          multiAccount={multiAccount}
-          showToggles={multiCalendar}
-          accounts={accounts}
-          failedKeys={failedCalendarKeys}
-          onToggle={onToggleCalendar}
-          onShowOtherCalendars={onShowOtherCalendars}
-        />
+      {connected && !filtersCollapsed ? (
+        <ScrollView style={styles.filterScroll} nestedScrollEnabled>
+          {multiAccount ? (
+            <CalendarAccountBar
+              accounts={accounts}
+              hiddenAccounts={hidden}
+              failedAccountIds={failedAccountIds}
+              onToggle={onToggleAccount}
+              onEnable={onEnableAccount}
+            />
+          ) : null}
+
+          {multiCalendar || needsListScope.length > 0 ? (
+            <CalendarListBar
+              sources={sources}
+              visibility={calendarVisibility}
+              multiAccount={multiAccount}
+              showToggles={multiCalendar}
+              accounts={accounts}
+              failedKeys={failedCalendarKeys}
+              onToggle={onToggleCalendar}
+              onShowOtherCalendars={onShowOtherCalendars}
+            />
+          ) : null}
+        </ScrollView>
       ) : null}
 
       {!setupState && view !== 'month' ? (
@@ -848,6 +922,8 @@ export default function CalendarScreen({ navigation }: any) {
   // Every readable account's calendars; the month grid reads the same set.
   const [calendarSources, setCalendarSources] = useState<AccountCalendars[]>([]);
   const [calendarVisibility, setCalendarVisibility] = useState<CalendarVisibility>({});
+  // Collapsed by default: a long chip list otherwise pushes the grid off-screen.
+  const [filtersCollapsed, setFiltersCollapsed] = useState(true);
 
   useEffect(() => {
     AsyncStorage.getItem(CALENDAR_HIDDEN_ACCOUNTS_KEY)
@@ -858,6 +934,9 @@ export default function CalendarScreen({ navigation }: any) {
       .catch(() => {});
     AsyncStorage.getItem(CALENDAR_VIEW_KEY)
       .then((raw) => setViewState(parseCalendarView(raw)))
+      .catch(() => {});
+    AsyncStorage.getItem(CALENDAR_FILTERS_COLLAPSED_KEY)
+      .then((raw) => setFiltersCollapsed(parseFiltersCollapsed(raw)))
       .catch(() => {});
   }, []);
 
@@ -1026,6 +1105,14 @@ export default function CalendarScreen({ navigation }: any) {
     });
   };
 
+  const toggleFilters = () => {
+    setFiltersCollapsed((current) => {
+      const next = !current;
+      AsyncStorage.setItem(CALENDAR_FILTERS_COLLAPSED_KEY, String(next)).catch(() => {});
+      return next;
+    });
+  };
+
   const refresh = () => {
     setMonthReload((n) => n + 1);
     return load();
@@ -1108,6 +1195,8 @@ export default function CalendarScreen({ navigation }: any) {
         failedCalendarKeys={failedCalendarKeys}
         onToggleCalendar={toggleCalendar}
         onShowOtherCalendars={(accountId: string) => connect(accountId || undefined)}
+        filtersCollapsed={filtersCollapsed}
+        onToggleFilters={toggleFilters}
         onOpenSettings={() => navigation.navigate('Settings', { tab: 'account' })}
         onCreate={() => showModal(null)}
         onEdit={(event: any) => showModal(event)}
@@ -1177,6 +1266,9 @@ export default function CalendarScreen({ navigation }: any) {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.gray950 },
+  filterToggle: { alignSelf: 'flex-start', paddingVertical: 6, marginBottom: 8 },
+  filterScroll: { flexGrow: 0, maxHeight: 180, marginBottom: 4 },
+  filterToggleText: { color: colors.gray300, fontSize: 13, fontWeight: '600' },
   accountBar: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 },
   accountChip: {
     flexDirection: 'row',

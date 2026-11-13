@@ -28,7 +28,9 @@ import {
   buildCalendarEventInput,
   calendarReturnTo,
   CalendarAgendaContent,
+  calendarFilterSummary,
   EventModal,
+  parseFiltersCollapsed,
   eventCalendarId,
   loadCalendarEventsAcrossCalendars,
   loadCalendarSources,
@@ -294,6 +296,30 @@ describe('CalendarScreen mobile parity', () => {
       expect(html).toContain('Show me@home.com');
       // An account without Calendar access offers Enable instead of a toggle.
       expect(html).toContain('Enable Calendar for side@x.com');
+    });
+
+    it('collapses the account chips behind a summary toggle', () => {
+      const props = {
+        view: 'month',
+        loading: false,
+        eventsLoading: false,
+        error: null,
+        status: MULTI,
+        events,
+        hiddenAccounts: ['home'],
+        monthView: 'GRID',
+      };
+      const collapsed = renderToStaticMarkup(<CalendarAgendaContent {...props} filtersCollapsed />);
+      expect(collapsed).toContain('Show calendar filters');
+      expect(collapsed).toContain('1 of 3 accounts shown');
+      expect(collapsed).not.toContain('Show me@home.com');
+      expect(collapsed).toContain('GRID');
+
+      const expanded = renderToStaticMarkup(
+        <CalendarAgendaContent {...props} filtersCollapsed={false} />,
+      );
+      expect(expanded).toContain('Hide calendar filters');
+      expect(expanded).toContain('Show me@home.com');
     });
 
     it('ignores a stored hidden account once only one is linked', () => {
@@ -619,5 +645,35 @@ describe('CalendarScreen mobile parity', () => {
       expect(html).toContain('Close');
       expect(html).not.toContain('>Save<');
     });
+  });
+});
+
+describe('calendar filter collapse', () => {
+  it('defaults to collapsed unless explicitly expanded', () => {
+    expect(parseFiltersCollapsed(null)).toBe(true);
+    expect(parseFiltersCollapsed('garbage')).toBe(true);
+    expect(parseFiltersCollapsed('true')).toBe(true);
+    expect(parseFiltersCollapsed('false')).toBe(false);
+  });
+
+  it('counts visible calendars, excluding hidden accounts', () => {
+    const cal = (id: string, selected: boolean) => ({ id, summary: id, primary: false, selected });
+    const sources: any[] = [
+      {
+        account: { accountId: 'a' },
+        calendars: [cal('a1', true), cal('a2', false)],
+        listGranted: true,
+      },
+      { account: { accountId: 'b' }, calendars: [cal('b1', true)], listGranted: true },
+    ];
+    expect(
+      calendarFilterSummary({
+        accounts: [],
+        hiddenAccounts: ['b'],
+        sources,
+        visibility: { 'a|a2': true },
+        multiCalendar: true,
+      }),
+    ).toBe('2 of 3 calendars shown');
   });
 });
