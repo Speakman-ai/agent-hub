@@ -51,6 +51,7 @@ import { assignedFinalizeAutomationLevel } from './finalize/automation.js';
 import { resolveShouldAutoMerge } from './auto-merge.js';
 import { loadCardReplayContext } from './replays/replay-context-loader.js';
 import { loadCardSupportTicketCommentContext } from './support-ticket-comment-context.js';
+import { loadCardUploadAttachments } from './card-attachments.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -1515,6 +1516,11 @@ async function runAutonomousLoopInner(
 
       const commentContext = loadCardSupportTicketCommentContext(d.stmts, card, projectId);
       if (commentContext) contextLines.push(`\n${commentContext}`);
+      const images = await loadCardUploadAttachments(
+        { stmts: d.stmts, config: d.getConfig() },
+        card,
+        projectId,
+      );
 
       // Scoped cross-hub secret injection: only cards that carry an opt-in
       // label (`cross-hub:dev` or one from `AGENT_HUB_CROSS_HUB_LABELS`) receive `DEV_HUB_API_KEY`
@@ -1543,6 +1549,7 @@ async function runAutonomousLoopInner(
         agentId: agent.id,
         sessionId,
         content: contextLines.join('\n'),
+        ...(images.length > 0 ? { images } : {}),
         hookSpecificOutput: { sessionTitle: card.title },
         // Mark this chat as an autonomous-dispatch origin so the spawn
         // credential policy in `chat.ts` (`resolveGithubSpawnToken` in

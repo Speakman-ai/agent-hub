@@ -35,6 +35,7 @@ import { recomputeEpicState } from './epic-state.js';
 import { loadCardReplayContext } from './replays/replay-context-loader.js';
 import { buildAssignedCardSessionContext } from './assign-card-context.js';
 import { loadCardSupportTicketCommentContext } from './support-ticket-comment-context.js';
+import { loadCardUploadAttachments } from './card-attachments.js';
 import { cardNeedsDevHubKey, getDevHubApiKey } from './secrets.js';
 import { restoreCardAfterFailedAssign } from './kanban-assign-restore.js';
 import { enrichSessionForClient } from './session-checkpoint-rewind.js';
@@ -271,6 +272,7 @@ export async function assignKanbanCard(
   if (commentContext) contextLines.push(`\n${commentContext}`);
 
   const contextMessage = contextLines.join('\n');
+  const images = await loadCardUploadAttachments({ stmts, config }, card, projectId);
 
   const extraEnv: Record<string, string> = {};
   if (cardNeedsDevHubKey(card.labels)) {
@@ -283,6 +285,7 @@ export async function assignKanbanCard(
     agentId,
     sessionId,
     content: contextMessage,
+    ...(images.length > 0 ? { images } : {}),
     hookSpecificOutput: { sessionTitle: card.title },
     ...(Object.keys(extraEnv).length > 0 ? { extraEnv } : {}),
   }).catch((err: Error) => {

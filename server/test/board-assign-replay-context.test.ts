@@ -13,6 +13,11 @@ import type { RouteDeps, Project, KanbanCardRow } from '../types.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { getStmts } from '../db.js';
 import { createSupportTicket } from '../support-tickets-store.js';
+import { addSupportTicketAttachment } from '../support-ticket-attachments.js';
+import { LocalUploadStore } from '../upload-store.js';
+import { mkdtempSync, writeFileSync } from 'fs';
+import os from 'os';
+import path from 'path';
 import {
   addSupportTicketComment,
   hideSupportTicketComment,
@@ -117,12 +122,17 @@ function replayRow() {
   };
 }
 
-function buildApp(opts: { replay?: unknown; card?: Partial<KanbanCardRow> } = {}) {
-  const captured: { content: string } = { content: '' };
-  const handleChat = vi.fn((_caller: unknown, payload: { content?: string }) => {
-    captured.content = payload?.content ?? '';
-    return Promise.resolve();
-  });
+function buildApp(
+  opts: { replay?: unknown; card?: Partial<KanbanCardRow>; uploadsDir?: string } = {},
+) {
+  const captured: { content: string; images?: Array<{ filename: string }> } = { content: '' };
+  const handleChat = vi.fn(
+    (_caller: unknown, payload: { content?: string; images?: Array<{ filename: string }> }) => {
+      captured.content = payload?.content ?? '';
+      captured.images = payload?.images;
+      return Promise.resolve();
+    },
+  );
   const noop = { run: () => {} };
   const card = {
     id: 'card-1',
@@ -192,6 +202,7 @@ function buildApp(opts: { replay?: unknown; card?: Partial<KanbanCardRow> } = {}
     config: {
       engineValidModels: { 'claude-code': ['claude-x'] },
       engineDefaultModels: { 'claude-code': 'claude-x' },
+      uploadsDir: opts.uploadsDir,
     },
   } as unknown as RouteDeps;
   const app = express();
@@ -375,4 +386,58 @@ describe('board assign support ticket comments', () => {
       expect(captured.content).not.toContain('Do not include this');
     },
   );
+});
+
+// Regression: a card converted from a support ticket only carried markdown
+// links to the reporter screenshot and attachments, so the fix session never
+// received the files themselves. They must arrive as chat attachments so the
+// turn stages them into the worktree for the agent to Read.
+describe('board assign support ticket files', () => {
+  const PNG = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64',
+  );
+
+  it('forwards the screenshot and attachments to the session', async () => {
+    const uploadsDir = mkdtempSync(path.join(os.tmpdir(), 'card-attach-'));
+    writeFileSync(path.join(uploadsDir, 'support-screenshot-abc.png'), PNG);
+    const ticket = createSupportTicket({
+      projectId: 'proj-1',
+      type: 'bug',
+      body: 'Broken',
+      screenshotRef: '/uploads/support-screenshot-abc.png',
+    });
+    const pdf = await addSupportTicketAttachment(new LocalUploadStore(uploadsDir), {
+      ticketId: ticket.id,
+      buffer: Buffer.from('%PDF-1.4\n%%EOF\n'),
+      filename: 'spec.pdf',
+    });
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { request, captured } = buildApp({
+      uploadsDir,
+      card: {
+        support_ticket_id: ticket.id,
+        description:
+          '**Screenshot:** ![screenshot](/uploads/support-screenshot-abc.png)\n' +
+          '- [gone.png](/uploads/support-attachment-gone.png)\n' +
+          'Replay: [r](/uploads/replay-abc.json)',
+      },
+    });
+
+    await request.post(url).send({ agentId: 'agent-1' }).expect(200);
+
+    // The missing file is skipped rather than failing the turn, and the raw
+    // replay capture is left to the transcript block.
+    expect(captured.images?.map((i) => i.filename)).toEqual([
+      'support-screenshot-abc.png',
+      pdf.ref.replace('/uploads/', ''),
+    ]);
+    spy.mockRestore();
+  });
+
+  it('sends no attachments for a card without files', async () => {
+    const { request, captured } = buildApp({});
+    await request.post(url).send({ agentId: 'agent-1' }).expect(200);
+    expect(captured.images).toBeUndefined();
+  });
 });
