@@ -23,7 +23,7 @@ import { resolveToolImageSrc } from '../utils/toolImageSrc';
 import DiffView from './DiffView';
 import SubagentCard from './SubagentCard';
 import AskUserQuestion from './AskUserQuestion';
-import SessionForwardCard from './SessionForwardCard';
+import { SessionForwardSlot } from './SessionForwardCard';
 import CredentialRequestPrompt from './CredentialRequestPrompt';
 import SessionPollerCard from './SessionPollerCard';
 import BrowserActivityPanel from './BrowserActivityPanel';
@@ -517,8 +517,9 @@ function SessionTail({
           />
         ))}
         {forwardBlocks.map((b: any) => (
-          <SessionForwardCard
+          <SessionForwardSlot
             key={`${b.event.forwardId}:${b.occurrence ?? 0}`}
+            streaming={!!streaming}
             forward={b.event}
             occurrence={b.occurrence ?? 0}
             sessionId={message?.session_id}
@@ -588,8 +589,9 @@ function SessionTail({
         />
       ))}
       {forwardBlocks.map((b: any) => (
-        <SessionForwardCard
+        <SessionForwardSlot
           key={`${b.event.forwardId}:${b.occurrence ?? 0}`}
+          streaming={!!streaming}
           forward={b.event}
           occurrence={b.occurrence ?? 0}
           sessionId={message?.session_id}

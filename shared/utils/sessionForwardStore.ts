@@ -10,7 +10,8 @@
 export type SessionForwardEntry<R> =
   | { status: 'pending' }
   | { status: 'done'; record: R }
-  | { status: 'failed'; message: string };
+  | { status: 'failed'; message: string }
+  | { status: 'dismissed' };
 
 export interface SessionForwardStore<R> {
   get(key: string): SessionForwardEntry<R> | undefined;
@@ -18,6 +19,8 @@ export interface SessionForwardStore<R> {
   claim(key: string): boolean;
   succeed(key: string, record: R): void;
   fail(key: string, message: string): void;
+  /** Close the card without starting anything. Ignored once a dispatch is pending or done. */
+  dismiss(key: string): void;
   subscribe(key: string, listener: () => void): () => void;
   clear(): void;
 }
@@ -41,6 +44,11 @@ export function createSessionForwardStore<R>(): SessionForwardStore<R> {
     },
     succeed: (key, record) => set(key, { status: 'done', record }),
     fail: (key, message) => set(key, { status: 'failed', message }),
+    dismiss(key) {
+      const current = entries.get(key);
+      if (current?.status === 'pending' || current?.status === 'done') return;
+      set(key, { status: 'dismissed' });
+    },
     subscribe(key, listener) {
       const group = listeners.get(key) ?? new Set();
       group.add(listener);

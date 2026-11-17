@@ -31,6 +31,7 @@ import TopBar from './components/TopBar';
 import ChatMessage from './components/ChatMessage';
 import ThinkingIndicator from './components/ThinkingIndicator';
 import SessionTail from './components/SessionTail';
+import { SessionForwardDock, SessionForwardDockContext } from './components/SessionForwardCard';
 import AutopilotSetupPrompt from './components/AutopilotSetupPrompt';
 import MessageInput from './components/MessageInput';
 import AgentSwitcher from './components/AgentSwitcher';
@@ -7103,62 +7104,73 @@ export default function App({ initialView }: any = {}) {
           style={{ overflowAnchor: 'none' }}
         >
           <div className="min-w-0 max-w-full" ref={messagesColumnRef}>
-            {hubAssistantTranscriptLive &&
-              messages.length === 0 &&
-              !thinking &&
-              !streamingMsgId &&
-              !streamingContent && (
-                <p className="text-sm text-gray-500 px-1" data-testid="server-agent-empty">
-                  Ask {serverAgentName} anything about Agent Hub: what to focus on next, to start an
-                  agent, to manage cards, wiki, crons, or settings. It works through the API as you,
-                  so it sees only the projects you can access and can do what your role allows.
-                </p>
-              )}
-            {hubAssistantTranscriptLive && (
-              <>
-                {messages.map((msg: any) =>
-                  msg.role === 'assistant' ? (
-                    <SessionTail
-                      key={msg.id}
-                      message={msg}
-                      events={eventsByMessage[msg.id]}
-                      agentColor={msg.agent_color || chatAccentColor}
-                      agentName={serverAgentName}
-                      onEventsLoaded={handleEventsLoaded}
-                      onAskSubmit={handleAskSubmit}
-                      onCredentialSubmit={handleCredentialSubmit}
-                      askSubmittedIds={askSubmitted}
-                      fromAgent={activeAgent}
-                      agents={agents}
-                      projects={projects}
-                      sessionHandoffs={sessionHandoffs}
-                      sessionDelegations={delegations[activeSessionId]}
-                      delegationDispatchError={delegationDispatchErrors[activeSessionId]}
-                      onOpenSession={handleOpenHandoffSession}
-                      browserScreenshots={browserScreensBySession[activeSessionId]?.[msg.id] ?? {}}
-                      hideStatus={shellMode === 'simple'}
-                    />
-                  ) : (
-                    <ChatMessage
-                      key={msg.id}
-                      message={msg}
-                      agentColor={chatAccentColor}
-                      projectId={activeChatProject?.id}
-                      hosted={activeChatProject?.gitHost === 'agenthub'}
-                      onOpenPrDetail={handleOpenPrDetail}
-                      onStartFollowUp={() => handleStartFollowUpSession(activeSessionId)}
-                    />
-                  ),
+            <SessionForwardDockContext.Provider value>
+              {hubAssistantTranscriptLive &&
+                messages.length === 0 &&
+                !thinking &&
+                !streamingMsgId &&
+                !streamingContent && (
+                  <p className="text-sm text-gray-500 px-1" data-testid="server-agent-empty">
+                    Ask {serverAgentName} anything about Agent Hub: what to focus on next, to start
+                    an agent, to manage cards, wiki, crons, or settings. It works through the API as
+                    you, so it sees only the projects you can access and can do what your role
+                    allows.
+                  </p>
                 )}
-                {(reactLoopStepsBySession[activeSessionId] || []).length > 0 && (
-                  <ReactLoopObservabilityPanel
-                    steps={reactLoopStepsBySession[activeSessionId]}
-                    streaming={Boolean(streamingMsgId || activeTasks[activeSessionId])}
+              {hubAssistantTranscriptLive && (
+                <>
+                  {messages.map((msg: any) =>
+                    msg.role === 'assistant' ? (
+                      <SessionTail
+                        key={msg.id}
+                        message={msg}
+                        events={eventsByMessage[msg.id]}
+                        agentColor={msg.agent_color || chatAccentColor}
+                        agentName={serverAgentName}
+                        onEventsLoaded={handleEventsLoaded}
+                        onAskSubmit={handleAskSubmit}
+                        onCredentialSubmit={handleCredentialSubmit}
+                        askSubmittedIds={askSubmitted}
+                        fromAgent={activeAgent}
+                        agents={agents}
+                        projects={projects}
+                        sessionHandoffs={sessionHandoffs}
+                        sessionDelegations={delegations[activeSessionId]}
+                        delegationDispatchError={delegationDispatchErrors[activeSessionId]}
+                        onOpenSession={handleOpenHandoffSession}
+                        browserScreenshots={
+                          browserScreensBySession[activeSessionId]?.[msg.id] ?? {}
+                        }
+                        hideStatus={shellMode === 'simple'}
+                      />
+                    ) : (
+                      <ChatMessage
+                        key={msg.id}
+                        message={msg}
+                        agentColor={chatAccentColor}
+                        projectId={activeChatProject?.id}
+                        hosted={activeChatProject?.gitHost === 'agenthub'}
+                        onOpenPrDetail={handleOpenPrDetail}
+                        onStartFollowUp={() => handleStartFollowUpSession(activeSessionId)}
+                      />
+                    ),
+                  )}
+                  {(reactLoopStepsBySession[activeSessionId] || []).length > 0 && (
+                    <ReactLoopObservabilityPanel
+                      steps={reactLoopStepsBySession[activeSessionId]}
+                      streaming={Boolean(streamingMsgId || activeTasks[activeSessionId])}
+                    />
+                  )}
+                  {liveStreamingAssistantTurn}
+                  <SessionForwardDock
+                    chatSessionId={activeSessionId}
+                    agents={agents}
+                    projects={projects}
+                    onOpenSession={handleOpenHandoffSession}
                   />
-                )}
-                {liveStreamingAssistantTurn}
-              </>
-            )}
+                </>
+              )}
+            </SessionForwardDockContext.Provider>
           </div>
         </div>
         <div className="min-w-0 max-w-full shrink-0">
@@ -8627,7 +8639,7 @@ export default function App({ initialView }: any = {}) {
                               );
                               const queued = messages.filter((msg: any) => queuedIds.has(msg.id));
                               return (
-                                <>
+                                <SessionForwardDockContext.Provider value>
                                   {nonQueued.map((msg: any) =>
                                     msg.role === 'assistant' ? (
                                       <SessionTail
@@ -8772,6 +8784,13 @@ export default function App({ initialView }: any = {}) {
                                         }}
                                       />
                                     )}
+                                  {/* Open Session forward cards stay at the end until launched or dismissed */}
+                                  <SessionForwardDock
+                                    chatSessionId={activeSessionId}
+                                    agents={agents}
+                                    projects={projects}
+                                    onOpenSession={handleOpenHandoffSession}
+                                  />
                                   {/* Queued messages always render at the very bottom */}
                                   {queued.map((msg: any) => (
                                     <ChatMessage
@@ -8786,7 +8805,7 @@ export default function App({ initialView }: any = {}) {
                                       inFlightWhileStreaming={isProcessing}
                                     />
                                   ))}
-                                </>
+                                </SessionForwardDockContext.Provider>
                               );
                             })()}
                           </div>

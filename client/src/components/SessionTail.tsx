@@ -45,7 +45,7 @@ import { latestSessionEnvLaunch } from '@shared/utils/sessionEnvLaunch';
 import { formatSystemBannerModelLine } from '@shared/utils/systemBannerModel';
 import { extractCredentialRequestBlocks } from '../utils/credentialRequests';
 import AskUserQuestion from './AskUserQuestion';
-import SessionForwardCard from './SessionForwardCard';
+import { SessionForwardSlot } from './SessionForwardCard';
 import SessionPollerCard from './SessionPollerCard';
 import { extractPollerBlocks } from '@shared/utils/sessionPoller';
 import ReviewDisputeCard from './ReviewDisputeCard';
@@ -498,8 +498,9 @@ function SessionTail({
                 );
               case 'session_forward':
                 return (
-                  <SessionForwardCard
+                  <SessionForwardSlot
                     key={`b${i}`}
+                    streaming={!!streaming}
                     forward={block.event}
                     occurrence={block.occurrence ?? 0}
                     sessionId={message?.session_id}

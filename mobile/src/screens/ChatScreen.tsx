@@ -15,6 +15,14 @@ import SessionEngineModelSheet from '../components/SessionEngineModelSheet';
 import AgentSwitcher from '../components/AgentSwitcher';
 import DelegationPanel from '../components/DelegationPanel';
 import SessionTail from '../components/SessionTail';
+import {
+  SessionForwardDock,
+  SessionForwardDockContext,
+  createOpenForwardScanner,
+  useDockedForwards,
+} from '../components/SessionForwardCard';
+import { api } from '../utils/api';
+import { mapRowsFromMessageEventsApi } from '../utils/sessionTailEventsLoad';
 // FinalizeBar — single action row (Summary, View changes, Build, Finalize, Push).
 import SessionAgentsPanel from '../components/SessionAgentsPanel';
 import FinalizeBar from '../components/FinalizeBar';
@@ -57,6 +65,11 @@ import { HUB_ASSISTANT_AGENT_ID } from '@shared/utils/hub';
 import { needsAutopilotSetup } from '@shared/utils/sessionAutopilot';
 import AutopilotSetupPrompt from '../components/AutopilotSetupPrompt';
 import WindowKeyboardAvoidingView from '../components/WindowKeyboardAvoidingView';
+
+const FORWARD_SCAN_RETRY_BASE_MS = 2_000;
+const FORWARD_SCAN_RETRY_MAX_MS = 30_000;
+const FORWARD_SCAN_MAX_RETRIES = 6;
+
 export default function ChatScreen({
   embedded = false,
   simple = false,
@@ -260,6 +273,48 @@ export default function ChatScreen({
     sessionAgentColor: activeAgent?.color,
     sessionModel,
   });
+  const dockedForwards = useDockedForwards(activeSessionId);
+  // Rows the FlatList never mounts still pin their open cards. The scanner
+  // remembers only successful checks; a failed load is retried with backoff,
+  // and sooner when new events or messages arrive.
+  const handleEventsLoadedRef = useRef(handleEventsLoaded);
+  handleEventsLoadedRef.current = handleEventsLoaded;
+  const forwardScanner = useMemo(
+    () =>
+      createOpenForwardScanner(async (messageId) => {
+        try {
+          const rows = mapRowsFromMessageEventsApi(await api.getMessageEvents(messageId));
+          handleEventsLoadedRef.current(messageId, rows);
+          return rows;
+        } catch {
+          return null;
+        }
+      }),
+    [],
+  );
+  const [forwardScanRetry, setForwardScanRetry] = useState(0);
+  const forwardScanAttempts = useRef(0);
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    void forwardScanner.scan(messages, eventsByMessage).then((failed) => {
+      if (cancelled) return;
+      if (failed.length === 0) {
+        forwardScanAttempts.current = 0;
+        return;
+      }
+      const attempt = forwardScanAttempts.current++;
+      if (attempt >= FORWARD_SCAN_MAX_RETRIES) return;
+      timer = setTimeout(
+        () => setForwardScanRetry((n) => n + 1),
+        Math.min(FORWARD_SCAN_RETRY_BASE_MS * 2 ** attempt, FORWARD_SCAN_RETRY_MAX_MS),
+      );
+    });
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [forwardScanner, messages, eventsByMessage, forwardScanRetry]);
   // Build list data: messages + thinking + streaming indicators
   const listData = [
     ...messages.map((msg: any) => ({ type: 'message', key: msg.id, data: msg })),
@@ -273,6 +328,8 @@ export default function ChatScreen({
           },
         ]
       : []),
+    // Open Session forward cards stay at the end until launched or dismissed.
+    ...(dockedForwards.length > 0 ? [{ type: 'forward-dock', key: 'forward-dock' }] : []),
     ...(!simple && activeDelegation?.tasks?.length > 0
       ? [{ type: 'delegation', key: 'delegation', data: activeDelegation }]
       : []),
@@ -398,6 +455,15 @@ export default function ChatScreen({
               onCancel={handleDelegationCancel}
             />
           </View>
+        );
+      case 'forward-dock':
+        return (
+          <SessionForwardDock
+            chatSessionId={activeSessionId}
+            agents={agents}
+            projects={projects}
+            onOpenSession={onOpenSession ?? handleOpenHandoffSession}
+          />
         );
       case 'resolve-pr-banner':
         return (
@@ -735,23 +801,25 @@ export default function ChatScreen({
           <>
             <SessionPollerBanner sessionId={activeSessionId ?? null} />
             {/* Messages */}
-            <FlatList
-              ref={flatListRef}
-              data={listData}
-              renderItem={renderItem}
-              keyExtractor={(item: any) => item.key}
-              ListEmptyComponent={!thinking && !streamingContent ? renderEmpty : null}
-              contentContainerStyle={
-                listData.length === 0 ? styles.emptyListContent : styles.listContent
-              }
-              showsVerticalScrollIndicator={false}
-              onScrollToIndexFailed={() => undefined}
-              onContentSizeChange={() => {
-                if (listData.length > 0) {
-                  flatListRef.current?.scrollToEnd({ animated: false });
+            <SessionForwardDockContext.Provider value>
+              <FlatList
+                ref={flatListRef}
+                data={listData}
+                renderItem={renderItem}
+                keyExtractor={(item: any) => item.key}
+                ListEmptyComponent={!thinking && !streamingContent ? renderEmpty : null}
+                contentContainerStyle={
+                  listData.length === 0 ? styles.emptyListContent : styles.listContent
                 }
-              }}
-            />
+                showsVerticalScrollIndicator={false}
+                onScrollToIndexFailed={() => undefined}
+                onContentSizeChange={() => {
+                  if (listData.length > 0) {
+                    flatListRef.current?.scrollToEnd({ animated: false });
+                  }
+                }}
+              />
+            </SessionForwardDockContext.Provider>
 
             {!simple && listData.length > 0 && configuringAutopilot && activeSessionId ? (
               <View style={{ paddingHorizontal: 16, paddingBottom: 8 }}>

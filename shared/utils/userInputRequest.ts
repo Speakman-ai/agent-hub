@@ -95,6 +95,20 @@ function metadataUserInput(metadata: string | null | undefined): {
   }
 }
 
+/**
+ * True when an assistant row may hold a Session forward card. Forward fences
+ * are lifted out of the saved text into events, so the row's stamp is the
+ * only hint available without loading its events. Rows stamped before kinds
+ * were recorded count as maybe.
+ */
+export function messageMayHoldForward(
+  message: { role?: string | null; metadata?: string | null } | null | undefined,
+): boolean {
+  if (message?.role !== 'assistant') return false;
+  const stamp = metadataUserInput(message.metadata);
+  return stamp.flagged && (stamp.kinds === null || stamp.kinds.includes('forward'));
+}
+
 export interface AwaitingUserReplyOptions {
   /**
    * Request kinds that do not block the caller. A row stamped without kinds

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   findCredentialRequestIds,
   isAwaitingUserReply,
+  messageMayHoldForward,
   textRequestsUserInput,
   userInputKindsInText,
 } from './userInputRequest.js';
@@ -137,5 +138,20 @@ describe('isAwaitingUserReply', () => {
         { role: 'user', content: 'a' },
       ]),
     ).toBe(false);
+  });
+});
+
+describe('messageMayHoldForward', () => {
+  const stamp = (kinds?: string[]) =>
+    JSON.stringify({
+      awaitingUserInput: true,
+      ...(kinds ? { awaitingUserInputKinds: kinds } : {}),
+    });
+  it('reads the forward kind from the assistant stamp', () => {
+    expect(messageMayHoldForward({ role: 'assistant', metadata: stamp(['forward']) })).toBe(true);
+    expect(messageMayHoldForward({ role: 'assistant', metadata: stamp(['ask']) })).toBe(false);
+    expect(messageMayHoldForward({ role: 'assistant', metadata: stamp() })).toBe(true);
+    expect(messageMayHoldForward({ role: 'assistant', metadata: null })).toBe(false);
+    expect(messageMayHoldForward({ role: 'user', metadata: stamp(['forward']) })).toBe(false);
   });
 });

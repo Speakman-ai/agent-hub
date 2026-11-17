@@ -1,4 +1,12 @@
-import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import React, {
+  createContext,
+  memo,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
@@ -13,10 +21,18 @@ import {
 } from '@shared/utils/extractForwardBlocks';
 import { colors } from '../theme/colors';
 import { createSessionForwardStore } from '@shared/utils/sessionForwardStore';
+import {
+  DISMISSED_FORWARD_VALUE,
+  createSessionForwardDock,
+  dockedForwardsFor,
+  parseSavedForwardState,
+} from '@shared/utils/sessionForwardDock';
 import { api } from '../utils/api';
 import { getAuthRecord } from '../utils/auth';
 import { getServerBaseUrl } from '../utils/config';
 import { isWorkflowProject } from '../utils/project-mode';
+import { eventsToBlocks } from '../utils/sessionTailBlocks';
+import { messageMayHoldForward } from '@shared/utils/userInputRequest';
 
 interface ForwardRecord {
   sessionId: string;
@@ -27,6 +43,52 @@ interface ForwardRecord {
 
 /** Dispatch state per card identity for this client; outlives card mounts. */
 export const forwardStore = createSessionForwardStore<ForwardRecord>();
+
+/** Open cards pinned to the end of their chat; see `sessionForwardDock`. */
+export const forwardDock = createSessionForwardDock();
+
+/**
+ * True inside a chat that renders `SessionForwardDock`. Without it a card
+ * stays in its message, so a surface with no dock never loses one.
+ */
+export const SessionForwardDockContext = createContext(false);
+
+function cardKeys(
+  sessionId: string | null | undefined,
+  messageId: string | number | null | undefined,
+  forwardId: string,
+  occurrence: number,
+): { storageKey: string | null; identity: string } {
+  const storageKey = sessionForwardStorageKey({
+    owner: storageOwner(),
+    sessionId,
+    messageId,
+    forwardId,
+    occurrence,
+  });
+  return {
+    storageKey,
+    identity:
+      storageKey ??
+      ['local', sessionId ?? '', String(messageId ?? ''), forwardId, occurrence].join(':'),
+  };
+}
+
+async function readSavedState(key: string | null): Promise<'dismissed' | 'forwarded' | null> {
+  if (!key) return null;
+  try {
+    return parseSavedForwardState(await AsyncStorage.getItem(key));
+  } catch {
+    return null;
+  }
+}
+
+function useForwardEntry(identity: string) {
+  return useSyncExternalStore(
+    (onChange) => forwardStore.subscribe(identity, onChange),
+    () => forwardStore.get(identity),
+  );
+}
 
 function storageOwner(): string {
   return `${getServerBaseUrl() ?? ''}|${getAuthRecord()?.user?.id ?? ''}`;
@@ -81,24 +143,10 @@ export default function SessionForwardCard({
   const modeOptions = SESSION_FORWARD_MODE_OPTIONS.filter((option) =>
     allowedModes.includes(option.value),
   );
-  const storageKey = useMemo(
-    () =>
-      sessionForwardStorageKey({
-        owner: storageOwner(),
-        sessionId,
-        messageId,
-        forwardId: forward.forwardId,
-        occurrence,
-      }),
+  const { storageKey, identity } = useMemo(
+    () => cardKeys(sessionId, messageId, forward.forwardId, occurrence),
     [sessionId, messageId, forward.forwardId, occurrence],
   );
-  // Which card this is. The component can be reused for another card (the
-  // web tail keys blocks by position) or unmount mid-dispatch, so dispatch
-  // state lives in `forwardStore` under this identity and the rest of the
-  // local state below is tagged with it.
-  const identity =
-    storageKey ??
-    ['local', sessionId ?? '', String(messageId ?? ''), forward.forwardId, occurrence].join(':');
   const [chosen, setChosen] = useState<{ key: string; mode: SessionForwardMode } | null>(null);
   const mode = initialSessionForwardMode(
     allowedModes,
@@ -109,16 +157,18 @@ export default function SessionForwardCard({
   // `loaded` is the saved record for one identity. Until it matches the
   // current card, that card may already be forwarded, so Session forward
   // stays disabled.
-  const [loaded, setLoaded] = useState<{ key: string; record: ForwardRecord | null } | null>(null);
+  const [loaded, setLoaded] = useState<{
+    key: string;
+    record: ForwardRecord | null;
+    dismissed: boolean;
+  } | null>(null);
   const hydrated = loaded?.key === identity;
   const savedRecord = hydrated ? (loaded?.record ?? null) : null;
-  const entry = useSyncExternalStore(
-    (onChange) => forwardStore.subscribe(identity, onChange),
-    () => forwardStore.get(identity),
-  );
+  const entry = useForwardEntry(identity);
   const pending = entry?.status === 'pending';
   const error = entry?.status === 'failed' ? entry.message : null;
   const record = entry?.status === 'done' ? entry.record : savedRecord;
+  const dismissed = !record && (entry?.status === 'dismissed' || (hydrated && !!loaded?.dismissed));
   const selected = modeOptions.find((option) => option.value === mode) ?? modeOptions[0];
   const toAgent = (agents || []).find(
     (agent: any) => agent?.id === (record?.agentId || forward.agentId),
@@ -127,9 +177,12 @@ export default function SessionForwardCard({
 
   useEffect(() => {
     let cancelled = false;
-    void readForwardRecord(storageKey).then((saved) => {
-      if (!cancelled) setLoaded({ key: identity, record: saved });
-    });
+    void Promise.all([readForwardRecord(storageKey), readSavedState(storageKey)]).then(
+      ([saved, state]) => {
+        if (!cancelled)
+          setLoaded({ key: identity, record: saved, dismissed: state === 'dismissed' });
+      },
+    );
     return () => {
       cancelled = true;
     };
@@ -140,7 +193,7 @@ export default function SessionForwardCard({
     const savedKey = storageKey;
     // The claim is in the module store, so a remounted card sees a dispatch
     // that is still in flight and cannot start a second one.
-    if (!hydrated || record || !forwardStore.claim(key)) return;
+    if (!hydrated || record || dismissed || !forwardStore.claim(key)) return;
     try {
       const started = await api.dispatchSession(forward.projectId, {
         prompt: forward.prompt,
@@ -165,6 +218,16 @@ export default function SessionForwardCard({
     }
   };
 
+  const dismiss = () => {
+    if (!hydrated || record || pending) return;
+    forwardStore.dismiss(identity);
+    if (storageKey) {
+      AsyncStorage.setItem(storageKey, DISMISSED_FORWARD_VALUE).catch(() => {
+        /* the card still closes for this visit */
+      });
+    }
+  };
+
   return (
     <View style={styles.card} testID="session-forward-card">
       <View style={styles.header}>
@@ -178,7 +241,13 @@ export default function SessionForwardCard({
         {forward.summary}
       </Text>
       <Text style={styles.forLine}>For {toName}</Text>
-      {record ? (
+      {dismissed ? (
+        <View style={styles.footer}>
+          <Text testID="session-forward-dismissed" style={styles.note}>
+            Dismissed. Nothing was started.
+          </Text>
+        </View>
+      ) : record ? (
         <View style={styles.footer}>
           <Text style={styles.note}>Forwarded as {sessionForwardModeLabel(record.mode)}.</Text>
           {typeof onOpenSession === 'function' ? (
@@ -232,6 +301,16 @@ export default function SessionForwardCard({
           >
             <Text style={styles.buttonText}>{pending ? 'Starting…' : 'Session forward'}</Text>
           </Pressable>
+          <Pressable
+            testID="session-forward-dismiss"
+            accessibilityRole="button"
+            accessibilityLabel="Dismiss"
+            disabled={pending || !hydrated}
+            onPress={dismiss}
+            style={styles.secondaryButton}
+          >
+            <Text style={styles.secondaryButtonText}>Dismiss</Text>
+          </Pressable>
           {error ? (
             <Text testID="session-forward-error" style={styles.error}>
               {error}
@@ -244,6 +323,7 @@ export default function SessionForwardCard({
 }
 
 const styles = StyleSheet.create({
+  dock: { paddingHorizontal: 12 },
   card: {
     marginVertical: 8,
     borderWidth: 1,
@@ -300,5 +380,204 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   buttonText: { color: colors.amber400, fontSize: 13, fontWeight: '600' },
+  secondaryButton: {
+    alignSelf: 'flex-start',
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  secondaryButtonText: { color: colors.gray400, fontSize: 13, fontWeight: '600' },
   error: { color: colors.red400, fontSize: 12 },
 });
+
+type CardProps = Parameters<typeof SessionForwardCard>[0];
+
+/**
+ * The card's place in its message. While the card is open and the chat has a
+ * dock, it is pinned to the end of the chat and this renders nothing; once it
+ * is launched or dismissed it renders here, in the message that proposed it.
+ * A streaming message keeps its card inline: it is already at the bottom.
+ */
+export const SessionForwardSlot = memo(function SessionForwardSlot(
+  props: CardProps & { streaming?: boolean },
+) {
+  const { streaming, ...cardProps } = props;
+  const { forward, sessionId, messageId } = cardProps;
+  const occurrence = cardProps.occurrence ?? 0;
+  const docked = useContext(SessionForwardDockContext);
+  const { storageKey, identity } = useMemo(
+    () => cardKeys(sessionId, messageId, forward.forwardId, occurrence),
+    [sessionId, messageId, forward.forwardId, occurrence],
+  );
+  const entry = useForwardEntry(identity);
+  const [saved, setSaved] = useState<{
+    key: string;
+    state: 'dismissed' | 'forwarded' | null;
+  } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void readSavedState(storageKey).then((state) => {
+      if (!cancelled) setSaved({ key: identity, state });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [identity, storageKey]);
+  const hydrated = saved?.key === identity;
+  const resolved =
+    entry?.status === 'done' ||
+    entry?.status === 'dismissed' ||
+    (entry?.status !== 'pending' && hydrated && saved?.state != null);
+  const dockable = docked && !streaming && !!sessionId && messageId != null;
+  const pin = dockable && hydrated && !resolved;
+
+  useEffect(() => {
+    if (pin && sessionId && messageId != null) {
+      forwardDock.pin({ identity, chatSessionId: sessionId, messageId, forward, occurrence });
+    } else if (resolved) {
+      forwardDock.unpin(identity);
+    }
+  }, [pin, resolved, identity, sessionId, messageId, forward, occurrence]);
+
+  // Until the saved state is read, a dockable card could be either; show nothing.
+  if (dockable && !resolved && !hydrated) return null;
+  return pin ? null : <SessionForwardCard {...cardProps} />;
+});
+
+/** Leaves the dock on its own once resolved, even if its row is virtualized away. */
+function DockedCard({ identity, ...props }: CardProps & { identity: string }) {
+  const entry = useForwardEntry(identity);
+  const resolved = entry?.status === 'done' || entry?.status === 'dismissed';
+  useEffect(() => {
+    if (resolved) forwardDock.unpin(identity);
+  }, [resolved, identity]);
+  return <SessionForwardCard {...props} />;
+}
+
+/** Pinned cards for one chat; the chat adds a list row only when there are some. */
+export function useDockedForwards(chatSessionId: string | null | undefined) {
+  const snapshot = useSyncExternalStore(forwardDock.subscribe, forwardDock.snapshot);
+  return useMemo(() => dockedForwardsFor(snapshot, chatSessionId), [snapshot, chatSessionId]);
+}
+
+/** Open cards for one chat, rendered after its last message. */
+export function SessionForwardDock({
+  chatSessionId,
+  agents,
+  projects,
+  onOpenSession,
+}: {
+  chatSessionId: string | null | undefined;
+  agents?: any[];
+  projects?: any[];
+  onOpenSession?: (agentId: string, sessionId: string) => void;
+}) {
+  const pinned = useDockedForwards(chatSessionId);
+  if (pinned.length === 0) return null;
+  return (
+    <View testID="session-forward-dock" style={styles.dock}>
+      {pinned.map((entry) => (
+        <DockedCard
+          key={entry.identity}
+          identity={entry.identity}
+          forward={entry.forward}
+          occurrence={entry.occurrence}
+          sessionId={entry.chatSessionId}
+          messageId={entry.messageId}
+          agents={agents}
+          projects={projects}
+          onOpenSession={onOpenSession}
+        />
+      ))}
+    </View>
+  );
+}
+
+/**
+ * Pin one message's open cards. False when its events could not be loaded,
+ * so the caller knows the message still needs a check.
+ */
+async function pinOpenForwardsOf(
+  message: any,
+  eventsByMessage: Record<string, unknown>,
+  loadEvents: (messageId: string) => Promise<unknown[] | null>,
+): Promise<boolean> {
+  const known = eventsByMessage[message.id];
+  const events = Array.isArray(known) ? known : await loadEvents(String(message.id));
+  if (!Array.isArray(events)) return false;
+  const blocks = eventsToBlocks(events).filter((block: any) => block.kind === 'session_forward');
+  for (const block of blocks) {
+    const { type: _type, ...forward } = block.event as ExtractedForward & { type?: string };
+    const occurrence = block.occurrence ?? 0;
+    const { storageKey, identity } = cardKeys(
+      message.session_id,
+      message.id,
+      forward.forwardId,
+      occurrence,
+    );
+    const status = forwardStore.get(identity)?.status;
+    if (status === 'done' || status === 'dismissed') continue;
+    if (status !== 'pending' && (await readSavedState(storageKey)) !== null) continue;
+    forwardDock.pin({
+      identity,
+      chatSessionId: message.session_id,
+      messageId: message.id,
+      forward,
+      occurrence,
+    });
+  }
+  return true;
+}
+
+export interface OpenForwardScanner {
+  /**
+   * Check every message not yet checked. Resolves to the ids whose events
+   * could not be loaded; those stay unchecked and are tried on the next scan.
+   */
+  scan(messages: ReadonlyArray<any>, eventsByMessage: Record<string, unknown>): Promise<string[]>;
+}
+
+/**
+ * Pins a chat's open cards from its loaded messages, without waiting for
+ * their rows to mount. A long chat opens scrolled to the end, so the FlatList
+ * may never render the row that proposed a card. Only rows stamped as holding
+ * a forward have their events loaded. A message counts as checked only after
+ * its check succeeds; one in flight is skipped, a failed one is retried.
+ */
+export function createOpenForwardScanner(
+  loadEvents: (messageId: string) => Promise<unknown[] | null>,
+): OpenForwardScanner {
+  const checked = new Set<string>();
+  // A scan that finds a message already in flight waits for that check, so
+  // its failure is reported by whichever scan is still listening.
+  const inFlight = new Map<string, Promise<boolean>>();
+  return {
+    async scan(messages, eventsByMessage) {
+      const work: Array<Promise<string | null>> = [];
+      for (const message of messages) {
+        const id = message?.id == null ? '' : String(message.id);
+        if (!id || checked.has(id)) continue;
+        let check = inFlight.get(id);
+        if (!check) {
+          if (!message.session_id || !messageMayHoldForward(message)) {
+            checked.add(id);
+            continue;
+          }
+          check = pinOpenForwardsOf(message, eventsByMessage, loadEvents)
+            .catch(() => false)
+            .then((ok) => {
+              inFlight.delete(id);
+              if (ok) checked.add(id);
+              return ok;
+            });
+          inFlight.set(id, check);
+        }
+        work.push(check.then((ok) => (ok ? null : id)));
+      }
+      const results = await Promise.all(work);
+      return results.filter((id): id is string => id !== null);
+    },
+  };
+}

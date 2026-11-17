@@ -36,4 +36,17 @@ describe('createSessionForwardStore', () => {
     expect(store.get('a')).toBeUndefined();
     expect(store.claim('a')).toBe(true);
   });
+
+  it('dismisses an open card but never one that is starting or started', () => {
+    const store = createSessionForwardStore<string>();
+    store.dismiss('a');
+    expect(store.get('a')).toEqual({ status: 'dismissed' });
+    expect(store.claim('a')).toBe(false);
+    store.claim('b');
+    store.dismiss('b');
+    expect(store.get('b')).toEqual({ status: 'pending' });
+    store.succeed('b', 'sess');
+    store.dismiss('b');
+    expect(store.get('b')).toEqual({ status: 'done', record: 'sess' });
+  });
 });

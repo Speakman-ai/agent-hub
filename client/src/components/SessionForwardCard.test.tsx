@@ -5,7 +5,14 @@ import type { ExtractedForward } from '@shared/utils/extractForwardBlocks';
 const dispatchSession = vi.hoisted(() => vi.fn());
 vi.mock('../utils/api', () => ({ api: { dispatchSession } }));
 
-const { default: SessionForwardCard, forwardStore } = await import('./SessionForwardCard');
+const {
+  default: SessionForwardCard,
+  forwardStore,
+  forwardDock,
+  SessionForwardSlot,
+  SessionForwardDock,
+  SessionForwardDockContext,
+} = await import('./SessionForwardCard');
 
 const forward: ExtractedForward = {
   forwardId: 'fwd-test',
@@ -22,6 +29,21 @@ describe('SessionForwardCard', () => {
     dispatchSession.mockReset();
     localStorage.clear();
     forwardStore.clear();
+    forwardDock.clear();
+  });
+
+  it('dismisses without starting anything and stays dismissed on reload', () => {
+    const card = <SessionForwardCard forward={forward} sessionId="chat-1" messageId="m-1" />;
+    const view = render(card);
+    fireEvent.click(screen.getByTestId('session-forward-dismiss'));
+    expect(screen.getByTestId('session-forward-dismissed')).toBeTruthy();
+    expect(screen.queryByTestId('session-forward')).toBeNull();
+    expect(dispatchSession).not.toHaveBeenCalled();
+    view.unmount();
+    forwardStore.clear();
+
+    render(card);
+    expect(screen.getByTestId('session-forward-dismissed')).toBeTruthy();
   });
 
   it('starts the session with the dropdown level and then offers to open it', async () => {
@@ -308,5 +330,86 @@ describe('SessionForwardCard', () => {
     expect(await screen.findByTestId('session-forward-open')).toBeTruthy();
     expect(screen.queryByTestId('session-forward')).toBeNull();
     expect(dispatchSession).toHaveBeenCalledTimes(1);
+  });
+
+  describe('pinned to the end of the chat', () => {
+    // The open card leaves its message and renders in the dock after every
+    // later message; launching or dismissing it puts it back in its message.
+    function chat(extra: string) {
+      return (
+        <SessionForwardDockContext.Provider value>
+          <div data-testid="message-1">
+            <SessionForwardSlot
+              forward={forward}
+              sessionId="chat-1"
+              messageId="m-1"
+              onOpenSession={() => {}}
+            />
+          </div>
+          <div data-testid="message-2">{extra}</div>
+          <SessionForwardDock chatSessionId="chat-1" onOpenSession={() => {}} />
+        </SessionForwardDockContext.Provider>
+      );
+    }
+
+    it('stays below later messages until dismissed, then returns to its message', () => {
+      render(chat('a later reply'));
+      const dock = screen.getByTestId('session-forward-dock');
+      expect(screen.getByTestId('message-1').childElementCount).toBe(0);
+      expect(dock.querySelector('[data-testid="session-forward-card"]')).toBeTruthy();
+      // The dock is after the later message in document order.
+      expect(
+        screen.getByTestId('message-2').compareDocumentPosition(dock) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+
+      fireEvent.click(screen.getByTestId('session-forward-dismiss'));
+      expect(screen.queryByTestId('session-forward-dock')).toBeNull();
+      expect(
+        screen.getByTestId('message-1').querySelector('[data-testid="session-forward-dismissed"]'),
+      ).toBeTruthy();
+    });
+
+    it('leaves the dock once launched', async () => {
+      dispatchSession.mockResolvedValue({
+        sessionId: 'sess-1',
+        agentId: 'ada',
+        projectId: 'app',
+        name: 'Fix login',
+        skippedSkills: [],
+        ref: '',
+      });
+      render(chat(''));
+      fireEvent.click(screen.getByTestId('session-forward'));
+      await waitFor(() => expect(screen.queryByTestId('session-forward-dock')).toBeNull());
+      expect(
+        screen.getByTestId('message-1').querySelector('[data-testid="session-forward-open"]'),
+      ).toBeTruthy();
+    });
+
+    it('does not pin a card in a streaming message or a chat without a dock', () => {
+      render(
+        <>
+          <SessionForwardDockContext.Provider value>
+            <SessionForwardSlot forward={forward} sessionId="chat-1" messageId="m-1" streaming />
+          </SessionForwardDockContext.Provider>
+          <SessionForwardSlot forward={forward} sessionId="chat-1" messageId="m-2" />
+        </>,
+      );
+      expect(screen.getAllByTestId('session-forward-card')).toHaveLength(2);
+      expect(forwardDock.snapshot()).toHaveLength(0);
+    });
+
+    it('only shows the cards of the chat it belongs to', () => {
+      forwardDock.pin({
+        identity: 'other',
+        chatSessionId: 'chat-2',
+        messageId: 'm-9',
+        forward,
+        occurrence: 0,
+      });
+      render(<SessionForwardDock chatSessionId="chat-1" />);
+      expect(screen.queryByTestId('session-forward-dock')).toBeNull();
+    });
   });
 });

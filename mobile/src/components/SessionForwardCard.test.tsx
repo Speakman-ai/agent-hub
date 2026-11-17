@@ -31,8 +31,20 @@ vi.mock('../utils/config', () => ({ getServerBaseUrl: () => 'https://hub.test' }
 const originalNodeEnv = process.env.NODE_ENV;
 process.env.NODE_ENV = 'development';
 const React = await import('react');
+const View = 'View' as unknown as React.ComponentType<{
+  testID?: string;
+  children?: React.ReactNode;
+}>;
 const TestRenderer = (await import('react-test-renderer')).default;
-const { default: SessionForwardCard, forwardStore } = await import('./SessionForwardCard');
+const {
+  default: SessionForwardCard,
+  forwardStore,
+  forwardDock,
+  SessionForwardSlot,
+  SessionForwardDock,
+  SessionForwardDockContext,
+  createOpenForwardScanner,
+} = await import('./SessionForwardCard');
 process.env.NODE_ENV = originalNodeEnv;
 const act = TestRenderer.act;
 
@@ -55,6 +67,7 @@ describe('SessionForwardCard (mobile)', () => {
     dispatchSession.mockReset();
     storage.store.clear();
     forwardStore.clear();
+    forwardDock.clear();
   });
 
   it('starts the session at the chosen ship level', async () => {
@@ -330,5 +343,166 @@ describe('SessionForwardCard (mobile)', () => {
     expect(has(second, 'session-forward')).toBe(false);
     expect(dispatchSession).toHaveBeenCalledTimes(1);
     second.unmount();
+  });
+
+  it('dismisses without starting anything and stays dismissed on reload', async () => {
+    const first = await mount({ sessionId: 'chat-1', messageId: 'm-1' });
+    await act(async () => {
+      byId(first, 'session-forward-dismiss').props.onPress();
+    });
+    expect(has(first, 'session-forward-dismissed')).toBe(true);
+    expect(has(first, 'session-forward')).toBe(false);
+    first.unmount();
+    forwardStore.clear();
+
+    const second = await mount({ sessionId: 'chat-1', messageId: 'm-1' });
+    expect(has(second, 'session-forward-dismissed')).toBe(true);
+    expect(dispatchSession).not.toHaveBeenCalled();
+    second.unmount();
+  });
+
+  it('pins an open card to the dock until it is dismissed, then shows it in its message', async () => {
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        <SessionForwardDockContext.Provider value>
+          <View testID="message-1">
+            <SessionForwardSlot forward={forward} sessionId="chat-1" messageId="m-1" />
+          </View>
+          <SessionForwardDock chatSessionId="chat-1" />
+        </SessionForwardDockContext.Provider>,
+      );
+    });
+    const inMessage = () =>
+      byId(renderer, 'message-1').findAll((node) => node.props.testID === 'session-forward-card');
+    expect(inMessage()).toHaveLength(0);
+    expect(has(renderer, 'session-forward-dock')).toBe(true);
+
+    await act(async () => {
+      byId(renderer, 'session-forward-dismiss').props.onPress();
+    });
+    expect(has(renderer, 'session-forward-dock')).toBe(false);
+    expect(inMessage()).toHaveLength(1);
+    expect(has(renderer, 'session-forward-dismissed')).toBe(true);
+    renderer.unmount();
+  });
+
+  it('keeps a streaming card in its message', async () => {
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(
+        <SessionForwardDockContext.Provider value>
+          <SessionForwardSlot forward={forward} sessionId="chat-1" messageId="m-1" streaming />
+        </SessionForwardDockContext.Provider>,
+      );
+    });
+    expect(has(renderer, 'session-forward-card')).toBe(true);
+    expect(forwardDock.snapshot()).toHaveLength(0);
+    renderer.unmount();
+  });
+
+  it('pins an open card from a long chat whose row never mounted', async () => {
+    // Reopening a long chat: the list starts at the end, so the row that
+    // proposed the card (m-20 of 60) is never rendered. Only stamped rows
+    // have their events loaded.
+    const stamp = JSON.stringify({ awaitingUserInput: true, awaitingUserInputKinds: ['forward'] });
+    const messages = Array.from({ length: 60 }, (_, i) => ({
+      id: `m-${i}`,
+      session_id: 'chat-1',
+      role: i % 2 ? 'assistant' : 'user',
+      content: '',
+      metadata: i === 21 || i === 41 ? stamp : null,
+    }));
+    const dismissed = { ...forward, forwardId: 'fwd-dismissed' };
+    const rows = (f: typeof forward) => [{ seq: 1, event: { type: 'session_forward', ...f } }];
+    const loadEvents = vi.fn(async (id: string) => rows(id === 'm-21' ? forward : dismissed));
+    // m-41's card was dismissed in an earlier visit.
+    let dismissedKey = '';
+    {
+      const probe = await mount({ forward: dismissed, sessionId: 'chat-1', messageId: 'm-41' });
+      await act(async () => {
+        byId(probe, 'session-forward-dismiss').props.onPress();
+      });
+      dismissedKey = [...storage.store.keys()][0];
+      probe.unmount();
+      forwardStore.clear();
+    }
+    expect(dismissedKey).toContain('fwd-dismissed');
+
+    expect(await createOpenForwardScanner(loadEvents).scan(messages, {})).toEqual([]);
+    expect(loadEvents.mock.calls.map(([id]) => id)).toEqual(['m-21', 'm-41']);
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = TestRenderer.create(<SessionForwardDock chatSessionId="chat-1" />);
+    });
+    const cards = renderer.root.findAll((node) => node.props.testID === 'session-forward-card');
+    expect(cards).toHaveLength(1);
+    expect(forwardDock.snapshot().map((entry) => entry.messageId)).toEqual(['m-21']);
+    renderer.unmount();
+  });
+
+  describe('open forward scanner', () => {
+    const stamped = (id: string) => ({
+      id,
+      session_id: 'chat-1',
+      role: 'assistant',
+      content: '',
+      metadata: JSON.stringify({ awaitingUserInput: true, awaitingUserInputKinds: ['forward'] }),
+    });
+    const rows = [{ seq: 1, event: { type: 'session_forward', ...forward } }];
+
+    it('retries a message whose events failed to load, then pins its card', async () => {
+      const loadEvents = vi
+        .fn<(id: string) => Promise<unknown[] | null>>()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(rows);
+      const scanner = createOpenForwardScanner(loadEvents);
+      const messages = [stamped('m-1')];
+
+      expect(await scanner.scan(messages, {})).toEqual(['m-1']);
+      expect(forwardDock.snapshot()).toHaveLength(0);
+
+      expect(await scanner.scan(messages, {})).toEqual([]);
+      expect(forwardDock.snapshot().map((entry) => entry.messageId)).toEqual(['m-1']);
+
+      // Checked now: later scans do not load it again.
+      await scanner.scan(messages, {});
+      expect(loadEvents).toHaveBeenCalledTimes(2);
+    });
+
+    it('uses events that arrived after a failed load without fetching again', async () => {
+      const loadEvents = vi.fn(async () => null);
+      const scanner = createOpenForwardScanner(loadEvents);
+      expect(await scanner.scan([stamped('m-1')], {})).toEqual(['m-1']);
+      expect(await scanner.scan([stamped('m-1')], { 'm-1': rows })).toEqual([]);
+      expect(loadEvents).toHaveBeenCalledTimes(1);
+      expect(forwardDock.snapshot()).toHaveLength(1);
+    });
+
+    it('reports an in-flight failure to a scan that started while it was loading', async () => {
+      let finish!: (value: unknown[] | null) => void;
+      const loadEvents = vi.fn(
+        () =>
+          new Promise<unknown[] | null>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const scanner = createOpenForwardScanner(loadEvents);
+      const first = scanner.scan([stamped('m-1')], {});
+      const second = scanner.scan([stamped('m-1')], {});
+      finish(null);
+      expect(await first).toEqual(['m-1']);
+      expect(await second).toEqual(['m-1']);
+      expect(loadEvents).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips unstamped messages without loading them', async () => {
+      const loadEvents = vi.fn(async () => rows);
+      const scanner = createOpenForwardScanner(loadEvents);
+      const plain = { ...stamped('m-2'), metadata: null };
+      expect(await scanner.scan([plain], {})).toEqual([]);
+      expect(loadEvents).not.toHaveBeenCalled();
+    });
   });
 });
