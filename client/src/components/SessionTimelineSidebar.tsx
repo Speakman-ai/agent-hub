@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { History, FileDiff, FlaskConical, MessageSquareWarning, X } from 'lucide-react';
+import { History, FileDiff, ListChecks, FlaskConical, MessageSquareWarning, X } from 'lucide-react';
 import {
   deriveSessionTimelineMarkers,
   type SessionTimelineKind,
@@ -36,6 +36,11 @@ const KIND_META: Record<
   SessionTimelineKind,
   { label: string; Icon: typeof FileDiff; dot: string }
 > = {
+  plan: {
+    label: 'Plan',
+    Icon: ListChecks,
+    dot: 'bg-violet-400',
+  },
   change_summary: {
     label: 'Change summary',
     Icon: FileDiff,
@@ -62,6 +67,8 @@ function statusClass(status: SessionTimelineStatus, kind: SessionTimelineKind): 
 
 function kindLabel(kind: SessionTimelineKind): string {
   switch (kind) {
+    case 'plan':
+      return KIND_META.plan.label;
     case 'change_summary':
       return KIND_META.change_summary.label;
     case 'test_run':
@@ -77,7 +84,7 @@ function kindLabel(kind: SessionTimelineKind): string {
 
 /**
  * Toggleable session activity timeline. Markers jump to the matching
- * change summary, finalize checks round, or review comment in the chat.
+ * plan, change summary, finalize checks round, or review comment in the chat.
  */
 export default function SessionTimelineSidebar({
   sessionId,
@@ -137,8 +144,8 @@ export default function SessionTimelineSidebar({
       <ol className="flex-1 min-h-0 overflow-y-auto px-2 py-3 space-y-0">
         {markers.length === 0 ? (
           <li className="px-2 py-6 text-center text-[11px] text-gray-500 leading-relaxed">
-            Markers appear here for each turn&apos;s change summary, finalize checks, and review
-            comment.
+            Markers appear here for each plan the agent posts, each turn&apos;s change summary,
+            finalize checks, and review comment.
           </li>
         ) : (
           markers.map((marker, index) => {

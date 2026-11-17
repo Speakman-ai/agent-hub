@@ -27,6 +27,8 @@ import FinalizeReadyToPushBlock from './finalize/blocks/FinalizeReadyToPushBlock
 import FinalizeRunSummaryBlock from './finalize/blocks/FinalizeRunSummaryBlock';
 import TurnChangeSummaryBlock from './finalize/blocks/TurnChangeSummaryBlock';
 import { parseTurnChangeSummaryMetadata } from '../utils/turnChangeSummary';
+import { parseAgentPlanMetadata } from '@shared/utils/agentPlan';
+import AgentPlanBlock from './AgentPlanBlock';
 import WikiConsultedChip from './WikiConsultedChip';
 import { HubChatMessageBody, HubChatPlainTextWithRefs, hasHubChatRefTokens } from './HubChatRefs';
 import FinalizeTerminalBlock from './finalize/blocks/FinalizeTerminalBlock';
@@ -417,6 +419,9 @@ function ChatMessage({
     }
     if (parseTurnChangeSummaryMetadata(message.metadata)) {
       return <TurnChangeSummaryBlock message={message} />;
+    }
+    if (parseAgentPlanMetadata(message.metadata)) {
+      return <AgentPlanBlock message={message} />;
     }
     const finalizeKind = parseFinalizeTimelineKind(message.metadata);
     if (finalizeKind === 'finalize_run_started') {

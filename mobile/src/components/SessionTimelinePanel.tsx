@@ -16,12 +16,14 @@ import {
 } from '@shared/utils/sessionTimeline';
 
 const KIND_ICON: Record<SessionTimelineKind, string> = {
+  plan: 'list-outline',
   change_summary: 'git-compare-outline',
   test_run: 'flask-outline',
   review_comment: 'chatbubble-outline',
 };
 
 const KIND_LABEL: Record<SessionTimelineKind, string> = {
+  plan: 'Plan',
   change_summary: 'Change summary',
   test_run: 'Checks',
   review_comment: 'Review comment',
@@ -31,6 +33,7 @@ function statusColor(marker: SessionTimelineMarker): string {
   if (marker.status === 'fail') return colors.red400;
   if (marker.status === 'ok' && marker.kind === 'test_run') return colors.emerald400;
   if (marker.status === 'pending') return colors.yellow400;
+  if (marker.kind === 'plan') return colors.indigo300;
   if (marker.kind === 'change_summary') return colors.blue400;
   if (marker.kind === 'review_comment') return colors.yellow400;
   return colors.emerald400;
@@ -38,6 +41,8 @@ function statusColor(marker: SessionTimelineMarker): string {
 
 function kindLabel(kind: SessionTimelineKind): string {
   switch (kind) {
+    case 'plan':
+      return KIND_LABEL.plan;
     case 'change_summary':
       return KIND_LABEL.change_summary;
     case 'test_run':
@@ -69,7 +74,8 @@ export function SessionTimelinePanelContent({
       </View>
       {markers.length === 0 ? (
         <Text style={styles.empty}>
-          Markers appear here for each turn's change summary, finalize checks, and review comment.
+          Markers appear here for each plan the agent posts, each turn's change summary, finalize
+          checks, and review comment.
         </Text>
       ) : (
         <ScrollView style={styles.list} nestedScrollEnabled>

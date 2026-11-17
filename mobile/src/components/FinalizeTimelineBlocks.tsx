@@ -29,6 +29,7 @@ import {
   parseFinalizeTerminalMetadata,
 } from '@shared/utils/finalizeTimeline';
 import { parseTurnChangeSummaryMetadata } from '@shared/utils/turnChangeSummary';
+import { parseAgentPlanMetadata } from '@shared/utils/agentPlan';
 import { describeFinalizeFailureReason } from '@shared/utils/finalizeFailureReason';
 import { followUpsEmptyStateMessage, NO_COMMITS_MESSAGE } from '@shared/utils/finalizeSummaryCopy';
 
@@ -680,6 +681,24 @@ export function TurnChangeSummaryBlock({ message }: any) {
   );
 }
 
+export function AgentPlanBlock({ message }: any) {
+  const meta = useMemo(() => parseAgentPlanMetadata(message.metadata), [message.metadata]);
+  if (!meta) return null;
+  return (
+    <Card tone="indigo" testID="agent-plan-block" createdAt={message.created_at}>
+      <HeaderRow
+        icon="list-outline"
+        iconColor={colors.indigo300}
+        title="Plan"
+        titleColor={TONES.indigo.text}
+      />
+      <Text style={styles.body} selectable testID="agent-plan-text">
+        {meta.plan}
+      </Text>
+    </Card>
+  );
+}
+
 export function SystemPrFailedMessage({ message }: any) {
   const meta = parsePrFailedMetadata(message.metadata);
   if (!meta) return null;
@@ -722,6 +741,9 @@ export function renderTimelineSystemMessage(
   if (isFinalizeStepOutputMessage(message.metadata)) return null;
   if (parseTurnChangeSummaryMetadata(message.metadata)) {
     return <TurnChangeSummaryBlock message={message} />;
+  }
+  if (parseAgentPlanMetadata(message.metadata)) {
+    return <AgentPlanBlock message={message} />;
   }
   switch (parseFinalizeTimelineKind(message.metadata)) {
     case 'finalize_run_started':

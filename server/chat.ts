@@ -322,6 +322,7 @@ import { createCliTitleCompleter } from './title-completer.js';
 import { isAutoCardTitle, syncAutoCardTitle } from './auto-title-sync.js';
 import { clipUtf8StringToMaxBytes } from './utf8-clip.js';
 import { applyAssistantTextChunk } from './assistant-stream-buffer.js';
+import { createAgentPlanEmitter } from './agent-plan.js';
 import { isSessionChatBusy } from './session-chat-busy.js';
 import type {
   Project,
@@ -1468,6 +1469,14 @@ Everything else: do the work. A rejected change costs a few minutes; a blocked a
 
 ## Research Questions — Answer on the Spot, Don't Card It
 When a user asks a research or investigation question (how something works, why it behaves a certain way, where a feature lives, what the current state of X is), just do the research and answer inline. Do **not** offer to open a ticket for the investigation itself. Cards are for work to ship, not questions to answer — if research surfaces a concrete bug or feature, *then* create a card for that follow-up work.
+
+## Recite Your Plan Before Changing Code
+Once you have looked around and know what you are going to change, and before your first edit, write a short plan as a naked \`<agenthub:plan>\` block (never inside a code fence), then keep working in the same turn without waiting for a reply. Agent Hub pins it to the session timeline so a human following along can step in. A few lines or bullets: what you will change and where. Example:
+<agenthub:plan>
+- Add the retry wrapper in server/foo.ts
+- Cover it with server/foo.test.ts
+</agenthub:plan>
+Skip it for answers that change no code. If the plan changes materially, emit a new block.
 
 ## No Shell — Don't Tell the User to Run Commands
 The user is talking to you through a web/chat UI and has **no shell access**. They cannot run \`npm\`, \`git\`, \`curl\`, or any other terminal command. Never respond with "run this in your terminal", a copy-pasteable command block presented as instructions, or "you can check by running…". You have a \`Bash\` tool — when work needs a command, **run it yourself** and report the actual output. The only acceptable shell snippets in chat are ones you've already executed (showing what *you* ran) or short illustrative examples inside a larger explanation, never something the user is expected to execute.`;
@@ -5350,6 +5359,13 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         } catch {}
       }
 
+      const emitAgentPlans = createAgentPlanEmitter({
+        sessionId,
+        stmts: S,
+        broadcast,
+        log: (msg) => console.warn(msg),
+      });
+
       const handleEvent = (incoming: StreamEvent): void => {
         if (incoming.type === 'context_usage') {
           // Subagent steps run in their own context window; only the parent's
@@ -5412,6 +5428,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           try {
             S.appendActiveTaskOutput.run(finalText || partialFallback, sessionId);
           } catch {}
+          emitAgentPlans(finalText || partialFallback);
         }
 
         if (event.type === 'system' && event.gitWorktree != null) {

@@ -4,13 +4,21 @@
  * same extraction.
  *
  * Sources:
+ *   - `agent_plan` system messages (plan the agent recited mid-turn)
  *   - `turn_change_summary` system messages (post-turn briefing)
  *   - `finalize_checks_round` CI rounds (the "tests" the timeline tracks)
  *   - Individual threads on `finalize_review_round` (or the round itself
  *     when the reviewer posted a verdict with no findings)
  */
 
-export const SESSION_TIMELINE_KINDS = ['change_summary', 'test_run', 'review_comment'] as const;
+import { agentPlanAnchorId, parseAgentPlanMetadata } from './agentPlan.js';
+
+export const SESSION_TIMELINE_KINDS = [
+  'plan',
+  'change_summary',
+  'test_run',
+  'review_comment',
+] as const;
 
 /**
  * Dispatched (on `window`) with `{ anchorId }` before scrolling to a timeline
@@ -67,6 +75,23 @@ function parseMetadata(metadata: unknown): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+function planMarker(message: any): SessionTimelineMarker | null {
+  const meta = parseAgentPlanMetadata(message?.metadata);
+  if (!meta) return null;
+  const messageId = String(message.id);
+  const anchorId = agentPlanAnchorId(messageId);
+  return {
+    id: anchorId,
+    kind: 'plan',
+    messageId,
+    anchorId,
+    createdAt: message.created_at ?? null,
+    title: truncateTimelineText(meta.plan, 96),
+    subtitle: null,
+    status: 'neutral',
+  };
 }
 
 function changeSummaryMarker(message: any): SessionTimelineMarker | null {
@@ -188,6 +213,8 @@ export function deriveSessionTimelineMarkers(args: {
   const markers: SessionTimelineMarker[] = [];
   for (const message of list) {
     if (!message || message.id == null || message.role !== 'system') continue;
+    const plan = planMarker(message);
+    if (plan) markers.push(plan);
     const change = changeSummaryMarker(message);
     if (change) markers.push(change);
     const checks = checksRoundMarker(message);
