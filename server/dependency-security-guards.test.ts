@@ -1860,6 +1860,72 @@ describe('unpatched advisories (containment guards)', () => {
       ],
       why: 'the fix is only on glob 14 and every Expo package declares ^13; dev/build-time tooling that never passes an AbortSignal',
     },
+    // ReDoS through single-branch repeated extglobs (`+(*)`, `+(*a)`), which
+    // analyzeRepeatedExtglob skips. Vulnerable `<= 4.0.7`; 4.0.7 is the newest
+    // picomatch release and `first_patched_version` is null, covering both the
+    // 2.x and 4.x lines. Exploiting it needs an attacker-chosen glob; every
+    // pattern below comes from bundler, test-runner, lint-staged or watcher
+    // config committed to this repo. The server never imports picomatch or
+    // anything that matches request data against a glob.
+    {
+      workspace: 'root',
+      pkg: 'picomatch',
+      advisory: ['GHSA-fc5q-39xc-vjpf'],
+      vulnerableRange: '<= 4.0.7',
+      dependents: ['fdir', 'lint-staged', 'tinyglobby', 'vite', 'vitest'],
+      flags: { dev: true },
+      why: 'no picomatch release fixes it; vite, vitest, lint-staged and tinyglobby only match globs from committed tooling config, and the copy is dev-only',
+    },
+    {
+      workspace: 'server',
+      pkg: 'picomatch',
+      advisory: ['GHSA-fc5q-39xc-vjpf'],
+      vulnerableRange: '<= 4.0.7',
+      dependents: ['fdir', 'tinyglobby', 'vite', 'vitest'],
+      flags: { dev: true },
+      why: 'no picomatch release fixes it; only the vitest/vite test toolchain uses it, the copy is dev-only, and no server code passes request data as a glob',
+    },
+    {
+      workspace: 'shared',
+      pkg: 'picomatch',
+      advisory: ['GHSA-fc5q-39xc-vjpf'],
+      vulnerableRange: '<= 4.0.7',
+      dependents: ['fdir', 'tinyglobby', 'vite', 'vitest'],
+      flags: { dev: true },
+      why: 'no picomatch release fixes it; only the vitest/vite test toolchain uses it and the copy is dev-only',
+    },
+    {
+      workspace: 'client',
+      pkg: 'picomatch',
+      advisory: ['GHSA-fc5q-39xc-vjpf'],
+      vulnerableRange: '<= 4.0.7',
+      // 2.x via anymatch / micromatch / readdirp (chokidar, Tailwind content
+      // scanning); 4.x via vite, vitest and tinyglobby.
+      dependents: ['anymatch', 'fdir', 'micromatch', 'readdirp', 'tinyglobby', 'vite', 'vitest'],
+      flags: { dev: true },
+      why: 'no picomatch release fixes it; build and test tooling matching globs from committed config, and every copy is dev-only',
+    },
+    {
+      workspace: 'mobile',
+      pkg: 'picomatch',
+      advisory: ['GHSA-fc5q-39xc-vjpf'],
+      vulnerableRange: '<= 4.0.7',
+      // Expo CLI, metro-config and metro's file map / jest-util watcher
+      // matching on the developer machine. Not flagged dev because expo
+      // declares these as runtime dependencies, but none of it ships in the
+      // app bundle.
+      dependents: [
+        '@expo/cli',
+        '@expo/metro-config',
+        'fdir',
+        'jest-util',
+        'micromatch',
+        'tinyglobby',
+        'vite',
+        'vitest',
+      ],
+      why: 'no picomatch release fixes it; Expo, metro and jest tooling match globs from Expo itself and committed config at dev/build time',
+    },
   ];
 
   // Unfixed advisories a workspace used to carry under a containment note and
