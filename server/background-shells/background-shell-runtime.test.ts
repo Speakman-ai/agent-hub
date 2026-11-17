@@ -307,6 +307,15 @@ describe('BackgroundShellRuntime exit handling', () => {
     expect(after.exit_code).toBe(0);
   });
 
+  it('reports a running shell per session until it exits', () => {
+    const h = makeHarness();
+    h.runtime.start(START);
+    expect(h.runtime.hasRunningForSession(START.sessionId)).toBe(true);
+    expect(h.runtime.hasRunningForSession('other-session')).toBe(false);
+    h.children[0].emitExit(0);
+    expect(h.runtime.hasRunningForSession(START.sessionId)).toBe(false);
+  });
+
   it('flips to failed on non-zero exit', () => {
     const h = makeHarness();
     const row = h.runtime.start(START);

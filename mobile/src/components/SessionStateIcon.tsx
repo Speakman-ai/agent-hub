@@ -13,6 +13,7 @@ const ICONS: Record<string, any> = {
   CloudUpload: 'cloud-upload-outline',
   GitMerge: 'git-merge-outline',
   CircleAlert: 'alert-circle',
+  Radio: 'radio-outline',
 };
 const COLOR: Record<string, any> = {
   amber: colors.amber400,

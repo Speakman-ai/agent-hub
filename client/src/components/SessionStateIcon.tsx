@@ -8,6 +8,7 @@ import {
   CloudUpload,
   GitMerge,
   CircleAlert,
+  Radio,
 } from 'lucide-react';
 import { sessionStateMeta } from '@shared/utils/sessionState';
 
@@ -23,6 +24,7 @@ const ICONS = {
   CloudUpload,
   GitMerge,
   CircleAlert,
+  Radio,
 } as Record<string, any>;
 
 // Semantic color token → Tailwind text class. Centralized so web stays in sync

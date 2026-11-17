@@ -2900,7 +2900,9 @@ components:
           type: string
           enum:
             - waiting_for_user_input
+            - needs_input
             - working
+            - waiting_on_background
             - running_tests
             - reviewing
             - pending_checks
@@ -4354,6 +4356,7 @@ components:
                   - needs_input
                   - waiting_for_user_input
                   - working
+                  - waiting_on_background
                   - running_tests
                   - reviewing
                   - pending_checks

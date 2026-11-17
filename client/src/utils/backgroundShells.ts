@@ -284,6 +284,13 @@ export function deriveWatchIndicator(
   };
 }
 
+/** Tooltip for the "Waiting on background task" state icon. */
+export function backgroundStateLabel(shells: BackgroundShellView[] | undefined): string {
+  const watch = deriveWatchIndicator(shells);
+  if (!watch) return 'Waiting on background task';
+  return `Waiting on background task: ${watchIndicatorTitle(watch)}`;
+}
+
 /** Short pill copy, e.g. "2 watching" / "1 running". */
 export function watchIndicatorLabel(indicator: WatchIndicator): string {
   if (indicator.watching > 0) return `${indicator.watching} watching`;

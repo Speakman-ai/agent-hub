@@ -6,6 +6,11 @@ describe('deriveSessionState', () => {
   it('defaults to waiting for an idle session', () => {
     expect(deriveSessionState({ id: 's1' })).toBe('waiting_for_user_input');
   });
+  it('shows waiting_on_background from the server seed until a turn starts', () => {
+    const session = { id: 's1', state: 'waiting_on_background' };
+    expect(deriveSessionState(session)).toBe('waiting_on_background');
+    expect(deriveSessionState(session, { activeTaskSessionIds: { s1: true } })).toBe('working');
+  });
   it('lets live activity override a settled seed', () => {
     expect(
       deriveSessionState({ id: 's1', state: 'merged' }, { activeTaskSessionIds: { s1: true } }),

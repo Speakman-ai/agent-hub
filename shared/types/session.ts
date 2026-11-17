@@ -3,6 +3,7 @@ export type SessionState =
   | 'waiting_for_user_input'
   | 'needs_input'
   | 'working'
+  | 'waiting_on_background'
   | 'running_tests'
   | 'reviewing'
   | 'pending_checks'
@@ -26,6 +27,8 @@ export interface SessionStateSignals {
   needsInput?: NeedsInputKind | null;
   finalizeStatus?: string | null;
   hasActiveTask?: boolean;
+  /** A Hub-owned background shell is still running for the session. */
+  hasRunningBackgroundShell?: boolean;
   merged?: boolean;
 }
 

@@ -11,6 +11,7 @@ export const SESSION_STATES: readonly SessionState[] = [
   'needs_input',
   'waiting_for_user_input',
   'working',
+  'waiting_on_background',
   'running_tests',
   'reviewing',
   'pending_checks',
@@ -78,6 +79,9 @@ export function resolveSessionState(signals: SessionStateSignals): SessionState 
   if (fromFinalize && !pushStage && !parked) return fromFinalize;
   if (signals?.hasActiveTask) return 'working';
   if (parked) return fromFinalize;
+  // The turn ended but a background shell it started is still going; the
+  // session wakes itself when it finishes, so the human is not the blocker.
+  if (signals?.hasRunningBackgroundShell) return 'waiting_on_background';
   if (signals?.merged) return 'merged';
   if (fromFinalize) return fromFinalize;
   return DEFAULT_SESSION_STATE;
@@ -104,6 +108,13 @@ export const SESSION_STATE_META: Record<SessionState, SessionStateMeta> = {
     icon: 'Loader2',
     color: 'indigo',
     anim: 'spin',
+  },
+  waiting_on_background: {
+    label: 'Waiting on background task',
+    short: 'Background',
+    icon: 'Radio',
+    color: 'amber',
+    anim: 'pulse',
   },
   running_tests: {
     label: 'Running tests',
@@ -201,12 +212,13 @@ export function isSessionsViewMode(v: unknown): v is SessionsViewMode {
  * Kanban columns for the dashboard's board view. Unlike
  * {@link groupSessionsByState}, every in-flight state gets a column even when
  * empty, so the board layout stays stable as sessions move between states.
- * `needs_input`, `pushed` and `merged` only appear when a session is actually
+ * `needs_input`, `waiting_on_background`, `pushed` and `merged` only appear when a session is actually
  * in them: blocked sessions are rare, and a pushed session normally resolves to `merged` or
  * back to an active state, so always-empty columns are noise. Renderers collapse empty columns.
  */
 const BOARD_COLUMNS_SHOWN_ONLY_WHEN_POPULATED: readonly SessionState[] = [
   'needs_input',
+  'waiting_on_background',
   'pushed',
   'merged',
 ];

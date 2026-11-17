@@ -178,7 +178,9 @@ export const SessionComponent = registerComponent(
       state: z
         .enum([
           'waiting_for_user_input',
+          'needs_input',
           'working',
+          'waiting_on_background',
           'running_tests',
           'reviewing',
           'pending_checks',

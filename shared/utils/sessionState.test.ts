@@ -113,6 +113,36 @@ describe('SESSION_STATE_META', () => {
     expect(SESSION_STATE_META.pushed.icon).toBe('CloudUpload');
     expect(SESSION_STATE_META.merged.icon).toBe('GitMerge');
     expect(SESSION_STATE_META.needs_input.icon).toBe('CircleAlert');
+    expect(SESSION_STATE_META.waiting_on_background.icon).toBe('Radio');
+  });
+});
+
+describe('waiting_on_background state', () => {
+  it('replaces the idle state while a background shell runs', () => {
+    expect(resolveSessionState({ hasRunningBackgroundShell: true })).toBe('waiting_on_background');
+    expect(resolveSessionState({ hasRunningBackgroundShell: false })).toBe(
+      'waiting_for_user_input',
+    );
+  });
+
+  it('yields to a live turn, a Finalize phase, and a request for the human', () => {
+    const bg = { hasRunningBackgroundShell: true };
+    expect(resolveSessionState({ ...bg, hasActiveTask: true })).toBe('working');
+    expect(resolveSessionState({ ...bg, finalizeStatus: 'running' })).toBe('running_tests');
+    expect(resolveSessionState({ ...bg, needsInput: 'question' })).toBe('needs_input');
+    expect(resolveSessionState({ ...bg, finalizeStatus: 'disputed' })).toBe('needs_input');
+  });
+
+  it('outranks the settled push and merge states', () => {
+    const bg = { hasRunningBackgroundShell: true };
+    expect(resolveSessionState({ ...bg, merged: true })).toBe('waiting_on_background');
+    expect(resolveSessionState({ ...bg, finalizeStatus: 'pushed' })).toBe('waiting_on_background');
+  });
+
+  it('only gets a board column while a session is in it', () => {
+    expect(buildSessionBoardColumns([]).some((c) => c.state === 'waiting_on_background')).toBe(
+      false,
+    );
   });
 });
 

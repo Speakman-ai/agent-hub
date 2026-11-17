@@ -428,6 +428,7 @@ import {
 import { parseDevServerConfig } from './dev-server-config.js';
 import { buildBackgroundShellEnv } from './background-shells/background-shell-env.js';
 import { createBackgroundShellRuntime } from './background-shells/background-shell-runtime-setup.js';
+import { recomputeSessionState, setRunningBackgroundShellLookup } from './session-state.js';
 import {
   BackgroundShellWatcher,
   WATCH_SWEEP_INTERVAL_MS,
@@ -1851,8 +1852,21 @@ const backgroundShellRuntime = createBackgroundShellRuntime({
     } catch {
       /* best-effort — never let a broadcast failure stall the runtime */
     }
+    // A shell starting or finishing moves an idle session in or out of
+    // "Waiting on background task".
+    if (event.type === 'background_shell_update' && stmts) {
+      const sessionId = event.sessionId;
+      queueMicrotask(() => {
+        const agentId =
+          (stmts!.getSession.get(sessionId) as SessionRow | undefined)?.agent_id ?? null;
+        recomputeSessionState(stmts!, sessionId, { agentId, broadcast });
+      });
+    }
   },
 });
+setRunningBackgroundShellLookup((sessionId) =>
+  backgroundShellRuntime.hasRunningForSession(sessionId),
+);
 
 /**
  * Write a `role: 'system'` transcript line for the watch loop and push it to

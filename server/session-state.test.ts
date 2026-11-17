@@ -1,7 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect } from 'vitest';
 import {
   resolveSessionState,
   recomputeSessionState,
+  setRunningBackgroundShellLookup,
   isSessionState,
   SESSION_STATES,
   DEFAULT_SESSION_STATE,
@@ -144,5 +145,44 @@ describe('recomputeSessionState', () => {
     expect(broadcasts).toEqual([
       { type: 'session_state', sessionId: 'sess-1', agentId: 'agent-1', state: 'merged' },
     ]);
+  });
+});
+
+describe('recomputeSessionState with background shells', () => {
+  afterEach(() => setRunningBackgroundShellLookup(null));
+
+  it('resolves an idle session with a running shell to waiting_on_background', () => {
+    const broadcasts: Array<{ state?: unknown }> = [];
+    const stmts = {
+      getLatestFinalizeRunForSession: { get: () => undefined },
+      getActiveTask: { get: () => undefined },
+      getKanbanCardBySession: { get: () => undefined },
+      getMessagesPageLatest: { all: () => [] },
+      updateSessionState: { run: () => undefined },
+    };
+    let running = true;
+    setRunningBackgroundShellLookup((sid) => sid === 'sess-1' && running);
+
+    const opts = { broadcast: (msg: Record<string, unknown>) => broadcasts.push(msg) };
+    expect(recomputeSessionState(stmts as never, 'sess-1', opts)).toBe('waiting_on_background');
+    running = false;
+    expect(recomputeSessionState(stmts as never, 'sess-1', opts)).toBe('waiting_for_user_input');
+    expect(broadcasts.map((b) => b.state)).toEqual([
+      'waiting_on_background',
+      'waiting_for_user_input',
+    ]);
+  });
+
+  it('treats a throwing lookup as no running shell', () => {
+    setRunningBackgroundShellLookup(() => {
+      throw new Error('db closed');
+    });
+    const stmts = {
+      getLatestFinalizeRunForSession: { get: () => undefined },
+      getActiveTask: { get: () => undefined },
+      getKanbanCardBySession: { get: () => undefined },
+      getMessagesPageLatest: { all: () => [] },
+    };
+    expect(recomputeSessionState(stmts as never, 'sess-1')).toBe('waiting_for_user_input');
   });
 });

@@ -19,6 +19,7 @@ import {
  *   activeTaskSessionIds?: Record<string, unknown>,
  *   finalizeStatusBySession?: Record<string, string>,
  *   needsInputBySession?: Record<string, string | null>,
+ *   backgroundShellsBySession?: Record<string, unknown[]>,
  * }} [signals]
  * @returns {string} one of shared SESSION_STATES
  */
@@ -37,7 +38,20 @@ export function deriveSessionState(session: any, signals: any = {}) {
   const kind = sessionNeedsInputKind(session, signals);
   const needsInput = isNeedsInputKind(kind) ? kind : null;
 
-  const derived = resolveSessionState({ finalizeStatus, hasActiveTask, merged, needsInput });
+  // The live shell map (connect snapshot + updates) is authoritative when the
+  // caller has it; otherwise the server seed carries the background state.
+  const liveShells = signals.backgroundShellsBySession;
+  const hasRunningBackgroundShell = liveShells
+    ? (liveShells[session.id]?.length ?? 0) > 0
+    : session.state === 'waiting_on_background';
+
+  const derived = resolveSessionState({
+    finalizeStatus,
+    hasActiveTask,
+    hasRunningBackgroundShell,
+    merged,
+    needsInput,
+  });
 
   // If nothing live or payload-derived put us past the default, but the server
   // already resolved a more-advanced settled state (e.g. `pushed`), keep it.
@@ -48,7 +62,8 @@ export function deriveSessionState(session: any, signals: any = {}) {
     session.state &&
     session.state !== DEFAULT_SESSION_STATE &&
     // needs_input has its own live signal above; a stale seed must not revive it.
-    session.state !== 'needs_input'
+    session.state !== 'needs_input' &&
+    session.state !== 'waiting_on_background'
   ) {
     return session.state;
   }

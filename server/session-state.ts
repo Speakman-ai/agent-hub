@@ -57,12 +57,32 @@ function lookupMergedForSession(stmts: Stmts, sessionId: string): boolean {
   }
 }
 
+type RunningShellLookup = (sessionId: string) => boolean;
+let runningShellLookup: RunningShellLookup | null = null;
+
+/**
+ * Wire the background-shell runtime in. Kept as a setter because the runtime
+ * owns its own table and is built after the shared statements.
+ */
+export function setRunningBackgroundShellLookup(fn: RunningShellLookup | null): void {
+  runningShellLookup = fn;
+}
+
+function lookupHasRunningBackgroundShell(sessionId: string): boolean {
+  try {
+    return runningShellLookup?.(sessionId) ?? false;
+  } catch {
+    return false;
+  }
+}
+
 /** Gather the live signals for a session from the DB. */
 export function gatherSessionStateSignals(stmts: Stmts, sessionId: string): SessionStateSignals {
   return {
     needsInput: computeSessionNeedsInput(stmts, sessionId),
     finalizeStatus: lookupFinalizeStatusForSession(stmts, sessionId),
     hasActiveTask: lookupHasActiveTask(stmts, sessionId),
+    hasRunningBackgroundShell: lookupHasRunningBackgroundShell(sessionId),
     merged: lookupMergedForSession(stmts, sessionId),
   };
 }

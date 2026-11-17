@@ -766,6 +766,16 @@ export class BackgroundShellRuntime {
     return this.getById(shellId);
   }
 
+  /** True while any shell for `sessionId` is still running. */
+  hasRunningForSession(sessionId: string): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 FROM background_shells WHERE session_id = ? AND status = 'running' LIMIT 1`,
+      )
+      .get(sessionId);
+    return row !== undefined;
+  }
+
   /**
    * Stop every `running` shell for a session. Used by the session-delete /
    * archive hook. Returns the number of shells stopped.

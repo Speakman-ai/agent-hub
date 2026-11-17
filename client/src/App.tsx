@@ -6343,8 +6343,15 @@ export default function App({ initialView }: any = {}) {
         activeTaskSessionIds: activeTasks,
         finalizeStatusBySession,
         needsInputBySession,
+        backgroundShellsBySession,
       }),
-    [activeSession, activeTasks, finalizeStatusBySession, needsInputBySession],
+    [
+      activeSession,
+      activeTasks,
+      finalizeStatusBySession,
+      needsInputBySession,
+      backgroundShellsBySession,
+    ],
   );
 
   // Fire an ensure for every opened worktree session, independent of the

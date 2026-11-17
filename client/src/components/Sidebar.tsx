@@ -65,7 +65,11 @@ import { daysUntilPurge } from '../utils/time';
 import SessionStateIcon from './SessionStateIcon';
 import { deriveSessionState, sessionNeedsInputKind } from '../utils/deriveSessionState';
 import { needsInputLabel } from '@shared/utils/sessionState';
-import { deriveWatchIndicator, watchIndicatorTitle } from '../utils/backgroundShells';
+import {
+  backgroundStateLabel,
+  deriveWatchIndicator,
+  watchIndicatorTitle,
+} from '../utils/backgroundShells';
 import { derivePreviewIndicator, previewIndicatorTitle } from '../utils/sessionPreviewState';
 import BugReportButton from './BugReportButton';
 import NotificationBell from './NotificationBell';
@@ -769,6 +773,7 @@ export default function Sidebar({
       activeTaskSessionIds,
       finalizeStatusBySession,
       needsInputBySession,
+      backgroundShellsBySession,
     });
     return (
       <button
@@ -1744,6 +1749,7 @@ export default function Sidebar({
                                         activeTaskSessionIds,
                                         finalizeStatusBySession,
                                         needsInputBySession,
+                                        backgroundShellsBySession,
                                       });
                                       const isEditing = editingSessionId === session.id;
                                       const prReady = changesReadyBySession[session.id];
@@ -1864,7 +1870,11 @@ export default function Sidebar({
                                                             needsInputBySession,
                                                           }),
                                                         )
-                                                      : undefined
+                                                      : sessionState === 'waiting_on_background'
+                                                        ? backgroundStateLabel(
+                                                            backgroundShellsBySession[session.id],
+                                                          )
+                                                        : undefined
                                                   }
                                                 />
                                                 {subagentsBySession[session.id]?.running > 0 && (
@@ -1877,6 +1887,10 @@ export default function Sidebar({
                                                   </span>
                                                 )}
                                                 {(() => {
+                                                  // The state icon already shows it.
+                                                  if (sessionState === 'waiting_on_background') {
+                                                    return null;
+                                                  }
                                                   const watch = deriveWatchIndicator(
                                                     backgroundShellsBySession[session.id],
                                                   );
@@ -2227,6 +2241,7 @@ export default function Sidebar({
                             activeTaskSessionIds,
                             finalizeStatusBySession,
                             needsInputBySession,
+                            backgroundShellsBySession,
                           });
                           const prReady = changesReadyBySession[session.id];
                           const resolvePrHref =

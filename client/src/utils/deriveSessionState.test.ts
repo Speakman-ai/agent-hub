@@ -39,6 +39,24 @@ describe('deriveSessionState', () => {
     ).toBe('working');
   });
 
+  it('shows waiting_on_background from the live shell map, and drops a stale seed', () => {
+    const shells = { s1: [{ id: 'sh1', status: 'running' }] };
+    expect(deriveSessionState({ id: 's1' }, { backgroundShellsBySession: shells })).toBe(
+      'waiting_on_background',
+    );
+    expect(
+      deriveSessionState(
+        { id: 's1' },
+        { backgroundShellsBySession: shells, activeTaskSessionIds: { s1: true } },
+      ),
+    ).toBe('working');
+    const seeded = { id: 's1', state: 'waiting_on_background' };
+    expect(deriveSessionState(seeded)).toBe('waiting_on_background');
+    expect(deriveSessionState(seeded, { backgroundShellsBySession: {} })).toBe(
+      'waiting_for_user_input',
+    );
+  });
+
   it('defaults to waiting for an idle session with no signals', () => {
     expect(deriveSessionState({ id: 's1' })).toBe('waiting_for_user_input');
   });
