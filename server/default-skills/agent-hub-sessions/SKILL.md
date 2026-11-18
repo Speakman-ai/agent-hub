@@ -36,8 +36,9 @@ and sends it the prompt. It prints `sessionId` and `ref`, an
 `@[name](session:id)` token. Paste `ref` into your reply or a chat post and it
 renders as a live session chip.
 
-In a Hub session or a Consult chat, do not run `dispatch` yourself while a
-person is in the thread. Emit one fenced `agenthub:forward` card and stop.
+In any interactive session (Build, Hub, Consult, or Orchestrate), do not run
+`dispatch` yourself while a person is in the thread. That includes "forward
+this session" and "spin up a new session for X". Emit one fenced `agenthub:forward` card and stop.
 They pick Build, Build and Review, Build and Push, or Auto Merge on the card
 and press Session forward. A workflow project has no build levels, so set
 `"mode": "consult"` for it. That button is what starts the session. `dispatch`

@@ -199,6 +199,7 @@ import { buildScopingModePreamble } from './scoping-mode-prompt.js';
 import { buildSkillBuilderModePreamble } from './skill-builder-mode-prompt.js';
 import { buildConsultModePreamble } from './consult-mode-prompt.js';
 import { buildOrchestrateModePreamble } from './orchestrate-mode-prompt.js';
+import { buildSessionForwardGuidance } from './session-forward-prompt.js';
 import { buildQaModePreamble } from './qa-mode-prompt.js';
 import { qaBorrowedPreviewStartRefusal, qaRunPreviewOwnerSessionId } from './qa-run-kickoff.js';
 import { qaStepGuard } from './qa-environments.js';
@@ -3759,6 +3760,12 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           agentId: agent?.id ?? null,
         });
         enrichedPrompt = `${consultPreamble}\n\n${enrichedPrompt}`;
+      } else if (!isSidebarSession(session)) {
+        enrichedPrompt += `\n\n${buildSessionForwardGuidance({
+          projectId: (project as Project | undefined)?.id ?? projectId ?? null,
+          agentId: agent?.id ?? null,
+          workflow: (project as Project | undefined)?.mode === 'workflow',
+        })}`;
       }
 
       let linkedEpicForBudgets: KanbanEpicRow | null = null;
