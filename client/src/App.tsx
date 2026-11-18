@@ -2,6 +2,7 @@ import {
   applyNeedsInputEvent,
   applyNeedsInputSnapshot,
   reseedNeedsInputFromSessions,
+  reseedFinalizeStatusFromSessions,
   type NeedsInputMap,
 } from '@shared/utils/sessionState';
 import { SESSION_POLLER_WS_EVENT } from './utils/sessionPollers';
@@ -2017,18 +2018,9 @@ export default function App({ initialView }: any = {}) {
       });
 
       setNeedsInputBySession((prev: any) => reseedNeedsInputFromSessions(prev, data));
-      setFinalizeStatusBySession((prev: any) => {
-        const next = { ...prev };
-        const alive = new Set(data.map((x: any) => x.id));
-        for (const k of Object.keys(next)) {
-          if (!alive.has(k)) delete next[k];
-        }
-        for (const s of data) {
-          if (s.finalize_status) next[s.id] = s.finalize_status;
-          else delete next[s.id];
-        }
-        return next;
-      });
+      // Workers are not in this list; pruning absent ids wiped their live
+      // finalize status and left the Orchestrate rail on "Waiting".
+      setFinalizeStatusBySession((prev: any) => reseedFinalizeStatusFromSessions(prev, data));
 
       const cur = activeSessionIdRef.current;
       if (
@@ -3784,6 +3776,12 @@ export default function App({ initialView }: any = {}) {
           setAwaitingInputBySession((prev: any) =>
             clearAwaitingInputForSession(prev, data.sessionId),
           );
+          setFinalizeStatusBySession((prev: any) => {
+            if (!(data.sessionId in prev)) return prev;
+            const next = { ...prev };
+            delete next[data.sessionId];
+            return next;
+          });
           if (activeSessionIdRef.current === data.sessionId) {
             setActiveSessionId(null);
           }

@@ -337,3 +337,35 @@ export function liveNeedsInputKind(
   const payloadAt = typeof session.needs_input_at === 'number' ? session.needs_input_at : -1;
   return payloadAt > held.at ? fromPayload : held.kind;
 }
+
+/**
+ * Fold a freshly fetched session list into the live finalize-status map. Only
+ * sessions in the list are touched: a listed session takes its payload status
+ * (or loses its entry when it has none). Sessions the list does not carry keep
+ * their entry, since a list fetch is scoped to one agent and never includes
+ * Orchestrate workers, whose live status the spawned-sessions rail still reads.
+ * Deleted sessions are removed by the `session_deleted` handler instead.
+ * Returns `prev` unchanged when nothing changes.
+ */
+export function reseedFinalizeStatusFromSessions(
+  prev: Readonly<Record<string, string>>,
+  sessions: ReadonlyArray<{ id?: unknown; finalize_status?: unknown }> | null | undefined,
+): Record<string, string> {
+  if (!Array.isArray(sessions) || sessions.length === 0) return prev;
+  let next: Record<string, string> | null = null;
+  for (const s of sessions) {
+    const sid = typeof s?.id === 'string' ? s.id : null;
+    if (!sid) continue;
+    const status =
+      typeof s.finalize_status === 'string' && s.finalize_status ? s.finalize_status : null;
+    if (status) {
+      if (prev[sid] === status) continue;
+      next ??= { ...prev };
+      next[sid] = status;
+    } else if (sid in prev) {
+      next ??= { ...prev };
+      delete next[sid];
+    }
+  }
+  return next ?? prev;
+}

@@ -13,6 +13,7 @@ import {
   applyNeedsInputSnapshot,
   applyNeedsInputEvent,
   liveNeedsInputKind,
+  reseedFinalizeStatusFromSessions,
   reseedNeedsInputFromSessions,
   isNeedsInputKind,
   isSessionsViewMode,
@@ -366,5 +367,34 @@ describe('needs-input reconciliation', () => {
     // Rows without a timestamp and empty lists leave the map alone.
     expect(reseedNeedsInputFromSessions(map, [{ id: 's9', needs_input: null }])).toBe(map);
     expect(reseedNeedsInputFromSessions(map, [])).toBe(map);
+  });
+});
+
+describe('reseedFinalizeStatusFromSessions', () => {
+  it('keeps live status for sessions the list does not carry (Orchestrate workers)', () => {
+    const prev = { worker: 'running', listed: 'reviewing' };
+    const next = reseedFinalizeStatusFromSessions(prev, [{ id: 'listed', finalize_status: null }]);
+    expect(next).toEqual({ worker: 'running' });
+    // The rail derives from this map; the worker must still read as testing.
+    expect(resolveSessionState({ finalizeStatus: next.worker, hasActiveTask: false })).toBe(
+      'running_tests',
+    );
+  });
+
+  it('takes the payload status for listed sessions', () => {
+    const next = reseedFinalizeStatusFromSessions({ a: 'queued' }, [
+      { id: 'a', finalize_status: 'running' },
+      { id: 'b', finalize_status: 'pushed' },
+    ]);
+    expect(next).toEqual({ a: 'running', b: 'pushed' });
+  });
+
+  it('returns prev unchanged when nothing changes', () => {
+    const prev = { a: 'running' };
+    expect(reseedFinalizeStatusFromSessions(prev, [{ id: 'a', finalize_status: 'running' }])).toBe(
+      prev,
+    );
+    expect(reseedFinalizeStatusFromSessions(prev, [])).toBe(prev);
+    expect(reseedFinalizeStatusFromSessions(prev, null)).toBe(prev);
   });
 });
