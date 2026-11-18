@@ -252,7 +252,10 @@ describe('sessionNameFromPrompt', () => {
   });
 
   describe('idempotencyKey', () => {
-    async function mountWithKeys(auth: Record<string, unknown>): Promise<Express> {
+    async function mountWithKeys(
+      auth: Record<string, unknown>,
+      broadcast?: RouteDeps['broadcast'],
+    ): Promise<Express> {
       const { getStmts } = await import('../db.js');
       const real = getStmts();
       const app = express();
@@ -272,6 +275,7 @@ describe('sessionNameFromPrompt', () => {
             releaseSessionDispatchKey: real.releaseSessionDispatchKey,
             pruneSessionDispatchKeys: real.pruneSessionDispatchKeys,
           },
+          broadcast,
         } as unknown as RouteDeps),
       );
       return app;
@@ -297,6 +301,25 @@ describe('sessionNameFromPrompt', () => {
       const winner = a.status === 201 ? a : b;
       expect(a.body.mode).toBe(winner.body.mode);
       expect(b.body.mode).toBe(winner.body.mode);
+    });
+
+    it('a launched forward card is recorded and re-announces the chat that posted it', async () => {
+      const { getStmts } = await import('../db.js');
+      const { sessionForwardDispatchKeyPrefix } =
+        await import('../../shared/utils/sessionForwardDispatchKey.js');
+      const broadcast = vi.fn();
+      const app = await mountWithKeys(asOwner, broadcast);
+      await request(app)
+        .post('/api/projects/web/sessions/dispatch')
+        .send({ prompt: 'Fix the rows', idempotencyKey: 'session-forward:chat-f:msg-f:fwd:0' })
+        .expect(201);
+      const prefix = sessionForwardDispatchKeyPrefix('chat-f', 'msg-f');
+      expect(getStmts().listLaunchedSessionForwardKeys.all(prefix, prefix)).toEqual([
+        { idem_key: 'session-forward:chat-f:msg-f:fwd:0' },
+      ]);
+      expect(broadcast).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'session_needs_input', sessionId: 'chat-f' }),
+      );
     });
 
     it('replays the started mode, not the mode the repeat asked for', async () => {

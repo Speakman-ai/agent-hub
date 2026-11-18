@@ -28,6 +28,8 @@ import { isInternalSystemProject } from '../../shared/utils/hub.js';
 import { formatHubChatRefToken } from '../../shared/utils/hubChatRefTokens.js';
 import { requestOrganizationDispatch } from '../organization-dispatch.js';
 import { sendDispatchOutcome } from './organization-dispatch.js';
+import { parseSessionForwardDispatchKey } from '../../shared/utils/sessionForwardDispatchKey.js';
+import { publishSessionNeedsInput } from '../session-needs-input.js';
 import { orchestrateParentLinkError, orchestrateSpawnParentId } from '../session-mode.js';
 
 const MAX_PROMPT_CHARS = 50_000;
@@ -164,7 +166,7 @@ export function sessionNameFromPrompt(prompt: string): string {
 }
 
 export default function createSessionDispatchRoutes(
-  deps: Pick<RouteDeps, 'findProject' | 'stmts'>,
+  deps: Pick<RouteDeps, 'findProject' | 'stmts'> & Partial<Pick<RouteDeps, 'broadcast'>>,
 ): Router {
   const router = Router();
 
@@ -338,6 +340,12 @@ export default function createSessionDispatchRoutes(
           ownerUserId,
           idempotencyKey,
         );
+        // A launched forward card no longer needs the human, so the chat
+        // that posted it can leave "Needs your input".
+        const forwardedFrom = parseSessionForwardDispatchKey(idempotencyKey);
+        if (forwardedFrom && deps.broadcast) {
+          publishSessionNeedsInput(forwardedFrom.sessionId, deps.stmts, deps.broadcast);
+        }
       }
       res.status(201).json({
         sessionId: result.sessionId,

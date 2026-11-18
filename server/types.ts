@@ -2508,6 +2508,8 @@ export interface Stmts {
   claimSessionDispatchKey: Stmt;
   getSessionDispatchKey: Stmt;
   completeSessionDispatchKey: Stmt;
+  listLaunchedSessionForwardKeys: Stmt;
+  getMessageSessionForwardEvents: Stmt;
   releaseSessionDispatchKey: Stmt;
   pruneSessionDispatchKeys: Stmt;
   getSpawnedSessions: Stmt;

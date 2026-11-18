@@ -5731,6 +5731,18 @@ function initDb(dataDir: string): void {
           SET session_id = ?, agent_id = ?, project_id = ?, name = ?, skipped_skills = ?, mode = ?
         WHERE owner_user_id = ? AND idem_key = ?`,
     ),
+    // Sessions started from forward cards in one message: `substr` matches the
+    // `session-forward:<session>:<message>:` key prefix without LIKE escaping.
+    listLaunchedSessionForwardKeys: db.prepare(
+      `SELECT idem_key FROM session_dispatch_keys
+        WHERE session_id IS NOT NULL AND substr(idem_key, 1, length(?)) = ?`,
+    ),
+    // Forward cards a turn posted, in stream order (one row per card).
+    getMessageSessionForwardEvents: db.prepare(
+      `SELECT payload FROM session_events
+        WHERE parent_kind = 'message' AND parent_id = ? AND event_type = 'session_forward'
+        ORDER BY seq ASC`,
+    ),
     releaseSessionDispatchKey: db.prepare(
       'DELETE FROM session_dispatch_keys WHERE owner_user_id = ? AND idem_key = ? AND session_id IS NULL',
     ),

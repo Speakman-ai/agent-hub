@@ -16,11 +16,30 @@ const {
   __resetNeedsInputForTests,
 } = await import('./session-needs-input.js');
 
-type Msg = { role: string; content: string; metadata?: string | null };
+type Msg = { id?: string; role: string; content: string; metadata?: string | null };
 
-function makeStmts(opts: { messages?: Msg[]; active?: boolean; finalizeStatus?: string | null }) {
+function makeStmts(opts: {
+  messages?: Msg[];
+  active?: boolean;
+  finalizeStatus?: string | null;
+  launchedKeys?: string[];
+  forwardIds?: string[];
+}) {
   const messages = opts.messages ?? [];
+  const launchedKeys = opts.launchedKeys ?? [];
   return {
+    listLaunchedSessionForwardKeys: {
+      all: vi.fn((prefix: string) =>
+        launchedKeys.filter((k) => k.startsWith(prefix)).map((idem_key) => ({ idem_key })),
+      ),
+    },
+    getMessageSessionForwardEvents: {
+      all: vi.fn(() =>
+        (opts.forwardIds ?? ['fix-rows']).map((forwardId) => ({
+          payload: JSON.stringify({ type: 'session_forward', forwardId }),
+        })),
+      ),
+    },
     getActiveTask: { get: vi.fn(() => (opts.active ? { status: 'running' } : undefined)) },
     // Newest first, like the real keyset query.
     getMessagesPageLatest: {
@@ -58,6 +77,81 @@ describe('computeSessionNeedsInput', () => {
         's',
       ),
     ).toBe('credential');
+  });
+
+  describe('Session forward cards', () => {
+    const forwardRow = (kinds: string[]): Msg => ({
+      id: 'm1',
+      role: 'assistant',
+      content: 'Starting a dev session for this.',
+      metadata: JSON.stringify({ awaitingUserInput: true, awaitingUserInputKinds: kinds }),
+    });
+
+    it('needs input while the card has not been launched', () => {
+      const stmts = makeStmts({ messages: [forwardRow(['forward'])] });
+      expect(computeSessionNeedsInput(stmts, 's1')).toBe('question');
+    });
+
+    it('drops back to the default state once the card launched a session', () => {
+      const stmts = makeStmts({
+        messages: [forwardRow(['forward'])],
+        launchedKeys: ['session-forward:s1:m1:fix-rows:0'],
+      });
+      expect(computeSessionNeedsInput(stmts, 's1')).toBeNull();
+    });
+
+    it('ignores launches from another message or session', () => {
+      const stmts = makeStmts({
+        messages: [forwardRow(['forward'])],
+        launchedKeys: ['session-forward:s1:m0:fix-rows:0', 'session-forward:s2:m1:fix-rows:0'],
+      });
+      expect(computeSessionNeedsInput(stmts, 's1')).toBe('question');
+    });
+
+    it('needs input until every card in the message has launched', () => {
+      const messages = [forwardRow(['forward'])];
+      const forwardIds = ['fix-rows', 'add-tests'];
+      const oneLaunched = makeStmts({
+        messages,
+        forwardIds,
+        launchedKeys: ['session-forward:s1:m1:fix-rows:0'],
+      });
+      expect(computeSessionNeedsInput(oneLaunched, 's1')).toBe('question');
+      const bothLaunched = makeStmts({
+        messages,
+        forwardIds,
+        launchedKeys: ['session-forward:s1:m1:fix-rows:0', 'session-forward:s1:m1:add-tests:0'],
+      });
+      expect(computeSessionNeedsInput(bothLaunched, 's1')).toBeNull();
+    });
+
+    it('tells two cards with the same forward id apart by occurrence', () => {
+      const stmts = makeStmts({
+        messages: [forwardRow(['forward'])],
+        forwardIds: ['fix-rows', 'fix-rows'],
+        launchedKeys: ['session-forward:s1:m1:fix-rows:0'],
+      });
+      expect(computeSessionNeedsInput(stmts, 's1')).toBe('question');
+    });
+
+    it('reads the card id from a clamped event payload', () => {
+      const stmts = makeStmts({
+        messages: [forwardRow(['forward'])],
+        launchedKeys: ['session-forward:s1:m1:fix-rows:0'],
+      }) as unknown as { getMessageSessionForwardEvents: { all: () => unknown[] } };
+      stmts.getMessageSessionForwardEvents.all = () => [
+        { payload: '{"type":"session_forward","forwardId":"fix-rows","prompt":"very long…' },
+      ];
+      expect(computeSessionNeedsInput(stmts as never, 's1')).toBeNull();
+    });
+
+    it('still needs input when the same turn also asked a question', () => {
+      const stmts = makeStmts({
+        messages: [forwardRow(['ask', 'forward'])],
+        launchedKeys: ['session-forward:s1:m1:fix-rows:0'],
+      });
+      expect(computeSessionNeedsInput(stmts, 's1')).toBe('question');
+    });
   });
 
   it('clears once the user replies', () => {
