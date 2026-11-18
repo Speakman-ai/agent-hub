@@ -458,6 +458,44 @@ describe('SessionForwardCard', () => {
     vi.useRealTimers();
   });
 
+  it('auto starts at a build mode picked during the countdown', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    dispatchSession.mockResolvedValue({
+      sessionId: 'sess-1',
+      agentId: 'ada',
+      projectId: 'app',
+      name: 'Fix login',
+      skippedSkills: [],
+      ref: '',
+    });
+    setOrchestrateLaunchSettings('chat-1', { mode: 'merge', autoStart: true });
+    setOrchestrateSessionActive('chat-1', true);
+    render(
+      <SessionForwardCard
+        forward={forward}
+        sessionId="chat-1"
+        messageId="m-1"
+        projects={[{ id: 'app', mode: 'dev' }]}
+      />,
+    );
+    const picker = await screen.findByTestId('session-forward-countdown-mode');
+    expect(picker).toHaveValue('merge');
+    fireEvent.change(picker, { target: { value: 'review' } });
+    expect(screen.getByTestId('session-forward-countdown')).toHaveTextContent(
+      'as Build and Review',
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(dispatchSession).toHaveBeenCalledTimes(1);
+    expect(dispatchSession).toHaveBeenCalledWith(
+      'app',
+      expect.objectContaining({ mode: 'review' }),
+      { parentSessionId: 'chat-1' },
+    );
+    vi.useRealTimers();
+  });
+
   it('starts immediately or stays manual when the countdown is overridden', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     dispatchSession.mockResolvedValue({

@@ -182,7 +182,8 @@ function SessionForwardCard({
   // rail holding the switch is gone and cards go back to a manual press.
   const orchestrating = useOrchestrateSessionActive(sessionId);
   // The Orchestrate chat's Default build for this card; a workflow target
-  // resolves it to consult.
+  // resolves it to consult. It only gates Auto start: the countdown launches
+  // at `mode`, so a level picked on the card during the countdown wins.
   const autoStartMode = orchestrateLaunchMode(allowedModes, launch.mode);
   const mode = forwardCardMode({
     allowed: allowedModes,
@@ -268,6 +269,8 @@ function SessionForwardCard({
   };
   const startRef = useRef(start);
   startRef.current = start;
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
 
   useEffect(() => {
     if (!autoStartOn || !hydrated || record) {
@@ -281,7 +284,7 @@ function SessionForwardCard({
       const left = orchestrateAutoStartRemaining(identity);
       setRemaining(left);
       if (left <= 0 && markOrchestrateAutoStartFired(identity)) {
-        void startRef.current(autoStartMode).then((ok) => {
+        void startRef.current(modeRef.current).then((ok) => {
           if (!ok && forwardStore.get(identity)?.status === 'failed') {
             cancelOrchestrateAutoStart(identity);
           }
@@ -291,16 +294,7 @@ function SessionForwardCard({
     tick();
     const timer = window.setInterval(tick, 200);
     return () => window.clearInterval(timer);
-  }, [
-    autoStartOn,
-    hydrated,
-    record,
-    pending,
-    identity,
-    launch.autoStart,
-    orchestrating,
-    autoStartMode,
-  ]);
+  }, [autoStartOn, hydrated, record, pending, identity, launch.autoStart, orchestrating]);
 
   const counting = autoStartOn && hydrated && !record && remaining != null;
 
@@ -371,9 +365,25 @@ function SessionForwardCard({
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
             <p data-testid="session-forward-countdown" className="text-xs text-amber-100">
               {remaining > 0
-                ? `Starting in ${remaining}s as ${sessionForwardModeLabel(autoStartMode)}`
+                ? `Starting in ${remaining}s as ${sessionForwardModeLabel(mode)}`
                 : 'Starting…'}
             </p>
+            {modeOptions.length > 1 && (
+              <select
+                data-testid="session-forward-countdown-mode"
+                aria-label="Automation"
+                value={mode}
+                disabled={pending || remaining <= 0}
+                onChange={(event) => setMode(parseSessionForwardMode(event.target.value))}
+                className="min-w-0 max-w-full rounded-md border border-gray-700 bg-gray-900 px-2 py-1 text-xs text-gray-100 disabled:opacity-60"
+              >
+                {modeOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            )}
             <button
               type="button"
               data-testid="session-forward-start-now"
@@ -381,7 +391,7 @@ function SessionForwardCard({
               onClick={() => {
                 if (!markOrchestrateAutoStartFired(identity)) return;
                 setRemaining(0);
-                void start(autoStartMode).then((ok) => {
+                void start(mode).then((ok) => {
                   if (!ok && forwardStore.get(identity)?.status === 'failed') {
                     cancelOrchestrateAutoStart(identity);
                   }

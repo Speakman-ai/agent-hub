@@ -169,7 +169,8 @@ export default function SessionForwardCard({
   // rail holding the switch is gone and cards go back to a manual press.
   const orchestrating = useOrchestrateSessionActive(sessionId);
   // The Orchestrate chat's Default build for this card; a workflow target
-  // resolves it to consult.
+  // resolves it to consult. It only gates Auto start: the countdown launches
+  // at `mode`, so a level picked on the card during the countdown wins.
   const autoStartMode = orchestrateLaunchMode(allowedModes, launch.mode);
   const mode = forwardCardMode({
     allowed: allowedModes,
@@ -269,6 +270,8 @@ export default function SessionForwardCard({
   };
   const startRef = useRef(start);
   startRef.current = start;
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
 
   useEffect(() => {
     if (!autoStartOn || !hydrated || record) {
@@ -282,7 +285,7 @@ export default function SessionForwardCard({
       const left = orchestrateAutoStartRemaining(identity);
       setRemaining(left);
       if (left <= 0 && markOrchestrateAutoStartFired(identity)) {
-        void startRef.current(autoStartMode).then((ok) => {
+        void startRef.current(modeRef.current).then((ok) => {
           if (!ok && forwardStore.get(identity)?.status === 'failed') {
             cancelOrchestrateAutoStart(identity);
           }
@@ -292,16 +295,7 @@ export default function SessionForwardCard({
     tick();
     const timer = setInterval(tick, 200);
     return () => clearInterval(timer);
-  }, [
-    autoStartOn,
-    hydrated,
-    record,
-    pending,
-    identity,
-    launch.autoStart,
-    orchestrating,
-    autoStartMode,
-  ]);
+  }, [autoStartOn, hydrated, record, pending, identity, launch.autoStart, orchestrating]);
 
   const counting = autoStartOn && hydrated && !record && remaining != null;
 
@@ -352,9 +346,40 @@ export default function SessionForwardCard({
         <View style={styles.footer}>
           <Text testID="session-forward-countdown" style={styles.countdown}>
             {remaining != null && remaining > 0
-              ? `Starting in ${remaining}s as ${sessionForwardModeLabel(autoStartMode)}`
+              ? `Starting in ${remaining}s as ${sessionForwardModeLabel(mode)}`
               : 'Starting…'}
           </Text>
+          {modeOptions.length > 1 ? (
+            <>
+              <Pressable
+                testID="session-forward-countdown-mode"
+                accessibilityRole="button"
+                accessibilityLabel="Automation"
+                disabled={pending || remaining == null || remaining <= 0}
+                onPress={() => setMenuOpen((open) => !open)}
+                style={styles.select}
+              >
+                <Text style={styles.selectText}>{selected?.label}</Text>
+              </Pressable>
+              {menuOpen
+                ? modeOptions.map((option) => (
+                    <Pressable
+                      key={option.value}
+                      testID={`session-forward-countdown-mode-${option.value}`}
+                      accessibilityRole="button"
+                      onPress={() => {
+                        setMode(option.value);
+                        setMenuOpen(false);
+                      }}
+                      style={styles.option}
+                    >
+                      <Text style={styles.optionText}>{option.label}</Text>
+                      <Text style={styles.optionHint}>{option.description}</Text>
+                    </Pressable>
+                  ))
+                : null}
+            </>
+          ) : null}
           <View style={styles.countdownActions}>
             <Pressable
               testID="session-forward-start-now"
@@ -364,7 +389,7 @@ export default function SessionForwardCard({
               onPress={() => {
                 if (!markOrchestrateAutoStartFired(identity)) return;
                 setRemaining(0);
-                void start(autoStartMode).then((ok) => {
+                void start(mode).then((ok) => {
                   if (!ok && forwardStore.get(identity)?.status === 'failed') {
                     cancelOrchestrateAutoStart(identity);
                   }
