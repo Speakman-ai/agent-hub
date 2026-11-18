@@ -62,6 +62,13 @@ export const CONSULT_AUTOMATION_OPTION = {
     'Answer questions and update Agent Hub project data — board, wiki, workflows — without code ship or Finalize',
 } as Record<string, any>;
 
+export const ORCHESTRATE_AUTOMATION_OPTION = {
+  value: 'orchestrate',
+  label: 'Orchestrate',
+  description:
+    'One chat that starts other sessions. Those sessions stay off the sidebar and show on the rail — nothing ships from this chat',
+} as Record<string, any>;
+
 export const VM_AUTOMATION_OPTION = {
   value: 'isolated',
   label: 'VM',
@@ -91,6 +98,7 @@ export const AUTOPILOT_AUTOMATION_OPTION = {
  */
 export const WORKFLOW_SESSION_CONTROL_VALUES = new Set([
   'consult',
+  'orchestrate',
   'scoping',
   'skill-builder',
   'design',
@@ -100,6 +108,7 @@ const SHIP_AUTOMATION_VALUES = new Set(['manual', 'review', 'push', 'merge']);
 
 export const SESSION_CONTROL_OPTIONS = [
   CONSULT_AUTOMATION_OPTION,
+  ORCHESTRATE_AUTOMATION_OPTION,
   DESIGN_AUTOMATION_OPTION,
   SCOPING_AUTOMATION_OPTION,
   SKILL_BUILDER_AUTOMATION_OPTION,
@@ -163,6 +172,7 @@ export function sessionControlValue({ sessionMode, askMode, automation }: any = 
   if (sessionMode === 'scoping') return 'scoping';
   if (sessionMode === 'skill-builder') return 'skill-builder';
   if (sessionMode === 'consult') return 'consult';
+  if (sessionMode === 'orchestrate') return 'orchestrate';
   if (sessionMode === 'hub') return 'consult';
   if (sessionMode === 'qa') return 'consult';
   if (sessionMode === 'isolated') return 'isolated';
@@ -188,15 +198,17 @@ export function planSessionControlChange(current: any, target: any, options: any
           ? 'skill-builder'
           : current?.sessionMode === 'consult'
             ? 'consult'
-            : current?.sessionMode === 'hub'
-              ? 'hub'
-              : current?.sessionMode === 'isolated'
-                ? 'isolated'
-                : current?.sessionMode === 'autopilot'
-                  ? 'autopilot'
-                  : current?.sessionMode === 'no-guardrails'
-                    ? 'no-guardrails'
-                    : 'chat';
+            : current?.sessionMode === 'orchestrate'
+              ? 'orchestrate'
+              : current?.sessionMode === 'hub'
+                ? 'hub'
+                : current?.sessionMode === 'isolated'
+                  ? 'isolated'
+                  : current?.sessionMode === 'autopilot'
+                    ? 'autopilot'
+                    : current?.sessionMode === 'no-guardrails'
+                      ? 'no-guardrails'
+                      : 'chat';
   const askMode = !!current?.askMode;
   const automation = parseFinalizeAutomation(current?.automation);
   const currentValue = sessionControlValue({ sessionMode, askMode, automation });
@@ -239,6 +251,13 @@ export function planSessionControlChange(current: any, target: any, options: any
     return steps;
   }
 
+  if (target === 'orchestrate') {
+    clearLegacyAsk();
+    clearShipIntent();
+    steps.push({ type: 'mode', value: 'orchestrate' });
+    return steps;
+  }
+
   if (target === 'isolated') {
     clearLegacyAsk();
     clearShipIntent();
@@ -269,6 +288,7 @@ export function planSessionControlChange(current: any, target: any, options: any
     sessionMode === 'scoping' ||
     sessionMode === 'skill-builder' ||
     sessionMode === 'consult' ||
+    sessionMode === 'orchestrate' ||
     sessionMode === 'autopilot' ||
     sessionMode === 'no-guardrails'
   ) {

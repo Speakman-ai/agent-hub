@@ -2662,11 +2662,12 @@ components:
             - scoping
             - skill-builder
             - consult
+            - orchestrate
             - hub
             - qa
             - no-guardrails
             - null
-          description: "Session mode picker dimension: `chat` (default), `isolated` (opt-in Firecracker VM; same ship surface as chat), `autopilot` (named-branch implement/push/preview-verify loop; never auto-merges), `design`, `scoping`, `skill-builder`, or `consult`. NULL/absent on legacy rows → treated as `chat`. Set via `PATCH /api/sessions/{sessionId}` or `PUT .../mode`."
+          description: "Session mode picker dimension: `chat` (default), `isolated` (opt-in Firecracker VM; same ship surface as chat), `autopilot` (named-branch implement/push/preview-verify loop; never auto-merges), `design`, `scoping`, `skill-builder`, `consult`, or `orchestrate` (parent chat that starts other sessions and does not ship). NULL/absent on legacy rows → treated as `chat`. Set via `PATCH /api/sessions/{sessionId}` or `PUT .../mode`."
         finalize_pushed_count:
           type: integer
           description: Number of Finalize runs for this session that reached status `pushed` (a PR was opened or updated). Autopilot sessions show this as a committed-PR counter instead of the Finalize button.
@@ -17655,6 +17656,18 @@ components:
           type: string
         name:
           type: string
+        mode:
+          type: string
+          enum:
+            - manual
+            - review
+            - push
+            - merge
+            - consult
+            - scoping
+            - skill-builder
+            - autopilot
+          description: The control the session actually started with. On an `idempotencyKey` repeat this is the first request's mode, which can differ from the mode this request asked for.
         skippedSkills:
           type: array
           items:
@@ -17667,6 +17680,7 @@ components:
         - agentId
         - projectId
         - name
+        - mode
         - skippedSkills
         - ref
       description: The started session. Its first turn streams in the background.
@@ -17847,6 +17861,103 @@ components:
       required:
         - ok
         - closedSessionIds
+    SpawnedSession:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        agent_id:
+          type: string
+        state:
+          type: string
+        updated_at:
+          type: string
+        finalize_status:
+          type: string
+          nullable: true
+        needs_input:
+          type: string
+          nullable: true
+        needs_input_at:
+          type: number
+          nullable: true
+        last_turn_error:
+          type: string
+          nullable: true
+      required:
+        - id
+        - name
+        - agent_id
+        - state
+        - updated_at
+        - finalize_status
+        - needs_input
+        - needs_input_at
+        - last_turn_error
+      description: A Hub session started from an Orchestrate parent.
+    SpawnedArchivedSession:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        agent_id:
+          type: string
+        deleted_at:
+          type: string
+      required:
+        - id
+        - name
+        - agent_id
+        - deleted_at
+      description: A soft-deleted Orchestrate worker still inside the recovery window.
+    GetSpawnedSessionsResponse:
+      type: object
+      properties:
+        parent:
+          type: object
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            agent_id:
+              type: string
+            up:
+              type: object
+              nullable: true
+              properties:
+                id:
+                  type: string
+                name:
+                  type: string
+                agent_id:
+                  type: string
+              required:
+                - id
+                - name
+                - agent_id
+              description: When this chat is itself a worker that was switched to Orchestrate, the Orchestrate chat that started it, so the rail can link back up. Null otherwise.
+          required:
+            - id
+            - name
+            - agent_id
+            - up
+        sessions:
+          type: array
+          items:
+            $ref: "#/components/schemas/SpawnedSession"
+        archived:
+          type: array
+          items:
+            $ref: "#/components/schemas/SpawnedArchivedSession"
+      required:
+        - parent
+        - sessions
+        - archived
     SkillEvalsBody:
       type: object
       properties:
@@ -20226,6 +20337,11 @@ components:
             minLength: 1
           maxItems: 20
           description: Skills preloaded into the first turn.
+        idempotencyKey:
+          type: string
+          minLength: 1
+          maxLength: 512
+          description: At most one session per acting user and key. A repeat with the same project, prompt and agent returns the session the first request started (200); a different payload is refused (409 `idempotency_key_reused`). Session forward cards send one per card so two tabs or devices cannot both start it.
       required:
         - prompt
   parameters: {}
@@ -27043,6 +27159,7 @@ paths:
                     - scoping
                     - skill-builder
                     - consult
+                    - orchestrate
                     - hub
                     - qa
                     - no-guardrails
@@ -27350,6 +27467,7 @@ paths:
                     - scoping
                     - skill-builder
                     - consult
+                    - orchestrate
                     - hub
                     - qa
                     - no-guardrails
@@ -28518,6 +28636,7 @@ paths:
                     - scoping
                     - skill-builder
                     - consult
+                    - orchestrate
                     - hub
                     - qa
                     - no-guardrails
@@ -64789,7 +64908,7 @@ paths:
               $ref: "#/components/schemas/DispatchSessionRequest"
       responses:
         "200":
-          description: "Organization capability retry of an accepted request: the same target session (OrganizationDispatch body)."
+          description: "A repeat of an `idempotencyKey` already used by this user: the session the first request started (DispatchSessionResponse body). For an organization capability retry, the same target session (OrganizationDispatch body)."
         "201":
           description: Session created and first turn started.
           content:
@@ -64825,7 +64944,7 @@ paths:
                 required:
                   - error
         "403":
-          description: Organization capability scope denied or dispatch override forbidden.
+          description: Organization capability scope denied or dispatch override forbidden, or the calling Orchestrate session belongs to another user (`parent_session_forbidden`).
           content:
             application/json:
               schema:
@@ -64851,7 +64970,7 @@ paths:
                 required:
                   - error
         "409":
-          description: Organization capability reused an Idempotency-Key with a different payload.
+          description: Organization capability reused an Idempotency-Key with a different payload, `idempotencyKey` reused with a different payload (`idempotency_key_reused`), or the calling Orchestrate session is archived (`parent_session_archived`).
           content:
             application/json:
               schema:
@@ -65121,6 +65240,36 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SessionSidebarErrorResponse"
+  /api/sessions/{sessionId}/spawned:
+    get:
+      tags:
+        - Sessions
+      summary: List sessions spawned from an Orchestrate chat
+      description: Owner-only. Returns worker sessions whose `spawned_from_session_id` is this session, newest first, plus soft-deleted workers still inside the 24-hour recovery window. Live rows are omitted from the agent session list.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Parent summary and its spawned sessions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetSpawnedSessionsResponse"
+        "404":
+          description: Session not found, or the caller does not own it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
   /api/projects/{projectId}/skills/{skillId}/evals:
     get:
       tags:

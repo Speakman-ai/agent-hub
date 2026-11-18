@@ -26,6 +26,7 @@ import { mapRowsFromMessageEventsApi } from '../utils/sessionTailEventsLoad';
 // FinalizeBar — single action row (Summary, View changes, Build, Finalize, Push).
 import SessionAgentsPanel from '../components/SessionAgentsPanel';
 import FinalizeBar from '../components/FinalizeBar';
+import SpawnedSessionsSheet from '../components/SpawnedSessionsSheet';
 import SessionDesignFilesPanel from '../components/SessionDesignFilesPanel';
 import SessionArtifactsPanel from '../components/SessionArtifactsPanel';
 import SessionChatDraftsPanel from '../components/SessionChatDraftsPanel';
@@ -65,6 +66,8 @@ import { HUB_ASSISTANT_AGENT_ID } from '@shared/utils/hub';
 import { needsAutopilotSetup } from '@shared/utils/sessionAutopilot';
 import AutopilotSetupPrompt from '../components/AutopilotSetupPrompt';
 import WindowKeyboardAvoidingView from '../components/WindowKeyboardAvoidingView';
+import { orchestrateComposerCopy } from '@shared/utils/orchestrateComposer';
+import { orchestrateRailParentId } from '@shared/utils/orchestrateRail';
 
 const FORWARD_SCAN_RETRY_BASE_MS = 2_000;
 const FORWARD_SCAN_RETRY_MAX_MS = 30_000;
@@ -132,6 +135,7 @@ export default function ChatScreen({
     sessionHandoffs,
     handleOpenHandoffSession,
     sessionConsultMode,
+    handleSimpleOrchestrateChange,
     askSubmitted,
     handleAskSubmit,
     handleCredentialSubmit,
@@ -168,6 +172,7 @@ export default function ChatScreen({
   const [showSideBar, setShowSideBar] = useState(false);
   const [showTimeline, setShowTimeline] = useState(false);
   const [showActions, setShowActions] = useState(false);
+  const [spawnedOpen, setSpawnedOpen] = useState(false);
   const [showHubModelPicker, setShowHubModelPicker] = useState(false);
   const [selectedTimelineAnchor, setSelectedTimelineAnchor] = useState<string | null>(null);
   // Reload the active session's messages every time the Chat screen gains
@@ -206,6 +211,8 @@ export default function ChatScreen({
   const hubBound = (embedded && !simple) || simpleServer;
   const hubSession = hubBound || activeSession?.session_mode === 'hub';
   const consultLike = sessionConsultMode || activeSession?.session_mode === 'consult' || hubSession;
+  const orchestrateCopy = orchestrateComposerCopy(activeSession?.session_mode);
+  const orchestrateParentId = orchestrateRailParentId(activeSession);
   // In the embedded Hub assistant tab, only send once the live Hub session is
   // the active one. Before HubScreen's GET resolves (or if it failed) the
   // active session may still be a restored project row — never post there.
@@ -835,6 +842,17 @@ export default function ChatScreen({
               </View>
             ) : null}
             <SessionApprovalCard sessionId={activeSessionId ?? null} />
+            {orchestrateParentId ? (
+              <TouchableOpacity
+                testID="open-spawned-sessions"
+                accessibilityRole="button"
+                accessibilityLabel="Sessions"
+                onPress={() => setSpawnedOpen(true)}
+                style={styles.sessionsBar}
+              >
+                <Text style={styles.sessionsBarText}>Sessions</Text>
+              </TouchableOpacity>
+            ) : null}
             {/* Input */}
             <MessageInput
               onSend={sendChat}
@@ -850,26 +868,51 @@ export default function ChatScreen({
               agentColor={activeAgent?.color}
               skills={skills}
               queueLength={(messageQueues[activeSessionId] || []).length}
-              consultMode={simple ? false : consultLike}
+              consultMode={simple ? Boolean(orchestrateCopy) : consultLike}
               consultHint={
-                simple
-                  ? null
-                  : hubSession
+                orchestrateCopy
+                  ? orchestrateCopy.hint
+                  : !simple && hubSession
                     ? 'Hub assistant — server & account help, no code ship or Finalize'
                     : null
               }
+              composerPlaceholder={orchestrateCopy?.placeholder ?? null}
               toolbarStart={
                 hubSession || simple ? (
-                  <TouchableOpacity
-                    testID="hub-model-picker"
-                    onPress={() => setShowHubModelPicker(true)}
-                    style={styles.hubModelChip}
-                    accessibilityLabel="Model"
-                  >
-                    <Text style={styles.hubModelLabel} numberOfLines={1}>
-                      {sessionModel || 'Model'}
-                    </Text>
-                  </TouchableOpacity>
+                  <View style={styles.simpleComposerTools}>
+                    <TouchableOpacity
+                      testID="hub-model-picker"
+                      onPress={() => setShowHubModelPicker(true)}
+                      style={styles.hubModelChip}
+                      accessibilityLabel="Model"
+                    >
+                      <Text style={styles.hubModelLabel} numberOfLines={1}>
+                        {sessionModel || 'Model'}
+                      </Text>
+                    </TouchableOpacity>
+                    {simple && !simpleServer ? (
+                      <TouchableOpacity
+                        testID="simple-orchestrate-toggle"
+                        accessibilityRole="switch"
+                        accessibilityLabel="Orchestrate"
+                        accessibilityState={{
+                          checked: activeSession?.session_mode === 'orchestrate',
+                        }}
+                        onPress={() =>
+                          void handleSimpleOrchestrateChange(
+                            activeSession?.session_mode !== 'orchestrate',
+                          )
+                        }
+                        style={[
+                          styles.orchestrateToggle,
+                          activeSession?.session_mode === 'orchestrate' &&
+                            styles.orchestrateToggleOn,
+                        ]}
+                      >
+                        <Text style={styles.hubModelLabel}>Orchestrate</Text>
+                      </TouchableOpacity>
+                    ) : null}
+                  </View>
                 ) : null
               }
             />
@@ -904,6 +947,15 @@ export default function ChatScreen({
         </PreviewChatLayout>
       </WindowKeyboardAvoidingView>
 
+      {spawnedOpen && orchestrateParentId ? (
+        <SpawnedSessionsSheet
+          key={orchestrateParentId}
+          visible
+          parentSessionId={orchestrateParentId}
+          activeSessionId={activeSessionId}
+          onClose={() => setSpawnedOpen(false)}
+        />
+      ) : null}
       {/* Agent Switcher Modal */}
       <AgentSwitcher
         visible={showSwitcher}
@@ -1026,6 +1078,35 @@ const styles = StyleSheet.create({
     backgroundColor: colors.gray900,
   },
   clearLabel: { color: colors.gray300, fontSize: 12, fontWeight: '600' },
+  simpleComposerTools: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  orchestrateToggle: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: colors.gray900,
+    borderWidth: 1,
+    borderColor: colors.gray800,
+  },
+  orchestrateToggleOn: {
+    backgroundColor: 'rgba(14, 116, 144, 0.45)',
+    borderColor: '#0284c7',
+  },
+  sessionsBar: {
+    alignSelf: 'flex-start',
+    marginHorizontal: 12,
+    marginBottom: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    backgroundColor: colors.gray900,
+  },
+  sessionsBarText: { color: colors.gray200, fontSize: 12, fontWeight: '600' },
   hubModelChip: {
     alignSelf: 'flex-start',
     maxWidth: 220,

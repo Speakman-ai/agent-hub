@@ -2,6 +2,7 @@ import {
   Box,
   CloudUpload,
   FlaskConical,
+  GitFork,
   GitMerge,
   Hammer,
   MessageCircle,
@@ -16,6 +17,7 @@ import {
 /** Lucide icon per session-control value (Consult → Auto Merge). */
 export const SESSION_CONTROL_ICON_MAP: Record<string, LucideIcon> = {
   consult: MessageCircle,
+  orchestrate: GitFork,
   design: Palette,
   scoping: Network,
   'skill-builder': Sparkles,

@@ -198,6 +198,7 @@ import type { BrowserSessionOptions } from './browser.js';
 import { buildScopingModePreamble } from './scoping-mode-prompt.js';
 import { buildSkillBuilderModePreamble } from './skill-builder-mode-prompt.js';
 import { buildConsultModePreamble } from './consult-mode-prompt.js';
+import { buildOrchestrateModePreamble } from './orchestrate-mode-prompt.js';
 import { buildQaModePreamble } from './qa-mode-prompt.js';
 import { qaBorrowedPreviewStartRefusal, qaRunPreviewOwnerSessionId } from './qa-run-kickoff.js';
 import { qaStepGuard } from './qa-environments.js';
@@ -213,6 +214,7 @@ import { buildAutopilotModePreamble, parseAutopilotSessionConfig } from './sessi
 import {
   isSkillBuilderModeActive,
   isConsultBehaviorActive,
+  isOrchestrateModeActive,
   isQaModeActive,
   resolveCliWorkspaceAccess,
 } from './session-mode.js';
@@ -3713,6 +3715,27 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           enrichedPrompt += `\n\n${hubTurn.skillInjections.join('\n\n')}`;
         }
         if (hubTurn.preamble) enrichedPrompt = `${hubTurn.preamble}\n\n${enrichedPrompt}`;
+      } else if (isOrchestrateModeActive(session!)) {
+        if (!isAutoContinuation) {
+          for (const requiredId of requiredSkillIdsForSession(session!)) {
+            if (loadedRoutedSkillIds.has(requiredId)) continue;
+            const injection = loadSkillByName({
+              name: requiredId,
+              reason: 'session_mode=orchestrate (required)',
+              paths: skillPaths,
+              sessionId,
+              stmts: stmts as Stmts,
+              broadcast,
+            });
+            enrichedPrompt += `\n\n${injection}`;
+            loadedRoutedSkillIds.add(requiredId);
+          }
+        }
+        const orchestratePreamble = buildOrchestrateModePreamble({
+          project: project as Project,
+          agentId: agent?.id ?? null,
+        });
+        enrichedPrompt = `${orchestratePreamble}\n\n${enrichedPrompt}`;
       } else if (isConsultBehaviorActive(session!)) {
         if (!isAutoContinuation) {
           for (const requiredId of requiredSkillIdsForSession(session!)) {

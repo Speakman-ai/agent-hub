@@ -9,10 +9,10 @@ import { isResolvePrSessionTitle } from '@shared/utils/sessionTitlePr';
  * from the in-memory list (agent switch races, optimistic navigation, etc.).
  */
 
-/** True when the session is in Consult, Hub, or QA (no code ship / Finalize). */
+/** True when the session does not ship code (Consult, Orchestrate, Hub, or QA). */
 export function isSessionConsultModeEnabled(session: any) {
   const mode = session?.session_mode;
-  if (mode === 'consult' || mode === 'hub' || mode === 'qa') return true;
+  if (mode === 'consult' || mode === 'orchestrate' || mode === 'hub' || mode === 'qa') return true;
   return Number(session?.ask_mode ?? 0) !== 0;
 }
 
@@ -227,7 +227,8 @@ export function planRemoteSessionCreatedCaches(args: {
   sessions: any[];
 }): { sessionsByAgentId: Record<string, any[]>; sessions: any[] } {
   const { targetAgentId, loadedSessionsAgentId, session, sessionsByAgentId, sessions } = args;
-  if (!targetAgentId || !session?.id) {
+  // Orchestrate workers stay off the left list. The rail hears the same event.
+  if (!targetAgentId || !session?.id || session.spawned_from_session_id) {
     return { sessionsByAgentId, sessions };
   }
   const nextSessions =

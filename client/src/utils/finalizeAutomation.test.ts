@@ -6,6 +6,7 @@ import {
   SESSION_CONTROL_OPTIONS,
   DESIGN_AUTOMATION_OPTION,
   CONSULT_AUTOMATION_OPTION,
+  ORCHESTRATE_AUTOMATION_OPTION,
   sessionControlValue,
   sessionControlLabel,
   planSessionControlChange,
@@ -30,6 +31,7 @@ describe('SESSION_CONTROL_OPTIONS', () => {
   it('folds Consult + Design + Scoping + Skill Builder + VM + the four finalize levels', () => {
     expect(SESSION_CONTROL_OPTIONS.map((o: any) => (o as any).value)).toEqual([
       'consult',
+      'orchestrate',
       'design',
       'scoping',
       'skill-builder',
@@ -43,9 +45,10 @@ describe('SESSION_CONTROL_OPTIONS', () => {
     ]);
   });
 
-  it('puts Consult first and Design second as no-ship options', () => {
+  it('puts Consult first, Orchestrate next, then Design', () => {
     expect(SESSION_CONTROL_OPTIONS[0]).toBe(CONSULT_AUTOMATION_OPTION);
-    expect(SESSION_CONTROL_OPTIONS[1]).toBe(DESIGN_AUTOMATION_OPTION);
+    expect(SESSION_CONTROL_OPTIONS[1]).toBe(ORCHESTRATE_AUTOMATION_OPTION);
+    expect(SESSION_CONTROL_OPTIONS[2]).toBe(DESIGN_AUTOMATION_OPTION);
     expect(DESIGN_AUTOMATION_OPTION.label).toBe('Design');
   });
 });
@@ -222,6 +225,24 @@ describe('planSessionControlChange', () => {
     ]);
   });
 
+  it('selecting Orchestrate clears ship intent', () => {
+    expect(
+      sessionControlPatch(
+        { sessionMode: 'chat', askMode: false, automation: 'merge' },
+        'orchestrate',
+      ),
+    ).toEqual({ session_mode: 'orchestrate', finalize_automation: 'manual' });
+  });
+
+  it('leaving Orchestrate for a ship level returns to chat', () => {
+    expect(
+      sessionControlPatch(
+        { sessionMode: 'orchestrate', askMode: false, automation: 'manual' },
+        'push',
+      ),
+    ).toEqual({ session_mode: 'chat', finalize_automation: 'push' });
+  });
+
   it('leaving Consult for a ship level resets session_mode first', () => {
     expect(
       planSessionControlChange(
@@ -330,9 +351,10 @@ describe('sessionControlOptionsForProject / sessionControlValueForProject', () =
   it('offers only server-accepted workflow modes (incl. Design) on workflow projects', () => {
     const opts = sessionControlOptionsForProject({ mode: 'workflow' }, { role: 'sub' });
     // Design is offered on workflow projects (data-dir artifact store). Order
-    // follows SESSION_CONTROL_OPTIONS: consult, design, scoping, skill-builder.
+    // follows SESSION_CONTROL_OPTIONS: consult, orchestrate, design, scoping, skill-builder.
     expect(opts.map((o: any) => o.value)).toEqual([
       'consult',
+      'orchestrate',
       'design',
       'scoping',
       'skill-builder',
@@ -341,7 +363,7 @@ describe('sessionControlOptionsForProject / sessionControlValueForProject', () =
 
   it('hides Skill Builder on workflow projects when the agent is a helper', () => {
     const opts = sessionControlOptionsForProject({ mode: 'workflow' }, { role: 'docs' });
-    expect(opts.map((o: any) => o.value)).toEqual(['consult', 'design', 'scoping']);
+    expect(opts.map((o: any) => o.value)).toEqual(['consult', 'orchestrate', 'design', 'scoping']);
   });
 
   it('includes Consult, VM, and Build modes on dev projects', () => {

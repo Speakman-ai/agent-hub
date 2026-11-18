@@ -21,7 +21,7 @@ import { groupSimpleChats } from '@shared/utils/simpleRosterGroups';
 import {
   buildSimpleContacts,
   filterSimpleContacts,
-  isSimpleConsultSession,
+  isSimpleShellSession,
   moveSimpleContact,
   orderSimpleContacts,
   preferredSimpleSession,
@@ -311,10 +311,10 @@ export default function SimpleChatsScreen() {
           const entry = { owner: generation, promise: Promise.resolve<any>(null) };
           entry.promise = (async () => {
             const known = sessionsByAgentId[agentId] || [];
-            let consults = known.filter(isSimpleConsultSession);
+            let consults = known.filter(isSimpleShellSession);
             if (consults.length === 0) {
               const rows = await api.getSessions(agentId);
-              consults = (Array.isArray(rows) ? rows : []).filter(isSimpleConsultSession);
+              consults = (Array.isArray(rows) ? rows : []).filter(isSimpleShellSession);
             }
             const remembered =
               rememberedSessionIds[agentId] ?? (await readSimpleSessionId(agentId));

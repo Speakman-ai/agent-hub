@@ -46,6 +46,7 @@ function fakeStmts() {
     updateSessionPendingSkillContext: { run: vi.fn() },
     getSession: { get: vi.fn(() => ({ id: 's' })) },
     markSessionHidden: { run: vi.fn() },
+    markSessionSpawnedFrom: { run: vi.fn() },
   };
 }
 
@@ -87,6 +88,23 @@ describe('pickBackgroundSessionAgent', () => {
     expect(pickBackgroundSessionAgent(proj(), null)?.id).toBe('dev');
     expect(pickBackgroundSessionAgent(proj(), 'dev2')?.id).toBe('dev2');
     expect(pickBackgroundSessionAgent(proj(), 'docs')).toBeNull();
+  });
+
+  it('lets Orchestrate start only agents marked Dev', async () => {
+    const { resolveOrchestrateForwardAgent } = await import('./background-agent-session.js');
+    const agents = [
+      { id: 'docs', name: 'Docs', role: 'docs', engine: 'claude-code' },
+      { id: 'writer', name: 'Writer', role: 'sub', engine: 'claude-code', isDev: false },
+      { id: 'fe', name: 'Frontend', role: 'sub', engine: 'claude-code', isDev: true },
+    ];
+    expect(resolveOrchestrateForwardAgent(agents, 'docs')).toEqual({
+      error: 'Agent "docs" is not marked as Dev',
+    });
+    expect(resolveOrchestrateForwardAgent(agents, 'writer')).toEqual({
+      error: 'Agent "writer" is not marked as Dev',
+    });
+    expect(resolveOrchestrateForwardAgent(agents, 'fe')).toEqual({ agentId: 'fe' });
+    expect(resolveOrchestrateForwardAgent(agents, null)).toEqual({ agentId: 'fe' });
   });
 });
 
@@ -130,6 +148,28 @@ describe('dispatchBackgroundAgentSession', () => {
       handleChat.mock.invocationCallOrder[0]!,
     );
     expect(broadcastSessionCreated).not.toHaveBeenCalled();
+  });
+
+  it('stamps spawned_from_session_id before the session is announced', () => {
+    dispatchBackgroundAgentSession(
+      proj(),
+      { id: 'a1', name: 'Fix login', prompt: 'Fix it', runAsSession: true },
+      { sessionName: 'Fix login', spawnedFromSessionId: 'parent-1', sessionId: 'child-1' },
+    );
+    expect(stmts.markSessionSpawnedFrom.run).toHaveBeenCalledWith('parent-1', 'child-1');
+    expect(stmts.markSessionSpawnedFrom.run.mock.invocationCallOrder[0]!).toBeLessThan(
+      stmts.getSession.get.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('does not stamp a parent when the dispatch was not from Orchestrate', () => {
+    dispatchBackgroundAgentSession(proj(), {
+      id: 'a1',
+      name: 'Triage',
+      prompt: 'Look',
+      runAsSession: true,
+    });
+    expect(stmts.markSessionSpawnedFrom.run).not.toHaveBeenCalled();
   });
 
   it('announces a normal session and leaves it visible', () => {

@@ -39,6 +39,10 @@ describe('sessionDerivedState', () => {
       expect(isSessionConsultModeEnabled({ id: 'x', session_mode: 'consult' })).toBe(true);
     });
 
+    it('returns true for orchestrate session_mode', () => {
+      expect(isSessionConsultModeEnabled({ id: 'x', session_mode: 'orchestrate' })).toBe(true);
+    });
+
     it('returns true for hub session_mode', () => {
       expect(isSessionConsultModeEnabled({ id: 'x', session_mode: 'hub' })).toBe(true);
     });
@@ -563,6 +567,20 @@ describe('sessionDerivedState', () => {
       expect(out.sessions).toBe(sessions);
       expect(out.sessionsByAgentId['agent-2']).toEqual([created, { id: 's-b' }]);
       expect(out.sessionsByAgentId['agent-1']).toEqual([rowA]);
+    });
+
+    it('does not list an Orchestrate worker in the sidebar cache', () => {
+      const sessions = [rowA];
+      const cache = { 'agent-1': [rowA] };
+      const out = planRemoteSessionCreatedCaches({
+        targetAgentId: 'agent-1',
+        loadedSessionsAgentId: 'agent-1',
+        session: { id: 'worker', spawned_from_session_id: 'parent' },
+        sessionsByAgentId: cache,
+        sessions,
+      });
+      expect(out.sessions).toBe(sessions);
+      expect(out.sessionsByAgentId).toBe(cache);
     });
 
     it('does not invent a cache entry for an agent that has never been fetched', () => {

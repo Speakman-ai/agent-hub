@@ -182,6 +182,13 @@ describe('requiredSkillIdsForSession', () => {
     ]);
   });
 
+  it('force-loads session skills in orchestrate mode', () => {
+    expect(requiredSkillIdsForSession({ session_mode: 'orchestrate' })).toEqual([
+      'agent-hub',
+      'agent-hub-sessions',
+    ]);
+  });
+
   it('force-loads Hub skills in consult mode', () => {
     expect(requiredSkillIdsForSession({ session_mode: 'consult' })).toEqual([
       'agent-hub',

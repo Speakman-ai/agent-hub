@@ -29,6 +29,7 @@ import { isWorkflowProject } from './project-mode-guards.js';
 import { loadSkillBody, loadSkillByName } from './skill-invoke.js';
 import { resolveWorkspaceSkillsDir } from './project-paths.js';
 import { resolveProjectSkillsDir } from './project-skill-paths.js';
+import { agentAcceptsAutonomousTickets } from './agent-autonomy.js';
 
 /**
  * Session control values a background session may start in. Mirrors the
@@ -136,6 +137,33 @@ export function pickBackgroundSessionAgent(
   return agents.find((a) => isEligibleBackgroundSessionAgent(a)) ?? null;
 }
 
+/** Agents whose Dev mark is on. Orchestrate may start a session only on these. */
+export function devMarkedAgents<T extends Pick<Agent, 'role' | 'isDev'>>(
+  agents: readonly T[] | null | undefined,
+): T[] {
+  return (agents ?? []).filter((agent) => agentAcceptsAutonomousTickets(agent));
+}
+
+/**
+ * The agent an Orchestrate forward may start. A named agent must be marked
+ * Dev. With no name, the project's first Dev agent is the default.
+ */
+export function resolveOrchestrateForwardAgent<T extends Pick<Agent, 'id' | 'role' | 'isDev'>>(
+  agents: readonly T[] | null | undefined,
+  agentId: string | null | undefined,
+): { agentId: string } | { error: string } {
+  const devs = devMarkedAgents(agents);
+  const requested = agentId?.trim() ?? '';
+  if (requested) {
+    const match = devs.find((agent) => agent.id === requested);
+    if (!match) return { error: `Agent "${requested}" is not marked as Dev` };
+    return { agentId: match.id };
+  }
+  const first = devs[0];
+  if (!first) return { error: 'This project has no agent marked as Dev' };
+  return { agentId: first.id };
+}
+
 export interface BackgroundAgentSessionDeps {
   stmts: Stmts;
   config: AppConfig;
@@ -165,6 +193,8 @@ export class BackgroundSessionDispatchError extends Error {
 export interface BackgroundSessionDispatchResult {
   sessionId: string;
   agentId: string;
+  /** The control the session started with, after the project default applied. */
+  mode: BackgroundSessionMode;
   /** Skills that failed to load (missing / not allowed); the run still starts. */
   skippedSkills: string[];
 }
@@ -201,6 +231,11 @@ export function dispatchBackgroundAgentSession(
      * somewhere else.
      */
     hidden?: boolean;
+    /**
+     * Orchestrate parent that started this session. Stamped before the
+     * created broadcast so clients leave it off the left session list.
+     */
+    spawnedFromSessionId?: string | null;
   } = {},
 ): BackgroundSessionDispatchResult {
   const deps = hook;
@@ -253,6 +288,9 @@ export function dispatchBackgroundAgentSession(
   // Before anything broadcasts about the session: the broadcast filter
   // caches whether a session is hidden on first sight.
   if (opts.hidden) stmts.markSessionHidden.run(sessionId);
+  if (opts.spawnedFromSessionId) {
+    stmts.markSessionSpawnedFrom.run(opts.spawnedFromSessionId, sessionId);
+  }
   setSessionOwner(sessionId, ownerUserId);
   if (sessionMode !== 'chat') stmts.updateSessionMode.run(sessionMode, sessionId);
   stmts.updateSessionFinalizeAutomation.run(finalizeAutomation, sessionId);
@@ -308,5 +346,5 @@ export function dispatchBackgroundAgentSession(
   const session = stmts.getSession.get(sessionId) as SessionRow | undefined;
   if (session && !opts.hidden)
     broadcastSessionCreated(deps.broadcast, agent.id, session, stmts, project);
-  return { sessionId, agentId: agent.id, skippedSkills };
+  return { sessionId, agentId: agent.id, mode: control, skippedSkills };
 }

@@ -73,7 +73,7 @@ export const SessionComponent = registerComponent(
       }),
       session_mode: SessionModeSchema.nullable().optional().openapi({
         description:
-          'Session mode picker dimension: `chat` (default), `isolated` (opt-in Firecracker VM; same ship surface as chat), `autopilot` (named-branch implement/push/preview-verify loop; never auto-merges), `design`, `scoping`, `skill-builder`, or `consult`. NULL/absent on legacy rows → treated as `chat`. Set via `PATCH /api/sessions/{sessionId}` or `PUT .../mode`.',
+          'Session mode picker dimension: `chat` (default), `isolated` (opt-in Firecracker VM; same ship surface as chat), `autopilot` (named-branch implement/push/preview-verify loop; never auto-merges), `design`, `scoping`, `skill-builder`, `consult`, or `orchestrate` (parent chat that starts other sessions and does not ship). NULL/absent on legacy rows → treated as `chat`. Set via `PATCH /api/sessions/{sessionId}` or `PUT .../mode`.',
       }),
       finalize_pushed_count: z.number().int().optional().openapi({
         description:

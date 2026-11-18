@@ -39,6 +39,7 @@ function MessageInput(
     askMode,
     consultMode = askMode,
     consultHint = null,
+    composerPlaceholder = null,
     readOnly,
     draftKey,
     onFileError,
@@ -991,13 +992,15 @@ function MessageInput(
           placeholder={
             disabled
               ? 'Waiting...'
-              : consultMode
-                ? window.innerWidth < 640
-                  ? 'Ask a question...'
-                  : 'Consult on Agent Hub — board, wiki, workflows…'
-                : window.innerWidth < 640
-                  ? 'Message...'
-                  : 'Type a message... (# to tag a card or PR, paste or drop files)'
+              : composerPlaceholder
+                ? composerPlaceholder
+                : consultMode
+                  ? window.innerWidth < 640
+                    ? 'Ask a question...'
+                    : 'Consult on Agent Hub — board, wiki, workflows…'
+                  : window.innerWidth < 640
+                    ? 'Message...'
+                    : 'Type a message... (# to tag a card or PR, paste or drop files)'
           }
           disabled={disabled && !isProcessing}
           rows={1}

@@ -34,6 +34,7 @@ function SessionControlIcon({
  * It folds session mode and finalize automation into one mutually-exclusive control:
  *   - session_mode === 'design'  → Design (no ship at all; live canvas)
  *   - session_mode === 'consult' → Consult (Hub-only; no code ship or Finalize)
+ *   - session_mode === 'orchestrate' → Orchestrate (starts other sessions; no ship)
  *   - finalize_automation level  → Build / Build and Review / Build and Push / Auto Merge
  *
  * Design and Consult sit at the no-ship end of the gradient. They are mutually
@@ -61,13 +62,15 @@ export default function FinalizeAutomationSelect({
           ? 'skill-builder'
           : session?.session_mode === 'consult'
             ? 'consult'
-            : session?.session_mode === 'isolated'
-              ? 'isolated'
-              : session?.session_mode === 'autopilot'
-                ? 'autopilot'
-                : session?.session_mode === 'no-guardrails'
-                  ? 'no-guardrails'
-                  : 'chat';
+            : session?.session_mode === 'orchestrate'
+              ? 'orchestrate'
+              : session?.session_mode === 'isolated'
+                ? 'isolated'
+                : session?.session_mode === 'autopilot'
+                  ? 'autopilot'
+                  : session?.session_mode === 'no-guardrails'
+                    ? 'no-guardrails'
+                    : 'chat';
   // Design mode runs when the session has an isolated worktree (dev projects) OR
   // the project is workflow/no-code (artifacts go to the Hub data-dir store). The
   // server's `can_design_mode` covers the worktree arm; we OR in the workflow arm

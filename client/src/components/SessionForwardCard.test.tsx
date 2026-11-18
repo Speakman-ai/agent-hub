@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ExtractedForward } from '@shared/utils/extractForwardBlocks';
+import {
+  resetOrchestrateLaunchStateForTests,
+  setOrchestrateLaunchSettings,
+  setOrchestrateSessionActive,
+} from '../utils/orchestrateLaunchSettings';
 
 const dispatchSession = vi.hoisted(() => vi.fn());
 vi.mock('../utils/api', () => ({ api: { dispatchSession } }));
@@ -30,6 +35,8 @@ describe('SessionForwardCard', () => {
     localStorage.clear();
     forwardStore.clear();
     forwardDock.clear();
+    resetOrchestrateLaunchStateForTests();
+    vi.useRealTimers();
   });
 
   it('dismisses without starting anything and stays dismissed on reload', () => {
@@ -171,12 +178,17 @@ describe('SessionForwardCard', () => {
     expect(select.value).toBe('consult');
     fireEvent.click(screen.getByTestId('session-forward'));
     await waitFor(() => expect(dispatchSession).toHaveBeenCalledTimes(1));
-    expect(dispatchSession).toHaveBeenCalledWith('ops', {
-      prompt: forward.prompt,
-      agentId: 'ops',
-      name: 'Fix login',
-      mode: 'consult',
-    });
+    expect(dispatchSession).toHaveBeenCalledWith(
+      'ops',
+      {
+        prompt: forward.prompt,
+        agentId: 'ops',
+        name: 'Fix login',
+        mode: 'consult',
+        idempotencyKey: `session-forward:hub-1:m-1:${forward.forwardId}:0`,
+      },
+      { parentSessionId: 'hub-1' },
+    );
   });
 
   it('keeps the ship levels for a dev project', () => {
@@ -236,6 +248,7 @@ describe('SessionForwardCard', () => {
     expect(dispatchSession).toHaveBeenLastCalledWith(
       'app',
       expect.objectContaining({ prompt: 'Add logout.' }),
+      { parentSessionId: 'chat-1' },
     );
   });
 
@@ -411,5 +424,312 @@ describe('SessionForwardCard', () => {
       render(<SessionForwardDock chatSessionId="chat-1" />);
       expect(screen.queryByTestId('session-forward-dock')).toBeNull();
     });
+  });
+
+  it('starts with the orchestrate default build mode after 30 seconds', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    dispatchSession.mockResolvedValue({
+      sessionId: 'sess-1',
+      agentId: 'ada',
+      projectId: 'app',
+      name: 'Fix login',
+      skippedSkills: [],
+      ref: '',
+    });
+    setOrchestrateLaunchSettings('chat-1', { mode: 'push', autoStart: true });
+    setOrchestrateSessionActive('chat-1', true);
+    render(
+      <SessionForwardCard
+        forward={forward}
+        sessionId="chat-1"
+        messageId="m-1"
+        projects={[{ id: 'app', mode: 'dev' }]}
+      />,
+    );
+    expect(await screen.findByTestId('session-forward-countdown')).toHaveTextContent(
+      'Starting in 30s as Build and Push',
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(dispatchSession).toHaveBeenCalledWith('app', expect.objectContaining({ mode: 'push' }), {
+      parentSessionId: 'chat-1',
+    });
+    vi.useRealTimers();
+  });
+
+  it('starts immediately or stays manual when the countdown is overridden', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    dispatchSession.mockResolvedValue({
+      sessionId: 'sess-1',
+      agentId: 'ada',
+      projectId: 'app',
+      name: 'Fix login',
+      skippedSkills: [],
+      ref: '',
+    });
+    setOrchestrateLaunchSettings('chat-1', { mode: 'merge', autoStart: true });
+    setOrchestrateSessionActive('chat-1', true);
+    const view = render(
+      <SessionForwardCard
+        forward={forward}
+        sessionId="chat-1"
+        messageId="m-1"
+        projects={[{ id: 'app', mode: 'dev' }]}
+      />,
+    );
+    expect(await screen.findByTestId('session-forward-countdown')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('session-forward-cancel-auto'));
+    expect(screen.getByTestId('session-forward')).toBeTruthy();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(dispatchSession).not.toHaveBeenCalled();
+
+    view.rerender(
+      <SessionForwardCard
+        forward={{ ...forward, forwardId: 'fwd-now' }}
+        sessionId="chat-1"
+        messageId="m-2"
+        projects={[{ id: 'app', mode: 'dev' }]}
+      />,
+    );
+    fireEvent.click(await screen.findByTestId('session-forward-start-now'));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(dispatchSession).toHaveBeenCalledWith(
+      'app',
+      expect.objectContaining({ mode: 'merge' }),
+      { parentSessionId: 'chat-1' },
+    );
+    vi.useRealTimers();
+  });
+
+  it('does not auto start once the chat leaves Orchestrate', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    setOrchestrateLaunchSettings('chat-1', { mode: 'push', autoStart: true });
+    setOrchestrateSessionActive('chat-1', true);
+    render(
+      <SessionForwardCard
+        forward={forward}
+        sessionId="chat-1"
+        messageId="m-1"
+        projects={[{ id: 'app', mode: 'dev' }]}
+      />,
+    );
+    expect(await screen.findByTestId('session-forward-countdown')).toBeTruthy();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+      setOrchestrateSessionActive('chat-1', false);
+    });
+    expect(screen.queryByTestId('session-forward-countdown')).toBeNull();
+    expect(screen.getByTestId('session-forward')).toBeTruthy();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(dispatchSession).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it('ignores a saved Auto start in a chat that is not in Orchestrate', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    setOrchestrateLaunchSettings('chat-1', { mode: 'push', autoStart: true });
+    render(
+      <SessionForwardCard
+        forward={forward}
+        sessionId="chat-1"
+        messageId="m-1"
+        projects={[{ id: 'app', mode: 'dev' }]}
+      />,
+    );
+    expect(await screen.findByTestId('session-forward')).toBeTruthy();
+    expect(screen.queryByTestId('session-forward-countdown')).toBeNull();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(31_000);
+    });
+    expect(dispatchSession).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it('auto starts a workflow forward as consult', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    dispatchSession.mockResolvedValue({
+      sessionId: 'sess-1',
+      agentId: 'ada',
+      projectId: 'app',
+      name: 'Fix login',
+      skippedSkills: [],
+      ref: '',
+    });
+    setOrchestrateLaunchSettings('chat-1', { mode: 'push', autoStart: true });
+    setOrchestrateSessionActive('chat-1', true);
+    render(
+      <SessionForwardCard
+        forward={{ ...forward, mode: 'consult' }}
+        sessionId="chat-1"
+        messageId="m-1"
+        projects={[{ id: 'app', mode: 'workflow' }]}
+      />,
+    );
+    expect(await screen.findByTestId('session-forward-countdown')).toHaveTextContent(
+      'Starting in 30s',
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(dispatchSession).toHaveBeenCalledWith(
+      'app',
+      expect.objectContaining({ mode: 'consult' }),
+      { parentSessionId: 'chat-1' },
+    );
+    vi.useRealTimers();
+  });
+
+  it('cancelling one copy of a card stops the countdown in every copy', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    setOrchestrateLaunchSettings('chat-1', { mode: 'push', autoStart: true });
+    setOrchestrateSessionActive('chat-1', true);
+    const props = {
+      forward,
+      sessionId: 'chat-1',
+      messageId: 'm-1',
+      projects: [{ id: 'app', mode: 'dev' }],
+    };
+    render(
+      <>
+        <SessionForwardCard {...props} />
+        <SessionForwardCard {...props} />
+      </>,
+    );
+    await waitFor(() => expect(screen.getAllByTestId('session-forward-countdown')).toHaveLength(2));
+    fireEvent.click(screen.getAllByTestId('session-forward-cancel-auto')[0]!);
+    expect(screen.queryAllByTestId('session-forward-countdown')).toHaveLength(0);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(31_000);
+    });
+    expect(dispatchSession).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it('does not restart a cancelled countdown after a reload', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    setOrchestrateLaunchSettings('chat-1', { mode: 'push', autoStart: true });
+    setOrchestrateSessionActive('chat-1', true);
+    const props = {
+      forward,
+      sessionId: 'chat-1',
+      messageId: 'm-1',
+      projects: [{ id: 'app', mode: 'dev' }],
+    };
+    const first = render(<SessionForwardCard {...props} />);
+    fireEvent.click(await screen.findByTestId('session-forward-cancel-auto'));
+    first.unmount();
+
+    // Reload: in-memory state is gone; saved settings and cancels remain.
+    resetOrchestrateLaunchStateForTests();
+    setOrchestrateSessionActive('chat-1', true);
+    render(<SessionForwardCard {...props} />);
+    expect(await screen.findByTestId('session-forward')).toBeTruthy();
+    expect(screen.queryByTestId('session-forward-countdown')).toBeNull();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(31_000);
+    });
+    expect(dispatchSession).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it("starts a manual press at the Orchestrate chat's Default build", async () => {
+    dispatchSession.mockResolvedValue({
+      sessionId: 'sess-1',
+      agentId: 'ada',
+      projectId: 'app',
+      name: 'Fix login',
+      skippedSkills: [],
+      ref: '',
+    });
+    setOrchestrateLaunchSettings('chat-1', { mode: 'push', autoStart: false });
+    setOrchestrateSessionActive('chat-1', true);
+    render(
+      <SessionForwardCard
+        forward={{ ...forward, mode: 'manual' }}
+        sessionId="chat-1"
+        messageId="m-1"
+        projects={[{ id: 'app', mode: 'dev' }]}
+      />,
+    );
+    expect(await screen.findByTestId('session-forward-mode')).toHaveValue('push');
+    fireEvent.click(screen.getByTestId('session-forward'));
+    await waitFor(() =>
+      expect(dispatchSession).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({ mode: 'push' }),
+        { parentSessionId: 'chat-1' },
+      ),
+    );
+  });
+
+  it('keeps a mode chosen on the card over the Default build', async () => {
+    dispatchSession.mockResolvedValue({
+      sessionId: 'sess-1',
+      agentId: 'ada',
+      projectId: 'app',
+      name: 'Fix login',
+      skippedSkills: [],
+      ref: '',
+    });
+    setOrchestrateLaunchSettings('chat-1', { mode: 'push', autoStart: false });
+    setOrchestrateSessionActive('chat-1', true);
+    render(
+      <SessionForwardCard
+        forward={forward}
+        sessionId="chat-1"
+        messageId="m-1"
+        projects={[{ id: 'app', mode: 'dev' }]}
+      />,
+    );
+    fireEvent.change(await screen.findByTestId('session-forward-mode'), {
+      target: { value: 'review' },
+    });
+    fireEvent.click(screen.getByTestId('session-forward'));
+    await waitFor(() =>
+      expect(dispatchSession).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({ mode: 'review' }),
+        { parentSessionId: 'chat-1' },
+      ),
+    );
+  });
+
+  it('remembers the mode the session started with when another tab started it first', async () => {
+    dispatchSession.mockResolvedValue({
+      sessionId: 'sess-1',
+      agentId: 'ada',
+      projectId: 'app',
+      name: 'Fix login',
+      mode: 'manual',
+      skippedSkills: [],
+      ref: '',
+    });
+    render(
+      <SessionForwardCard
+        forward={forward}
+        sessionId="chat-1"
+        messageId="m-1"
+        projects={[{ id: 'app', mode: 'dev' }]}
+      />,
+    );
+    fireEvent.change(await screen.findByTestId('session-forward-mode'), {
+      target: { value: 'push' },
+    });
+    fireEvent.click(screen.getByTestId('session-forward'));
+    await waitFor(() => expect(screen.getByText(/Forwarded as Build\./)).toBeTruthy());
+    expect(dispatchSession).toHaveBeenCalledWith('app', expect.objectContaining({ mode: 'push' }), {
+      parentSessionId: 'chat-1',
+    });
+    const saved = Object.keys(localStorage)
+      .map((key) => localStorage.getItem(key) ?? '')
+      .find((value) => value.includes('sess-1'));
+    expect(JSON.parse(saved!)).toMatchObject({ sessionId: 'sess-1', mode: 'manual' });
   });
 });

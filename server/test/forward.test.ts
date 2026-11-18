@@ -78,6 +78,38 @@ async function createSessionWithMessages(
 // ═══════════════════════════════════════════════════════════════════
 
 describe('POST /api/sessions/:sessionId/forward', () => {
+  it('refuses to start a non-Dev worker from an Orchestrate chat', async () => {
+    const docsAgent = await createAgent({
+      projectId: project.id as string,
+      id: 'agent-fwd-docs',
+      name: 'Docs Agent',
+      role: 'docs',
+    });
+    const { session: srcSession } = await createSessionWithMessages(agentA.id as string, [
+      { role: 'user', content: 'Seed the wiki' },
+    ]);
+    const { stmts } = await import('../db.js');
+    stmts!.updateSessionMode.run('orchestrate', srcSession.id as string);
+
+    const res = await request
+      .post(`/api/sessions/${srcSession.id}/forward`)
+      .send({ targetAgentId: docsAgent.id, autoStart: true })
+      .expect(400);
+    expect(res.body).toEqual({
+      error: 'Agent "agent-fwd-docs" is not marked as Dev',
+      code: 'no_session_agent',
+    });
+
+    const ok = await request
+      .post(`/api/sessions/${srcSession.id}/forward`)
+      .send({ targetAgentId: agentB.id })
+      .expect(201);
+    const worker = stmts!.getSession.get(ok.body.session.id) as {
+      spawned_from_session_id: string | null;
+    };
+    expect(worker.spawned_from_session_id).toBe(srcSession.id);
+  });
+
   it('forwards all messages to a new session on the target agent', async () => {
     const { session: srcSession } = await createSessionWithMessages(agentA.id as string, [
       { role: 'user', content: 'Hello from the user' },

@@ -42,6 +42,7 @@ import {
   defaultSessionModeForProject,
   isShippingCompatibleSessionMode,
   isAutopilotModeActive,
+  orchestrateSpawnParentId,
   type SessionMode,
 } from '../session-mode.js';
 import {
@@ -236,6 +237,7 @@ import {
   persistSessionCredentialToSkill,
 } from '../session-credential-persist.js';
 import { resolveProjectSkillsDir } from '../project-skill-paths.js';
+import { agentAcceptsAutonomousTickets } from '../agent-autonomy.js';
 
 /**
  * A session row joined with its parent cron's metadata, as returned by
@@ -4011,6 +4013,17 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       if (!canViewProject(targetFound.project, caller)) {
         return res.status(404).json({ error: `Target agent not found: ${targetAgentId}` });
       }
+      // An Orchestrate chat starts Dev-agent workers only, the same rule
+      // /sessions/dispatch enforces.
+      if (
+        orchestrateSpawnParentId(sourceSession) &&
+        !agentAcceptsAutonomousTickets(targetFound.agent)
+      ) {
+        return res.status(400).json({
+          error: `Agent "${targetAgentId}" is not marked as Dev`,
+          code: 'no_session_agent',
+        });
+      }
 
       // If autoStart requested, verify handleChat is available
       if (autoStart && !handleChat) {
@@ -4133,6 +4146,10 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       // must own the source (gated by the prefix middleware above), and the
       // forwarded transcript should stay strictly with that same user.
       inheritOwnerFromSession(newSessionId, String(req.params.sessionId));
+      const spawnedFromSessionId = orchestrateSpawnParentId(sourceSession);
+      if (spawnedFromSessionId) {
+        stmts.markSessionSpawnedFrom.run(spawnedFromSessionId, newSessionId);
+      }
 
       // When autoStart is true, handleChat will store the user message itself,
       // so we only pre-store it when NOT auto-starting (to avoid duplicates).

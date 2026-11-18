@@ -169,20 +169,35 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(body),
     }),
+  getSpawnedSessions: (sessionId: string) =>
+    fetchJSON(`/sessions/${encodeURIComponent(sessionId)}/spawned`),
   dispatchSession: (
     projectId: string,
-    body: { prompt: string; agentId?: string; name?: string; mode?: string },
+    body: {
+      prompt: string;
+      agentId?: string;
+      name?: string;
+      mode?: string;
+      /** One session per key for this user, across tabs and devices. */
+      idempotencyKey?: string;
+    },
+    opts?: { parentSessionId?: string | null },
   ): Promise<{
     sessionId: string;
     agentId: string;
     projectId: string;
     name: string;
+    /** The mode the session started with; a repeat reports the first start's. */
+    mode?: string;
     skippedSkills: string[];
     ref: string;
   }> =>
     fetchJSON(`/projects/${encodeURIComponent(projectId)}/sessions/dispatch`, {
       method: 'POST',
       body: JSON.stringify(body),
+      headers: opts?.parentSessionId
+        ? { 'X-Agent-Hub-Session-Id': opts.parentSessionId }
+        : undefined,
     }),
   createSession: (agentId: any, name: any, options: any = {}) =>
     fetchJSON(`/agents/${agentId}/sessions`, {

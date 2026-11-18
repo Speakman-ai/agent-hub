@@ -104,11 +104,20 @@ export function isSimpleViewChat(
   return Boolean(session?.simple_chat);
 }
 
-/** The rows the full Hub sidebar lists for an agent: everything but Simple view chats. */
-export function hubSidebarSessions<T extends { simple_chat?: number | boolean | null }>(
-  sessions: T[],
-): T[] {
-  return sessions.some(isSimpleViewChat) ? sessions.filter((s) => !isSimpleViewChat(s)) : sessions;
+function isHiddenFromHubSidebar(session: {
+  simple_chat?: number | boolean | null;
+  spawned_from_session_id?: string | null;
+}): boolean {
+  return isSimpleViewChat(session) || Boolean(session.spawned_from_session_id);
+}
+
+/** The rows the full Hub sidebar lists: not Simple chats, not Orchestrate workers. */
+export function hubSidebarSessions<
+  T extends { simple_chat?: number | boolean | null; spawned_from_session_id?: string | null },
+>(sessions: T[]): T[] {
+  return sessions.some(isHiddenFromHubSidebar)
+    ? sessions.filter((s) => !isHiddenFromHubSidebar(s))
+    : sessions;
 }
 
 /** Where Full Hub returns to: the session open when the simple view was entered. */
@@ -120,25 +129,41 @@ export function simpleSessionKey(agentId: string): string {
   return `${SIMPLE_SESSION_KEY_PREFIX}${agentId}`;
 }
 
-export function isSimpleConsultSession(
-  session: Pick<SimpleSession, 'session_mode' | 'sidebar_parent_id' | 'cron_id'> | null | undefined,
+function isPlainSimpleChat(
+  session: Pick<SimpleSession, 'sidebar_parent_id' | 'cron_id'> | null | undefined,
 ): boolean {
-  if (!session || session.session_mode !== 'consult') return false;
+  if (!session) return false;
   if (session.sidebar_parent_id) return false;
   if (session.cron_id) return false;
   return true;
 }
 
+export function isSimpleConsultSession(
+  session: Pick<SimpleSession, 'session_mode' | 'sidebar_parent_id' | 'cron_id'> | null | undefined,
+): boolean {
+  return !!session && session.session_mode === 'consult' && isPlainSimpleChat(session);
+}
+
+/** Consult, or the same chat with Orchestrate toggled on. */
+export function isSimpleShellSession(
+  session: Pick<SimpleSession, 'session_mode' | 'sidebar_parent_id' | 'cron_id'> | null | undefined,
+): boolean {
+  if (!session) return false;
+  if (session.session_mode !== 'consult' && session.session_mode !== 'orchestrate') return false;
+  return isPlainSimpleChat(session);
+}
+
 /**
- * The simple shell only shows consult chats. A known session that is not one
- * must open in the full app, or build turns would go out with the build
- * controls hidden. An unknown row is usually a target still loading.
+ * The simple shell shows consult chats, including one toggled to Orchestrate.
+ * A known session that is neither must open in the full app, or build turns
+ * would go out with the build controls hidden. An unknown row is usually a
+ * target still loading.
  */
 export function simpleShellMustLeaveFor(
   session: Pick<SimpleSession, 'session_mode' | 'sidebar_parent_id' | 'cron_id'> | null | undefined,
 ): boolean {
   if (!session) return false;
-  return !isSimpleConsultSession(session);
+  return !isSimpleShellSession(session);
 }
 
 // Last mode read or written, so a screen can render the right chrome on its
@@ -257,7 +282,8 @@ export async function writeSimpleSessionId(agentId: string, sessionId: string): 
  * Record where Full Hub should return when the user enters the simple view
  * from the full app. One target for the whole shell, not per agent: the
  * Server Agent and every chat change the active agent, so a key on the agent
- * active at exit would miss. Entering from a consult or Hub thread clears it.
+ * active at exit would miss. Entering from a consult, Orchestrate, or Hub
+ * thread clears it.
  */
 export async function rememberPreSimpleTarget(
   agentId: string | null | undefined,
@@ -265,7 +291,13 @@ export async function rememberPreSimpleTarget(
   sessionMode: string | null | undefined,
 ): Promise<void> {
   try {
-    if (!agentId || !sessionId || sessionMode === 'consult' || sessionMode === 'hub') {
+    if (
+      !agentId ||
+      !sessionId ||
+      sessionMode === 'consult' ||
+      sessionMode === 'orchestrate' ||
+      sessionMode === 'hub'
+    ) {
       await AsyncStorage.removeItem(PRE_SIMPLE_TARGET_KEY);
       return;
     }
@@ -395,7 +427,7 @@ export function simpleContactStatus(
 ): SimpleContactStatus {
   if (sessions.some((session) => sessionShowsNeedsYou(session, signals))) return 'needs-you';
   const activeTasks = signals.activeTaskSessionIds ?? {};
-  if (sessions.some((session) => isSimpleConsultSession(session) && activeTasks[session.id])) {
+  if (sessions.some((session) => isSimpleShellSession(session) && activeTasks[session.id])) {
     return 'working';
   }
   return 'idle';
@@ -431,7 +463,7 @@ export function buildSimpleContacts(input: {
   for (const agent of input.agents) {
     if (!agent?.id || agent.active === false || !isSimpleChatAgent(agent)) continue;
     const sessions = cached[agent.id] ?? [];
-    const consults = sessions.filter(isSimpleConsultSession);
+    const consults = sessions.filter(isSimpleShellSession);
     const session = preferredSimpleSession(consults, input.rememberedSessionIds?.[agent.id]);
     const projectName = agent.projectName?.trim() || '';
     const status = simpleContactStatus(sessions, signals);

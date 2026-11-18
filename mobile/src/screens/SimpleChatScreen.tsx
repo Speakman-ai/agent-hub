@@ -100,9 +100,9 @@ export default function SimpleChatScreen() {
     ]),
   );
 
-  // The simple chat only shows consult chats. A session link from the
-  // transcript (a dispatched build, a fork) opens in the full chat screen,
-  // where its build controls are visible.
+  // The simple chat shows consult chats, including one toggled to Orchestrate.
+  // A session link from the transcript (a dispatched build, a fork) opens in
+  // the full chat screen, where its build controls are visible.
   const openSessionInFullChat = useCallback(
     (targetAgentId: string, targetSessionId: string) => {
       if (!targetAgentId || !targetSessionId) return;

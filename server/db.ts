@@ -3442,6 +3442,77 @@ function initDb(dataDir: string): void {
     'CREATE INDEX IF NOT EXISTS idx_sessions_sidebar_parent ON sessions(sidebar_parent_id) WHERE sidebar_parent_id IS NOT NULL',
   );
 
+  // Orchestrate workers: a full Hub session started from a parent chat.
+  // Kept out of the agent's session list; the parent rail reads them by this id.
+  try {
+    db.prepare('SELECT spawned_from_session_id FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN spawned_from_session_id TEXT DEFAULT NULL');
+  }
+  db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_sessions_spawned_from ON sessions(spawned_from_session_id) WHERE spawned_from_session_id IS NOT NULL',
+  );
+  // One session per (owner, idempotency key) for POST .../sessions/dispatch.
+  // A session forward card sends a key derived from the chat, message and
+  // card, so two tabs or devices pressing (or auto-starting) the same card
+  // start one session between them.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS session_dispatch_keys (
+      owner_user_id TEXT NOT NULL,
+      idem_key TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      session_id TEXT,
+      agent_id TEXT,
+      project_id TEXT,
+      name TEXT,
+      skipped_skills TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (owner_user_id, idem_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_dispatch_keys_created
+      ON session_dispatch_keys(created_at);
+  `);
+  try {
+    db.prepare('SELECT mode FROM session_dispatch_keys LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE session_dispatch_keys ADD COLUMN mode TEXT');
+  }
+  // A completed key must report the mode its session started with; rows saved
+  // before the column existed cannot, so they are dropped rather than guessed.
+  db.exec('DELETE FROM session_dispatch_keys WHERE session_id IS NOT NULL AND mode IS NULL');
+
+  // Workers are hidden from the session list only while their parent can show
+  // them. When the parent leaves Orchestrate, is archived, or is removed, its
+  // workers are detached and go back to their agent's normal list (live rows to
+  // the list, archived rows to the archive). Restoring the parent does not
+  // re-attach them. Triggers cover every write path, including the purge tick.
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_sessions_detach_spawned_au
+    AFTER UPDATE OF session_mode, deleted_at ON sessions
+    WHEN NEW.deleted_at IS NOT NULL OR COALESCE(NEW.session_mode, '') != 'orchestrate'
+    BEGIN
+      UPDATE sessions SET spawned_from_session_id = NULL
+       WHERE spawned_from_session_id = NEW.id;
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_sessions_detach_spawned_ad
+    AFTER DELETE ON sessions
+    BEGIN
+      UPDATE sessions SET spawned_from_session_id = NULL
+       WHERE spawned_from_session_id = OLD.id;
+    END;
+  `);
+  // Rows orphaned before the triggers existed.
+  db.exec(`
+    UPDATE sessions SET spawned_from_session_id = NULL
+     WHERE spawned_from_session_id IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM sessions p
+          WHERE p.id = sessions.spawned_from_session_id
+            AND p.deleted_at IS NULL
+            AND p.session_mode = 'orchestrate'
+       )
+  `);
+
   // Sessions the system runs on the user's behalf whose output lands
   // elsewhere (channel digests). Kept out of every session list; still
   // readable by id.
@@ -5442,7 +5513,7 @@ function initDb(dataDir: string): void {
     // paths (WebSocket, checkpoint lookups, active-process cleanup) legitimately
     // need to look up a row regardless of archive status.
     getSessions: db.prepare(
-      'SELECT * FROM sessions WHERE agent_id = ? AND deleted_at IS NULL AND sidebar_parent_id IS NULL AND hidden = 0 ORDER BY (pinned_at IS NOT NULL) DESC, updated_at DESC',
+      'SELECT * FROM sessions WHERE agent_id = ? AND deleted_at IS NULL AND sidebar_parent_id IS NULL AND spawned_from_session_id IS NULL AND hidden = 0 ORDER BY (pinned_at IS NOT NULL) DESC, updated_at DESC',
     ),
     getSession: db.prepare('SELECT * FROM sessions WHERE id = ?'),
     markSessionHidden: db.prepare('UPDATE sessions SET hidden = 1 WHERE id = ?'),
@@ -5514,6 +5585,7 @@ function initDb(dataDir: string): void {
        WHERE agent_id = ?
          AND deleted_at IS NOT NULL
          AND sidebar_parent_id IS NULL
+         AND spawned_from_session_id IS NULL
          AND hidden = 0
          AND deleted_at >= datetime('now', '-1 day')
        ORDER BY deleted_at DESC`,
@@ -5647,6 +5719,46 @@ function initDb(dataDir: string): void {
               sidebar_seq = (SELECT COALESCE(MAX(sidebar_seq), 0) + 1 FROM sessions WHERE sidebar_parent_id = ?),
               updated_at = datetime('now')
         WHERE id = ?`,
+    ),
+    claimSessionDispatchKey: db.prepare(
+      'INSERT OR IGNORE INTO session_dispatch_keys (owner_user_id, idem_key, request_hash) VALUES (?, ?, ?)',
+    ),
+    getSessionDispatchKey: db.prepare(
+      'SELECT * FROM session_dispatch_keys WHERE owner_user_id = ? AND idem_key = ?',
+    ),
+    completeSessionDispatchKey: db.prepare(
+      `UPDATE session_dispatch_keys
+          SET session_id = ?, agent_id = ?, project_id = ?, name = ?, skipped_skills = ?, mode = ?
+        WHERE owner_user_id = ? AND idem_key = ?`,
+    ),
+    releaseSessionDispatchKey: db.prepare(
+      'DELETE FROM session_dispatch_keys WHERE owner_user_id = ? AND idem_key = ? AND session_id IS NULL',
+    ),
+    // Keys live for 30 days. A claim with no session after 5 minutes belongs
+    // to a dispatch that died mid-way, so it can be claimed again.
+    pruneSessionDispatchKeys: db.prepare(
+      `DELETE FROM session_dispatch_keys
+        WHERE created_at < datetime('now', '-30 days')
+           OR (session_id IS NULL AND created_at < datetime('now', '-5 minutes'))`,
+    ),
+    markSessionSpawnedFrom: db.prepare(
+      "UPDATE sessions SET spawned_from_session_id = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    getSpawnedSessions: db.prepare(
+      `SELECT * FROM sessions
+       WHERE spawned_from_session_id = ?
+         AND deleted_at IS NULL
+       ORDER BY created_at DESC`,
+    ),
+    // Soft-deleted workers still inside the same 24-hour recovery window as
+    // the left session list. The Orchestrate rail is the only place they
+    // can be restored, because the agent archive query omits them.
+    getArchivedSpawnedSessions: db.prepare(
+      `SELECT * FROM sessions
+       WHERE spawned_from_session_id = ?
+         AND deleted_at IS NOT NULL
+         AND deleted_at >= datetime('now', '-1 day')
+       ORDER BY deleted_at DESC`,
     ),
     clearSessionForkSource: db.prepare(
       'UPDATE sessions SET fork_from_engine_session_id = NULL WHERE id = ?',

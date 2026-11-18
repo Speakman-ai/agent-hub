@@ -5,6 +5,7 @@ describe('sessionControlIcons', () => {
   it('maps every session-control value to an icon', () => {
     const values = [
       'consult',
+      'orchestrate',
       'design',
       'scoping',
       'skill-builder',

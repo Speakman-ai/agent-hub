@@ -15,6 +15,7 @@ import AppIcon from './AppIcon';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import { colors } from '../theme/colors';
+import { composerPlaceholderText } from '../utils/composerPlaceholder';
 import { useVoiceTranscription } from '../hooks/useVoiceTranscription';
 import { HubChatComposer } from './HubChatRefs';
 import { locateChatMarkdownCode } from '../utils/hubChatInstance';
@@ -54,6 +55,7 @@ export default function MessageInput({
   askMode,
   consultMode = askMode,
   consultHint = null,
+  composerPlaceholder = null,
   readOnly,
   toolbarStart,
 }: any) {
@@ -416,9 +418,7 @@ export default function MessageInput({
             if (text !== value) handleChangeText(text);
           }}
           onSelectionChange={handleSelectionChange}
-          placeholder={
-            disabled ? 'Waiting...' : consultMode ? 'Consult on Agent Hub…' : 'Message...'
-          }
+          placeholder={composerPlaceholderText({ disabled, consultMode, composerPlaceholder })}
           placeholderTextColor={colors.gray500}
           editable={!disabled || isProcessing}
           multiline

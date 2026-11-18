@@ -15,6 +15,7 @@ import {
 // instead of a worktree, so the "no worktree" promise of workflow mode holds.
 const WORKFLOW_SESSION_MODES = new Set<SessionMode>([
   'consult',
+  'orchestrate',
   'scoping',
   'skill-builder',
   'design',
@@ -65,7 +66,7 @@ export function validateSessionModeForProject(
     return {
       error: 'session_mode_not_allowed_on_workflow_project',
       message:
-        'Workflow projects only support Consult, Scoping, Skill Builder, Design, Hub, and QA session modes. Use a dev project for build/chat/VM sessions.',
+        'Workflow projects only support Consult, Orchestrate, Scoping, Skill Builder, Design, Hub, and QA session modes. Use a dev project for build/chat/VM sessions.',
     };
   }
   // Kept inline (not via no-guardrails.ts) so that module can import this one

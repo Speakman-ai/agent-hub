@@ -136,6 +136,34 @@ describe('shellMode', () => {
     expect(contacts[0]).toMatchObject({ sessionId: 'chat', preview: 'Hub · The button' });
   });
 
+  it('keeps an Orchestrate chat as the simple contact', () => {
+    const contacts = buildSimpleContacts({
+      agents: [{ id: 'lead', name: 'Ada', projectName: 'Hub', active: true }],
+      sessionsByAgentId: {
+        lead: [
+          {
+            id: 'orch',
+            name: 'Plan the park',
+            session_mode: 'orchestrate',
+            updated_at: '2026-06-01T00:00:00Z',
+          },
+          {
+            id: 'build',
+            name: 'Newer build',
+            session_mode: 'chat',
+            updated_at: '2026-07-01T00:00:00Z',
+          },
+        ],
+      },
+      activeTaskSessionIds: { orch: true },
+    });
+    expect(contacts[0]).toMatchObject({
+      sessionId: 'orch',
+      status: 'working',
+      preview: 'Working…',
+    });
+  });
+
   it('uses the loaded agent session list instead of a stale cache', () => {
     const contacts = buildSimpleContacts({
       agents: [{ id: 'lead', name: 'Ada', projectName: 'Hub', active: true }],
@@ -207,9 +235,12 @@ describe('shellMode', () => {
     expect(takePreSimpleTarget()).toBeNull();
   });
 
-  it('clears the target when the simple view is entered from a consult or Hub thread', () => {
+  it('clears the target when the simple view is entered from a consult, Orchestrate, or Hub thread', () => {
     rememberPreSimpleTarget('ada', 'build-1', 'chat');
     rememberPreSimpleTarget('ada', 'consult-1', 'consult');
+    expect(takePreSimpleTarget()).toBeNull();
+    rememberPreSimpleTarget('ada', 'build-1', 'chat');
+    rememberPreSimpleTarget('ada', 'orch-1', 'orchestrate');
     expect(takePreSimpleTarget()).toBeNull();
     rememberPreSimpleTarget('ada', 'build-1', 'chat');
     rememberPreSimpleTarget(null, 'hub-1', 'hub');
@@ -287,8 +318,10 @@ describe('simpleShellMustLeaveFor', () => {
     expect(simpleShellMustLeaveFor({ session_mode: 'consult', cron_id: 'c' })).toBe(true);
   });
 
-  it('stays for a consult chat or a row that has not loaded', () => {
+  it('stays for a consult chat, an Orchestrate chat, or a row that has not loaded', () => {
     expect(simpleShellMustLeaveFor({ session_mode: 'consult' })).toBe(false);
+    expect(simpleShellMustLeaveFor({ session_mode: 'orchestrate' })).toBe(false);
+    expect(simpleShellMustLeaveFor({ session_mode: 'orchestrate', cron_id: 'c' })).toBe(true);
     expect(simpleShellMustLeaveFor(undefined)).toBe(false);
     expect(simpleShellMustLeaveFor(null)).toBe(false);
   });
@@ -305,6 +338,14 @@ describe('hubSidebarSessions', () => {
     expect(isSimpleViewChat(rows[0])).toBe(true);
     expect(isSimpleViewChat(rows[1])).toBe(false);
     expect(isSimpleViewChat(null)).toBe(false);
+  });
+
+  it('leaves Orchestrate workers out of the Hub sidebar', () => {
+    const rows = [
+      { id: 'parent', session_mode: 'orchestrate' },
+      { id: 'worker', spawned_from_session_id: 'parent' },
+    ];
+    expect(hubSidebarSessions(rows).map((row) => row.id)).toEqual(['parent']);
   });
 
   it('returns the same array when nothing is filtered', () => {

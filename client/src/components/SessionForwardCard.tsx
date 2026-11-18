@@ -1,9 +1,16 @@
 import {
+  forwardCardMode,
+  orchestrateLaunchMode,
+  startedForwardMode,
+} from '@shared/utils/orchestrateForwardMode';
+import { sessionForwardDispatchKey } from '@shared/utils/sessionForwardDispatchKey';
+import {
   createContext,
   memo,
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
 } from 'react';
@@ -12,7 +19,6 @@ import remarkGfm from 'remark-gfm';
 import { ArrowRight, ExternalLink, X } from 'lucide-react';
 import {
   SESSION_FORWARD_MODE_OPTIONS,
-  initialSessionForwardMode,
   parseSessionForwardMode,
   sessionForwardModeLabel,
   sessionForwardModesFor,
@@ -31,6 +37,16 @@ import { api } from '../utils/api';
 import { getAuthRecord } from '../utils/auth';
 import { getServerBase } from '../utils/connection';
 import { isWorkflowProject } from '../utils/projectMode';
+import {
+  cancelOrchestrateAutoStart,
+  markOrchestrateAutoStartFired,
+  orchestrateAutoStartDeadline,
+  orchestrateAutoStartRemaining,
+  releaseOrchestrateAutoStart,
+  useOrchestrateAutoStartCancelled,
+  useOrchestrateLaunchSettings,
+  useOrchestrateSessionActive,
+} from '../utils/orchestrateLaunchSettings';
 
 interface ForwardRecord {
   sessionId: string;
@@ -161,10 +177,20 @@ function SessionForwardCard({
     [sessionId, messageId, forward.forwardId, occurrence],
   );
   const [chosen, setChosen] = useState<{ key: string; mode: SessionForwardMode } | null>(null);
-  const mode = initialSessionForwardMode(
-    allowedModes,
-    chosen?.key === identity ? chosen.mode : forward.mode,
-  );
+  const launch = useOrchestrateLaunchSettings(sessionId);
+  // Auto start belongs to Orchestrate: once the chat leaves that mode, the
+  // rail holding the switch is gone and cards go back to a manual press.
+  const orchestrating = useOrchestrateSessionActive(sessionId);
+  // The Orchestrate chat's Default build for this card; a workflow target
+  // resolves it to consult.
+  const autoStartMode = orchestrateLaunchMode(allowedModes, launch.mode);
+  const mode = forwardCardMode({
+    allowed: allowedModes,
+    chosen: chosen?.key === identity ? chosen.mode : null,
+    suggested: forward.mode,
+    orchestrating,
+    railMode: launch.mode,
+  });
   const setMode = (next: SessionForwardMode) => setChosen({ key: identity, mode: next });
   // `loaded` is the saved record for one identity. Until it matches the
   // current card, that card may already be forwarded, so Session forward
@@ -182,6 +208,15 @@ function SessionForwardCard({
   const record = entry?.status === 'done' ? entry.record : savedRecord;
   const dismissed = !record && (entry?.status === 'dismissed' || (hydrated && !!loaded?.dismissed));
   const selected = modeOptions.find((option) => option.value === mode) ?? modeOptions[0];
+  const autoCancelled = useOrchestrateAutoStartCancelled(identity);
+  const autoStartOn =
+    Boolean(sessionId) &&
+    orchestrating &&
+    launch.autoStart &&
+    !dismissed &&
+    !autoCancelled &&
+    allowedModes.includes(autoStartMode);
+  const [remaining, setRemaining] = useState<number | null>(null);
 
   useEffect(() => {
     setLoaded({
@@ -191,31 +226,83 @@ function SessionForwardCard({
     });
   }, [identity, storageKey]);
 
-  const start = async () => {
+  const start = async (modeOverride?: SessionForwardMode): Promise<boolean> => {
     const key = identity;
     const savedKey = storageKey;
     // The claim is in the module store, so a remounted card sees a dispatch
     // that is still in flight and cannot start a second one.
-    if (!hydrated || record || dismissed || !forwardStore.claim(key)) return;
+    if (!hydrated || record || dismissed || !forwardStore.claim(key)) return false;
+    const ship = modeOverride ?? mode;
     try {
-      const started = await api.dispatchSession(forward.projectId, {
+      // The server starts at most one session per card for this user, so a
+      // second tab or device pressing or auto-starting it gets the same one.
+      const idempotencyKey = sessionForwardDispatchKey({
+        sessionId,
+        messageId,
+        forwardId: forward.forwardId,
+        occurrence,
+      });
+      const request = {
         prompt: forward.prompt,
         agentId: forward.agentId,
         name: forward.name,
-        mode,
-      });
+        mode: ship,
+        ...(idempotencyKey ? { idempotencyKey } : {}),
+      };
+      const started = sessionId
+        ? await api.dispatchSession(forward.projectId, request, { parentSessionId: sessionId })
+        : await api.dispatchSession(forward.projectId, request);
       const next: ForwardRecord = {
         sessionId: started.sessionId,
         agentId: started.agentId || forward.agentId,
         name: started.name || forward.name,
-        mode,
+        mode: startedForwardMode(started.mode, ship),
       };
       writeForwardRecord(savedKey, next);
       forwardStore.succeed(key, next);
+      return true;
     } catch (err) {
       forwardStore.fail(key, err instanceof Error ? err.message : 'Could not start the session');
+      return false;
     }
   };
+  const startRef = useRef(start);
+  startRef.current = start;
+
+  useEffect(() => {
+    if (!autoStartOn || !hydrated || record) {
+      if (!launch.autoStart || !orchestrating) releaseOrchestrateAutoStart(identity);
+      if (!autoStartOn || record) setRemaining(null);
+      return;
+    }
+    if (pending) return;
+    orchestrateAutoStartDeadline(identity);
+    const tick = () => {
+      const left = orchestrateAutoStartRemaining(identity);
+      setRemaining(left);
+      if (left <= 0 && markOrchestrateAutoStartFired(identity)) {
+        void startRef.current(autoStartMode).then((ok) => {
+          if (!ok && forwardStore.get(identity)?.status === 'failed') {
+            cancelOrchestrateAutoStart(identity);
+          }
+        });
+      }
+    };
+    tick();
+    const timer = window.setInterval(tick, 200);
+    return () => window.clearInterval(timer);
+  }, [
+    autoStartOn,
+    hydrated,
+    record,
+    pending,
+    identity,
+    launch.autoStart,
+    orchestrating,
+    autoStartMode,
+  ]);
+
+  const counting = autoStartOn && hydrated && !record && remaining != null;
 
   const dismiss = () => {
     if (!hydrated || record || pending) return;
@@ -280,6 +367,42 @@ function SessionForwardCard({
               </button>
             )}
           </>
+        ) : counting ? (
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+            <p data-testid="session-forward-countdown" className="text-xs text-amber-100">
+              {remaining > 0
+                ? `Starting in ${remaining}s as ${sessionForwardModeLabel(autoStartMode)}`
+                : 'Starting…'}
+            </p>
+            <button
+              type="button"
+              data-testid="session-forward-start-now"
+              disabled={pending}
+              onClick={() => {
+                if (!markOrchestrateAutoStartFired(identity)) return;
+                setRemaining(0);
+                void start(autoStartMode).then((ok) => {
+                  if (!ok && forwardStore.get(identity)?.status === 'failed') {
+                    cancelOrchestrateAutoStart(identity);
+                  }
+                });
+              }}
+              className="inline-flex items-center gap-1.5 rounded-md border border-amber-700/50 bg-amber-900/40 px-2.5 py-1 text-xs font-medium text-amber-100 transition-colors hover:bg-amber-800/60 disabled:opacity-60"
+            >
+              Start
+            </button>
+            <button
+              type="button"
+              data-testid="session-forward-cancel-auto"
+              onClick={() => {
+                cancelOrchestrateAutoStart(identity);
+                setRemaining(null);
+              }}
+              className="inline-flex items-center rounded-md border border-gray-700 px-2.5 py-1 text-xs text-gray-300 hover:bg-gray-800"
+            >
+              Cancel
+            </button>
+          </div>
         ) : (
           <>
             <label className="flex min-w-0 flex-1 flex-col gap-1">

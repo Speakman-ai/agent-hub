@@ -59,6 +59,7 @@ describe('SESSION_CONTROL_OPTIONS', () => {
   it('lists Consult, Design, Scoping, Skill Builder, VM, Autopilot, then the four finalize levels', () => {
     expect(SESSION_CONTROL_OPTIONS.map((o: any) => o.value)).toEqual([
       'consult',
+      'orchestrate',
       'design',
       'scoping',
       'skill-builder',
@@ -197,6 +198,7 @@ describe('sessionControlOptionsForProject', () => {
     const opts = sessionControlOptionsForProject({ mode: 'workflow' }, { role: 'sub' });
     expect(opts.map((o: any) => o.value)).toEqual([
       'consult',
+      'orchestrate',
       'design',
       'scoping',
       'skill-builder',
@@ -204,7 +206,7 @@ describe('sessionControlOptionsForProject', () => {
   });
   it('hides Skill Builder on workflow projects when the agent is a helper', () => {
     const opts = sessionControlOptionsForProject({ mode: 'workflow' }, { role: 'docs' });
-    expect(opts.map((o: any) => o.value)).toEqual(['consult', 'design', 'scoping']);
+    expect(opts.map((o: any) => o.value)).toEqual(['consult', 'orchestrate', 'design', 'scoping']);
   });
   it('includes Consult and VM on dev projects', () => {
     const opts = sessionControlOptionsForProject(

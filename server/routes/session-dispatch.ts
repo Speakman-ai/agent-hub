@@ -10,25 +10,29 @@ import { organizationCapabilityCanReadProject } from '../organization-capabiliti
  * of the calling session. The response carries a ready-made chat ref token so
  * the caller can link the new session in its reply.
  */
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { Router, type Request, type Response } from 'express';
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
-import type { RouteDeps } from '../types.js';
+import type { RouteDeps, SessionRow } from '../types.js';
 import { canViewProject } from '../project-visibility.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
 import { resolveGoogleConnectionUserId } from '../google-connection-user.js';
 import {
   BACKGROUND_SESSION_MODES,
+  type BackgroundSessionMode,
   BackgroundSessionDispatchError,
   dispatchBackgroundAgentSession,
+  resolveOrchestrateForwardAgent,
 } from '../background-agent-session.js';
 import { isInternalSystemProject } from '../../shared/utils/hub.js';
 import { formatHubChatRefToken } from '../../shared/utils/hubChatRefTokens.js';
 import { requestOrganizationDispatch } from '../organization-dispatch.js';
 import { sendDispatchOutcome } from './organization-dispatch.js';
+import { orchestrateParentLinkError, orchestrateSpawnParentId } from '../session-mode.js';
 
 const MAX_PROMPT_CHARS = 50_000;
 const MAX_NAME_CHARS = 120;
+const MAX_IDEMPOTENCY_KEY_CHARS = 512;
 
 export const DispatchSessionRequestSchema = z
   .object({
@@ -51,6 +55,10 @@ export const DispatchSessionRequestSchema = z
     skills: z.array(z.string().min(1)).max(20).optional().openapi({
       description: 'Skills preloaded into the first turn.',
     }),
+    idempotencyKey: z.string().trim().min(1).max(MAX_IDEMPOTENCY_KEY_CHARS).optional().openapi({
+      description:
+        'At most one session per acting user and key. A repeat with the same project, prompt and agent returns the session the first request started (200); a different payload is refused (409 `idempotency_key_reused`). Session forward cards send one per card so two tabs or devices cannot both start it.',
+    }),
   })
   .openapi('DispatchSessionRequest');
 
@@ -62,6 +70,10 @@ const DispatchSessionResponse = registerComponent(
       agentId: z.string(),
       projectId: z.string(),
       name: z.string(),
+      mode: z.enum(BACKGROUND_SESSION_MODES).openapi({
+        description:
+          "The control the session actually started with. On an `idempotencyKey` repeat this is the first request's mode, which can differ from the mode this request asked for.",
+      }),
       skippedSkills: z.array(z.string()),
       ref: z.string().openapi({
         description:
@@ -98,7 +110,7 @@ registerPath({
     },
     200: {
       description:
-        'Organization capability retry of an accepted request: the same target session (OrganizationDispatch body).',
+        'A repeat of an `idempotencyKey` already used by this user: the session the first request started (DispatchSessionResponse body). For an organization capability retry, the same target session (OrganizationDispatch body).',
     },
     202: {
       description:
@@ -107,12 +119,14 @@ registerPath({
     400: { description: 'Invalid body, agent or mode.', content: errorContent },
     401: { description: 'No user identity to own the session.', content: errorContent },
     403: {
-      description: 'Organization capability scope denied or dispatch override forbidden.',
+      description:
+        'Organization capability scope denied or dispatch override forbidden, or the calling Orchestrate session belongs to another user (`parent_session_forbidden`).',
       content: errorContent,
     },
     404: { description: 'Project not found or not visible.', content: errorContent },
     409: {
-      description: 'Organization capability reused an Idempotency-Key with a different payload.',
+      description:
+        'Organization capability reused an Idempotency-Key with a different payload, `idempotencyKey` reused with a different payload (`idempotency_key_reused`), or the calling Orchestrate session is archived (`parent_session_archived`).',
       content: errorContent,
     },
     422: {
@@ -122,6 +136,25 @@ registerPath({
     503: { description: 'Session dispatch is not ready.', content: errorContent },
   },
 });
+
+interface DispatchKeyRow {
+  request_hash: string;
+  session_id: string | null;
+  agent_id: string | null;
+  project_id: string | null;
+  name: string | null;
+  skipped_skills: string | null;
+  mode: string | null;
+}
+
+function parseSkippedSkills(raw: string | null): string[] {
+  try {
+    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [];
+  } catch {
+    return [];
+  }
+}
 
 /** Session title from the prompt's first line. */
 export function sessionNameFromPrompt(prompt: string): string {
@@ -206,6 +239,74 @@ export default function createSessionDispatchRoutes(
     }
     const body = parsed.data;
     const name = body.name ?? sessionNameFromPrompt(body.prompt);
+    // The spawn-bound session id wins over the caller-controlled header, the
+    // same precedence the owner resolution above uses.
+    const callingSessionId =
+      (req as AuthenticatedRequest).authSpawnSessionId?.trim() ||
+      req.get('X-Agent-Hub-Session-Id')?.trim() ||
+      '';
+    const callingSession = callingSessionId
+      ? (deps.stmts.getSession.get(callingSessionId) as SessionRow | undefined)
+      : undefined;
+    const spawnedFromSessionId = orchestrateSpawnParentId(callingSession);
+    if (spawnedFromSessionId && callingSession) {
+      const parentError = orchestrateParentLinkError(callingSession, ownerUserId);
+      if (parentError) {
+        res.status(parentError.status).json({ error: parentError.error, code: parentError.code });
+        return;
+      }
+    }
+    let sessionAgentId = body.agentId ?? null;
+    if (spawnedFromSessionId) {
+      const resolved = resolveOrchestrateForwardAgent(project.agents, sessionAgentId);
+      if ('error' in resolved) {
+        res.status(400).json({ error: resolved.error, code: 'no_session_agent' });
+        return;
+      }
+      sessionAgentId = resolved.agentId;
+    }
+    // Claim the key before dispatching. Dispatch runs synchronously, so a
+    // second request for the key always finds the claim already completed.
+    const idempotencyKey = body.idempotencyKey ?? null;
+    if (idempotencyKey) {
+      const requestHash = createHash('sha256')
+        .update(JSON.stringify([project.id, body.prompt, body.agentId ?? null]))
+        .digest('hex');
+      deps.stmts.pruneSessionDispatchKeys.run();
+      const claimed =
+        deps.stmts.claimSessionDispatchKey.run(ownerUserId, idempotencyKey, requestHash).changes >
+        0;
+      if (!claimed) {
+        const prior = deps.stmts.getSessionDispatchKey.get(ownerUserId, idempotencyKey) as
+          | DispatchKeyRow
+          | undefined;
+        if (!prior || prior.request_hash !== requestHash) {
+          res.status(409).json({
+            error: 'This idempotency key was already used for a different request',
+            code: 'idempotency_key_reused',
+          });
+          return;
+        }
+        if (!prior.session_id) {
+          res.status(409).json({
+            error: 'A session for this request is already starting',
+            code: 'dispatch_in_progress',
+          });
+          return;
+        }
+        const priorName = prior.name || name;
+        res.status(200).json({
+          sessionId: prior.session_id,
+          agentId: prior.agent_id || '',
+          projectId: prior.project_id || project.id,
+          name: priorName,
+          mode: prior.mode as BackgroundSessionMode,
+          skippedSkills: parseSkippedSkills(prior.skipped_skills),
+          ref: formatHubChatRefToken(priorName, 'session', prior.session_id) ?? '',
+        });
+        return;
+      }
+    }
     try {
       const result = dispatchBackgroundAgentSession(
         project,
@@ -214,24 +315,43 @@ export default function createSessionDispatchRoutes(
           name,
           prompt: body.prompt,
           ownerUserId,
-          sessionAgentId: body.agentId ?? null,
+          sessionAgentId,
           sessionMode: body.mode ?? null,
           engine: body.engine ?? null,
           model: body.model ?? null,
           skills: body.skills ?? [],
           runAsSession: true,
         },
-        { sessionName: name },
+        {
+          sessionName: name,
+          ...(spawnedFromSessionId ? { spawnedFromSessionId } : {}),
+        },
       );
+      if (idempotencyKey) {
+        deps.stmts.completeSessionDispatchKey.run(
+          result.sessionId,
+          result.agentId,
+          project.id,
+          name,
+          JSON.stringify(result.skippedSkills ?? []),
+          result.mode,
+          ownerUserId,
+          idempotencyKey,
+        );
+      }
       res.status(201).json({
         sessionId: result.sessionId,
         agentId: result.agentId,
         projectId: project.id,
         name,
+        mode: result.mode,
         skippedSkills: result.skippedSkills,
         ref: formatHubChatRefToken(name, 'session', result.sessionId) ?? '',
       });
     } catch (err) {
+      if (idempotencyKey) {
+        deps.stmts.releaseSessionDispatchKey.run(ownerUserId, idempotencyKey);
+      }
       if (err instanceof BackgroundSessionDispatchError) {
         const status = err.code === 'no_hook' ? 503 : 400;
         res.status(status).json({ error: err.message, code: err.code });

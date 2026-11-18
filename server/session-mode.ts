@@ -33,6 +33,7 @@ export const SESSION_MODES = [
   'scoping',
   'skill-builder',
   'consult',
+  'orchestrate',
   'hub',
   'qa',
   'no-guardrails',
@@ -142,6 +143,56 @@ export function isConsultModeActive(
 }
 
 /**
+ * Orchestrate mode: one parent chat that starts other Hub sessions.
+ * Non-shipping, like Consult — implementation happens in the spawned sessions.
+ */
+export function isOrchestrateModeActive(
+  session: { session_mode?: string | null } | null | undefined,
+): boolean {
+  return normalizeSessionMode(session?.session_mode) === 'orchestrate';
+}
+
+/**
+ * Parent id to stamp on a session created from this chat, or null when the
+ * caller is not an Orchestrate session. Workers stay full Hub sessions; the
+ * column only hides them from the left session list.
+ */
+export function orchestrateSpawnParentId(
+  parent: { id?: string | null; session_mode?: string | null } | null | undefined,
+): string | null {
+  const id = parent?.id?.trim();
+  if (!id || !isOrchestrateModeActive(parent)) return null;
+  return id;
+}
+
+/**
+ * Why a worker may not be linked under this Orchestrate parent, or null when
+ * it may. The parent must be live and owned by the user the worker will run as,
+ * so one user cannot hide a session under another user's rail.
+ */
+export function orchestrateParentLinkError(
+  parent: { owner_user_id?: string | null; deleted_at?: string | null },
+  ownerUserId: string,
+): { status: 403 | 409; error: string; code: string } | null {
+  if (parent.deleted_at) {
+    return {
+      status: 409,
+      error: 'The Orchestrate session is archived',
+      code: 'parent_session_archived',
+    };
+  }
+  const parentOwner = parent.owner_user_id?.trim() || null;
+  if (parentOwner !== ownerUserId) {
+    return {
+      status: 403,
+      error: 'You do not own the Orchestrate session',
+      code: 'parent_session_forbidden',
+    };
+  }
+  return null;
+}
+
+/**
  * Whether Hub-assistant mode is active. Hub sessions answer personal/org
  * operating questions and mutate Hub data (board, todos, support, sessions)
  * without code ship or Finalize. Distinct from Consult: Consult is
@@ -211,7 +262,12 @@ export function isConsultBehaviorActive(
 export function isNonShippingSessionBehavior(
   session: { session_mode?: string | null; ask_mode?: number | null } | null | undefined,
 ): boolean {
-  return isHubModeActive(session) || isQaModeActive(session) || isConsultBehaviorActive(session);
+  return (
+    isHubModeActive(session) ||
+    isQaModeActive(session) ||
+    isOrchestrateModeActive(session) ||
+    isConsultBehaviorActive(session)
+  );
 }
 
 /** Default session_mode for newly created user-facing sessions. */
@@ -286,6 +342,7 @@ export function resolveCliWorkspaceAccess(args: {
   const hubOnly =
     workflowProject ||
     isConsultModeActive(session) ||
+    isOrchestrateModeActive(session) ||
     isHubModeActive(session) ||
     isQaModeActive(session);
   const scoping = isScopingModeActive(session);

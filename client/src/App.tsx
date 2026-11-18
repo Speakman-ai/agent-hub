@@ -62,6 +62,8 @@ const SessionArtifactsPane = lazy(() => import('./components/SessionArtifactsPan
 const SessionTerminalPane = lazy(() => import('./components/SessionTerminalPane'));
 const SessionBrowserPane = lazy(() => import('./components/SessionBrowserPane'));
 const SessionSideBarPane = lazy(() => import('./components/SessionSideBarPane'));
+import SimpleOrchestrateToggle from './components/SimpleOrchestrateToggle';
+import SpawnedSessionsRail, { SPAWNED_SESSION_WS_EVENT } from './components/SpawnedSessionsRail';
 import { RunInTerminalProvider } from './components/RunInTerminalContext';
 import { sendCommandToTerminal } from './utils/terminalCommandBus';
 import LinkDesignModal from './components/LinkDesignModal';
@@ -273,7 +275,7 @@ import {
 import { readSidebarCollapsed, writeSidebarCollapsed } from './utils/sidebarCollapse';
 import { getServerBase } from './utils/connection';
 import {
-  isSimpleConsultSession,
+  isSimpleShellSession,
   pickNewestSession,
   readShellMode,
   sessionShowsNeedsYou,
@@ -350,6 +352,10 @@ import { indexSessionsById, resolveChatAccentColor } from './utils/chatAccentCol
 import { notifyFinalizeRunFromTimelineMessage } from './utils/finalizeTimelineLive';
 import { deriveSessionState } from './utils/deriveSessionState';
 import { resolveDeepLinkTarget, upsertSessionRow } from './utils/sessionDeepLinkTarget';
+import { openSpawnedSessionWhenCurrent } from '@shared/utils/spawnedSessionRow';
+import { orchestrateComposerCopy } from '@shared/utils/orchestrateComposer';
+import { orchestrateRailParentId } from '@shared/utils/orchestrateRail';
+import { setOrchestrateSessionActive } from './utils/orchestrateLaunchSettings';
 import { mergeIncomingMessage } from './utils/mergeIncomingMessage';
 import { deriveSessionTimelineMarkers } from '@shared/utils/sessionTimeline';
 import { shouldAutoPresentArtifact } from '@shared/utils/artifactView';
@@ -2765,6 +2771,7 @@ export default function App({ initialView }: any = {}) {
         }
 
         case 'session_state': {
+          window.dispatchEvent(new CustomEvent(SPAWNED_SESSION_WS_EVENT, { detail: data }));
           // Server-side lifecycle cache push. Keep the session row seed current
           // so late terminal states (pushed / merged) update immediately even
           // when no independent client-side signal map changes.
@@ -3705,6 +3712,7 @@ export default function App({ initialView }: any = {}) {
           break;
 
         case 'session_created': {
+          window.dispatchEvent(new CustomEvent(SPAWNED_SESSION_WS_EVENT, { detail: data }));
           // Triggered spawn (Resolve PR, security fix, kanban assign,
           // autonomous dispatch) and another tab's POST /sessions. Splice
           // into the live list when it belongs to the loaded agent, and
@@ -3765,6 +3773,7 @@ export default function App({ initialView }: any = {}) {
         }
 
         case 'session_deleted':
+          window.dispatchEvent(new CustomEvent(SPAWNED_SESSION_WS_EVENT, { detail: data }));
           tearDownSessionPreviewRef.current?.(data.sessionId);
           setSessions((prev: any) => prev.filter((s: any) => s.id !== data.sessionId));
           setSessionsByAgentId((prev: any) =>
@@ -3781,6 +3790,7 @@ export default function App({ initialView }: any = {}) {
           break;
 
         case 'session_restored': {
+          window.dispatchEvent(new CustomEvent(SPAWNED_SESSION_WS_EVENT, { detail: data }));
           // Server broadcast after POST /api/sessions/:id/restore. We re-home
           // the row in the live list without a full refetch and drop it from
           // the Archived sidebar section. Tolerant of either identifier
@@ -3827,6 +3837,7 @@ export default function App({ initialView }: any = {}) {
         }
 
         case 'session_forwarded': {
+          window.dispatchEvent(new CustomEvent(SPAWNED_SESSION_WS_EVENT, { detail: data }));
           // A session was forwarded somewhere — if the new session belongs to
           // the currently-active agent, splice it into the sidebar list so the
           // user sees it without a refresh. The initiating client also calls
@@ -3834,6 +3845,7 @@ export default function App({ initialView }: any = {}) {
           const newSession = data.session;
           if (
             newSession &&
+            !newSession.spawned_from_session_id &&
             newSession.agent_id === activeAgentIdRef.current &&
             isSessionVisibleInOwnSidebar(newSession, getAuthRecord()?.user?.id)
           ) {
@@ -4722,7 +4734,7 @@ export default function App({ initialView }: any = {}) {
       // A forwarded build is not a consult chat. Leave the simple shell so its
       // ship controls are on screen. An unknown row is treated the same way:
       // the list often has not loaded the session the card just started.
-      if (shellModeRef.current === 'simple' && !isSimpleConsultSession(row)) {
+      if (shellModeRef.current === 'simple' && !isSimpleShellSession(row)) {
         writeShellMode('hub');
         setShellMode('hub');
       }
@@ -4765,9 +4777,9 @@ export default function App({ initialView }: any = {}) {
         sessionsByIdRef.current.get(sessionId);
       const resolvedAgentId = agentId || row?.agent_id;
       // An explicit link (a dispatched build chip, a notification) can target
-      // any session. The simple shell keeps only known consult chats; anything
-      // else opens in the full Hub with its build controls.
-      if (shellModeRef.current === 'simple' && !isSimpleConsultSession(row)) {
+      // any session. The simple shell keeps consult and Orchestrate chats;
+      // anything else opens in the full Hub with its build controls.
+      if (shellModeRef.current === 'simple' && !isSimpleShellSession(row)) {
         writeShellMode('hub');
         setShellMode('hub');
       }
@@ -4786,8 +4798,9 @@ export default function App({ initialView }: any = {}) {
   focusAgentSessionRef.current = focusAgentSession;
 
   // Every path into the simple chat (restore, deep link, the sessions loader
-  // picking the newest row) must land on a consult chat. A build session that
-  // slips in opens in the full Hub, where its build controls are visible.
+  // picking the newest row) must land on a consult or Orchestrate chat. A
+  // build session that slips in opens in the full Hub, where its build
+  // controls are visible.
   useEffect(() => {
     if (shellMode !== 'simple' || currentView !== 'chat' || !activeSessionId) return;
     const row = sessions.find((session: any) => session.id === activeSessionId);
@@ -5475,7 +5488,7 @@ export default function App({ initialView }: any = {}) {
           await startConsult();
           return;
         }
-        if (openRow && isSimpleConsultSession(openRow)) {
+        if (openRow && isSimpleShellSession(openRow)) {
           enterSimpleChat();
           remember(openRow.id);
           return;
@@ -5499,7 +5512,7 @@ export default function App({ initialView }: any = {}) {
         } catch {
           remembered = null;
         }
-        const consults = (list || []).filter(isSimpleConsultSession);
+        const consults = (list || []).filter(isSimpleShellSession);
         const chosen =
           (remembered && consults.find((session: any) => session.id === remembered)) ||
           pickNewestSession(consults);
@@ -5803,6 +5816,8 @@ export default function App({ initialView }: any = {}) {
         return next;
       });
       setSessions((prev: any) => prev.filter((s: any) => s.id !== sessionId));
+      // Archiving an Orchestrate chat returns its workers to the session list.
+      if (deletedRow?.session_mode === 'orchestrate') void silentRefreshSessions();
       if (deletedRow) {
         setArchivedSessions((prev: any) => {
           if (prev.some((s: any) => s.id === sessionId)) return prev;
@@ -5828,8 +5843,10 @@ export default function App({ initialView }: any = {}) {
       // No success toast — the row appears in the sidebar's Archived
       // section with its own "purges in Nh" countdown, which already
       // tells the user what happened and when it'll be gone.
+      return true;
     } catch (err: any) {
       showToast(`Archive failed: ${err?.message || 'unknown error'}`, 'error', 6000);
+      return false;
     } finally {
       setDeletingSessionIds((prev: any) => {
         const next = new Set(prev);
@@ -5854,8 +5871,10 @@ export default function App({ initialView }: any = {}) {
         });
       }
       showToast('Session restored', 'success', 3000);
+      return true;
     } catch (err: any) {
       showToast(`Restore failed: ${err?.message || 'unknown error'}`, 'error', 6000);
+      return false;
     } finally {
       setRestoringSessionIds((prev: any) => {
         const next = new Set(prev);
@@ -6145,6 +6164,25 @@ export default function App({ initialView }: any = {}) {
       null,
     [sessions, activeSessionId, sessionsIndexTick],
   );
+  const railParentId = orchestrateRailParentId(activeSession);
+  // Forward cards auto start only while their chat is in Orchestrate.
+  const activeSessionModeForLaunch = activeSession?.id ? activeSession.session_mode : undefined;
+  const lastLaunchModeRef = useRef<{ id: string; mode: string | null | undefined } | null>(null);
+  useEffect(() => {
+    if (!activeSessionId || activeSessionModeForLaunch === undefined) return;
+    setOrchestrateSessionActive(activeSessionId, activeSessionModeForLaunch === 'orchestrate');
+    const last = lastLaunchModeRef.current;
+    lastLaunchModeRef.current = { id: activeSessionId, mode: activeSessionModeForLaunch };
+    // Leaving Orchestrate detaches the workers server-side; reload the list so
+    // they show on the left again.
+    if (
+      last?.id === activeSessionId &&
+      last?.mode === 'orchestrate' &&
+      activeSessionModeForLaunch !== 'orchestrate'
+    ) {
+      void silentRefreshSessions();
+    }
+  }, [activeSessionId, activeSessionModeForLaunch, silentRefreshSessions]);
 
   // Resolve the design linked to the active session (if any) against the
   // loaded designs list. A stale id (design since deleted) resolves to
@@ -6249,8 +6287,9 @@ export default function App({ initialView }: any = {}) {
     async (patch: any) => {
       if (!activeSessionId) return;
       const prevConsult = sessionConsultMode;
-      if (patch.session_mode === 'consult') setSessionConsultMode(true);
-      else if (
+      if (patch.session_mode === 'consult' || patch.session_mode === 'orchestrate') {
+        setSessionConsultMode(true);
+      } else if (
         patch.session_mode === 'chat' ||
         patch.session_mode === 'isolated' ||
         patch.session_mode === 'autopilot' ||
@@ -9276,7 +9315,18 @@ export default function App({ initialView }: any = {}) {
                           queueLength={(messageQueues[activeSessionId] || []).length}
                           agentColor={chatAccentColor}
                           skills={skills}
-                          consultMode={shellMode === 'simple' ? false : sessionConsultActive}
+                          consultMode={
+                            shellMode === 'simple'
+                              ? activeSession?.session_mode === 'orchestrate'
+                              : sessionConsultActive
+                          }
+                          consultHint={
+                            orchestrateComposerCopy(activeSession?.session_mode)?.hint ?? null
+                          }
+                          composerPlaceholder={
+                            orchestrateComposerCopy(activeSession?.session_mode)?.placeholder ??
+                            null
+                          }
                           readOnly={activeAgent?.role === 'reviewer'}
                           draftKey={activeSessionId || activeAgentId || 'none'}
                           onFileError={(msg: any) => showToast(msg, 'error', 6000)}
@@ -9295,6 +9345,26 @@ export default function App({ initialView }: any = {}) {
                                   onEngineChange={handleEngineChange}
                                   onModelChange={handleModelChange}
                                 />
+                                <SimpleOrchestrateToggle
+                                  enabled={activeSession?.session_mode === 'orchestrate'}
+                                  disabled={!connected}
+                                  onChange={(enabled) => {
+                                    void handleSessionControlChange(
+                                      enabled
+                                        ? {
+                                            session_mode: 'orchestrate',
+                                            finalize_automation: 'manual',
+                                          }
+                                        : { session_mode: 'consult' },
+                                    ).catch((err: any) =>
+                                      showToast(
+                                        err?.message || 'Could not change Orchestrate',
+                                        'error',
+                                        6000,
+                                      ),
+                                    );
+                                  }}
+                                />
                                 {simpleChatTools(activeSessionId)}
                               </div>
                             ) : null
@@ -9302,6 +9372,50 @@ export default function App({ initialView }: any = {}) {
                         />
                       </div>
                     </div>
+                    {activeSessionId && railParentId ? (
+                      <SpawnedSessionsRail
+                        key={railParentId}
+                        parentSessionId={railParentId}
+                        activeSessionId={activeSessionId}
+                        agents={agents}
+                        activeTaskSessionIds={activeTasks}
+                        finalizeStatusBySession={finalizeStatusBySession}
+                        needsInputBySession={needsInputBySession}
+                        onDeleteSession={(row) => handleDeleteSession(row.id)}
+                        onRestoreSession={(row) => handleRestoreSession(row.id)}
+                        onOpenSession={(row) => {
+                          const existing =
+                            sessionsRef.current.find((s: any) => s.id === row.id) ??
+                            sessionsByIdRef.current.get(row.id);
+                          // Latest click wins: a later open, or any navigation that
+                          // bumps the generation or changes the chat, drops this one.
+                          const generation = bumpNavGeneration();
+                          const fromSessionId = activeSessionIdRef.current;
+                          // Workers are not in the agent list, so the rail summary is
+                          // all we hold. Load the full row (mode, engine, automation,
+                          // worktree) before activating it.
+                          void openSpawnedSessionWhenCurrent({
+                            summary: row,
+                            cached: existing,
+                            fetchFull: (id) =>
+                              api.getSession(id) as Promise<Record<string, unknown>>,
+                            isCurrent: () =>
+                              navGenerationRef.current === generation &&
+                              activeSessionIdRef.current === fromSessionId,
+                            activate: (stored) => {
+                              sessionsByIdRef.current.set(row.id, stored);
+                              setSessionsIndexTick((t: any) => t + 1);
+                              setSessions((prev: any) => {
+                                const next = upsertSessionRow(prev, stored);
+                                sessionsRef.current = next;
+                                return next;
+                              });
+                              focusAgentSession(row.agent_id, row.id);
+                            },
+                          });
+                        }}
+                      />
+                    ) : null}
                     {activeSessionId && sideBarPaneOpenBySession[activeSessionId] && (
                       <Suspense fallback={null}>
                         <SessionSideBarPane

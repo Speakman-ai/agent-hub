@@ -8,6 +8,8 @@ import {
   isSkillBuilderModeActive,
   isSkillBuilderEligibleAgent,
   isConsultModeActive,
+  isOrchestrateModeActive,
+  orchestrateSpawnParentId,
   isHubModeActive,
   isNonShippingSessionBehavior,
   isIsolatedModeActive,
@@ -27,6 +29,7 @@ describe('session-mode helpers', () => {
       'scoping',
       'skill-builder',
       'consult',
+      'orchestrate',
       'hub',
       'qa',
       'no-guardrails',
@@ -131,6 +134,7 @@ describe('session-mode helpers', () => {
       expect(isShippingCompatibleSessionMode('autopilot')).toBe(true);
       expect(isShippingCompatibleSessionMode('design')).toBe(false);
       expect(isShippingCompatibleSessionMode('consult')).toBe(false);
+      expect(isShippingCompatibleSessionMode('orchestrate')).toBe(false);
       expect(isShippingCompatibleSessionMode('hub')).toBe(false);
     });
   });
@@ -139,6 +143,26 @@ describe('session-mode helpers', () => {
     it('is true only for consult mode rows', () => {
       expect(isConsultModeActive({ session_mode: 'consult' })).toBe(true);
       expect(isConsultModeActive({ session_mode: 'chat' })).toBe(false);
+      expect(isConsultModeActive({ session_mode: 'orchestrate' })).toBe(false);
+    });
+  });
+
+  describe('isOrchestrateModeActive', () => {
+    it('is true only for orchestrate mode rows', () => {
+      expect(isOrchestrateModeActive({ session_mode: 'orchestrate' })).toBe(true);
+      expect(isOrchestrateModeActive({ session_mode: 'consult' })).toBe(false);
+      expect(isOrchestrateModeActive({ session_mode: null })).toBe(false);
+    });
+  });
+
+  describe('orchestrateSpawnParentId', () => {
+    it('returns the parent id only for an orchestrate session', () => {
+      expect(orchestrateSpawnParentId({ id: 'parent', session_mode: 'orchestrate' })).toBe(
+        'parent',
+      );
+      expect(orchestrateSpawnParentId({ id: 'parent', session_mode: 'consult' })).toBeNull();
+      expect(orchestrateSpawnParentId({ id: '  ', session_mode: 'orchestrate' })).toBeNull();
+      expect(orchestrateSpawnParentId(null)).toBeNull();
     });
   });
 
@@ -150,9 +174,10 @@ describe('session-mode helpers', () => {
   });
 
   describe('isNonShippingSessionBehavior', () => {
-    it('covers hub, consult, and legacy ask_mode', () => {
+    it('covers hub, consult, orchestrate, and legacy ask_mode', () => {
       expect(isNonShippingSessionBehavior({ session_mode: 'hub' })).toBe(true);
       expect(isNonShippingSessionBehavior({ session_mode: 'consult' })).toBe(true);
+      expect(isNonShippingSessionBehavior({ session_mode: 'orchestrate' })).toBe(true);
       expect(isNonShippingSessionBehavior({ session_mode: 'chat', ask_mode: 1 })).toBe(true);
       expect(isNonShippingSessionBehavior({ session_mode: 'chat', ask_mode: 0 })).toBe(false);
     });
@@ -219,6 +244,7 @@ describe('session-mode helpers', () => {
       for (const s of [
         { session_mode: 'consult', ask_mode: 1 },
         { session_mode: 'hub', ask_mode: 0 },
+        { session_mode: 'orchestrate', ask_mode: 0 },
       ]) {
         expect(access(s)).toEqual({ readOnly: false, blockCodeMutationTools: true });
       }

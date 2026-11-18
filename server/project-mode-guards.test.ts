@@ -24,6 +24,7 @@ describe('project-mode-guards', () => {
 
   it('allows non-shipping session modes (incl. design) on both dev and workflow projects', () => {
     expect(validateSessionModeForProject(workflowProject, 'consult')).toBeNull();
+    expect(validateSessionModeForProject(workflowProject, 'orchestrate')).toBeNull();
     expect(validateSessionModeForProject(workflowProject, 'scoping')).toBeNull();
     expect(validateSessionModeForProject(workflowProject, 'skill-builder')).toBeNull();
     // Design is now allowed on workflow projects (data-dir artifact store).

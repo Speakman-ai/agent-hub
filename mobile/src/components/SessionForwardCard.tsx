@@ -1,9 +1,16 @@
+import {
+  forwardCardMode,
+  orchestrateLaunchMode,
+  startedForwardMode,
+} from '@shared/utils/orchestrateForwardMode';
+import { sessionForwardDispatchKey } from '@shared/utils/sessionForwardDispatchKey';
 import React, {
   createContext,
   memo,
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
 } from 'react';
@@ -11,7 +18,6 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   SESSION_FORWARD_MODE_OPTIONS,
-  initialSessionForwardMode,
   parseSessionForwardMode,
   sessionForwardModeLabel,
   sessionForwardModesFor,
@@ -33,6 +39,16 @@ import { getServerBaseUrl } from '../utils/config';
 import { isWorkflowProject } from '../utils/project-mode';
 import { eventsToBlocks } from '../utils/sessionTailBlocks';
 import { messageMayHoldForward } from '@shared/utils/userInputRequest';
+import {
+  cancelOrchestrateAutoStart,
+  markOrchestrateAutoStartFired,
+  orchestrateAutoStartDeadline,
+  orchestrateAutoStartRemaining,
+  releaseOrchestrateAutoStart,
+  useOrchestrateAutoStartCancelled,
+  useOrchestrateLaunchSettings,
+  useOrchestrateSessionActive,
+} from '../context/orchestrateLaunchSettings';
 
 interface ForwardRecord {
   sessionId: string;
@@ -148,10 +164,20 @@ export default function SessionForwardCard({
     [sessionId, messageId, forward.forwardId, occurrence],
   );
   const [chosen, setChosen] = useState<{ key: string; mode: SessionForwardMode } | null>(null);
-  const mode = initialSessionForwardMode(
-    allowedModes,
-    chosen?.key === identity ? chosen.mode : forward.mode,
-  );
+  const launch = useOrchestrateLaunchSettings(sessionId);
+  // Auto start belongs to Orchestrate: once the chat leaves that mode, the
+  // rail holding the switch is gone and cards go back to a manual press.
+  const orchestrating = useOrchestrateSessionActive(sessionId);
+  // The Orchestrate chat's Default build for this card; a workflow target
+  // resolves it to consult.
+  const autoStartMode = orchestrateLaunchMode(allowedModes, launch.mode);
+  const mode = forwardCardMode({
+    allowed: allowedModes,
+    chosen: chosen?.key === identity ? chosen.mode : null,
+    suggested: forward.mode,
+    orchestrating,
+    railMode: launch.mode,
+  });
   const setMode = (next: SessionForwardMode) => setChosen({ key: identity, mode: next });
   const [menuOpen, setMenuOpen] = useState(false);
   // `loaded` is the saved record for one identity. Until it matches the
@@ -170,6 +196,15 @@ export default function SessionForwardCard({
   const record = entry?.status === 'done' ? entry.record : savedRecord;
   const dismissed = !record && (entry?.status === 'dismissed' || (hydrated && !!loaded?.dismissed));
   const selected = modeOptions.find((option) => option.value === mode) ?? modeOptions[0];
+  const autoCancelled = useOrchestrateAutoStartCancelled(identity);
+  const autoStartOn =
+    Boolean(sessionId) &&
+    orchestrating &&
+    launch.autoStart &&
+    !dismissed &&
+    !autoCancelled &&
+    allowedModes.includes(autoStartMode);
+  const [remaining, setRemaining] = useState<number | null>(null);
   const toAgent = (agents || []).find(
     (agent: any) => agent?.id === (record?.agentId || forward.agentId),
   );
@@ -188,24 +223,37 @@ export default function SessionForwardCard({
     };
   }, [identity, storageKey]);
 
-  const start = async () => {
+  const start = async (modeOverride?: SessionForwardMode): Promise<boolean> => {
     const key = identity;
     const savedKey = storageKey;
     // The claim is in the module store, so a remounted card sees a dispatch
     // that is still in flight and cannot start a second one.
-    if (!hydrated || record || dismissed || !forwardStore.claim(key)) return;
+    if (!hydrated || record || dismissed || !forwardStore.claim(key)) return false;
+    const ship = modeOverride ?? mode;
     try {
-      const started = await api.dispatchSession(forward.projectId, {
+      // The server starts at most one session per card for this user, so a
+      // second tab or device pressing or auto-starting it gets the same one.
+      const idempotencyKey = sessionForwardDispatchKey({
+        sessionId,
+        messageId,
+        forwardId: forward.forwardId,
+        occurrence,
+      });
+      const request = {
         prompt: forward.prompt,
         agentId: forward.agentId,
         name: forward.name,
-        mode,
-      });
+        mode: ship,
+        ...(idempotencyKey ? { idempotencyKey } : {}),
+      };
+      const started = sessionId
+        ? await api.dispatchSession(forward.projectId, request, { parentSessionId: sessionId })
+        : await api.dispatchSession(forward.projectId, request);
       const next: ForwardRecord = {
         sessionId: started.sessionId,
         agentId: started.agentId || forward.agentId,
         name: started.name || forward.name,
-        mode,
+        mode: startedForwardMode(started.mode, ship),
       };
       try {
         if (savedKey) await AsyncStorage.setItem(savedKey, JSON.stringify(next));
@@ -213,10 +261,49 @@ export default function SessionForwardCard({
         /* the card still shows forwarded for this visit */
       }
       forwardStore.succeed(key, next);
+      return true;
     } catch (err) {
       forwardStore.fail(key, err instanceof Error ? err.message : 'Could not start the session');
+      return false;
     }
   };
+  const startRef = useRef(start);
+  startRef.current = start;
+
+  useEffect(() => {
+    if (!autoStartOn || !hydrated || record) {
+      if (!launch.autoStart || !orchestrating) releaseOrchestrateAutoStart(identity);
+      if (!autoStartOn || record) setRemaining(null);
+      return;
+    }
+    if (pending) return;
+    orchestrateAutoStartDeadline(identity);
+    const tick = () => {
+      const left = orchestrateAutoStartRemaining(identity);
+      setRemaining(left);
+      if (left <= 0 && markOrchestrateAutoStartFired(identity)) {
+        void startRef.current(autoStartMode).then((ok) => {
+          if (!ok && forwardStore.get(identity)?.status === 'failed') {
+            cancelOrchestrateAutoStart(identity);
+          }
+        });
+      }
+    };
+    tick();
+    const timer = setInterval(tick, 200);
+    return () => clearInterval(timer);
+  }, [
+    autoStartOn,
+    hydrated,
+    record,
+    pending,
+    identity,
+    launch.autoStart,
+    orchestrating,
+    autoStartMode,
+  ]);
+
+  const counting = autoStartOn && hydrated && !record && remaining != null;
 
   const dismiss = () => {
     if (!hydrated || record || pending) return;
@@ -260,6 +347,46 @@ export default function SessionForwardCard({
               <Text style={styles.buttonText}>Open session</Text>
             </Pressable>
           ) : null}
+        </View>
+      ) : counting ? (
+        <View style={styles.footer}>
+          <Text testID="session-forward-countdown" style={styles.countdown}>
+            {remaining != null && remaining > 0
+              ? `Starting in ${remaining}s as ${sessionForwardModeLabel(autoStartMode)}`
+              : 'Starting…'}
+          </Text>
+          <View style={styles.countdownActions}>
+            <Pressable
+              testID="session-forward-start-now"
+              accessibilityRole="button"
+              accessibilityLabel="Start"
+              disabled={pending}
+              onPress={() => {
+                if (!markOrchestrateAutoStartFired(identity)) return;
+                setRemaining(0);
+                void start(autoStartMode).then((ok) => {
+                  if (!ok && forwardStore.get(identity)?.status === 'failed') {
+                    cancelOrchestrateAutoStart(identity);
+                  }
+                });
+              }}
+              style={styles.button}
+            >
+              <Text style={styles.buttonText}>Start</Text>
+            </Pressable>
+            <Pressable
+              testID="session-forward-cancel-auto"
+              accessibilityRole="button"
+              accessibilityLabel="Cancel"
+              onPress={() => {
+                cancelOrchestrateAutoStart(identity);
+                setRemaining(null);
+              }}
+              style={styles.cancel}
+            >
+              <Text style={styles.cancelText}>Cancel</Text>
+            </Pressable>
+          </View>
         </View>
       ) : (
         <View style={styles.footer}>
@@ -390,6 +517,16 @@ const styles = StyleSheet.create({
   },
   secondaryButtonText: { color: colors.gray400, fontSize: 13, fontWeight: '600' },
   error: { color: colors.red400, fontSize: 12 },
+  countdown: { color: colors.amber400, fontSize: 13 },
+  countdownActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  cancel: {
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  cancelText: { color: colors.gray300, fontSize: 13 },
 });
 
 type CardProps = Parameters<typeof SessionForwardCard>[0];

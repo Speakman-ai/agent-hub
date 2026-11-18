@@ -52,6 +52,7 @@ function resolveSessionModeFromRow(session: any) {
     m === 'scoping' ||
     m === 'skill-builder' ||
     m === 'consult' ||
+    m === 'orchestrate' ||
     m === 'isolated' ||
     m === 'autopilot' ||
     m === 'qa' ||
@@ -162,7 +163,7 @@ export default function FinalizeBar({
     askMode,
     automation,
   });
-  const consultActive = selectedValue === 'consult';
+  const consultActive = selectedValue === 'consult' || selectedValue === 'orchestrate';
   const dropdownLabel = sessionControlLabel(selectedValue);
   const reportError = useCallback(
     (msg: any) => {

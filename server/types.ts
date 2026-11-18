@@ -65,6 +65,11 @@ export interface SessionRow {
   discarded_at?: string | null;
   /** Set on a SideBar child: the parent session it was forked from. */
   sidebar_parent_id?: string | null;
+  /**
+   * Set on a worker session started from an Orchestrate parent. Hidden from
+   * the agent's session list; listed on that parent's spawned-session rail.
+   */
+  spawned_from_session_id?: string | null;
   /** 1 = run by the system for output posted elsewhere; kept out of session lists. */
   hidden?: number;
   /** 1 = consult chat opened by the Simple view; the full Hub sidebar omits it. */
@@ -2499,6 +2504,14 @@ export interface Stmts {
   getLiveSidebarSession: Stmt;
   getLiveSidebarSessions: Stmt;
   markSessionAsSidebar: Stmt;
+  markSessionSpawnedFrom: Stmt;
+  claimSessionDispatchKey: Stmt;
+  getSessionDispatchKey: Stmt;
+  completeSessionDispatchKey: Stmt;
+  releaseSessionDispatchKey: Stmt;
+  pruneSessionDispatchKeys: Stmt;
+  getSpawnedSessions: Stmt;
+  getArchivedSpawnedSessions: Stmt;
   clearSessionForkSource: Stmt;
   updateSessionAutopilotConfig: Stmt;
   casSessionAutopilotConfig: Stmt<[string, string, string | null]>;

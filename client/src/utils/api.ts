@@ -2541,6 +2541,33 @@ export const api = {
   /** The session's live SideBar (hidden Consult-mode fork), or null. */
   getSessionSidebar: (sessionId: string) =>
     fetchJSON<{ session: SessionWire | null; running?: boolean }>(`/sessions/${sessionId}/sidebar`),
+  /** Worker sessions started from an Orchestrate parent, newest first. */
+  getSpawnedSessions: (sessionId: string) =>
+    fetchJSON<{
+      parent: {
+        id: string;
+        name: string;
+        agent_id: string;
+        up?: { id: string; name: string; agent_id: string } | null;
+      };
+      sessions: Array<{
+        id: string;
+        name: string;
+        agent_id: string;
+        state: string;
+        updated_at: string;
+        finalize_status: string | null;
+        needs_input: string | null;
+        needs_input_at: number | null;
+        last_turn_error: string | null;
+      }>;
+      archived: Array<{
+        id: string;
+        name: string;
+        agent_id: string;
+        deleted_at: string;
+      }>;
+    }>(`/sessions/${sessionId}/spawned`),
   /**
    * Open a fresh SideBar (archives the previous one). With `content`, the
    * first question starts at once; follow-ups go over the WebSocket.
@@ -2560,19 +2587,32 @@ export const api = {
    */
   dispatchSession: (
     projectId: string,
-    body: { prompt: string; agentId?: string; name?: string; mode?: string },
+    body: {
+      prompt: string;
+      agentId?: string;
+      name?: string;
+      mode?: string;
+      /** One session per key for this user, across tabs and devices. */
+      idempotencyKey?: string;
+    },
+    opts?: { parentSessionId?: string | null },
   ) =>
     fetchJSON<{
       sessionId: string;
       agentId: string;
       projectId: string;
       name: string;
+      /** The mode the session started with; a repeat reports the first start's. */
+      mode?: string;
       skippedSkills: string[];
       ref: string;
     }>(`/projects/${encodeURIComponent(projectId)}/sessions/dispatch`, {
       method: 'POST',
       body: JSON.stringify(body),
       timeout: 60000,
+      headers: opts?.parentSessionId
+        ? { 'X-Agent-Hub-Session-Id': opts.parentSessionId }
+        : undefined,
     }),
   createSession: (
     agentId: string,

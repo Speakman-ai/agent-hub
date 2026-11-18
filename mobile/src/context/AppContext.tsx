@@ -10,6 +10,11 @@ import {
   resolveComputerToolEnabled,
 } from '@shared/utils/computerTool';
 import { organizationComputerOwnerLabel } from '@shared/utils/organizationComputer';
+import {
+  createNavigationIntent,
+  openSpawnedSessionWhenCurrent,
+} from '@shared/utils/spawnedSessionRow';
+import { setOrchestrateSessionActive } from './orchestrateLaunchSettings';
 import { isOrganizationAgentId } from '@shared/utils/organization-agents';
 import { isSessionVisibleInOwnSidebar } from '@shared/utils/sessionSidebarOwnership';
 import { promoteQueuedMessage } from '@shared/utils/promoteQueuedMessage';
@@ -416,6 +421,12 @@ export function AppProvider({ children }: any) {
     sessions.find((s: any) => s.id === activeSessionId) ||
     cronSessions.find((s: any) => s.id === activeSessionId) ||
     null;
+  // Forward cards auto start only while their chat is in Orchestrate.
+  const activeSessionModeForLaunch = activeSession?.id ? activeSession.session_mode : undefined;
+  useEffect(() => {
+    if (!activeSessionId || activeSessionModeForLaunch === undefined) return;
+    setOrchestrateSessionActive(activeSessionId, activeSessionModeForLaunch === 'orchestrate');
+  }, [activeSessionId, activeSessionModeForLaunch]);
   const activeSessionState = deriveSessionState(activeSession, {
     activeTaskSessionIds: activeTasks,
     finalizeStatusBySession,
@@ -470,6 +481,13 @@ export function AppProvider({ children }: any) {
     sideBarListenersRef.current.add(cb);
     return () => {
       sideBarListenersRef.current.delete(cb);
+    };
+  }, []);
+  const spawnedListenersRef = useRef<Set<(data: any) => void>>(new Set());
+  const subscribeSpawnedSessionEvents = useCallback((cb: (data: any) => void) => {
+    spawnedListenersRef.current.add(cb);
+    return () => {
+      spawnedListenersRef.current.delete(cb);
     };
   }, []);
   // Keep the latest sessions list reachable from the notification listener
@@ -540,6 +558,21 @@ export function AppProvider({ children }: any) {
           }
         });
         return;
+      }
+      if (
+        data?.type === 'session_state' ||
+        data?.type === 'session_deleted' ||
+        data?.type === 'session_created' ||
+        data?.type === 'session_restored' ||
+        data?.type === 'session_forwarded'
+      ) {
+        spawnedListenersRef.current.forEach((cb) => {
+          try {
+            cb(data);
+          } catch {
+            /* a listener throwing must not wedge the WS handler */
+          }
+        });
       }
       // Fan out to the in-app banner first so every mapped type gets a
       // notification regardless of which switch-case it takes below.
@@ -1976,6 +2009,29 @@ export function AppProvider({ children }: any) {
     setActiveAgentId(targetAgentId);
     setActiveSessionId(targetSessionId);
   }, []);
+  /** Open an Orchestrate parent or one of its workers, keeping the row in memory. */
+  const spawnedOpenIntentRef = useRef(createNavigationIntent());
+  const openSpawnedSession = useCallback(async (row: any) => {
+    if (!row?.id || !row?.agent_id) return;
+    // Latest open wins, and switching chats while the row loads drops it.
+    const latest = spawnedOpenIntentRef.current.begin();
+    const fromSessionId = activeSessionIdRef.current;
+    const cached = sessionsRef.current.find((s: any) => s.id === row.id) ?? null;
+    // Workers are not in the agent list, so the sheet's summary is all we
+    // hold. Load the full row (mode, engine, automation, worktree) first.
+    await openSpawnedSessionWhenCurrent({
+      summary: row,
+      cached,
+      fetchFull: (id) => api.getSession(id),
+      isCurrent: () => latest() && activeSessionIdRef.current === fromSessionId,
+      activate: (stored) => {
+        setSessions((prev: any) => upsertSessionRow(prev, stored));
+        pendingSessionIdRef.current = row.id;
+        setActiveAgentId(row.agent_id);
+        setActiveSessionId(row.id);
+      },
+    });
+  }, []);
   /** Opens an organization chat in the shared chat screen, owned by the signed-in user. */
   const openOrganizationChat = useCallback(
     (target: {
@@ -2192,6 +2248,22 @@ export function AppProvider({ children }: any) {
     }
     return { sessions, archived: archivedRows };
   }, []);
+  // Leaving Orchestrate detaches the workers server-side; reload the list so
+  // they show in the drawer again.
+  const lastLaunchModeRef = useRef<{ id: string; mode: string | null | undefined } | null>(null);
+  useEffect(() => {
+    if (!activeSessionId || activeSessionModeForLaunch === undefined) return;
+    const last = lastLaunchModeRef.current;
+    lastLaunchModeRef.current = { id: activeSessionId, mode: activeSessionModeForLaunch };
+    if (
+      last?.id === activeSessionId &&
+      last?.mode === 'orchestrate' &&
+      activeSessionModeForLaunch !== 'orchestrate' &&
+      activeAgentIdRef.current
+    ) {
+      void reloadAgentSessions(activeAgentIdRef.current).catch(() => {});
+    }
+  }, [activeSessionId, activeSessionModeForLaunch, reloadAgentSessions]);
   const handleReorderProjects = useCallback((newOrderIds: string[]) => {
     setProjects((prev: any) => {
       const byId = new Map(prev.map((p: any) => [p.id, p]));
@@ -2306,6 +2378,22 @@ export function AppProvider({ children }: any) {
     },
     [activeAgentId, activeSession, agents, cronSessions, projects, sessionConsultMode, sessions],
   );
+  const handleSimpleOrchestrateChange = useCallback(async (enabled: boolean) => {
+    const sid = activeSessionIdRef.current;
+    if (!sid) return;
+    const patch = enabled
+      ? { session_mode: 'orchestrate', finalize_automation: 'manual' }
+      : { session_mode: 'consult' };
+    try {
+      const updated = await api.updateSession(sid, patch);
+      setSessions((prev: any) =>
+        prev.map((s: any) => (s.id === updated.id ? { ...s, ...updated } : s)),
+      );
+      setSessionConsultMode(isSessionConsultModeEnabled(updated));
+    } catch (err: any) {
+      Alert.alert('Orchestrate', err?.message || 'Could not change Orchestrate');
+    }
+  }, []);
   const handleEngineChange = useCallback(
     async (engine: any) => {
       setSessionEngine(engine);
@@ -2432,61 +2520,68 @@ export function AppProvider({ children }: any) {
       throw err;
     }
   }, []);
-  const handleDeleteSession = useCallback(async (sessionId: any) => {
-    // Mirror of the web client's pattern (client/src/App.jsx) — await the
-    // DELETE first, then mutate state only on success. Previously we removed
-    // the row from `sessions` *before* the await, so a failed DELETE (network
-    // drop, 5xx, auth) would leave the session invisible without adding it
-    // to `archivedSessions` — the exact data-loss surface this feature is
-    // meant to prevent. We also snapshot the row up-front so the archived
-    // list can carry the real message_count rather than a placeholder.
-    const deletedRow = sessionsRef.current?.find((s: any) => s.id === sessionId) || null;
-    try {
-      await api.deleteSession(sessionId);
-      setBrowserScreensBySession((prev: any) => {
-        if (!prev[sessionId]) return prev;
-        const next = { ...prev };
-        delete (next as any)[sessionId];
-        return next;
-      });
-      setPreviewEventBySession((prev) => {
-        if (!prev[sessionId]) return prev;
-        const next = { ...prev };
-        delete next[sessionId];
-        return next;
-      });
-      setSessions((prev: any) => {
-        const remaining = prev.filter((s: any) => s.id !== sessionId);
-        if (activeSessionIdRef.current === sessionId) {
-          setActiveSessionId(remaining.length > 0 ? remaining[0].id : null);
-        }
-        return remaining;
-      });
-      if (deletedRow) {
-        setArchivedSessions((prev: any) => {
-          if (prev.some((s: any) => s.id === sessionId)) return prev;
-          return [
-            {
-              ...deletedRow,
-              // Client clock — may drift from server's UTC datetime('now')
-              // used by the purge cron. The next fetch reconciles.
-              deleted_at: new Date().toISOString(),
-              message_count: deletedRow.message_count ?? 0,
-            },
-            ...prev,
-          ];
+  const handleDeleteSession = useCallback(
+    async (sessionId: any) => {
+      // Mirror of the web client's pattern (client/src/App.jsx) — await the
+      // DELETE first, then mutate state only on success. Previously we removed
+      // the row from `sessions` *before* the await, so a failed DELETE (network
+      // drop, 5xx, auth) would leave the session invisible without adding it
+      // to `archivedSessions` — the exact data-loss surface this feature is
+      // meant to prevent. We also snapshot the row up-front so the archived
+      // list can carry the real message_count rather than a placeholder.
+      const deletedRow = sessionsRef.current?.find((s: any) => s.id === sessionId) || null;
+      try {
+        await api.deleteSession(sessionId);
+        setBrowserScreensBySession((prev: any) => {
+          if (!prev[sessionId]) return prev;
+          const next = { ...prev };
+          delete (next as any)[sessionId];
+          return next;
         });
+        setPreviewEventBySession((prev) => {
+          if (!prev[sessionId]) return prev;
+          const next = { ...prev };
+          delete next[sessionId];
+          return next;
+        });
+        setSessions((prev: any) => {
+          const remaining = prev.filter((s: any) => s.id !== sessionId);
+          if (activeSessionIdRef.current === sessionId) {
+            setActiveSessionId(remaining.length > 0 ? remaining[0].id : null);
+          }
+          return remaining;
+        });
+        // Archiving an Orchestrate chat returns its workers to the session list.
+        if (deletedRow?.session_mode === 'orchestrate' && deletedRow.agent_id) {
+          void reloadAgentSessions(deletedRow.agent_id).catch(() => {});
+        }
+        if (deletedRow) {
+          setArchivedSessions((prev: any) => {
+            if (prev.some((s: any) => s.id === sessionId)) return prev;
+            return [
+              {
+                ...deletedRow,
+                // Client clock — may drift from server's UTC datetime('now')
+                // used by the purge cron. The next fetch reconciles.
+                deleted_at: new Date().toISOString(),
+                message_count: deletedRow.message_count ?? 0,
+              },
+              ...prev,
+            ];
+          });
+        }
+      } catch (err: any) {
+        // Surface the failure so the user knows the row is still live. No
+        // rollback needed because we never removed it optimistically.
+        Alert.alert(
+          'Delete failed',
+          err?.message || 'Could not archive this session. Please try again.',
+        );
+        throw err;
       }
-    } catch (err: any) {
-      // Surface the failure so the user knows the row is still live. No
-      // rollback needed because we never removed it optimistically.
-      Alert.alert(
-        'Delete failed',
-        err?.message || 'Could not archive this session. Please try again.',
-      );
-      throw err;
-    }
-  }, []);
+    },
+    [reloadAgentSessions],
+  );
   const handleRestoreSession = useCallback(async (sessionId: any) => {
     setRestoringSessionIds((prev: any) => {
       const next = new Set(prev);
@@ -2984,6 +3079,7 @@ export function AppProvider({ children }: any) {
     modelConfig,
     sessionConsultMode,
     handleConsultModeChange,
+    handleSimpleOrchestrateChange,
     connected,
     reconnecting,
     isProcessing,
@@ -3015,6 +3111,7 @@ export function AppProvider({ children }: any) {
     delegations,
     sessionHandoffs,
     handleOpenHandoffSession,
+    openSpawnedSession,
     openOrganizationChat,
     organizationChatAgent,
     organizationChatOrganization,
@@ -3094,6 +3191,7 @@ export function AppProvider({ children }: any) {
     openInboxNotification,
     subscribeInitialBuild,
     subscribeSideBarEvents,
+    subscribeSpawnedSessionEvents,
   };
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

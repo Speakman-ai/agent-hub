@@ -778,6 +778,22 @@ describe('MessageInput readOnly (reviewer thread) mode', () => {
     expect(screen.queryByRole('textbox')).toBeNull();
   });
 
+  it('uses the Orchestrate placeholder instead of the Consult one', () => {
+    render(
+      <MessageInput
+        {...baseProps}
+        consultMode={true}
+        consultHint="Orchestrate — this chat starts other sessions and does not ship"
+        composerPlaceholder="Plan the work, then start a session…"
+      />,
+    );
+    expect(
+      screen.getByText('Orchestrate — this chat starts other sessions and does not ship'),
+    ).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Plan the work, then start a session…')).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/Consult on Agent Hub/)).not.toBeInTheDocument();
+  });
+
   it('shows the default consult banner copy when no consultHint is given', () => {
     render(<MessageInput {...baseProps} consultMode={true} />);
     expect(screen.getByText(/Consult mode — Hub project updates only/)).toBeInTheDocument();

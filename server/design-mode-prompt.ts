@@ -37,11 +37,13 @@ import {
   isSkillBuilderModeActive,
   isConsultBehaviorActive,
   isHubModeActive,
+  isOrchestrateModeActive,
   isQaModeActive,
 } from './session-mode.js';
 import { CONSULT_SKILL_IDS } from './consult-mode-prompt.js';
 import { QA_SKILL_IDS } from './qa-mode-prompt.js';
 import { HUB_SKILL_IDS } from './hub-mode-prompt.js';
+import { ORCHESTRATE_SKILL_IDS } from './orchestrate-mode-prompt.js';
 import type { Project } from './types.js';
 
 /** Subdirectory of the session worktree that holds design artifacts. */
@@ -72,6 +74,7 @@ export function requiredSkillIdsForSession(
   if (isScopingModeActive(session)) return ['agent-hub-kanban'];
   if (isSkillBuilderModeActive(session)) return [...SKILL_BUILDER_REQUIRED_SKILL_IDS];
   if (isHubModeActive(session)) return [...HUB_SKILL_IDS];
+  if (isOrchestrateModeActive(session)) return [...ORCHESTRATE_SKILL_IDS];
   if (isQaModeActive(session)) return [...QA_SKILL_IDS];
   if (isConsultBehaviorActive(session)) return [...CONSULT_SKILL_IDS];
   return [];
