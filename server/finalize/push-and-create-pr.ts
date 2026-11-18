@@ -30,6 +30,7 @@ import type { NativePrService } from '../native-pr/service.js';
 import { pushAndCreateNativePr } from './push-and-create-pr-agenthub.js';
 import { assertWorktreeOriginMatchesProject } from './origin-guard.js';
 import { generateLlmPrSummary } from './pr-summary-llm.js';
+import { PrePushHookError, resolvePrePushHook, runPrePushHook } from './pre-push-hook.js';
 import type { PrTitleHooks } from './pr-title-hooks.js';
 import { isLowSignalTitle, type TitleCompleter } from '../session-title.js';
 import { redactCardDescriptionForGit } from '../pr-body-redaction.js';
@@ -198,6 +199,8 @@ export function buildPrDetails(
   commits: CommitInfo[],
   diffStat: string,
   override?: PrSummaryOverride | null,
+  /** Text from the project's pre-push hook, placed above the footer. */
+  hookAppend?: string,
 ): { title: string; body: string } {
   const firstCommit = commits[0];
   const cardTitle = args.card.title?.trim() ?? '';
@@ -288,6 +291,12 @@ export function buildPrDetails(
     sections.push('```');
   }
 
+  const extra = hookAppend?.trim();
+  if (extra) {
+    sections.push('');
+    sections.push(hookBodyBlock(extra));
+  }
+
   sections.push('');
   sections.push('---');
   sections.push(
@@ -301,6 +310,55 @@ export function buildPrDetails(
   );
 
   return { title, body: sections.join('\n') };
+}
+
+const HOOK_BLOCK_START = '<!-- agent-hub:pre-push-hook -->';
+const HOOK_BLOCK_END = '<!-- /agent-hub:pre-push-hook -->';
+
+/** The pre-push hook's PR body text, between markers that identify it later. */
+export function hookBodyBlock(text: string): string {
+  return `${HOOK_BLOCK_START}\n${text.trim()}\n${HOOK_BLOCK_END}`;
+}
+
+/**
+ * Put the hook's text into a PR body. The hook owns only the marked block: an
+ * existing block is replaced with the latest text, otherwise the block is
+ * appended. Text elsewhere in the body (the summary, a person's edits) is
+ * never compared against, so `Fixes #123` there cannot hide `Fixes #12`.
+ * Returns the body unchanged when the block already holds exactly this text.
+ */
+export function mergeHookBodyBlock(body: string, text: string): string {
+  const block = hookBodyBlock(text);
+  const start = body.indexOf(HOOK_BLOCK_START);
+  const end = start === -1 ? -1 : body.indexOf(HOOK_BLOCK_END, start);
+  if (start !== -1 && end !== -1) {
+    return body.slice(0, start) + block + body.slice(end + HOOK_BLOCK_END.length);
+  }
+  return body.trim() ? `${body.trimEnd()}\n\n${block}` : block;
+}
+
+/**
+ * Add a pre-push hook's PR body text to a PR that already exists. No edit
+ * when the hook's block already holds the same text, so retries are no-ops.
+ */
+export async function appendToExistingPrBody(
+  prUrl: string,
+  text: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv | undefined,
+): Promise<void> {
+  const opts = { cwd, env, timeout: PUSH_TIMEOUT_MS, maxBuffer: MAX_BUFFER };
+  const { stdout } = await execGit('gh', ['pr', 'view', prUrl, '--json', 'body'], opts);
+  let body = '';
+  try {
+    const parsed = JSON.parse(stdout) as { body?: unknown };
+    body = typeof parsed.body === 'string' ? parsed.body : '';
+  } catch {
+    throw new Error(`gh pr view returned unreadable JSON for ${prUrl}`);
+  }
+  const next = mergeHookBodyBlock(body, text);
+  if (next === body) return;
+  await execGit('gh', ['pr', 'edit', prUrl, '--body', next], opts);
 }
 
 /**
@@ -371,11 +429,67 @@ export function createPushAndCreatePr(deps: {
     const guard = await assertWorktreeOriginMatchesProject(args.project, args.worktreePath, env);
     console.log(`[finalize-push] ${guard.summary}`);
 
+    let branch = args.branch;
+    let prBodyAppend = '';
+    const hook = resolvePrePushHook(args.project);
+    if (hook) {
+      const { stdout: preHookPrStdout } = await execGit(
+        'gh',
+        ['pr', 'list', '--head', branch, '--json', 'url', '--limit', '1'],
+        { cwd: args.worktreePath, env, timeout: PUSH_TIMEOUT_MS, maxBuffer: MAX_BUFFER },
+      );
+      // Recording the rename can fail (the session worktree already has a
+      // branch of that name). Then the push is refused: pushing a branch the
+      // session does not know about strands the PR from its session.
+      const followRename = async (to: string | null) => {
+        if (!to || to === branch) return;
+        console.log(
+          `[finalize-push] pre-push hook renamed ${branch} -> ${to} (project ${args.project.id})`,
+        );
+        branch = to;
+        await args.onBranchRenamed?.(to);
+      };
+      let hookResult: Awaited<ReturnType<typeof runPrePushHook>>;
+      try {
+        hookResult = await runPrePushHook({
+          hook,
+          worktreePath: args.worktreePath,
+          branch,
+          baseBranch: args.baseBranch,
+          headSha: args.headSha,
+          env,
+          context: {
+            sessionId: args.sessionId ?? null,
+            cardId: args.card.id,
+            cardTitle: args.card.title ?? null,
+            githubRepo: args.project.githubRepo ?? null,
+            existingPrUrl: parsePrListUrl(preHookPrStdout),
+          },
+        });
+      } catch (err) {
+        // The push is refused either way; a rename that happened before the
+        // failure still has to reach the session, or it points at a branch
+        // that no longer exists.
+        if (err instanceof PrePushHookError) {
+          await followRename(err.branch).catch((renameErr: unknown) => {
+            console.warn(
+              `[finalize-push] could not record renamed branch ${err.branch}: ` +
+                (renameErr instanceof Error ? renameErr.message : String(renameErr)),
+            );
+          });
+        }
+        throw err;
+      }
+      prBodyAppend = hookResult.prBodyAppend;
+      await followRename(hookResult.branch);
+    }
+    const renamed = branch !== args.branch ? { branch } : {};
+
     // git push --force-with-lease=<branch>:<sha> -u origin <branch> — the lease
     // is pinned to an explicit ls-remote SHA so it does not depend on origin's
     // fetch refspec (which only covers `main`). See resolveExpectedRemoteSha.
-    const expectedRemoteSha = await resolveExpectedRemoteSha(args.worktreePath, args.branch, env);
-    await execGit('git', buildForceWithLeasePushArgs(args.branch, expectedRemoteSha), {
+    const expectedRemoteSha = await resolveExpectedRemoteSha(args.worktreePath, branch, env);
+    await execGit('git', buildForceWithLeasePushArgs(branch, expectedRemoteSha), {
       cwd: args.worktreePath,
       env,
       timeout: PUSH_TIMEOUT_MS,
@@ -384,12 +498,15 @@ export function createPushAndCreatePr(deps: {
 
     const { stdout: existingPrStdout } = await execGit(
       'gh',
-      ['pr', 'list', '--head', args.branch, '--json', 'url', '--limit', '1'],
+      ['pr', 'list', '--head', branch, '--json', 'url', '--limit', '1'],
       { cwd: args.worktreePath, env, timeout: PUSH_TIMEOUT_MS, maxBuffer: MAX_BUFFER },
     );
     const existingPrUrl = parsePrListUrl(existingPrStdout);
     if (existingPrUrl) {
-      return { prUrl: existingPrUrl };
+      if (prBodyAppend) {
+        await appendToExistingPrBody(existingPrUrl, prBodyAppend, args.worktreePath, env);
+      }
+      return { prUrl: existingPrUrl, ...renamed };
     }
 
     const [commits, diffStat] = await Promise.all([
@@ -397,7 +514,13 @@ export function createPushAndCreatePr(deps: {
       collectPrDiffStat(args.worktreePath, args.baseBranch, env),
     ]);
     const override = await resolvePrSummaryOverride(args, commits, diffStat, deps.config, complete);
-    const { title, body } = buildPrDetails(args, commits, diffStat, override);
+    const { title, body } = buildPrDetails(
+      { ...args, branch },
+      commits,
+      diffStat,
+      override,
+      prBodyAppend,
+    );
 
     // gh pr create --base <baseBranch> --head <branch> --title <title> --body <body>
     const { stdout } = await execGit(
@@ -408,7 +531,7 @@ export function createPushAndCreatePr(deps: {
         '--base',
         args.baseBranch,
         '--head',
-        args.branch,
+        branch,
         '--title',
         title,
         '--body',
@@ -421,7 +544,7 @@ export function createPushAndCreatePr(deps: {
     if (!prUrl) {
       throw new Error(`gh pr create returned no parseable PR URL; stdout: ${stdout.slice(0, 500)}`);
     }
-    return { prUrl, title };
+    return { prUrl, title, ...renamed };
   }
 }
 

@@ -18,6 +18,7 @@ import { colors } from '../theme/colors';
 import ProjectScreenHeader from '../components/ProjectScreenHeader';
 import ProjectDefaultAutomationSection from '../components/settings/ProjectDefaultAutomationSection';
 import ProjectEmailLogoSection from '../components/settings/ProjectEmailLogoSection';
+import PrePushHookSection from '../components/settings/PrePushHookSection';
 const PROJECT_COLORS = [
   '#6366f1',
   '#ef4444',
@@ -185,6 +186,10 @@ export default function ProjectSettingsScreen({ route, navigation }: any) {
             trackColor={{ true: colors.emerald600, false: colors.gray600 }}
           />
         </View>
+
+        {project.mode !== 'workflow' && (
+          <PrePushHookSection project={project} saving={saving} saveField={saveField} />
+        )}
 
         <View style={{ marginTop: 12 }}>
           <ProjectDefaultAutomationSection projectId={projectId} />

@@ -3866,6 +3866,14 @@ export interface Project {
    */
   commitAsOwner?: { enabled?: boolean };
   /**
+   * Shell command Finalize runs in the checkout right before it pushes to
+   * GitHub (ignored for `gitHost: 'agenthub'`). It may rename the branch or
+   * append to the PR body; a non-zero exit fails the push. Only an Admin or
+   * Owner signed in as a person may change it. See
+   * `server/finalize/pre-push-hook.ts`.
+   */
+  prePushHook?: { enabled?: boolean; command?: string; timeoutSec?: number };
+  /**
    * Dependabot-style auto-PR for the dependency security audit (Agent
    * Hub-hosted projects only). When `enabled`, a scan that persists findings
    * (default-branch tip, not a dry run) opens/refreshes one native Hub PR per

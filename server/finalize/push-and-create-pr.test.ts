@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('child_process', () => ({
   execFile: vi.fn(),
+  spawn: vi.fn(),
 }));
 
 vi.mock('../auto-git.js', () => ({
@@ -17,16 +18,24 @@ vi.mock('../auto-git.js', () => ({
   autoGitChildEnv: vi.fn((token: string | null) => ({ PATH: '/usr/bin', GH_TOKEN: token })),
 }));
 
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
+import { EventEmitter } from 'node:events';
+import { writeFileSync } from 'node:fs';
 import {
   resolveOrgOwnerGithubToken,
   resolveAutoGitGithubToken,
   autoGitChildEnv,
 } from '../auto-git.js';
-import { createPushAndCreatePr, __test } from './push-and-create-pr.js';
+import {
+  createPushAndCreatePr,
+  __test,
+  hookBodyBlock,
+  mergeHookBodyBlock,
+} from './push-and-create-pr.js';
 import type { KanbanCardRow, Project } from '../types.js';
 
 const mockExecFile = execFile as unknown as ReturnType<typeof vi.fn>;
+const mockSpawn = spawn as unknown as ReturnType<typeof vi.fn>;
 const mockResolveOrgOwnerGithubToken = resolveOrgOwnerGithubToken as unknown as ReturnType<
   typeof vi.fn
 >;
@@ -843,5 +852,272 @@ describe('createPushAndCreatePr — GitHub identity attribution', () => {
     expect(mockResolveAutoGitGithubToken).not.toHaveBeenCalled();
     expect(mockResolveOrgOwnerGithubToken).toHaveBeenCalledTimes(1);
     expect(pushCallEnv().GH_TOKEN).toBe('ghs_org_owner_token');
+  });
+});
+
+describe('createPushAndCreatePr — project pre-push hook', () => {
+  beforeEach(() => {
+    mockExecFile.mockReset();
+    mockSpawn.mockReset();
+  });
+
+  /** Fake hook process: writes the PR body text, then exits 0 or 1. */
+  function wireHook(opts: { appendText: string; bashFails?: boolean }) {
+    mockSpawn.mockImplementation(
+      (_cmd: string, _args: string[], spawnOpts: { env: NodeJS.ProcessEnv }) => {
+        const child = Object.assign(new EventEmitter(), {
+          pid: undefined,
+          stdout: new EventEmitter(),
+          stderr: new EventEmitter(),
+          kill: vi.fn(),
+        });
+        setImmediate(() => {
+          writeFileSync(spawnOpts.env.AGENT_HUB_PR_BODY_APPEND!, opts.appendText);
+          if (opts.bashFails) {
+            child.stdout.emit('data', Buffer.from('issue created\n'));
+            child.stderr.emit('data', Buffer.from('branch push denied\n'));
+          }
+          child.emit('close', opts.bashFails ? 1 : 0, null);
+        });
+        return child;
+      },
+    );
+  }
+
+  function wireExec(opts: {
+    renameTo: string;
+    headSha: string;
+    appendText: string;
+    bashFails?: boolean;
+    existingPrUrl?: string;
+    existingBody?: string;
+  }) {
+    wireHook(opts);
+    mockExecFile.mockImplementation(
+      (
+        cmd: string,
+        args: string[],
+        execOpts: { env?: NodeJS.ProcessEnv },
+        cb: (err: Error | null, out: { stdout: string; stderr: string }) => void,
+      ) => {
+        if (cmd === 'git' && args[0] === 'remote') {
+          cb(null, { stdout: 'https://github.com/acme/proj.git\n', stderr: '' });
+          return;
+        }
+        if (cmd === 'gh' && args[1] === 'view') {
+          cb(null, { stdout: JSON.stringify({ body: opts.existingBody ?? '' }), stderr: '' });
+          return;
+        }
+        if (cmd === 'git' && args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
+          cb(null, { stdout: `${opts.renameTo}\n`, stderr: '' });
+          return;
+        }
+        if (cmd === 'git' && args[0] === 'rev-parse' && args[1] === 'HEAD') {
+          cb(null, { stdout: `${opts.headSha}\n`, stderr: '' });
+          return;
+        }
+        if (cmd === 'gh' && args[1] === 'list') {
+          cb(null, {
+            stdout: opts.existingPrUrl ? JSON.stringify([{ url: opts.existingPrUrl }]) : '[]\n',
+            stderr: '',
+          });
+          return;
+        }
+        if (cmd === 'git' && args[0] === 'log') {
+          cb(null, { stdout: 'Fix the thing\0', stderr: '' });
+          return;
+        }
+        if (cmd === 'gh' && args[1] === 'create') {
+          cb(null, { stdout: 'https://github.com/acme/proj/pull/8\n', stderr: '' });
+          return;
+        }
+        cb(null, { stdout: '', stderr: '' });
+      },
+    );
+  }
+
+  it('pushes and opens the PR on the branch the hook renamed to, with its PR body text', async () => {
+    const headSha = 'a'.repeat(40);
+    wireExec({ renameTo: '123-fix-the-thing', headSha, appendText: 'Fixes #123\n' });
+    const onBranchRenamed = vi.fn();
+    const push = createPushAndCreatePr({ config: { personalOAuth: null } as never });
+    const project = {
+      ...mkProject(),
+      prePushHook: { enabled: true, command: './hook.sh' },
+    } as Project;
+
+    const result = await push({
+      runId: 'run-1',
+      worktreePath: '/tmp/wt',
+      branch: 'agent-hub/dev/session-1',
+      baseBranch: 'main',
+      headSha,
+      card: mkCard(),
+      project,
+      onBranchRenamed,
+    });
+
+    expect(result).toMatchObject({
+      prUrl: 'https://github.com/acme/proj/pull/8',
+      branch: '123-fix-the-thing',
+    });
+    expect(onBranchRenamed).toHaveBeenCalledWith('123-fix-the-thing');
+
+    const calls = mockExecFile.mock.calls as Array<[string, string[]]>;
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
+    expect(mockSpawn.mock.calls[0].slice(0, 2)).toEqual(['bash', ['-c', './hook.sh']]);
+    expect(mockSpawn.mock.invocationCallOrder[0]).toBeLessThan(
+      mockExecFile.mock.invocationCallOrder[
+        calls.findIndex(([cmd, a]) => cmd === 'git' && a[0] === 'push')
+      ],
+    );
+    const pushIdx = calls.findIndex(([cmd, a]) => cmd === 'git' && a[0] === 'push');
+    expect(calls[pushIdx][1].slice(-1)).toEqual(['123-fix-the-thing']);
+    const create = calls.find(([cmd, a]) => cmd === 'gh' && a[1] === 'create')!;
+    expect(create[1][create[1].indexOf('--head') + 1]).toBe('123-fix-the-thing');
+    expect(create[1][create[1].indexOf('--body') + 1]).toContain('Fixes #123');
+  });
+
+  it('does not push when the hook moved HEAD', async () => {
+    wireExec({ renameTo: 'x', headSha: 'b'.repeat(40), appendText: '' });
+    const push = createPushAndCreatePr({ config: { personalOAuth: null } as never });
+    await expect(
+      push({
+        runId: 'run-1',
+        worktreePath: '/tmp/wt',
+        branch: 'x',
+        baseBranch: 'main',
+        headSha: 'a'.repeat(40),
+        card: mkCard(),
+        project: { ...mkProject(), prePushHook: { enabled: true, command: 'true' } } as Project,
+      }),
+    ).rejects.toThrow(/moved HEAD/);
+    const calls = mockExecFile.mock.calls as Array<[string, string[]]>;
+    expect(calls.some(([cmd, a]) => cmd === 'git' && a[0] === 'push')).toBe(false);
+  });
+
+  it('records a rename made before the hook failed, and does not push', async () => {
+    const headSha = 'a'.repeat(40);
+    wireExec({ renameTo: '5-renamed', headSha, appendText: '', bashFails: true });
+    const onBranchRenamed = vi.fn();
+    const push = createPushAndCreatePr({ config: { personalOAuth: null } as never });
+    await expect(
+      push({
+        runId: 'run-1',
+        worktreePath: '/tmp/wt',
+        branch: 'feature/x',
+        baseBranch: 'main',
+        headSha,
+        card: mkCard(),
+        project: { ...mkProject(), prePushHook: { enabled: true, command: 'x' } } as Project,
+        onBranchRenamed,
+      }),
+    ).rejects.toThrow(/exit 1:\n[\s\S]*issue created[\s\S]*branch push denied/);
+    expect(onBranchRenamed).toHaveBeenCalledWith('5-renamed');
+    const calls = mockExecFile.mock.calls as Array<[string, string[]]>;
+    expect(calls.some(([cmd, a]) => cmd === 'git' && a[0] === 'push')).toBe(false);
+  });
+
+  it('refuses the push when the rename cannot be recorded on the session', async () => {
+    const headSha = 'a'.repeat(40);
+    wireExec({ renameTo: '5-renamed', headSha, appendText: '' });
+    const push = createPushAndCreatePr({ config: { personalOAuth: null } as never });
+    await expect(
+      push({
+        runId: 'run-1',
+        worktreePath: '/tmp/wt',
+        branch: 'feature/x',
+        baseBranch: 'main',
+        headSha,
+        card: mkCard(),
+        project: { ...mkProject(), prePushHook: { enabled: true, command: 'x' } } as Project,
+        onBranchRenamed: vi.fn().mockRejectedValue(new Error('branch 5-renamed already exists')),
+      }),
+    ).rejects.toThrow(/already exists/);
+    const calls = mockExecFile.mock.calls as Array<[string, string[]]>;
+    expect(calls.some(([cmd, a]) => cmd === 'git' && a[0] === 'push')).toBe(false);
+  });
+
+  it('adds the hook text to an existing PR body once', async () => {
+    const headSha = 'a'.repeat(40);
+    const prUrl = 'https://github.com/acme/proj/pull/3';
+    const project = { ...mkProject(), prePushHook: { enabled: true, command: 'x' } } as Project;
+    const args = {
+      runId: 'run-1',
+      worktreePath: '/tmp/wt',
+      branch: 'feature/x',
+      baseBranch: 'main',
+      headSha,
+      card: mkCard(),
+      project,
+    };
+    const push = createPushAndCreatePr({ config: { personalOAuth: null } as never });
+
+    wireExec({
+      renameTo: 'feature/x',
+      headSha,
+      appendText: 'Fixes #3',
+      existingPrUrl: prUrl,
+      existingBody: 'Original body',
+    });
+    expect((await push(args)).prUrl).toBe(prUrl);
+    let calls = mockExecFile.mock.calls as Array<[string, string[]]>;
+    const edit = calls.find(([cmd, a]) => cmd === 'gh' && a[1] === 'edit')!;
+    expect(edit[1]).toEqual([
+      'pr',
+      'edit',
+      prUrl,
+      '--body',
+      `Original body\n\n${hookBodyBlock('Fixes #3')}`,
+    ]);
+
+    mockExecFile.mockReset();
+    mockSpawn.mockReset();
+    wireExec({
+      renameTo: 'feature/x',
+      headSha,
+      appendText: 'Fixes #3',
+      existingPrUrl: prUrl,
+      existingBody: `Original body\n\n${hookBodyBlock('Fixes #3')}`,
+    });
+    await push(args);
+    calls = mockExecFile.mock.calls as Array<[string, string[]]>;
+    expect(calls.some(([cmd, a]) => cmd === 'gh' && a[1] === 'edit')).toBe(false);
+  });
+
+  it('skips the hook when it is disabled', async () => {
+    wireExec({ renameTo: 'x', headSha: 'a'.repeat(40), appendText: '' });
+    const push = createPushAndCreatePr({ config: { personalOAuth: null } as never });
+    await push({
+      runId: 'run-1',
+      worktreePath: '/tmp/wt',
+      branch: 'feature/x',
+      baseBranch: 'main',
+      headSha: 'a'.repeat(40),
+      card: mkCard(),
+      project: { ...mkProject(), prePushHook: { enabled: false, command: 'true' } } as Project,
+    });
+    expect(mockSpawn).not.toHaveBeenCalled();
+  });
+});
+
+describe('mergeHookBodyBlock', () => {
+  it('links a new issue whose reference is a prefix of one already in the body', () => {
+    const body = `Summary\n\n${hookBodyBlock('Fixes #123')}`;
+    expect(mergeHookBodyBlock(body, 'Fixes #12')).toBe(`Summary\n\n${hookBodyBlock('Fixes #12')}`);
+    expect(mergeHookBodyBlock('Summary mentions Fixes #123', 'Fixes #12')).toBe(
+      `Summary mentions Fixes #123\n\n${hookBodyBlock('Fixes #12')}`,
+    );
+  });
+
+  it('leaves the body unchanged when the block already holds the same text', () => {
+    const body = `Summary\n\n${hookBodyBlock('Fixes #3')}\n\nfooter`;
+    expect(mergeHookBodyBlock(body, 'Fixes #3\n')).toBe(body);
+  });
+
+  it('replaces only the marked block and keeps text around it', () => {
+    const body = `top\n${hookBodyBlock('old')}\nbottom`;
+    expect(mergeHookBodyBlock(body, 'new')).toBe(`top\n${hookBodyBlock('new')}\nbottom`);
+    expect(mergeHookBodyBlock('', 'x')).toBe(hookBodyBlock('x'));
   });
 });

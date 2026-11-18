@@ -827,12 +827,24 @@ export const ProjectUpdateRequestSchema = z
     }),
     noGuardrails: z.object({ enabled: z.boolean().optional() }).nullable().optional().openapi({
       description:
-        'Allows the No Guardrails session mode, where the agent may `git push` / `gh pr create` directly. Default off; `null` clears it. Requires an Admin or Owner signed in as a person: the global API key and session spawn keys get `403`.',
+        'Allows the No Guardrails session mode, where the agent may `git push` / `gh pr create` directly. Default off; `null` clears it. Requires an Admin or Owner signed in as a person: every API key (global, personal, or session spawn key) gets `403`.',
     }),
     commitAsOwner: z.object({ enabled: z.boolean().optional() }).nullable().optional().openapi({
       description:
         "When enabled, session commits are authored as the session owner's connected GitHub account (GitHub username and ID-based noreply email). Sessions whose owner has no GitHub connection keep the Agent Hub identity. Default off; `null` clears it.",
     }),
+    prePushHook: z
+      .object({
+        enabled: z.boolean().optional(),
+        command: z.string().max(20000).optional(),
+        timeoutSec: z.number().int().min(1).max(1800).optional(),
+      })
+      .nullable()
+      .optional()
+      .openapi({
+        description:
+          "Shell command Finalize runs with `bash -c` in the checkout right before it pushes to GitHub (ignored for Agent Hub-hosted repos). It gets the push's GitHub token plus `AGENT_HUB_BRANCH`, `AGENT_HUB_BASE_BRANCH`, `AGENT_HUB_HEAD_SHA`, `AGENT_HUB_SESSION_ID`, `AGENT_HUB_CARD_ID`, `AGENT_HUB_CARD_TITLE`, `AGENT_HUB_GITHUB_REPO`, `AGENT_HUB_EXISTING_PR_URL`, and `AGENT_HUB_PR_BODY_APPEND` (a file whose contents are added to the PR body). It may rename the branch; Finalize pushes the new name. A non-zero exit, a timeout (default 300s), or a moved HEAD fails the push. Merged over the stored value; `null` clears it. Requires an Admin or Owner signed in as a person: the global API key and session spawn keys get `403`.",
+      }),
   })
   .passthrough();
 

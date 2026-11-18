@@ -373,12 +373,20 @@ export interface PushAndCreatePrArgs {
   /** Hub user id stamped on Agent Hub-native PR rows. Set by push-run. */
   authorUserId?: string | null;
   env?: NodeJS.ProcessEnv;
+  /**
+   * Called as soon as the project's pre-push hook renames the branch, before
+   * the push, so the session's stored branch follows even when the push then
+   * fails.
+   */
+  onBranchRenamed?: (branch: string) => void | Promise<void>;
 }
 
 export interface PushAndCreatePrResult {
   prUrl: string;
   /** Title the PR was created or refreshed with, when this run set it. */
   title?: string;
+  /** Branch actually pushed, when a pre-push hook renamed it. */
+  branch?: string;
 }
 
 export type PushAndCreatePrFn = (args: PushAndCreatePrArgs) => Promise<PushAndCreatePrResult>;

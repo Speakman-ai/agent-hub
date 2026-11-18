@@ -33,6 +33,7 @@ import { orderServerLogsNewestFirst } from '../utils/serverLogs';
 import ProjectSecretsEditor from './ProjectSecretsEditor';
 import GitHostSettingsSection from './GitHostSettingsSection';
 import CommitIdentitySection from './CommitIdentitySection';
+import PrePushHookSection from './PrePushHookSection';
 import ProjectDefaultAutomationSection from './finalize/ProjectDefaultAutomationSection';
 import ProjectMembersSection from './ProjectMembersSection';
 import ContextFilePanel from './ContextFilePanel';
@@ -1619,6 +1620,10 @@ export function ProjectsSection({
         showToast={showToast}
         onProjectsChange={onProjectsChange}
       />
+
+      {p.mode !== 'workflow' && (
+        <PrePushHookSection project={p} showToast={showToast} onProjectsChange={onProjectsChange} />
+      )}
 
       {/* Test Connection */}
       <div className="pt-2 border-t border-gray-800">

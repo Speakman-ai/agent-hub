@@ -352,6 +352,51 @@ async function syncSessionAfterPush(
   }
 }
 
+/**
+ * Follow a pre-push hook's branch rename onto the session.
+ *
+ * For a staged run the hook renamed the branch in the staging checkout, so
+ * the session's own worktree is renamed to match first. Either way the
+ * session worktree's actual branch is read back and only that is stored, so
+ * the stored branch can never name a branch the worktree is not on. Throws
+ * (leaving the stored branch untouched) when the worktree cannot be brought
+ * onto `to`, e.g. a branch of that name already exists there; the caller
+ * refuses the push.
+ */
+export async function recordRenamedPushBranch(args: {
+  stmts: Pick<Stmts, 'updateSessionWorktreeBranch' | 'setSessionWorktreeCheckoutBranch'>;
+  session: SessionRow;
+  sourcePath: string;
+  from: string;
+  to: string;
+}): Promise<void> {
+  const { stmts, session, sourcePath, from, to } = args;
+  if (session.worktree_path) {
+    const io = await sessionWorktreeIoFor(session.id, session.worktree_path);
+    if (session.worktree_path !== sourcePath) {
+      const renamed = await io.git(['branch', '-m', from, to]);
+      if (renamed.exitCode !== 0) {
+        throw new Error(
+          `could not rename the session worktree branch ${from} to ${to}: ` +
+            (renamed.stderr.trim() || `exit ${renamed.exitCode}`),
+        );
+      }
+    }
+    const current = await io.git(['rev-parse', '--abbrev-ref', 'HEAD']);
+    const actual = current.exitCode === 0 ? current.stdout.trim() : '';
+    if (actual !== to) {
+      throw new Error(
+        `the session worktree is on ${actual || 'an unreadable branch'}, not ${to}; ` +
+          'its stored branch was left unchanged',
+      );
+    }
+  }
+  stmts.updateSessionWorktreeBranch.run(to, session.id);
+  if (session.worktree_checkout_branch && session.worktree_checkout_branch === from) {
+    stmts.setSessionWorktreeCheckoutBranch.run(to, session.id);
+  }
+}
+
 export interface RunFinalizePushArgs {
   deps: RouteDeps;
   project: Project;
@@ -684,7 +729,8 @@ async function executePush(args: {
     status: 'pushing',
   });
 
-  let pushResult: { prUrl: string };
+  let pushResult: { prUrl: string; branch?: string };
+  let effectiveBranch = pushBranch;
   try {
     const baseBranch = await resolveFinalizeBaseBranchForCard({
       card,
@@ -715,7 +761,12 @@ async function executePush(args: {
       project,
       sessionId: session.id,
       authorUserId,
+      onBranchRenamed: async (to) => {
+        await recordRenamedPushBranch({ stmts, session, sourcePath, from: pushBranch, to });
+        effectiveBranch = to;
+      },
     });
+    if (pushResult.branch) effectiveBranch = pushResult.branch;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(
@@ -843,13 +894,13 @@ async function executePush(args: {
     bypassedGates,
   });
 
-  await syncSessionAfterPush(run, session, pushBranch);
+  await syncSessionAfterPush(run, session, effectiveBranch);
 
   scheduleAutopilotAfterPush({
     deps,
     session,
     sha: validatedHeadSha,
-    branch: pushBranch,
+    branch: effectiveBranch,
     prUrl: pushResult.prUrl,
   });
 
@@ -1419,6 +1470,14 @@ export async function runSessionPushToGithub(
       project,
       sessionId: session.id,
       authorUserId,
+      onBranchRenamed: (to) =>
+        recordRenamedPushBranch({
+          stmts: deps.stmts,
+          session,
+          sourcePath,
+          from: pushBranch,
+          to,
+        }),
     });
     if (!pushResult.prUrl) {
       console.error(

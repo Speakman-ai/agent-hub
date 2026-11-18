@@ -99,6 +99,7 @@ import { resolveProjectSkillsDir } from '../project-model.js';
 import { getProjectMode, getWorkflowWorkspaceDir } from '../project-mode.js';
 import { isInternalSystemProject } from '../../shared/utils/hub.js';
 import { parseBaseDriftPatch } from '../finalize/base-drift-policy.js';
+import { parsePrePushHookPatch } from '../finalize/pre-push-hook.js';
 
 const ANALYZE_SYSTEM_PROMPT = `You are a project analyzer for Agent Hub, an AI-powered workspace manager. Analyze the code repository at your current working directory and return structured JSON.
 
@@ -2225,6 +2226,29 @@ This workspace has no git repo and no PR automation — your job is planning, or
       }
     }
 
+    // The hook runs a shell command on the Hub with the push's GitHub token, so
+    // only a signed-in person with Admin or higher may set it. Every API key is
+    // refused, personal keys included: a bearer key can be held by automation.
+    let pendingPrePushHook: NonNullable<Project['prePushHook']> | null | undefined;
+    if (Object.prototype.hasOwnProperty.call(req.body as object, 'prePushHook')) {
+      const areq = req as AuthenticatedRequest;
+      if (areq.authViaApiKey || areq.authViaUserApiKey || areq.authSpawnSessionId) {
+        return res.status(403).json({
+          error: 'The pre-push hook must be changed by an Admin in project settings.',
+          code: 'pre_push_hook_requires_person',
+        });
+      }
+      if (!areq.authLocalOrgBypass && !hasAtLeastRole(areq.authRole, 'Admin')) {
+        return res.status(403).json({
+          error: 'Changing the pre-push hook requires the Admin role or higher.',
+          code: 'pre_push_hook_requires_admin',
+        });
+      }
+      const parsed = parsePrePushHookPatch((req.body as Record<string, unknown>).prePushHook);
+      if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+      pendingPrePushHook = parsed.value;
+    }
+
     const allowed = ['name', 'cwd', 'color', 'defaultReviewer', 'githubRepo'] as const;
     for (const key of allowed) {
       if ((req.body as Record<string, unknown>)[key] !== undefined)
@@ -2459,6 +2483,11 @@ This workspace has no git repo and no PR automation — your job is planning, or
           ...next,
         };
       }
+    }
+    if (pendingPrePushHook === null) {
+      delete (project as Record<string, unknown>).prePushHook;
+    } else if (pendingPrePushHook) {
+      project.prePushHook = { ...(project.prePushHook ?? {}), ...pendingPrePushHook };
     }
     if (pendingNoGuardrails === null) {
       delete (project as Record<string, unknown>).noGuardrails;
