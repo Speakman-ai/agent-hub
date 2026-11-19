@@ -153,8 +153,6 @@ export default function Sidebar({
   currentView,
   /** Active Hub pane, so Server Agent / Chat / Todos can show which one is open. */
   hubPane = null,
-  /** Organization open on the Organizations page, so its settings row can highlight. */
-  activeOrganizationId = null,
   /**
    * App-wide organization selection. When omitted, the sidebar keeps its own
    * stored choice. `independent` is the unlinked project set.
@@ -672,8 +670,6 @@ export default function Sidebar({
     }
     onNavigate('hub', pane);
   };
-  const orgSettingsId =
-    activeOrgSection && activeOrgSection.id !== 'independent' ? activeOrgSection.id : null;
   const homeLinks: Array<{
     pane: HubWorkspacePane;
     label: string;
@@ -1011,7 +1007,11 @@ export default function Sidebar({
                 testId="sidebar-org-switch"
                 optionTestIdPrefix="sidebar-org-option"
                 manageLabel="Manage organizations"
-                onManage={() => onNavigate('organizations')}
+                onManage={() =>
+                  activeOrgSection.id === 'independent'
+                    ? onNavigate('organizations')
+                    : onNavigate('organizations', activeOrgSection.id)
+                }
               />
               {activeOrgSection.id === 'independent' && (
                 <p className="mt-2 px-1 text-[11px] leading-4 text-gray-500">
@@ -2366,21 +2366,6 @@ export default function Sidebar({
           >
             <FolderInput size={16} className="shrink-0" aria-hidden />
             <span>Import existing project</span>
-          </button>
-        )}
-        {orgSettingsId && (
-          <button
-            type="button"
-            data-testid={`sidebar-org-settings-${orgSettingsId}`}
-            onClick={() => onNavigate('organizations', orgSettingsId)}
-            className={`w-full text-left px-3 py-2 rounded-lg flex items-center gap-2 text-sm transition-colors ${
-              currentView === 'organizations' && activeOrganizationId === orgSettingsId
-                ? 'bg-gray-800 text-white'
-                : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
-            }`}
-          >
-            <Settings size={16} className="shrink-0" />
-            <span className="truncate">Organization Settings</span>
           </button>
         )}
         <button

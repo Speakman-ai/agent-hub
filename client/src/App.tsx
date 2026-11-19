@@ -7501,7 +7501,6 @@ export default function App({ initialView }: any = {}) {
                   setSidebarOpen(false);
                 }}
                 currentView={currentView}
-                activeOrganizationId={currentView === 'organizations' ? organizationRouteId : null}
                 selectedOrganizationId={sidebarOrganizationId}
                 onSelectOrganization={(id: string) => {
                   setSidebarOrganizationId(id);

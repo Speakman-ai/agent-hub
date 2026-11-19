@@ -2048,7 +2048,6 @@ describe('Sidebar organization sections', () => {
     expect(screen.getByTestId('sidebar-home-server-agent')).toHaveTextContent('Server Agent');
     expect(screen.getByTestId(`sidebar-project-row-${PROJECT_ID}`)).toBeInTheDocument();
     expect(screen.queryByTestId('sidebar-project-row-proj-2')).not.toBeInTheDocument();
-    expect(screen.getByTestId('sidebar-org-settings-org-1')).toBeInTheDocument();
     expect(screen.getByTestId('sidebar-org-agents-heading')).toBeInTheDocument();
     expect(screen.getByTestId('sidebar-org-projects-heading')).toHaveTextContent('Projects');
 
@@ -2056,43 +2055,47 @@ describe('Sidebar organization sections', () => {
     fireEvent.click(screen.getByTestId('sidebar-org-option-independent'));
     expect(screen.queryByTestId(`sidebar-project-row-${PROJECT_ID}`)).not.toBeInTheDocument();
     expect(screen.getByTestId('sidebar-project-row-proj-2')).toBeInTheDocument();
-    expect(screen.queryByTestId('sidebar-org-settings-org-1')).not.toBeInTheDocument();
     expect(screen.queryByTestId('sidebar-org-agents-heading')).not.toBeInTheDocument();
     expect(localStorage.getItem('sidebarSelectedOrganization')).toBe('independent');
 
     fireEvent.click(screen.getByTestId('sidebar-org-switch'));
     fireEvent.click(screen.getByTestId('sidebar-org-option-org-2'));
     expect(screen.queryByTestId('sidebar-project-row-proj-2')).not.toBeInTheDocument();
-    expect(screen.getByTestId('sidebar-org-settings-org-2')).toBeInTheDocument();
   });
 
-  it('opens that organization from its settings row', async () => {
+  it('has no standalone Organization Settings footer button', async () => {
+    vi.spyOn(api.organizations, 'linked').mockResolvedValue({
+      projects: [{ id: PROJECT_ID, name: 'Test Project' }],
+    });
+    render(<Sidebar {...buildProps()} />);
+
+    expect(await screen.findByTestId('sidebar-org-switch')).toHaveTextContent('Acme');
+    expect(screen.queryByTestId('sidebar-org-settings-org-1')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Organization Settings' })).not.toBeInTheDocument();
+  });
+
+  it('opens the active organization from Manage organizations', async () => {
     vi.spyOn(api.organizations, 'linked').mockResolvedValue({
       projects: [{ id: PROJECT_ID, name: 'Test Project' }],
     });
     const onNavigate = vi.fn();
-    render(
-      <Sidebar
-        {...buildProps({
-          onNavigate,
-          currentView: 'organizations',
-          activeOrganizationId: 'org-1',
-        })}
-      />,
-    );
+    render(<Sidebar {...buildProps({ onNavigate })} />);
 
-    const settings = await screen.findByTestId('sidebar-org-settings-org-1');
-    expect(settings).toHaveClass('bg-gray-800');
-    fireEvent.click(settings);
+    const select = await screen.findByTestId('sidebar-org-switch');
+    await waitFor(() => expect(select).toHaveTextContent('Acme'));
+    fireEvent.click(select);
+    fireEvent.click(screen.getByTestId('sidebar-org-switch-manage'));
     expect(onNavigate).toHaveBeenCalledWith('organizations', 'org-1');
   });
 
-  it('opens the Organizations page from the organization switcher', async () => {
+  it('opens the Organizations page without an org from the Independent section', async () => {
     vi.spyOn(api.organizations, 'linked').mockResolvedValue({ projects: [] });
     const onNavigate = vi.fn();
     render(<Sidebar {...buildProps({ onNavigate })} />);
 
     fireEvent.click(await screen.findByTestId('sidebar-org-switch'));
+    fireEvent.click(screen.getByTestId('sidebar-org-option-independent'));
+    fireEvent.click(screen.getByTestId('sidebar-org-switch'));
     fireEvent.click(screen.getByTestId('sidebar-org-switch-manage'));
     expect(onNavigate).toHaveBeenCalledWith('organizations');
   });
