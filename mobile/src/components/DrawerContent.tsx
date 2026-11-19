@@ -18,7 +18,8 @@ import { Pin, PinOff } from 'lucide-react-native';
 import { isSessionPinned, pinnedSessionsFirst } from '@shared/utils/sessionPins';
 import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
-import { getOrgs, getActiveOrg } from '../utils/orgs';
+import { getActiveOrg } from '../utils/orgs';
+import ServerPicker from './ServerPicker';
 import { getApiBaseUrl, getWsUrl } from '../utils/config';
 import { colors } from '../theme/colors';
 import { daysUntilPurge, parseDate } from '../utils/time';
@@ -87,7 +88,6 @@ export default function DrawerContent({ navigation }: any) {
     archivedSessions,
     handleRestoreSession,
     restoringSessionIds,
-    handleSwitchOrg,
     cronSessions,
     activeTasks,
     finalizeStatusBySession,
@@ -260,7 +260,6 @@ export default function DrawerContent({ navigation }: any) {
   const [confirmAction, setConfirmAction] = useState<null | 'clear-all' | 'clear-merged'>(null);
   const [confirmAgentId, setConfirmAgentId] = useState<string | null>(null);
   const [clearingBulk, setClearingBulk] = useState(false);
-  const [showOrgPicker, setShowOrgPicker] = useState(false);
   // Server version / git hash for the footer (matches the web sidebar footer).
   const [health, setHealth] = useState<any>(null);
   useEffect(() => {
@@ -277,9 +276,6 @@ export default function DrawerContent({ navigation }: any) {
       cancelled = true;
     };
   }, []);
-  const orgState = getOrgs();
-  const orgs = orgState?.orgs || [];
-  const activeOrg = getActiveOrg();
   const toggleSessionFilter = (agentId: string) => {
     setCollapsedAgents((prev: any) => ({ ...prev, [agentId]: !prev[agentId] }));
   };
@@ -969,48 +965,12 @@ export default function DrawerContent({ navigation }: any) {
   ].includes(routeName);
   return (
     <SafeAreaView style={styles.container}>
-      {/* Org Switcher Header */}
-      <TouchableOpacity style={styles.header} onPress={() => setShowOrgPicker(!showOrgPicker)}>
-        <View style={[styles.orgDot, { backgroundColor: activeOrg?.color || '#6366f1' }]} />
-        <Text style={styles.headerTitle} numberOfLines={1}>
-          {activeOrg?.name || 'Agent Hub'}
-        </Text>
-        <Text style={styles.chevron}>{showOrgPicker ? '\u25B4' : '\u25BE'}</Text>
-      </TouchableOpacity>
-
-      {showOrgPicker && (
-        <View style={styles.orgDropdown}>
-          {orgs.map((org: any) => (
-            <TouchableOpacity
-              key={org.id}
-              style={[styles.orgItem, org.id === activeOrg?.id && styles.orgItemActive]}
-              onPress={async () => {
-                if (org.id !== activeOrg?.id) {
-                  await handleSwitchOrg(org.id);
-                }
-                setShowOrgPicker(false);
-              }}
-            >
-              <View style={[styles.orgItemDot, { backgroundColor: org.color }]} />
-              <Text style={styles.orgItemName} numberOfLines={1}>
-                {org.name}
-              </Text>
-              <Text style={styles.orgMode}>{'\u2601'}</Text>
-              {org.id === activeOrg?.id && <Text style={styles.orgCheck}>{'\u2713'}</Text>}
-            </TouchableOpacity>
-          ))}
-          <TouchableOpacity
-            style={styles.orgManage}
-            onPress={() => {
-              setShowOrgPicker(false);
-              navigation.navigate('Settings');
-              navigation.closeDrawer();
-            }}
-          >
-            <Text style={styles.orgManageText}>Manage Servers</Text>
-          </TouchableOpacity>
-        </View>
-      )}
+      <ServerPicker
+        onManage={() => {
+          navigation.navigate('Settings');
+          navigation.closeDrawer();
+        }}
+      />
 
       {/* Agents grouped by Project */}
       <ScrollView style={styles.agentList}>
@@ -1314,74 +1274,6 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.gray900,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.gray800,
-  },
-  headerTitle: {
-    flex: 1,
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: colors.white,
-  },
-  orgDot: {
-    width: 20,
-    height: 20,
-    borderRadius: 6,
-  },
-  chevron: {
-    color: colors.gray500,
-    fontSize: 12,
-  },
-  orgDropdown: {
-    backgroundColor: colors.gray800,
-    borderRadius: 8,
-    marginHorizontal: 12,
-    marginBottom: 8,
-    overflow: 'hidden',
-  },
-  orgItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
-  orgItemActive: {
-    backgroundColor: colors.gray700,
-  },
-  orgItemDot: {
-    width: 14,
-    height: 14,
-    borderRadius: 4,
-  },
-  orgItemName: {
-    flex: 1,
-    fontSize: 13,
-    color: colors.gray300,
-  },
-  orgMode: {
-    fontSize: 12,
-  },
-  orgCheck: {
-    color: colors.emerald400,
-    fontSize: 14,
-    fontWeight: 'bold',
-  },
-  orgManage: {
-    borderTopWidth: 1,
-    borderTopColor: colors.gray700,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
-  orgManageText: {
-    fontSize: 12,
-    color: colors.gray500,
   },
   agentList: {
     flex: 1,

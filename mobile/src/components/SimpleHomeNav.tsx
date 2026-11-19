@@ -1,13 +1,15 @@
 import React from 'react';
 import { View, Pressable, StyleSheet } from 'react-native';
 import HubIcon from './HubIcon';
+import ServerPicker from './ServerPicker';
 import { colors } from '../theme/colors';
 import { useGoogleChatAvailable } from '../hooks/useGoogleChatAvailable';
 import { simpleHomeLinks, type SimpleHomeTarget } from '../utils/simpleShell';
 
 /**
  * The simple shell's top toolbar. It stays on the Chats list and on every Hub
- * pane opened from it, with the open screen highlighted.
+ * pane opened from it, with the open screen highlighted. The saved-server
+ * picker sits directly above it once more than one server is saved.
  */
 export default function SimpleHomeNav({
   active,
@@ -18,24 +20,31 @@ export default function SimpleHomeNav({
 }) {
   const googleChatAvailable = useGoogleChatAvailable();
   return (
-    <View style={styles.nav} testID="simple-home-nav">
-      {simpleHomeLinks(googleChatAvailable).map((item) => {
-        const selected = item.target === active;
-        return (
-          <Pressable
-            key={item.target}
-            testID={`simple-home-${item.target}`}
-            accessibilityRole="button"
-            accessibilityLabel={item.label}
-            accessibilityState={{ selected }}
-            onPress={() => onSelect(item.target)}
-            style={[styles.icon, selected && styles.iconSelected]}
-          >
-            <HubIcon name={item.icon} size={18} color={selected ? colors.sky300 : colors.gray400} />
-          </Pressable>
-        );
-      })}
-    </View>
+    <>
+      <ServerPicker variant="simple" hideWhenSingle />
+      <View style={styles.nav} testID="simple-home-nav">
+        {simpleHomeLinks(googleChatAvailable).map((item) => {
+          const selected = item.target === active;
+          return (
+            <Pressable
+              key={item.target}
+              testID={`simple-home-${item.target}`}
+              accessibilityRole="button"
+              accessibilityLabel={item.label}
+              accessibilityState={{ selected }}
+              onPress={() => onSelect(item.target)}
+              style={[styles.icon, selected && styles.iconSelected]}
+            >
+              <HubIcon
+                name={item.icon}
+                size={18}
+                color={selected ? colors.sky300 : colors.gray400}
+              />
+            </Pressable>
+          );
+        })}
+      </View>
+    </>
   );
 }
 
