@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -19,6 +19,7 @@ import { composerPlaceholderText } from '../utils/composerPlaceholder';
 import { useVoiceTranscription } from '../hooks/useVoiceTranscription';
 import { HubChatComposer } from './HubChatRefs';
 import { locateChatMarkdownCode } from '../utils/hubChatInstance';
+import { findSlashQuery, insertSlashCommand } from '../utils/slashQuery';
 import {
   encodeComposerMentions,
   reconcileComposerMentions,
@@ -75,9 +76,18 @@ export default function MessageInput({
   // Attachments: [{id, uri, name, kind, dataUrl?, mimeType?, sizeBytes?}]
   // kind ∈ 'image' | 'video' | 'file'
   const [images, setImages] = useState<any[]>([]);
-  // Slash-command autocomplete state
-  const [slashQuery, setSlashQuery] = useState<any>(null); // null = closed, string = filter
-  const [slashStart, setSlashStart] = useState<any>(null); // position of the '/'
+  // Slash-command autocomplete, derived from the caret the composer reported
+  // with the last text change, and only while that text is still the draft.
+  const [slashCaret, setSlashCaret] = useState<{ text: string; caret: number } | null>(null);
+  const hasSkills = (skills?.length ?? 0) > 0;
+  const slash = useMemo(
+    () =>
+      hasSkills && slashCaret && slashCaret.text === value
+        ? findSlashQuery(value, slashCaret.caret)
+        : null,
+    [hasSkills, slashCaret, value],
+  );
+  const slashQuery = slash ? slash.query : null;
   const cursorRef = useRef(0);
   // Filtered skills for autocomplete
   const filteredSkills = (skills || []).filter((s: any) =>
@@ -86,21 +96,19 @@ export default function MessageInput({
       : (s.name || s.id || '').toLowerCase().includes(slashQuery.toLowerCase()) ||
         (s.description || '').toLowerCase().includes(slashQuery.toLowerCase()),
   );
-  const closeSlash = useCallback(() => {
-    setSlashQuery(null);
-    setSlashStart(null);
-  }, []);
+  const closeSlash = useCallback(() => setSlashCaret(null), []);
+  // Where the composer should put the caret after a slash command is inserted.
+  const [placeCaret, setPlaceCaret] = useState<{ text: string; caret: number } | null>(null);
   const insertSkill = useCallback(
     (skillId: any) => {
-      if (slashStart === null) return;
-      const before = value.slice(0, slashStart);
-      const cursor = cursorRef.current;
-      const after = value.slice(Math.max(cursor, slashStart));
-      const newValue = `${before}/${skillId} ${after}`;
-      setValue(newValue);
+      if (!slash) return;
+      const next = insertSlashCommand(value, slash, skillId);
+      cursorRef.current = next.caret;
+      setValue(next.text);
+      setPlaceCaret(next);
       closeSlash();
     },
-    [value, slashStart, closeSlash],
+    [value, slash, closeSlash],
   );
   const handleSelectionChange = useCallback((e: any) => {
     cursorRef.current = e.nativeEvent.selection.start;
@@ -116,26 +124,6 @@ export default function MessageInput({
     isProcessing,
     onError: reportTranscribeError,
   });
-  const handleChangeText = useCallback(
-    (val: any) => {
-      setValue(val);
-      // Use a small delay so cursorRef has updated from onSelectionChange
-      setTimeout(() => {
-        const cursor = Math.min(cursorRef.current + 1, val.length);
-        const textBeforeCursor = val.slice(0, cursor);
-        const slashMatch = textBeforeCursor.match(/(^|\n)\/([a-zA-Z0-9_.-]*)$/);
-        if (slashMatch && skills?.length > 0) {
-          const query = slashMatch[2];
-          const slashPos = textBeforeCursor.length - slashMatch[0].length + slashMatch[1].length;
-          setSlashQuery(query);
-          setSlashStart(slashPos);
-        } else {
-          closeSlash();
-        }
-      }, 0);
-    },
-    [skills, closeSlash],
-  );
   const pickImage = async () => {
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
@@ -412,10 +400,14 @@ export default function MessageInput({
           triggers={['#']}
           value={value}
           mentions={mentions}
-          onChange={(text, carried) => {
+          placeCaret={placeCaret}
+          onChange={(text, carried, caret) => {
+            // Store exactly what the field reported, even when it matches a
+            // stale render's `value`: skipping it would push old text back.
             mentionsTextRef.current = text;
             setMentions(carried);
-            if (text !== value) handleChangeText(text);
+            setValue(text);
+            setSlashCaret({ text, caret });
           }}
           onSelectionChange={handleSelectionChange}
           placeholder={composerPlaceholderText({ disabled, consultMode, composerPlaceholder })}

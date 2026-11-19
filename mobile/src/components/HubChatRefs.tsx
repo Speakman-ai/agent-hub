@@ -243,22 +243,40 @@ export interface HubChatComposerProps extends Omit<
 > {
   value: string;
   mentions: ComposerMention[];
-  onChange: (value: string, mentions: ComposerMention[]) => void;
+  /** `caret` is where the caret sits in `value` after this change. */
+  onChange: (value: string, mentions: ComposerMention[], caret: number) => void;
+  /**
+   * Ask the composer to put the caret at `caret` once `value` is `text` (the
+   * parent inserted something, such as a slash command). Each new object is
+   * applied once; a request for other text than `value` is ignored.
+   */
+  placeCaret?: { text: string; caret: number } | null;
   /** Triggers this composer answers. Defaults to both `@` and `#`. */
   triggers?: readonly ('@' | '#')[];
   /** Style for the wrapper around the popup and the input. */
   containerStyle?: any;
 }
 
+type Placement = { text: string; caret: number };
+
 /**
  * A text box with `@` (people, agents) and `#` (cards, sessions, tickets, PRs)
  * autocomplete. A picked item is inserted as readable text and tracked in
  * `mentions` by position, so the caller can swap each for its token on send.
+ *
+ * The input is controlled, so the parent must store exactly the text each
+ * change reports. Native events can arrive faster than renders (fast typing,
+ * an autocorrect replacement followed by its caret move), so every edit is
+ * measured against the text and mentions this composer last reported, not
+ * against the props of the last render. Diffing a stale `value`, or a parent
+ * skipping an update because its own `value` is stale, hands the native field
+ * old text back, which undoes the correction and moves the caret.
  */
 export function HubChatComposer({
   value,
   mentions,
   onChange,
+  placeCaret,
   triggers,
   containerStyle,
   ...inputProps
@@ -272,22 +290,59 @@ export function HubChatComposer({
   const [results, setResults] = useState<{ key: string; items: HubChatRefSuggestion[] } | null>(
     null,
   );
-  // A selection the composer placed itself, valid only for the text it was set on.
-  const [placed, setPlaced] = useState<{ text: string; start: number; end: number } | null>(null);
-  const selection =
-    placed && placed.text === value ? { start: placed.start, end: placed.end } : undefined;
+  // A caret the composer placed itself, sent to the native field for one
+  // commit only. A `selection` prop left in place is re-applied by React
+  // Native whenever the native selection or text differs from it, which fights
+  // the keyboard's own caret moves, so it is cleared right after it lands.
+  const [placed, setPlaced] = useState<Placement | null>(null);
+  // The parent's last caret request already applied (or present at mount).
+  const [usedRequest, setUsedRequest] = useState(placeCaret ?? null);
+  const pendingRequest =
+    placeCaret && placeCaret !== usedRequest && placeCaret.text === value ? placeCaret : null;
+  const placement = placed && placed.text === value ? placed : pendingRequest;
+  const selection = placement ? { start: placement.caret, end: placement.caret } : undefined;
+
   const caretRef = useRef(value.length);
   // Locates each edit from the selection history (see composerEdit.ts).
   const trackerRef = useRef<EditTracker | null>(null);
   if (!trackerRef.current) trackerRef.current = createEditTracker();
   const tracker = trackerRef.current;
   useEffect(() => () => tracker.dispose(), [tracker]);
-  // Latest props, for a correction that lands after this render.
-  const latest = useRef({ value, onChange });
-  latest.current = { value, onChange };
+
+  // The text and mentions the native field holds now, ahead of props while a
+  // render is pending. Props win whenever they change, which is how a draft
+  // replaced from outside (sent, edit opened) takes over.
+  const live = useRef({ text: value, mentions });
+  const seen = useRef({ value, mentions });
+  if (seen.current.value !== value || seen.current.mentions !== mentions) {
+    seen.current = { value, mentions };
+    live.current = { text: value, mentions };
+  }
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  const emit = (text: string, carried: ComposerMention[], caret: number) => {
+    live.current = { text, mentions: carried };
+    onChangeRef.current(text, carried, caret);
+  };
   const requestRef = useRef(0);
 
-  const refreshQuery = (text: string, caret: number) => setCaretAt({ text, caret });
+  useEffect(() => {
+    if (!placement) return;
+    // The selection went out with the commit that just landed; stop sending it.
+    if (placement === pendingRequest) {
+      tracker.setCaret(placement.caret, placement.text);
+      caretRef.current = placement.caret;
+      setCaretAt({ text: placement.text, caret: placement.caret });
+      setUsedRequest(pendingRequest);
+    }
+    setPlaced(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [placement]);
+
+  const refreshQuery = (text: string, caret: number) =>
+    setCaretAt((prev) =>
+      prev && prev.text === text && prev.caret === caret ? prev : { text, caret },
+    );
 
   const query = useMemo(
     () => mentionQueryAt(value, caretAt, mentions, triggers),
@@ -323,8 +378,9 @@ export function HubChatComposer({
   const pick = (s: HubChatRefSuggestion) => {
     // Re-derive against the text on screen now; a list for any other query
     // (or another draft) is never applied.
-    const live = mentionQueryAt(latest.current.value, caretAt, mentions, triggers);
-    if (!live || !results || results.key !== queryKey(live)) {
+    const current = live.current;
+    const found = mentionQueryAt(current.text, caretAt, current.mentions, triggers);
+    if (!found || !results || results.key !== queryKey(found)) {
       close();
       return;
     }
@@ -334,18 +390,18 @@ export function HubChatComposer({
       return;
     }
     const display = refDisplay(s.kind, s.label);
-    const end = live.start + 1 + live.query.length;
-    const next = insertMentionText(latest.current.value, live.start, end, display);
+    const end = found.start + 1 + found.query.length;
+    const next = insertMentionText(current.text, found.start, end, display);
     const carried = reconcileComposerMentions(
-      latest.current.value,
+      current.text,
       next.text,
-      mentions,
+      current.mentions,
       next.caret,
     );
-    onChange(next.text, addComposerMention(carried, { display, token, at: live.start }));
+    emit(next.text, addComposerMention(carried, { display, token, at: found.start }), next.caret);
     caretRef.current = next.caret;
     tracker.setCaret(next.caret, next.text);
-    setPlaced({ text: next.text, start: next.caret, end: next.caret });
+    setPlaced({ text: next.text, caret: next.caret });
     setCaretAt({ text: next.text, caret: next.caret });
     close();
   };
@@ -384,28 +440,31 @@ export function HubChatComposer({
         value={value}
         selection={selection}
         onChangeText={(text) => {
-          const { caret, mentions: carried } = tracker.onText(value, text, mentions);
+          const prev = live.current;
+          if (text === prev.text) return;
+          const { caret, mentions: carried } = tracker.onText(prev.text, text, prev.mentions);
           caretRef.current = caret;
           setPlaced(null);
-          onChange(text, carried);
+          emit(text, carried, caret);
           refreshQuery(text, caret);
         }}
         onSelectionChange={(e) => {
           inputProps.onSelectionChange?.(e);
           const { start, end } = e.nativeEvent.selection;
-          const fix = tracker.onSelection({ start, end }, latest.current.value);
+          const current = live.current;
+          const fix = tracker.onSelection({ start, end }, current.text);
           if (fix) {
             // The caret this edit produced shows another reading was right.
+            // Only the mentions change; the text is what native already holds.
             caretRef.current = fix.caret;
-            latest.current.onChange(latest.current.value, fix.mentions);
-            refreshQuery(latest.current.value, fix.caret);
+            emit(current.text, fix.mentions, fix.caret);
+            refreshQuery(current.text, fix.caret);
             return;
           }
           const caret = end;
           if (caret === caretRef.current) return;
           caretRef.current = caret;
-          setPlaced(null);
-          refreshQuery(latest.current.value, caret);
+          refreshQuery(current.text, caret);
         }}
       />
     </View>
