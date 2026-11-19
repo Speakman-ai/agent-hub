@@ -5,6 +5,9 @@ import {
   expectedPollerRuns,
   formatPollerMinutes,
   EMPTY_POLLER_BANNER,
+  isUnboundedPoller,
+  POLLER_REMINDER_EVERY_RUNS,
+  POLLER_RUNS_UNTIL_STOPPED,
   pollerBannerReducer,
   SESSION_POLLER_REFRESH_MS,
   parsePollerAnchor,
@@ -54,7 +57,7 @@ export default function SessionPollerCard({
     proposal.intervalMinutes ? String(proposal.intervalMinutes) : '',
   );
   const [duration, setDuration] = useState(() =>
-    schedule.initialDurationMinutes ? String(schedule.initialDurationMinutes) : '',
+    schedule.initialDurationMinutes !== null ? String(schedule.initialDurationMinutes) : '',
   );
   const [durationEdited, setDurationEdited] = useState(false);
   const [notifyEachRun, setNotifyEachRun] = useState(proposal.notifyEachRun);
@@ -179,12 +182,19 @@ export default function SessionPollerCard({
 
   const header = poller ? statusLine(poller) : 'Set up a poller';
   const deadlineMissed = schedule.deadlinePassed && !durationEdited && deadline !== null;
+  const formUnbounded = check.durationMinutes === 0 && !(deadline && !durationEdited);
   const endsPreview =
     deadline && !durationEdited
-      ? formatPollerClock(deadline)
-      : check.durationMinutes !== null
-        ? formatPollerClock(new Date(Date.now() + check.durationMinutes * 60_000))
-        : null;
+      ? `Ends around ${formatPollerClock(deadline)}`
+      : formUnbounded
+        ? POLLER_RUNS_UNTIL_STOPPED
+        : check.durationMinutes !== null
+          ? `Ends around ${formatPollerClock(new Date(Date.now() + check.durationMinutes * 60_000))}`
+          : null;
+  const expectedRuns =
+    check.intervalMinutes && check.durationMinutes !== null
+      ? expectedPollerRuns(check.intervalMinutes, check.durationMinutes)
+      : 0;
 
   return (
     <div
@@ -200,15 +210,22 @@ export default function SessionPollerCard({
         <div className="p-3 space-y-2 text-sm text-sky-100">
           <p className="whitespace-pre-wrap">{poller.task}</p>
           <p className="text-xs text-sky-100/70">
-            Every {formatPollerMinutes(poller.intervalMinutes)} for{' '}
-            {formatPollerMinutes(poller.durationMinutes)}
+            Every {formatPollerMinutes(poller.intervalMinutes)}
+            {isUnboundedPoller(poller) ? '' : ` for ${formatPollerMinutes(poller.durationMinutes)}`}
             {poller.status === 'active' && poller.nextRunAt
               ? ` · next check ${formatPollerClock(new Date(poller.nextRunAt))}`
               : ''}
             {poller.status === 'active'
-              ? ` · ends ${formatPollerClock(new Date(poller.endsAt))}`
+              ? poller.endsAt
+                ? ` · ends ${formatPollerClock(new Date(poller.endsAt))}`
+                : ` · ${POLLER_RUNS_UNTIL_STOPPED}`
               : ''}
           </p>
+          {poller.status === 'active' && isUnboundedPoller(poller) && (
+            <p className="text-xs text-sky-100/70">
+              Reminds you every {POLLER_REMINDER_EVERY_RUNS} runs that it is still running.
+            </p>
+          )}
           {(poller.notifyEachRun || poller.notifyOnComplete) && (
             <p className="text-xs text-sky-100/70 flex items-center gap-1.5">
               <BellRing size={12} className="text-sky-300" />
@@ -268,11 +285,13 @@ export default function SessionPollerCard({
               )}
             </label>
             <label className="block">
-              <span className="block text-xs text-sky-100/80 mb-1">Duration (minutes)</span>
+              <span className="block text-xs text-sky-100/80 mb-1">
+                Duration (minutes, 0 = until stopped)
+              </span>
               <input
                 aria-label="Duration in minutes"
                 type="number"
-                min={1}
+                min={0}
                 step={1}
                 inputMode="numeric"
                 value={duration}
@@ -290,9 +309,7 @@ export default function SessionPollerCard({
               ) : check.errors.duration ? (
                 <span className="text-[11px] text-rose-300">{check.errors.duration}</span>
               ) : (
-                endsPreview && (
-                  <span className="text-[11px] text-sky-100/60">Ends around {endsPreview}</span>
-                )
+                endsPreview && <span className="text-[11px] text-sky-100/60">{endsPreview}</span>
               )}
             </label>
           </div>
@@ -323,9 +340,11 @@ export default function SessionPollerCard({
           )}
           <div className="flex items-center justify-between gap-2">
             <span className="text-[11px] text-sky-100/60">
-              {check.intervalMinutes && check.durationMinutes
-                ? `About ${expectedPollerRuns(check.intervalMinutes, check.durationMinutes)} checks, first one now`
-                : ''}
+              {expectedRuns === null
+                ? 'Checks until you stop it, first one now'
+                : expectedRuns
+                  ? `About ${expectedRuns} checks, first one now`
+                  : ''}
             </span>
             <button
               type="button"

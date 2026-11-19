@@ -63,6 +63,16 @@ describe('SessionPollerBanner', () => {
     await waitFor(() => expect(screen.queryByTestId('session-poller-banner')).toBeNull());
   });
 
+  it('says an unbounded poller runs until stopped', async () => {
+    mocked.listSessionPollers.mockResolvedValue({
+      pollers: [poller('a', { durationMinutes: 0, endsAt: null })],
+    });
+    render(<SessionPollerBanner sessionId="s1" />);
+    const summary = await screen.findByText(/Every 30 min · 1 run so far/);
+    expect(summary.textContent).toMatch(/runs until stopped$/);
+    expect(summary.textContent).not.toContain('ends');
+  });
+
   it('appears when a poller starts and hides when a push says it finished', async () => {
     mocked.listSessionPollers.mockResolvedValue({ pollers: [] });
     render(<SessionPollerBanner sessionId="s1" />);

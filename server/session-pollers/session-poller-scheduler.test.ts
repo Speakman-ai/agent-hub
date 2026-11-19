@@ -302,3 +302,83 @@ describe('isPollerBlockedByUserInput', () => {
     ).toBe(true);
   });
 });
+
+describe('unbounded pollers (durationMinutes 0)', () => {
+  it('stores no end time and reports endsAt as null', () => {
+    const p = startPoller({ durationMinutes: 0 });
+    expect(p.durationMinutes).toBe(0);
+    expect(p.endsAt).toBeNull();
+    expect(store.listActive()[0].endsAt).toBeNull();
+  });
+
+  it('says it runs until stopped in the run prompt', () => {
+    const p = startPoller({ durationMinutes: 0 });
+    const prompt = buildPollerRunPrompt(p, T0);
+    expect(prompt).toContain('run 1, every 30 min, runs until the user stops it');
+    expect(prompt).not.toContain('of about');
+  });
+
+  it('never expires and reminds the owner on run 100 and 200 only', async () => {
+    const p = startPoller({ durationMinutes: 0, intervalMinutes: 60, notifyEachRun: false });
+    const s = makeScheduler();
+    const reminderRuns: number[] = [];
+    for (let run = 1; run <= 201; run++) {
+      now = min((run - 1) * 60);
+      broadcast.mockClear();
+      s.tick();
+      await flush();
+      expect(dispatch).toHaveBeenCalledTimes(run);
+      for (const n of notifications()) {
+        expect(n.kind).toBe('reminder');
+        reminderRuns.push(n.runCount as number);
+      }
+    }
+    expect(reminderRuns).toEqual([100, 200]);
+    const current = store.get(p.id)!;
+    expect(current.status).toBe('active');
+    expect(current.runCount).toBe(201);
+    expect(systemMessages).toEqual([]);
+  });
+
+  it('builds a reminder that names the task, run count and how to stop it', async () => {
+    const p = startPoller({ durationMinutes: 0, intervalMinutes: 1 });
+    for (let i = 0; i < 99; i++) store.recordRun(p.id, min(i));
+    now = min(99);
+    makeScheduler().tick();
+    await flush();
+    const [reminder] = notifications();
+    expect(reminder).toMatchObject({
+      kind: 'reminder',
+      runCount: 100,
+      ownerUserId: 'user-1',
+      pollerId: p.id,
+      title: 'Poller still running: Check dev for new tickets',
+    });
+    expect(reminder.body).toContain('100 runs so far');
+    expect(reminder.body).toContain('Cancel');
+  });
+
+  it('still sends per-run notifications alongside the reminder when notifyEachRun is on', async () => {
+    const p = startPoller({ durationMinutes: 0, intervalMinutes: 1, notifyEachRun: true });
+    for (let i = 0; i < 99; i++) store.recordRun(p.id, min(i));
+    now = min(99);
+    makeScheduler().tick();
+    await flush();
+    expect(notifications().map((n) => n.kind)).toEqual(['reminder', 'run']);
+  });
+
+  it('is cancelled when its session is archived or deleted', () => {
+    const p = startPoller({ durationMinutes: 0 });
+    session = { ...session!, deleted_at: '2026-11-10 15:00:00' };
+    makeScheduler().tick();
+    expect(store.get(p.id)?.status).toBe('cancelled');
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('is stopped by finish like a bounded poller', () => {
+    const p = startPoller({ durationMinutes: 0 });
+    const stopped = store.finish(p.id, 'cancelled', min(5));
+    expect(stopped?.status).toBe('cancelled');
+    expect(stopped?.nextRunAt).toBeNull();
+  });
+});

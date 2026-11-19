@@ -1049,6 +1049,24 @@ describe('mapBroadcastToNotification: session pollers', () => {
     });
   });
 
+  it('keys still-running reminders apart from per-run notifications', () => {
+    const n = mapBroadcastToNotification({
+      type: 'session_poller_notify',
+      kind: 'reminder',
+      sessionId: 's1',
+      pollerId: 'poll-1',
+      ownerUserId: 'u1',
+      runCount: 100,
+      title: 'Poller still running: Check dev',
+      body: '100 runs so far',
+    });
+    expect(n).toMatchObject({
+      category: 'session_poller',
+      sourceKey: 'session_poller:poll-1:reminder:100',
+      recipients: { kind: 'users', userIds: ['u1'] },
+    });
+  });
+
   it('dedupes completion once per poller and falls back to session recipients', () => {
     const n = mapBroadcastToNotification({
       type: 'session_poller_notify',

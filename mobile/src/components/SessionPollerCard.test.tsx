@@ -105,6 +105,46 @@ describe('SessionPollerCard (mobile)', () => {
     r.unmount();
   });
 
+  it('shows "Runs until stopped" for an active poller with no end time', async () => {
+    listSessionPollers.mockResolvedValue({
+      pollers: [{ ...active, durationMinutes: 0, endsAt: null }],
+    });
+    let r!: ReactTestRenderer;
+    await act(async () => {
+      r = TestRenderer.create(<SessionPollerCard sessionId="s-1" proposal={proposal} />);
+    });
+    const meta = texts(r).find((t) => t.startsWith('Every 30 min'))!;
+    expect(meta).toContain('Runs until stopped');
+    expect(meta).not.toMatch(/ for |ends /);
+    expect(texts(r)).toContain('Reminds you every 100 runs that it is still running.');
+    expect(texts(r)).toContain('Stop');
+    r.unmount();
+  });
+
+  it('accepts a 0 duration in the form and submits it', async () => {
+    listSessionPollers.mockResolvedValue({ pollers: [] });
+    startSessionPoller.mockResolvedValue({
+      poller: { ...active, durationMinutes: 0, endsAt: null },
+      created: true,
+    });
+    let r!: ReactTestRenderer;
+    await act(async () => {
+      r = TestRenderer.create(
+        <SessionPollerCard
+          sessionId="s-1"
+          proposal={{ ...proposal, until: null, durationMinutes: 0 }}
+        />,
+      );
+    });
+    expect(texts(r)).toContain('Runs until stopped');
+    expect(texts(r)).toContain('Checks until you stop it, first one now');
+    await act(async () => {
+      button(r, 'Start').props.onPress();
+    });
+    expect(startSessionPoller.mock.calls[0][1].durationMinutes).toBe(0);
+    r.unmount();
+  });
+
   it('stops refetching once the poller is finished', async () => {
     listSessionPollers.mockResolvedValue({ pollers: [{ ...active, status: 'completed' }] });
     let r!: ReactTestRenderer;

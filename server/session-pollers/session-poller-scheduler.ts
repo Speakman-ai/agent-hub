@@ -11,6 +11,7 @@
 import {
   expectedPollerRuns,
   formatPollerMinutes,
+  isPollerReminderRun,
   type SessionPoller,
 } from '../../shared/utils/sessionPoller.js';
 import {
@@ -78,12 +79,19 @@ export interface SessionPollerSchedulerDeps {
 
 export function buildPollerRunPrompt(poller: SessionPoller, now: Date): string {
   const run = poller.runCount + 1;
+  const every = formatPollerMinutes(poller.intervalMinutes);
   const total = expectedPollerRuns(poller.intervalMinutes, poller.durationMinutes);
-  const leftMin = Math.max(0, Math.round((Date.parse(poller.endsAt) - now.getTime()) / 60_000));
+  let header: string;
+  if (total === null || !poller.endsAt) {
+    header = `Scheduled poller check-in (run ${run}, every ${every}, runs until the user stops it).`;
+  } else {
+    const leftMin = Math.max(0, Math.round((Date.parse(poller.endsAt) - now.getTime()) / 60_000));
+    header = `Scheduled poller check-in (run ${run} of about ${total}, every ${every}, ${
+      leftMin > 0 ? `${formatPollerMinutes(leftMin)} left` : 'final window'
+    }).`;
+  }
   return [
-    `Scheduled poller check-in (run ${run} of about ${total}, every ${formatPollerMinutes(
-      poller.intervalMinutes,
-    )}, ${leftMin > 0 ? `${formatPollerMinutes(leftMin)} left` : 'final window'}).`,
+    header,
     '',
     `Task: ${poller.task}`,
     '',
@@ -167,7 +175,7 @@ export class SessionPollerScheduler {
     }
     if (this.inFlight.has(poller.id)) return;
 
-    const endsAtMs = Date.parse(poller.endsAt);
+    const endsAtMs = poller.endsAt ? Date.parse(poller.endsAt) : Number.POSITIVE_INFINITY;
     const nextRunMs = poller.nextRunAt ? Date.parse(poller.nextRunAt) : Number.NaN;
     // A run deferred (or missed while the Hub was down) past the end of the
     // window is dropped, not replayed.
@@ -197,12 +205,19 @@ export class SessionPollerScheduler {
     this.logger.log(
       `[pollers] run session=${session.id} poller=${poller.id} run=${updated.runCount}`,
     );
+    // An unbounded poller never finishes on its own, so nudge the owner now
+    // and then that it is still spending turns. Independent of notifyEachRun.
+    if (isPollerReminderRun(updated)) this.notifyReminder(updated, session);
     const settle = (ok: boolean): void => {
       this.inFlight.delete(poller.id);
       if (ok && updated.notifyEachRun) this.notifyRun(updated, session);
       // Close promptly when that was the last run instead of waiting a tick.
       const current = this.deps.store.get(poller.id);
-      if (current?.status === 'active' && this.now().getTime() >= Date.parse(current.endsAt)) {
+      if (
+        current?.status === 'active' &&
+        current.endsAt &&
+        this.now().getTime() >= Date.parse(current.endsAt)
+      ) {
         this.complete(current, session, this.now());
       }
     };
@@ -262,10 +277,22 @@ export class SessionPollerScheduler {
     );
   }
 
+  private notifyReminder(poller: SessionPoller, session: PollerSessionLike): void {
+    this.notify(
+      poller,
+      session,
+      'reminder',
+      `Poller still running: ${truncate(poller.task, 80)}`,
+      `${poller.runCount} runs so far, every ${formatPollerMinutes(
+        poller.intervalMinutes,
+      )}, with no end time. Open the session and press Cancel on the poller banner to stop it.`,
+    );
+  }
+
   private notify(
     poller: SessionPoller,
     session: PollerSessionLike,
-    kind: 'run' | 'complete',
+    kind: 'run' | 'complete' | 'reminder',
     title: string,
     body: string,
   ): void {

@@ -7,6 +7,10 @@ import {
   pollerBannerSummary,
   expectedPollerRuns,
   extractPollerBlocks,
+  checkPollerForm,
+  isPollerReminderRun,
+  isUnboundedPoller,
+  parsePollerDuration,
   formatPollerMinutes,
   parsePollerEnvelope,
   parsePollerUntil,
@@ -191,6 +195,10 @@ describe('helpers', () => {
     expect(expectedPollerRuns(30, 1120)).toBe(38);
   });
 
+  it('has no expected run count for a poller that runs until stopped', () => {
+    expect(expectedPollerRuns(30, 0)).toBeNull();
+  });
+
   it('formats minutes compactly', () => {
     expect(formatPollerMinutes(30)).toBe('30 min');
     expect(formatPollerMinutes(90)).toBe('1h 30m');
@@ -334,10 +342,68 @@ describe('session poller banner helpers', () => {
     });
   });
 
+  it('sorts an unbounded poller with no next run without throwing', () => {
+    const open = { ...base, id: 'u', durationMinutes: 0, endsAt: null, nextRunAt: null };
+    expect(activeSessionPollers([open, base]).map((p) => p.id)).toEqual(['u', 'a']);
+  });
+
+  it('says an unbounded poller runs until stopped instead of an end time', () => {
+    const now = new Date('2026-11-11T15:05:00.000Z');
+    const summary = pollerBannerSummary({ ...base, durationMinutes: 0, endsAt: null }, now);
+    expect(summary).toMatch(/^Every 30 min · 1 run so far · next check .+ · runs until stopped$/);
+    expect(summary).not.toContain('ends');
+  });
+
   it('summarises the schedule in one line', () => {
     const now = new Date('2026-11-11T15:05:00.000Z');
     expect(pollerBannerSummary(base, now)).toMatch(
       /^Every 30 min · 1 run so far · next check .+ · ends .+$/,
     );
+  });
+});
+
+describe('run-until-stopped pollers', () => {
+  it('parses durationMinutes 0 from a block but still rejects intervalMinutes 0', () => {
+    const p = parsePollerEnvelope(
+      JSON.stringify({ task: 't', intervalMinutes: 0, durationMinutes: 0 }),
+    );
+    expect(p?.durationMinutes).toBe(0);
+    expect(p?.intervalMinutes).toBeNull();
+  });
+
+  it('parsePollerDuration accepts 0 and in-range minutes, rejects the rest', () => {
+    expect(parsePollerDuration(0)).toBe(0);
+    expect(parsePollerDuration('0')).toBe(0);
+    expect(parsePollerDuration(45)).toBe(45);
+    expect(parsePollerDuration(-1)).toBeNull();
+    expect(parsePollerDuration(7 * 24 * 60 + 1)).toBeNull();
+    expect(parsePollerDuration(null)).toBeNull();
+  });
+
+  it('the form accepts a 0 duration but not a 0 interval', () => {
+    const ok = checkPollerForm({ task: 't', interval: '30', duration: '0' });
+    expect(ok.durationMinutes).toBe(0);
+    expect(ok.errors).toEqual({});
+    const bad = checkPollerForm({ task: 't', interval: '0', duration: '0' });
+    expect(bad.errors.interval).toBeDefined();
+    expect(bad.errors.duration).toBeUndefined();
+  });
+
+  it('flags unbounded pollers and their reminder runs', () => {
+    expect(isUnboundedPoller({ durationMinutes: 0 })).toBe(true);
+    expect(isUnboundedPoller({ durationMinutes: 60 })).toBe(false);
+    const runs = [0, 99, 100, 101, 199, 200, 201].filter((runCount) =>
+      isPollerReminderRun({ durationMinutes: 0, runCount }),
+    );
+    expect(runs).toEqual([100, 200]);
+    expect(isPollerReminderRun({ durationMinutes: 60, runCount: 100 })).toBe(false);
+  });
+
+  it('pre-fills a 0 duration from the block', () => {
+    const p = parsePollerEnvelope(
+      JSON.stringify({ task: 't', intervalMinutes: 30, durationMinutes: 0 }),
+    )!;
+    const plan = planPollerSchedule(p, { anchor: new Date(), now: new Date() });
+    expect(plan.initialDurationMinutes).toBe(0);
   });
 });

@@ -16,6 +16,9 @@ import {
   formatPollerClock,
   formatPollerMinutes,
   EMPTY_POLLER_BANNER,
+  isUnboundedPoller,
+  POLLER_REMINDER_EVERY_RUNS,
+  POLLER_RUNS_UNTIL_STOPPED,
   pollerBannerReducer,
   SESSION_POLLER_REFRESH_MS,
   parsePollerAnchor,
@@ -57,7 +60,7 @@ export default function SessionPollerCard({
     proposal.intervalMinutes ? String(proposal.intervalMinutes) : '',
   );
   const [duration, setDuration] = useState(() =>
-    schedule.initialDurationMinutes ? String(schedule.initialDurationMinutes) : '',
+    schedule.initialDurationMinutes !== null ? String(schedule.initialDurationMinutes) : '',
   );
   const [durationEdited, setDurationEdited] = useState(false);
   const [notifyEachRun, setNotifyEachRun] = useState(proposal.notifyEachRun);
@@ -166,12 +169,19 @@ export default function SessionPollerCard({
   };
 
   const deadlineMissed = schedule.deadlinePassed && !durationEdited && deadline !== null;
+  const formUnbounded = check.durationMinutes === 0 && !(deadline && !durationEdited);
   const endsPreview =
     deadline && !durationEdited
-      ? formatPollerClock(deadline)
-      : check.durationMinutes !== null
-        ? formatPollerClock(new Date(Date.now() + check.durationMinutes * 60_000))
-        : null;
+      ? `Ends around ${formatPollerClock(deadline)}`
+      : formUnbounded
+        ? POLLER_RUNS_UNTIL_STOPPED
+        : check.durationMinutes !== null
+          ? `Ends around ${formatPollerClock(new Date(Date.now() + check.durationMinutes * 60_000))}`
+          : null;
+  const expectedRuns =
+    check.intervalMinutes && check.durationMinutes !== null
+      ? expectedPollerRuns(check.intervalMinutes, check.durationMinutes)
+      : 0;
 
   return (
     <View style={styles.card}>
@@ -182,13 +192,22 @@ export default function SessionPollerCard({
         <View style={styles.body}>
           <Text style={styles.task}>{poller.task}</Text>
           <Text style={styles.meta}>
-            Every {formatPollerMinutes(poller.intervalMinutes)} for{' '}
-            {formatPollerMinutes(poller.durationMinutes)}
+            Every {formatPollerMinutes(poller.intervalMinutes)}
+            {isUnboundedPoller(poller) ? '' : ` for ${formatPollerMinutes(poller.durationMinutes)}`}
             {isActive && poller.nextRunAt
               ? ` · next check ${formatPollerClock(new Date(poller.nextRunAt))}`
               : ''}
-            {isActive ? ` · ends ${formatPollerClock(new Date(poller.endsAt))}` : ''}
+            {isActive
+              ? poller.endsAt
+                ? ` · ends ${formatPollerClock(new Date(poller.endsAt))}`
+                : ` · ${POLLER_RUNS_UNTIL_STOPPED}`
+              : ''}
           </Text>
+          {isActive && isUnboundedPoller(poller) ? (
+            <Text style={styles.meta}>
+              Reminds you every {POLLER_REMINDER_EVERY_RUNS} runs that it is still running.
+            </Text>
+          ) : null}
           {error ? <Text style={styles.error}>{error}</Text> : null}
           {isActive && (
             <TouchableOpacity
@@ -230,7 +249,7 @@ export default function SessionPollerCard({
               ) : null}
             </View>
             <View style={[styles.field, styles.flex]}>
-              <Text style={styles.label}>Duration (minutes)</Text>
+              <Text style={styles.label}>Duration (minutes, 0 = until stopped)</Text>
               <TextInput
                 accessibilityLabel="Duration in minutes"
                 value={duration}
@@ -249,7 +268,7 @@ export default function SessionPollerCard({
               ) : check.errors.duration ? (
                 <Text style={styles.error}>{check.errors.duration}</Text>
               ) : endsPreview ? (
-                <Text style={styles.hint}>Ends around {endsPreview}</Text>
+                <Text style={styles.hint}>{endsPreview}</Text>
               ) : null}
             </View>
           </View>
@@ -268,9 +287,11 @@ export default function SessionPollerCard({
           {error ? <Text style={styles.error}>{error}</Text> : null}
           <View style={styles.footer}>
             <Text style={styles.hint}>
-              {check.intervalMinutes && check.durationMinutes
-                ? `About ${expectedPollerRuns(check.intervalMinutes, check.durationMinutes)} checks, first one now`
-                : ''}
+              {expectedRuns === null
+                ? 'Checks until you stop it, first one now'
+                : expectedRuns
+                  ? `About ${expectedRuns} checks, first one now`
+                  : ''}
             </Text>
             <TouchableOpacity
               style={[styles.submit, !canStart && styles.submitDisabled]}

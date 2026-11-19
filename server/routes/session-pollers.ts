@@ -41,18 +41,27 @@ const SessionPollerSchema = registerComponent(
       pollerId: z.string().openapi({ description: 'Id from the `agenthub:poller` block.' }),
       task: z.string(),
       intervalMinutes: z.number().int(),
-      durationMinutes: z.number().int(),
+      durationMinutes: z
+        .number()
+        .int()
+        .openapi({ description: '0 when the poller runs until it is stopped.' }),
       notifyEachRun: z.boolean(),
       notifyOnComplete: z.boolean(),
       status: z.enum(['active', 'completed', 'cancelled']),
       runCount: z.number().int(),
       startedAt: z.string(),
-      endsAt: z.string(),
+      endsAt: z
+        .string()
+        .nullable()
+        .openapi({ description: 'Null when the poller runs until it is stopped.' }),
       nextRunAt: z.string().nullable(),
       lastRunAt: z.string().nullable(),
       finishedAt: z.string().nullable(),
     })
-    .openapi({ description: 'A recurring check that wakes one session until its window ends.' }),
+    .openapi({
+      description:
+        'A recurring check that wakes one session until its window ends, or until stopped when `durationMinutes` is 0.',
+    }),
 );
 
 export const CreateSessionPollerBody = z.object({
@@ -62,7 +71,10 @@ export const CreateSessionPollerBody = z.object({
     .openapi({ description: 'Id from the `agenthub:poller` block; makes the create idempotent.' }),
   task: z.string().trim().min(1).max(POLLER_TASK_MAX_LEN),
   intervalMinutes: z.number().int().positive().max(POLLER_MAX_INTERVAL_MINUTES),
-  durationMinutes: z.number().int().positive().max(POLLER_MAX_DURATION_MINUTES),
+  durationMinutes: z.number().int().min(0).max(POLLER_MAX_DURATION_MINUTES).openapi({
+    description:
+      'Window length in minutes. 0 means no end time: the poller runs until stopped, and every 100th run notifies the owner that it is still running.',
+  }),
   notifyEachRun: z.boolean().default(false),
   notifyOnComplete: z.boolean().default(true),
 });

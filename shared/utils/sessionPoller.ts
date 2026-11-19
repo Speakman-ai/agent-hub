@@ -13,6 +13,27 @@ export const POLLER_TASK_MAX_LEN = 2_000;
 /** One week: pollers are for throwaway checks, not standing schedules. */
 export const POLLER_MAX_DURATION_MINUTES = 7 * 24 * 60;
 export const POLLER_MAX_INTERVAL_MINUTES = POLLER_MAX_DURATION_MINUTES;
+/** `durationMinutes` value meaning no end time: the poller runs until a human stops it. */
+export const POLLER_UNBOUNDED_DURATION = 0;
+/** An unbounded poller reminds its owner it is still running every this many runs. */
+export const POLLER_REMINDER_EVERY_RUNS = 100;
+
+/** Whether a poller (or its duration) has no end time. */
+export function isUnboundedPoller(poller: { durationMinutes: number }): boolean {
+  return poller.durationMinutes === POLLER_UNBOUNDED_DURATION;
+}
+
+/** Whether this run of an unbounded poller should send the still-running reminder. */
+export function isPollerReminderRun(poller: {
+  durationMinutes: number;
+  runCount: number;
+}): boolean {
+  return (
+    isUnboundedPoller(poller) &&
+    poller.runCount > 0 &&
+    poller.runCount % POLLER_REMINDER_EVERY_RUNS === 0
+  );
+}
 
 export interface PollerProposal {
   pollerId: string;
@@ -49,6 +70,13 @@ export function parsePollerMinutes(value: unknown, max: number): number | null {
   return whole;
 }
 
+/** A duration in whole minutes: 0 (run until stopped) or a value {@link parsePollerMinutes} accepts. */
+export function parsePollerDuration(value: unknown): number | null {
+  const n = typeof value === 'string' && value.trim() ? Number(value) : value;
+  if (n === POLLER_UNBOUNDED_DURATION) return POLLER_UNBOUNDED_DURATION;
+  return parsePollerMinutes(n, POLLER_MAX_DURATION_MINUTES);
+}
+
 export function parsePollerEnvelope(raw: string): PollerProposal | null {
   let parsed: any;
   try {
@@ -66,7 +94,7 @@ export function parsePollerEnvelope(raw: string): PollerProposal | null {
     pollerId: POLLER_ID_RE.test(idRaw) ? idRaw : `poller-${simpleHash(raw)}`,
     task: task.slice(0, POLLER_TASK_MAX_LEN),
     intervalMinutes: parsePollerMinutes(parsed.intervalMinutes, POLLER_MAX_INTERVAL_MINUTES),
-    durationMinutes: parsePollerMinutes(parsed.durationMinutes, POLLER_MAX_DURATION_MINUTES),
+    durationMinutes: parsePollerDuration(parsed.durationMinutes),
     until: until && parsePollerUntil(until, new Date()) ? until : null,
     notifyEachRun: parsed.notifyEachRun === true,
     notifyOnComplete: parsed.notifyOnComplete !== false,
@@ -231,13 +259,15 @@ export interface SessionPoller {
   pollerId: string;
   task: string;
   intervalMinutes: number;
+  /** 0 when the poller runs until a human stops it. */
   durationMinutes: number;
   notifyEachRun: boolean;
   notifyOnComplete: boolean;
   status: SessionPollerStatus;
   runCount: number;
   startedAt: string;
-  endsAt: string;
+  /** Null when the poller runs until stopped. */
+  endsAt: string | null;
   nextRunAt: string | null;
   lastRunAt: string | null;
   finishedAt: string | null;
@@ -245,9 +275,14 @@ export interface SessionPoller {
 
 /**
  * Runs that fit in the window when none are deferred: one right away, then
- * one per interval that starts before the window closes.
+ * one per interval that starts before the window closes. Null for a poller
+ * that runs until stopped.
  */
-export function expectedPollerRuns(intervalMinutes: number, durationMinutes: number): number {
+export function expectedPollerRuns(
+  intervalMinutes: number,
+  durationMinutes: number,
+): number | null {
+  if (durationMinutes === POLLER_UNBOUNDED_DURATION) return null;
   if (intervalMinutes <= 0 || durationMinutes <= 0) return 0;
   return Math.ceil(durationMinutes / intervalMinutes);
 }
@@ -279,14 +314,14 @@ export function checkPollerForm(values: PollerFormValues): PollerFormCheck {
   const errors: PollerFormCheck['errors'] = {};
   const whole = (raw: string) => (/^\s*\d+\s*$/.test(raw) ? Number(raw) : Number.NaN);
   const intervalMinutes = parsePollerMinutes(whole(values.interval), POLLER_MAX_INTERVAL_MINUTES);
-  const durationMinutes = parsePollerMinutes(whole(values.duration), POLLER_MAX_DURATION_MINUTES);
+  const durationMinutes = parsePollerDuration(whole(values.duration));
   if (!values.task.trim()) errors.task = 'Describe what to check';
   if (intervalMinutes === null) errors.interval = 'Whole minutes, more than 0';
   if (durationMinutes === null) {
     errors.duration =
       whole(values.duration) > POLLER_MAX_DURATION_MINUTES
         ? 'At most 7 days'
-        : 'Whole minutes, more than 0';
+        : 'Whole minutes, or 0 to run until stopped';
   }
   return { intervalMinutes, durationMinutes, errors };
 }
@@ -309,7 +344,7 @@ export function formatPollerClock(date: Date, now: Date = new Date()): string {
 export function activeSessionPollers(pollers: SessionPoller[]): SessionPoller[] {
   return pollers
     .filter((p) => p.status === 'active')
-    .sort((a, b) => (a.nextRunAt ?? a.endsAt).localeCompare(b.nextRunAt ?? b.endsAt));
+    .sort((a, b) => (a.nextRunAt ?? a.endsAt ?? '').localeCompare(b.nextRunAt ?? b.endsAt ?? ''));
 }
 
 /** Merge one pushed poller update into the list the banner holds. */
@@ -378,12 +413,19 @@ export function pollerBannerReducer(
   };
 }
 
+/** Text the card and banner show in place of an end time for an unbounded poller. */
+export const POLLER_RUNS_UNTIL_STOPPED = 'Runs until stopped';
+
 /** One-line banner summary: "Every 30 min · 2 runs so far · next check 3:37 PM · ends 5:13 PM". */
 export function pollerBannerSummary(poller: SessionPoller, now: Date = new Date()): string {
   const parts = [`Every ${formatPollerMinutes(poller.intervalMinutes)}`];
   parts.push(`${poller.runCount} run${poller.runCount === 1 ? '' : 's'} so far`);
   if (poller.nextRunAt)
     parts.push(`next check ${formatPollerClock(new Date(poller.nextRunAt), now)}`);
-  parts.push(`ends ${formatPollerClock(new Date(poller.endsAt), now)}`);
+  parts.push(
+    poller.endsAt
+      ? `ends ${formatPollerClock(new Date(poller.endsAt), now)}`
+      : POLLER_RUNS_UNTIL_STOPPED.toLowerCase(),
+  );
   return parts.join(' · ');
 }

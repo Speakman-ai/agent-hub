@@ -218,6 +218,47 @@ describe('SessionPollerCard', () => {
   });
 });
 
+describe('SessionPollerCard run until stopped', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    (api.listSessionPollers as any).mockResolvedValue({ pollers: [] });
+  });
+
+  it('accepts a 0 duration, says it runs until stopped, and submits 0', async () => {
+    const unbounded = { ...active, durationMinutes: 0, endsAt: null };
+    (api.startSessionPoller as any).mockResolvedValue({ poller: unbounded, created: true });
+    render(
+      <SessionPollerCard
+        sessionId="s-1"
+        proposal={{ ...proposal, until: null, durationMinutes: 0 }}
+      />,
+    );
+    expect((screen.getByLabelText('Duration in minutes') as HTMLInputElement).value).toBe('0');
+    expect(screen.getByText('Runs until stopped')).toBeTruthy();
+    expect(screen.getByText('Checks until you stop it, first one now')).toBeTruthy();
+    await waitFor(() =>
+      expect((screen.getByText('Start') as HTMLButtonElement).disabled).toBe(false),
+    );
+    fireEvent.click(screen.getByText('Start'));
+    await waitFor(() => expect(api.startSessionPoller).toHaveBeenCalled());
+    expect((api.startSessionPoller as any).mock.calls[0][1].durationMinutes).toBe(0);
+    await screen.findByText('Running · 0 runs so far');
+  });
+
+  it('shows "Runs until stopped" instead of a duration and end time for an active poller', async () => {
+    (api.listSessionPollers as any).mockResolvedValue({
+      pollers: [{ ...active, durationMinutes: 0, endsAt: null, runCount: 4 }],
+    });
+    render(<SessionPollerCard sessionId="s-1" proposal={proposal} />);
+    await screen.findByText('Running · 4 runs so far');
+    const meta = screen.getByText(/Every 30 min/);
+    expect(meta.textContent).toContain('Runs until stopped');
+    expect(meta.textContent).not.toMatch(/ for |ends /);
+    expect(screen.getByText(/Reminds you every 100 runs/)).toBeTruthy();
+    expect(screen.getByText('Stop')).toBeTruthy();
+  });
+});
+
 describe('checkPollerForm', () => {
   it('requires whole positive minutes and a task', () => {
     expect(checkPollerForm({ task: 'x', interval: '30', duration: '60' }).errors).toEqual({});

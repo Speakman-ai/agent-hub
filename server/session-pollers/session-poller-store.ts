@@ -1,6 +1,7 @@
 /**
  * Session pollers: a user-confirmed recurring check that wakes one session
- * every `interval_minutes` until `ends_at`. Throwaway by design, so the
+ * every `interval_minutes` until `ends_at`, or until stopped when
+ * `duration_minutes` is 0. Throwaway by design, so the
  * schedule lives on the session rather than in the project's cron jobs.
  *
  * Timestamps are ISO-8601 strings written here (not `datetime('now')`) so the
@@ -8,7 +9,18 @@
  */
 import type { Database } from 'better-sqlite3';
 import { randomUUID } from 'crypto';
-import type { SessionPoller, SessionPollerStatus } from '../../shared/utils/sessionPoller.js';
+import {
+  POLLER_UNBOUNDED_DURATION,
+  type SessionPoller,
+  type SessionPollerStatus,
+} from '../../shared/utils/sessionPoller.js';
+
+/**
+ * `ends_at` stored for a poller that runs until stopped. The column is NOT
+ * NULL, and a far-future value keeps lexical "has it ended" comparisons
+ * correct; the API reports it as `endsAt: null`.
+ */
+export const UNBOUNDED_ENDS_AT = '9999-12-31T23:59:59.999Z';
 
 export const SESSION_POLLERS_SCHEMA = `
 CREATE TABLE IF NOT EXISTS session_pollers (
@@ -65,7 +77,7 @@ function toPoller(row: SessionPollerRow): SessionPoller {
     status: row.status,
     runCount: row.run_count,
     startedAt: row.started_at,
-    endsAt: row.ends_at,
+    endsAt: row.duration_minutes === POLLER_UNBOUNDED_DURATION ? null : row.ends_at,
     nextRunAt: row.next_run_at,
     lastRunAt: row.last_run_at,
     finishedAt: row.finished_at,
@@ -98,7 +110,10 @@ export class SessionPollerStore {
     if (existing) return { poller: existing, created: false };
     const now = input.now ?? new Date();
     const startedAt = now.toISOString();
-    const endsAt = new Date(now.getTime() + input.durationMinutes * 60_000).toISOString();
+    const endsAt =
+      input.durationMinutes === POLLER_UNBOUNDED_DURATION
+        ? UNBOUNDED_ENDS_AT
+        : new Date(now.getTime() + input.durationMinutes * 60_000).toISOString();
     const id = randomUUID();
     this.db
       .prepare(

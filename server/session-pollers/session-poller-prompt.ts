@@ -12,7 +12,7 @@ When the user asks you to repeat a check on a schedule in this session ("every 3
 
 - \`pollerId\`: a short slug unique within this session.
 - \`task\`: what each run should check, written as an instruction you will receive later. Make it self-contained (environment, URL, what counts as a change).
-- \`intervalMinutes\` and \`durationMinutes\`: whole minutes greater than 0. Fill in what the user said; omit a value they did not give and the card will ask.
+- \`intervalMinutes\`: whole minutes greater than 0. \`durationMinutes\`: whole minutes greater than 0, or \`0\` to run until the user stops it (use 0 only when they ask for no end: "keep checking until I tell you to stop", "forever"; the user then gets a still-running reminder every 100 runs). Fill in what the user said; omit a value they did not give and the card will ask.
 - When the user names an end time, send \`until\` instead of \`durationMinutes\` and copy their words in 24-hour form: "until tomorrow at 9am" → \`"until":"tomorrow 09:00"\`, "until 5pm" → \`"until":"17:00"\` (the next 17:00), "until today at 6" → \`"until":"today 18:00"\`. Do not convert to UTC or a date yourself; the card resolves it in the user's own timezone and shows the resulting duration.
 - \`notifyEachRun\` (default false) and \`notifyOnComplete\` (default true): set them from what the user asked for ("ping me each time", "let me know when it's done").
 

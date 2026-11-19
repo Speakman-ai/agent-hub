@@ -56,6 +56,23 @@ describe('SessionPollerBanner (mobile)', () => {
     expect(r.toJSON()).toBeNull();
   });
 
+  it('says an unbounded poller runs until stopped', async () => {
+    listSessionPollers.mockResolvedValue({
+      pollers: [{ ...active, durationMinutes: 0, endsAt: null }],
+    });
+    let r: any;
+    await act(async () => {
+      r = TestRenderer.create(React.createElement(SessionPollerBanner, { sessionId: 's-1' }));
+    });
+    await flush();
+    const summary = r.root
+      .findAllByType('Text')
+      .map((n: any) => [n.props.children].flat().join(''))
+      .find((t: string) => t.startsWith('Every 30 min'));
+    expect(summary).toMatch(/runs until stopped$/);
+    expect(summary).not.toContain('ends');
+  });
+
   it('shows the running poller and cancels it', async () => {
     listSessionPollers.mockResolvedValue({ pollers: [active] });
     stopSessionPoller.mockResolvedValue({ poller: { ...active, status: 'cancelled' } });

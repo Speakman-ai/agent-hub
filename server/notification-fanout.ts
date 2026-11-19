@@ -471,8 +471,10 @@ export function mapBroadcastToNotification(data: BroadcastData): NotificationInt
       const pollerId = str(data.pollerId);
       if (!sessionId || !pollerId) return null;
       const owner = str(data.ownerUserId);
-      const kind = data.kind === 'complete' ? 'complete' : 'run';
+      const kind =
+        data.kind === 'complete' || data.kind === 'reminder' ? data.kind : ('run' as const);
       const projectId = str(data.projectId) ?? null;
+      const runKey = String(data.runCount ?? '');
       return {
         category: 'session_poller',
         pushEvent: null,
@@ -481,7 +483,13 @@ export function mapBroadcastToNotification(data: BroadcastData): NotificationInt
         body: str(data.body) ?? '',
         data: { sessionId, agentId: data.agentId, projectId, pollerId, type: 'session_poller' },
         projectId,
-        sourceKey: `session_poller:${pollerId}:${kind === 'complete' ? 'complete' : `run:${String(data.runCount ?? '')}`}`,
+        sourceKey: `session_poller:${pollerId}:${
+          kind === 'complete'
+            ? 'complete'
+            : kind === 'reminder'
+              ? `reminder:${runKey}`
+              : `run:${runKey}`
+        }`,
         recipients: owner ? { kind: 'users', userIds: [owner] } : { kind: 'session', sessionId },
       };
     }

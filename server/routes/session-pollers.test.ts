@@ -88,6 +88,28 @@ describe('session poller routes', () => {
     }
   });
 
+  it('accepts durationMinutes 0 as run-until-stopped and rejects intervalMinutes 0', async () => {
+    const res = await app()
+      .post('/api/sessions/sess-1/pollers')
+      .send({ ...body, durationMinutes: 0 });
+    expect(res.status).toBe(201);
+    expect(res.body.poller).toMatchObject({ durationMinutes: 0, endsAt: null, status: 'active' });
+
+    const bad = await app()
+      .post('/api/sessions/sess-1/pollers')
+      .send({ ...body, pollerId: 'other', durationMinutes: 0, intervalMinutes: 0 });
+    expect(bad.status).toBe(400);
+  });
+
+  it('stops a run-until-stopped poller', async () => {
+    const created = await app()
+      .post('/api/sessions/sess-1/pollers')
+      .send({ ...body, durationMinutes: 0 });
+    const res = await app().post(`/api/sessions/sess-1/pollers/${created.body.poller.id}/stop`);
+    expect(res.status).toBe(200);
+    expect(res.body.poller).toMatchObject({ status: 'cancelled', endsAt: null });
+  });
+
   it('stops a poller', async () => {
     const created = await app().post('/api/sessions/sess-1/pollers').send(body);
     const res = await app().post(`/api/sessions/sess-1/pollers/${created.body.poller.id}/stop`);

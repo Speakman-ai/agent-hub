@@ -80,6 +80,7 @@ describe('buildEnrichedPrompt — session poller guidance', () => {
     expect(prompt).toContain('"intervalMinutes"');
     // End times stay in the user's words so the card can resolve them locally.
     expect(prompt).toContain('"until":"tomorrow 09:00"');
+    expect(prompt).toContain('or `0` to run until the user stops it');
   });
 
   it('steers chat schedules away from native schedulers and project crons', () => {

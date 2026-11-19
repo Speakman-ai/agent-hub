@@ -17638,6 +17638,7 @@ components:
           type: integer
         durationMinutes:
           type: integer
+          description: 0 when the poller runs until it is stopped.
         notifyEachRun:
           type: boolean
         notifyOnComplete:
@@ -17654,6 +17655,8 @@ components:
           type: string
         endsAt:
           type: string
+          nullable: true
+          description: Null when the poller runs until it is stopped.
         nextRunAt:
           type: string
           nullable: true
@@ -17679,7 +17682,7 @@ components:
         - nextRunAt
         - lastRunAt
         - finishedAt
-      description: A recurring check that wakes one session until its window ends.
+      description: A recurring check that wakes one session until its window ends, or until stopped when `durationMinutes` is 0.
     SessionSidebarErrorResponse:
       type: object
       properties:
@@ -64904,8 +64907,8 @@ paths:
                 durationMinutes:
                   type: integer
                   minimum: 0
-                  exclusiveMinimum: true
                   maximum: 10080
+                  description: "Window length in minutes. 0 means no end time: the poller runs until stopped, and every 100th run notifies the owner that it is still running."
                 notifyEachRun:
                   type: boolean
                   default: false
