@@ -14,7 +14,12 @@ import os from 'os';
 import path from 'path';
 import { promisify } from 'util';
 import { afterEach, describe, expect, it } from 'vitest';
-import { acquireFinalizeSource, reapFinalizeSourceCheckouts } from './session-source.js';
+import Database from 'better-sqlite3';
+import {
+  acquireFinalizeSource,
+  reapFinalizeSourceCheckouts,
+  selectRetainedFinalizeSourceIds,
+} from './session-source.js';
 import { envOwnedOverHostDir, fakeHostSharedIo } from '../test/fake-worktree-io.js';
 
 const execFileAsync = promisify(execFile);
@@ -409,6 +414,48 @@ describe('reapFinalizeSourceCheckouts', () => {
     expect(existsSync(staging)).toBe(true);
     expect(existsSync(jobCopy)).toBe(true);
     expect(existsSync(otherJob)).toBe(false);
+  });
+
+  it('keeps a live deployment job checkout past the grace window', async () => {
+    // Local deploys acquire the runner with runId = deploymentId, so their job
+    // copy is `<deploymentId>.job.<env>`. Retaining only finalize_runs ids let a
+    // long `npm ci` lose its working tree after five minutes.
+    const db = new Database(':memory:');
+    db.exec(`
+      CREATE TABLE finalize_runs (id TEXT PRIMARY KEY, status TEXT, phase TEXT,
+        ended_at TEXT, validated_head_sha TEXT);
+      CREATE TABLE deployments (id TEXT PRIMARY KEY, status TEXT);
+      INSERT INTO finalize_runs VALUES ('run-live', 'running', 'checks', NULL, NULL);
+      INSERT INTO finalize_runs VALUES ('run-done', 'passed', 'checks', '2026-01-01', NULL);
+      INSERT INTO deployments VALUES ('dep-running', 'running');
+      INSERT INTO deployments VALUES ('dep-pending', 'pending');
+      INSERT INTO deployments VALUES ('dep-gated', 'awaiting_approval');
+      INSERT INTO deployments VALUES ('dep-ok', 'success');
+      INSERT INTO deployments VALUES ('dep-failed', 'error');
+    `);
+
+    const retained = selectRetainedFinalizeSourceIds(db);
+    expect([...retained].sort()).toEqual(['dep-gated', 'dep-pending', 'dep-running', 'run-live']);
+
+    const root = await tmpDir('reap-deploy');
+    const live = await stagedDir(root, 'dep-running.job.production-deploy', OLD);
+    const finished = await stagedDir(root, 'dep-ok.job.production-deploy', OLD);
+    const failed = await stagedDir(root, 'dep-failed.job.production-deploy', OLD);
+
+    const reaped = await reapFinalizeSourceCheckouts({
+      retainRunIds: () => selectRetainedFinalizeSourceIds(db),
+      root,
+      logger: { warn: () => {} },
+    });
+    db.close();
+
+    expect(reaped.sort()).toEqual([
+      'dep-failed.job.production-deploy',
+      'dep-ok.job.production-deploy',
+    ]);
+    expect(existsSync(live)).toBe(true);
+    expect(existsSync(finished)).toBe(false);
+    expect(existsSync(failed)).toBe(false);
   });
 
   it('is a no-op when nothing was ever staged on this host', async () => {

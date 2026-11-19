@@ -526,6 +526,35 @@ export interface ReapFinalizeSourcesArgs {
 
 const DEFAULT_SOURCE_GRACE_MS = 5 * 60_000;
 
+interface RetainQueryDb {
+  prepare(sql: string): { all(): unknown[] };
+}
+
+/**
+ * IDs whose `.finalize-source` checkouts are still in use.
+ *
+ * Finalize runs stage under their run id. Local deploys acquire the same
+ * runner backend with `runId = deploymentId`, so their job checkout lands at
+ * `<deploymentId>.job.<env>` and must be kept until the deployment finishes,
+ * otherwise a step that runs past the grace window loses its working tree.
+ */
+export function selectRetainedFinalizeSourceIds(db: RetainQueryDb): Set<string> {
+  const finalizeRows = db
+    .prepare(
+      `SELECT id FROM finalize_runs
+        WHERE ended_at IS NULL
+           OR status IN ('ready_to_push', 'pushing')
+           OR (status = 'infra_error' AND phase = 'push' AND validated_head_sha IS NOT NULL)`,
+    )
+    .all() as Array<{ id: string }>;
+  const deploymentRows = db
+    .prepare(
+      `SELECT id FROM deployments WHERE status IN ('pending', 'awaiting_approval', 'running')`,
+    )
+    .all() as Array<{ id: string }>;
+  return new Set([...finalizeRows, ...deploymentRows].map((r) => r.id));
+}
+
 /**
  * Staging checkout is `runId`. Per-job copies used by the local DinD backend
  * are `runId.job.<slug>` siblings — keep them for as long as the run itself.

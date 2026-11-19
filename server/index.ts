@@ -483,7 +483,10 @@ import {
   parseNonNegativeIntEnv,
 } from './preview/preview-runtime-primitives.js';
 import { runFinalizeReaper, FINALIZE_REAPER_CRON } from './finalize/finalize-reaper.js';
-import { reapFinalizeSourceCheckouts } from './finalize/session-source.js';
+import {
+  reapFinalizeSourceCheckouts,
+  selectRetainedFinalizeSourceIds,
+} from './finalize/session-source.js';
 import { runStuckRunReaper, STUCK_RUN_REAPER_CRON } from './finalize/stuck-run-reaper.js';
 import { runRunnerJobLogReaper, resolveReaperCron } from './finalize/runner-job-log-reaper.js';
 import {
@@ -2202,24 +2205,13 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
   // separate from the container reaper above because the retention rule is
   // different: a run parked at `ready_to_push` has `ended_at` set but still
   // holds the only copy of the commits it validated, so it must survive until
-  // the push lands. Not docker-gated — staging is plain git on disk.
+  // the push lands. Local deploys share the root (keyed by deployment id), so
+  // live deployments are retained too. Not docker-gated: staging is plain git.
   cron.schedule(
     FINALIZE_REAPER_CRON,
     () => {
       void reapFinalizeSourceCheckouts({
-        retainRunIds: () =>
-          new Set(
-            (
-              getDb()
-                .prepare(
-                  `SELECT id FROM finalize_runs
-                    WHERE ended_at IS NULL
-                       OR status IN ('ready_to_push', 'pushing')
-                       OR (status = 'infra_error' AND phase = 'push' AND validated_head_sha IS NOT NULL)`,
-                )
-                .all() as Array<{ id: string }>
-            ).map((r) => r.id),
-          ),
+        retainRunIds: () => selectRetainedFinalizeSourceIds(getDb()),
       }).catch((err) => {
         console.warn('[finalize-source] reap tick failed:', (err as Error).message);
       });
