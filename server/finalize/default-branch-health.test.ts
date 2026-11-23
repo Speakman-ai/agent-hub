@@ -173,7 +173,11 @@ describe('recordDefaultBranchCiResult', () => {
       repoDir: dir,
     });
 
-    expect(res.kind).toBe('recorded');
+    expect(res).toMatchObject({
+      kind: 'recorded',
+      opened: true,
+      suspectSessionIds: [sessionId],
+    });
     const rows = failures(projectId);
     expect(rows.map((r) => [r.job_id, r.matrix_key, r.first_failing_sha])).toEqual([
       ['e2e', '', c],
@@ -205,7 +209,7 @@ describe('recordDefaultBranchCiResult', () => {
       ['unit', 'shard-2', 'passed'],
       ['e2e', '', 'failed'],
     ]);
-    await recordDefaultBranchCiResult(deps(), {
+    const res2 = await recordDefaultBranchCiResult(deps(), {
       projectId,
       branch: 'main',
       headSha: d,
@@ -214,6 +218,7 @@ describe('recordDefaultBranchCiResult', () => {
       outcome: 'failed',
       repoDir: dir,
     });
+    expect(res2).toMatchObject({ kind: 'recorded', opened: false, cardId: breakage.card_id });
     const again = stmts.getOpenDefaultBranchBreakage.get(projectId) as DefaultBranchBreakageRow;
     expect(again.id).toBe(breakage.id);
     expect(again.last_failing_sha).toBe(d);

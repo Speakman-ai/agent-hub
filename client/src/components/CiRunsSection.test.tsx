@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import CiRunsSection, {
+  DefaultBranchAutoFixSetting,
   TestSelectionSettings,
   formatCiStepLogLine,
   groupStepsByJob,
@@ -879,5 +880,51 @@ describe('CiRunsSection test selection', () => {
     render(<CiRunsSection project={hostedProject} />);
     await waitFor(() => expect(api.getDefaultBranchHealth).toHaveBeenCalledWith('proj-1'));
     expect(screen.queryByTestId('default-branch-red-banner')).not.toBeInTheDocument();
+  });
+});
+
+describe('DefaultBranchAutoFixSetting', () => {
+  const agents = [
+    { id: 'rev', name: 'Reviewer', role: 'reviewer' },
+    { id: 'qa', name: 'QA', role: 'qa' },
+    { id: 'dev', name: 'Dev', role: 'dev' },
+  ];
+
+  it('toggles autoFix and hides the agent picker while off', () => {
+    const onSave = vi.fn();
+    render(
+      <DefaultBranchAutoFixSetting
+        project={{ id: 'p', agents, ciOnPush: { enabled: true } }}
+        onSave={onSave}
+      />,
+    );
+    expect(screen.queryByTestId('default-branch-autofix-agent')).toBeNull();
+    fireEvent.click(screen.getByTestId('default-branch-autofix-toggle'));
+    expect(onSave).toHaveBeenCalledWith({ autoFix: true });
+  });
+
+  it('offers only agents that commit code and saves the choice', () => {
+    const onSave = vi.fn();
+    render(
+      <DefaultBranchAutoFixSetting
+        project={{ id: 'p', agents, ciOnPush: { enabled: true, autoFix: true } }}
+        onSave={onSave}
+      />,
+    );
+    const select = screen.getByTestId('default-branch-autofix-agent') as HTMLSelectElement;
+    expect([...select.options].map((o) => o.value)).toEqual(['', 'dev']);
+    fireEvent.change(select, { target: { value: 'dev' } });
+    expect(onSave).toHaveBeenCalledWith({ autoFixAgentId: 'dev' });
+    fireEvent.change(select, { target: { value: '' } });
+    expect(onSave).toHaveBeenCalledWith({ autoFixAgentId: null });
+  });
+
+  it('CiRunsSection shows it only while CI on push is on', async () => {
+    const { unmount } = render(<CiRunsSection project={hostedProject} />);
+    await screen.findByTestId('ci-on-push-toggle');
+    expect(screen.queryByTestId('default-branch-autofix')).toBeNull();
+    unmount();
+    render(<CiRunsSection project={{ ...hostedProject, ciOnPush: { enabled: true } }} />);
+    expect(await screen.findByTestId('default-branch-autofix')).toBeInTheDocument();
   });
 });

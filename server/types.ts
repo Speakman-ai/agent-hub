@@ -3791,10 +3791,20 @@ export interface Project {
    * `server/git-host/default-branch-watcher.ts` otherwise), the repo's
    * `.agent-hub/ci.yaml` (version 2) jobs run against the new commit and
    * results land in finalize_runs with `trigger_source: 'git_push'` —
-   * report-only (no reviewer / fix-dispatch / push step). See
+   * report-only (no reviewer or push step; `autoFix` can start a fix session
+   * from the breakage card). See
    * `server/git-host/push-ci.ts` and the Runners settings section.
    */
-  ciOnPush?: { enabled?: boolean };
+  ciOnPush?: {
+    enabled?: boolean;
+    /**
+     * When a default-branch run opens a breakage, assign its card to an agent
+     * so a fix session starts. See `server/finalize/default-branch-autofix.ts`.
+     */
+    autoFix?: boolean;
+    /** Agent for the fix session; unset uses the first dev agent. */
+    autoFixAgentId?: string | null;
+  };
   /**
    * What Finalize does when the base branch moves onto files this branch also
    * touches while review and checks run. `full` (default) re-runs everything,

@@ -105,6 +105,25 @@ const BaseDriftSettingsSchema = registerComponent(
     .openapi({ description: 'Base-drift policy for Finalize pushes and native PR merges.' }),
 );
 
+const CiOnPushSettingsSchema = registerComponent(
+  'CiOnPushSettings',
+  z
+    .object({
+      enabled: z.boolean().optional().openapi({
+        description: 'Run the full ci.yaml suite on every new default-branch commit.',
+      }),
+      autoFix: z.boolean().optional().openapi({
+        description:
+          'When a default-branch run goes red, assign the breakage card to an agent so a fix session starts right away. Needs `enabled`.',
+      }),
+      autoFixAgentId: z.string().nullable().optional().openapi({
+        description:
+          'Agent that works the fix session. Null or unset uses the first dev agent. Must be an agent on the project.',
+      }),
+    })
+    .openapi({ description: 'CI on push (default-branch full CI) settings.' }),
+);
+
 // ProjectDetail — minimal partial schema documenting only the fields
 // callers should be able to rely on at the OpenAPI contract layer. The
 // full Project shape (agents, githubWorkflow, prEnv, ...) is huge and
@@ -129,6 +148,7 @@ export const ProjectDetailComponent = registerComponent(
         description:
           'GitHub repo in `owner/repo` form (e.g. `Speakman-ai/agent-hub`). Empty/null when the project has no GitHub remote.',
       }),
+      ciOnPush: CiOnPushSettingsSchema.optional(),
       testSelection: TestSelectionSettingsSchema.optional(),
       baseDrift: BaseDriftSettingsSchema.optional(),
     })

@@ -60,6 +60,11 @@ import {
   selectionInstanceReason,
 } from '@shared/utils/testSelectionDisplay';
 import { DefaultBranchHealthBanner, TestSelectionManifest } from './finalize/TestSelectionManifest';
+import {
+  DEFAULT_BRANCH_AUTOFIX_HINT,
+  DEFAULT_BRANCH_AUTOFIX_LABEL,
+  defaultBranchFixAgentOptions,
+} from '@shared/utils/defaultBranchAutoFix';
 
 const TERMINAL_STATUSES = new Set([
   'ready_to_push',
@@ -1035,6 +1040,56 @@ function PushConcurrencySettings({ value, onChange, saving }: any) {
   );
 }
 
+/** Auto-fix toggle + agent picker under "CI on push". Shown only while CI on push is on. */
+export function DefaultBranchAutoFixSetting({ project, disabled, onSave }: any) {
+  const autoFix = project?.ciOnPush?.autoFix === true;
+  const agentId = project?.ciOnPush?.autoFixAgentId || '';
+  const agents = defaultBranchFixAgentOptions(project);
+  return (
+    <div className="space-y-1.5 pl-5" data-testid="default-branch-autofix">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex-1 min-w-0">
+          <span className="text-sm text-gray-200">{DEFAULT_BRANCH_AUTOFIX_LABEL}</span>
+          <p className="text-xs text-gray-500">{DEFAULT_BRANCH_AUTOFIX_HINT}</p>
+        </div>
+        <button
+          onClick={() => onSave({ autoFix: !autoFix })}
+          disabled={disabled}
+          data-testid="default-branch-autofix-toggle"
+          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 disabled:opacity-50 ${
+            autoFix ? 'bg-emerald-600' : 'bg-gray-600'
+          }`}
+        >
+          <span
+            className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+              autoFix ? 'translate-x-4' : 'translate-x-0.5'
+            }`}
+          />
+        </button>
+      </div>
+      {autoFix && (
+        <label className="flex items-center gap-2 text-xs text-gray-400">
+          Agent
+          <select
+            value={agentId}
+            onChange={(e) => onSave({ autoFixAgentId: e.target.value || null })}
+            disabled={disabled}
+            data-testid="default-branch-autofix-agent"
+            className="bg-gray-900 border border-gray-700 rounded-lg px-2 py-1 text-xs text-gray-200"
+          >
+            <option value="">Default (first dev agent)</option>
+            {agents.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+    </div>
+  );
+}
+
 export default function CiRunsSection({ project, onProjectsChange, showToast }: any) {
   const [runs, setRuns] = useState<any>(null);
   const [stats, setStats] = useState<any>(undefined);
@@ -1140,6 +1195,20 @@ export default function CiRunsSection({ project, onProjectsChange, showToast }: 
     }
   };
 
+  const updateAutoFix = async (patch: Record<string, unknown>) => {
+    if (!projectId) return;
+    setSavingToggle(true);
+    setCiOnPushError(null);
+    try {
+      await api.updateProject(projectId, { ciOnPush: patch });
+      if (onProjectsChange) onProjectsChange();
+    } catch (err: any) {
+      setCiOnPushError(testSelectionSaveError(err));
+    } finally {
+      setSavingToggle(false);
+    }
+  };
+
   const updatePushConcurrency = async (kind: string, mode: string) => {
     if (!projectId) return;
     setSavingToggle(true);
@@ -1214,6 +1283,14 @@ export default function CiRunsSection({ project, onProjectsChange, showToast }: 
           />
         </button>
       </div>
+
+      {ciOnPush && (
+        <DefaultBranchAutoFixSetting
+          project={project}
+          disabled={savingToggle}
+          onSave={updateAutoFix}
+        />
+      )}
 
       {spotChoiceAvailable && (
         <div className="flex items-center justify-between gap-3">

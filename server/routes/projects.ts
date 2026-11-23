@@ -2417,13 +2417,34 @@ This workspace has no git repo and no PR automation — your job is planning, or
       } else if (typeof rawCi !== 'object' || Array.isArray(rawCi)) {
         return res.status(400).json({ error: 'ciOnPush must be an object or null' });
       } else {
-        const enabled = (rawCi as Record<string, unknown>).enabled;
+        const ci = rawCi as Record<string, unknown>;
+        const { enabled, autoFix, autoFixAgentId } = ci;
         if (enabled !== undefined && typeof enabled !== 'boolean') {
           return res.status(400).json({ error: 'ciOnPush.enabled must be a boolean' });
+        }
+        if (autoFix !== undefined && typeof autoFix !== 'boolean') {
+          return res.status(400).json({ error: 'ciOnPush.autoFix must be a boolean' });
+        }
+        let agentPatch: { autoFixAgentId?: string | null } = {};
+        if ('autoFixAgentId' in ci) {
+          if (autoFixAgentId === null || autoFixAgentId === '') {
+            agentPatch = { autoFixAgentId: null };
+          } else if (
+            typeof autoFixAgentId !== 'string' ||
+            !(project.agents ?? []).some((a) => a.id === autoFixAgentId)
+          ) {
+            return res
+              .status(400)
+              .json({ error: 'ciOnPush.autoFixAgentId must be an agent on this project' });
+          } else {
+            agentPatch = { autoFixAgentId };
+          }
         }
         (project as Record<string, unknown>).ciOnPush = {
           ...(project.ciOnPush ?? {}),
           ...(enabled !== undefined ? { enabled } : {}),
+          ...(autoFix !== undefined ? { autoFix } : {}),
+          ...agentPatch,
         };
       }
     }

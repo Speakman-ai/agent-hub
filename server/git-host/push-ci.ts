@@ -58,7 +58,10 @@ import {
 } from '../finalize/run-abort-registry.js';
 import type { CancelSignal } from '../finalize/fix-dispatch.js';
 import { resolvePushConcurrency } from './push-concurrency.js';
-import { recordDefaultBranchCiResult } from '../finalize/default-branch-health.js';
+import {
+  recordDefaultBranchCiResult,
+  type RecordDefaultBranchResult,
+} from '../finalize/default-branch-health.js';
 import { originMirrorExists, originMirrorPath } from './origin-mirror.js';
 import {
   recordTestInventoryFromRun,
@@ -175,6 +178,25 @@ function firePrChecksFailed(
       }`,
     );
   }
+}
+
+/**
+ * Fired after a default-branch run's result is recorded while a breakage is
+ * open (the run that opened it and every later red run in the streak). The
+ * default-branch auto-fix subscribes; it dedupes on the breakage card.
+ */
+export type DefaultBranchBreakageHook = (args: {
+  project: Project;
+  branch: string;
+  headSha: string;
+  result: RecordDefaultBranchResult;
+}) => void;
+
+let defaultBranchBreakageHook: DefaultBranchBreakageHook | null = null;
+
+/** Register (or clear with `null`) the default-branch breakage hook. Wired once at boot. */
+export function setDefaultBranchBreakageHook(fn: DefaultBranchBreakageHook | null): void {
+  defaultBranchBreakageHook = fn;
 }
 
 /**
@@ -1012,7 +1034,7 @@ async function runCiForSha(
     const recordDefaultBranch = async (outcome: 'succeeded' | 'failed'): Promise<void> => {
       if (trigger !== 'git_push') return;
       try {
-        await (deps.recordDefaultBranch ?? recordDefaultBranchCiResult)(
+        const result = await (deps.recordDefaultBranch ?? recordDefaultBranchCiResult)(
           { stmts: deps.stmts, broadcast: deps.broadcast },
           {
             projectId: project.id,
@@ -1025,6 +1047,9 @@ async function runCiForSha(
             repoDir: bare,
           },
         );
+        if (outcome === 'failed' && result?.kind === 'recorded' && result.failing > 0) {
+          defaultBranchBreakageHook?.({ project, branch, headSha, result });
+        }
       } catch (err: unknown) {
         console.warn(
           `[push-ci] run=${runId} default-branch health record failed: ${

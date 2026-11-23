@@ -41,8 +41,10 @@ import {
   setChecksPassedHook,
   setPrChecksFailedHook,
   setMergeChecksFailedHook,
+  setDefaultBranchBreakageHook,
   runMergeCheck,
 } from './git-host/push-ci.js';
+import { maybeDispatchDefaultBranchFix } from './finalize/default-branch-autofix.js';
 import { startDefaultBranchWatcher } from './git-host/default-branch-watcher.js';
 import { maybeRunPushSecurityScan } from './security-audit/on-push.js';
 import { startScheduledSecurityScanner } from './security-audit/scheduled-scan.js';
@@ -3095,6 +3097,22 @@ setChecksPassedHook(({ project, branch }) => {
 // the remaining jobs only delays it.
 setPrChecksFailedHook(({ project, branch, headSha, reason }) => {
   void autoResolveOnChecksFailed(project, { branch, headSha, reason }, autoResolveDeps());
+});
+
+// Default branch went red in full CI: start a fix session on the breakage
+// card (when the project opted in).
+setDefaultBranchBreakageHook(({ project, branch, headSha, result }) => {
+  void maybeDispatchDefaultBranchFix(
+    {
+      stmts: stmts!,
+      config,
+      broadcast,
+      findAgent: routeDeps.findAgent,
+      findProject,
+      handleChat: routeDeps.handleChat,
+    },
+    { project, branch, headSha, result },
+  );
 });
 
 // Merge checks failed on a PR combined with the current base: the break only

@@ -15,6 +15,7 @@ import ProjectScreenHeader from '../components/ProjectScreenHeader';
 import FinalizeSection from '../components/FinalizeSection';
 import TestSelectionSection from '../components/settings/TestSelectionSection';
 import BaseDriftSection from '../components/settings/BaseDriftSection';
+import DefaultBranchAutoFixSection from '../components/settings/DefaultBranchAutoFixSection';
 import {
   DefaultBranchHealthBanner,
   TestSelectionManifestView,
@@ -99,6 +100,10 @@ export default function RunnersScreen({ route, navigation }: any) {
     const updated = await api.updateProject(projectId, { testSelection: patch });
     if (updated?.id) setProject(updated);
   };
+  const saveCiOnPush = async (patch: Record<string, unknown>) => {
+    const updated = await api.updateProject(projectId, { ciOnPush: patch });
+    if (updated?.id) setProject(updated);
+  };
   const saveBaseDrift = async (patch: Record<string, unknown>) => {
     const updated = await api.updateProject(projectId, { baseDrift: patch });
     if (updated?.id) setProject(updated);
@@ -144,6 +149,10 @@ export default function RunnersScreen({ route, navigation }: any) {
             refreshKey={defaultBranchHealthRefreshKey(runs)}
             onOpenCard={(cardId) => navigation.navigate('Kanban', { projectId, project, cardId })}
           />
+        ) : null}
+
+        {projectId && project?.ciOnPush?.enabled === true ? (
+          <DefaultBranchAutoFixSection project={project} onSave={saveCiOnPush} />
         ) : null}
 
         {projectId ? (

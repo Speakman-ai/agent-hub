@@ -201,7 +201,16 @@ export interface RecordDefaultBranchArgs {
 
 export type RecordDefaultBranchResult =
   | { kind: 'stale' }
-  | { kind: 'recorded'; failing: number; breakageId: string | null; cardId: string | null };
+  | {
+      kind: 'recorded';
+      failing: number;
+      breakageId: string | null;
+      cardId: string | null;
+      /** True when this run opened (or reopened) the breakage. */
+      opened?: boolean;
+      /** Sessions behind the merges this red run covers, newest merge first. */
+      suspectSessionIds?: string[];
+    };
 
 function short(sha: string | null | undefined): string {
   return sha ? sha.slice(0, 8) : '?';
@@ -342,7 +351,7 @@ async function recordUnserialized(
   }
 
   if (breakage) {
-    const cardId = await ensureBreakageCard(deps, {
+    const { cardId, suspectSessionIds } = await ensureBreakageCard(deps, {
       breakage,
       args,
       rangeFrom,
@@ -361,7 +370,14 @@ async function recordUnserialized(
         failing: failingJobs.map((j) => instanceLabel(j.job_id, j.matrix_key ?? '')),
       });
     }
-    return { kind: 'recorded', failing: remaining.length, breakageId: breakage.id, cardId };
+    return {
+      kind: 'recorded',
+      failing: remaining.length,
+      breakageId: breakage.id,
+      cardId,
+      opened,
+      suspectSessionIds,
+    };
   }
   return {
     kind: 'recorded',
@@ -590,9 +606,10 @@ async function ensureBreakageCard(
     failing: FinalizeRunJobRow[];
     stillFailing: DefaultBranchFailureRow[];
   },
-): Promise<string | null> {
+): Promise<{ cardId: string | null; suspectSessionIds: string[] }> {
   const { breakage, args, rangeFrom, failing, stillFailing } = input;
   const log = deps.log ?? ((m: string) => console.log(m));
+  let suspectSessionIds: string[] = [];
   try {
     const merges = await resolveRangeMerges(deps, {
       projectId: args.projectId,
@@ -600,6 +617,7 @@ async function ensureBreakageCard(
       from: rangeFrom,
       to: args.headSha,
     });
+    suspectSessionIds = [...new Set(merges.flatMap((m) => m.sessionIds))];
     const failingLines = stillFailing.map(
       (f) =>
         `- ${instanceLabel(f.job_id, f.matrix_key)}: failing since \`${short(f.first_failing_sha)}\``,
@@ -625,7 +643,7 @@ async function ensureBreakageCard(
         args.projectId,
         `Still failing at \`${short(args.headSha)}\`.\n\n${body}`.slice(0, MAX_DESCRIPTION_CHARS),
       );
-      return breakage.card_id;
+      return { cardId: breakage.card_id, suspectSessionIds };
     }
 
     const labels = failing.map((j) => instanceLabel(j.job_id, j.matrix_key ?? ''));
@@ -647,14 +665,14 @@ async function ensureBreakageCard(
       `[default-branch-health] ${args.projectId}: opened breakage ${breakage.id} card=${cardId} ` +
         `at ${short(args.headSha)}`,
     );
-    return cardId;
+    return { cardId, suspectSessionIds };
   } catch (err) {
     log(
       `[default-branch-health] ${args.projectId}: breakage card failed for ${breakage.id}: ${
         err instanceof Error ? err.message : String(err)
       }`,
     );
-    return breakage.card_id;
+    return { cardId: breakage.card_id, suspectSessionIds };
   }
 }
 

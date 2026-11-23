@@ -19,6 +19,7 @@ let isFeatureIntegrationBranch: typeof import('./push-ci.js').isFeatureIntegrati
 let __clearPushCiQueues: typeof import('./push-ci.js').__clearPushCiQueues;
 let setChecksPassedHook: typeof import('./push-ci.js').setChecksPassedHook;
 let setPrChecksFailedHook: typeof import('./push-ci.js').setPrChecksFailedHook;
+let setDefaultBranchBreakageHook: typeof import('./push-ci.js').setDefaultBranchBreakageHook;
 let createHostedRepo: typeof import('./repo-store.js').createHostedRepo;
 let gitHostRepoPath: typeof import('./repo-store.js').gitHostRepoPath;
 let configDataDir: string;
@@ -35,6 +36,7 @@ beforeAll(async () => {
     __clearPushCiQueues,
     setChecksPassedHook,
     setPrChecksFailedHook,
+    setDefaultBranchBreakageHook,
   } = await import('./push-ci.js'));
   ({ createHostedRepo, gitHostRepoPath } = await import('./repo-store.js'));
   configDataDir = (await import('../config.js')).default.dataDir;
@@ -1042,6 +1044,58 @@ describe('PR checks-failed hook (auto-resolve trigger)', () => {
       setPrChecksFailedHook(null);
     }
     expect(fired).toBe(false);
+  });
+});
+
+describe('default-branch breakage hook', () => {
+  const failing = vi.fn(async () => ({
+    status: 'failure' as const,
+    stepResults: [],
+    activeSecondsBilled: 1,
+  }));
+  const passing = vi.fn(async () => ({
+    status: 'success' as const,
+    stepResults: [],
+    activeSecondsBilled: 1,
+  }));
+
+  async function run(runJobPhase: typeof failing | typeof passing, failingCount: number) {
+    const { project, headSha } = await seedHostedProject();
+    const calls: Array<{ headSha: string; branch: string; breakageId: string | null }> = [];
+    setDefaultBranchBreakageHook(({ headSha: sha, branch, result }) => {
+      calls.push({
+        headSha: sha,
+        branch,
+        breakageId: result.kind === 'recorded' ? result.breakageId : null,
+      });
+    });
+    try {
+      await maybeRunPushCi(project, ['refs/heads/main'], {
+        stmts,
+        broadcast: () => {},
+        runJobPhase: runJobPhase as never,
+        mergeSecrets: () => {},
+        recordDefaultBranch: vi.fn(async () => ({
+          kind: 'recorded' as const,
+          failing: failingCount,
+          breakageId: failingCount > 0 ? 'b1' : null,
+          cardId: failingCount > 0 ? 'c1' : null,
+        })) as never,
+      });
+    } finally {
+      setDefaultBranchBreakageHook(null);
+    }
+    return { calls, headSha };
+  }
+
+  it('fires after a red default-branch run records an open breakage', async () => {
+    const { calls, headSha } = await run(failing, 1);
+    expect(calls).toEqual([{ headSha, branch: 'main', breakageId: 'b1' }]);
+  });
+
+  it('does not fire for a green run', async () => {
+    const { calls } = await run(passing, 0);
+    expect(calls).toEqual([]);
   });
 });
 
