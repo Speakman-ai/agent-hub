@@ -1082,6 +1082,15 @@ registerPath({
           id: z.string(),
           card_id: z.string(),
           blocked_by_card_id: z.string(),
+          warning: z
+            .object({
+              kind: z.enum(['later_phase', 'other_epic']),
+              message: z.string(),
+            })
+            .optional()
+            .describe(
+              'Present when the blocked card is in an epic phase that cannot reach the blocker: the blocker is in a later phase of the same epic (deadlock) or in another epic.',
+            ),
         }),
       ),
     },

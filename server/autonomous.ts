@@ -52,6 +52,23 @@ import { resolveShouldAutoMerge } from './auto-merge.js';
 import { loadCardReplayContext } from './replays/replay-context-loader.js';
 import { loadCardSupportTicketCommentContext } from './support-ticket-comment-context.js';
 import { loadCardUploadAttachments } from './card-attachments.js';
+import {
+  blockerPlacementHazardById,
+  type BlockerPlacementHazard,
+} from './kanban-blocker-placement.js';
+
+/** Placement check for the skip comment; a lookup failure must not block dispatch. */
+function safePlacementHazard(
+  stmts: Stmts,
+  cardId: string,
+  blockerId: string,
+): BlockerPlacementHazard | null {
+  try {
+    return blockerPlacementHazardById(stmts, cardId, blockerId);
+  } catch {
+    return null;
+  }
+}
 
 const execFileAsync = promisify(execFile);
 
@@ -924,14 +941,21 @@ async function runAutonomousLoopInner(
         const prev = lastBlockerSkipSignature.get(card.id);
         if (prev !== signature) {
           try {
+            const hazards = unresolvedLinks.map((b) => safePlacementHazard(d.stmts, card.id, b.id));
             const bulletList = unresolvedLinks
-              .map((b) => `- **${b.title}** (\`${b.id}\`)`)
+              .map((b, i) => {
+                const hazard = hazards[i];
+                return `- **${b.title}** (\`${b.id}\`)${hazard ? `\n  ⚠️ ${hazard.message}` : ''}`;
+              })
               .join('\n');
+            const footer = hazards.some(Boolean)
+              ? 'At least one blocker cannot be reached by this phase order, so the phase will stall until it is moved.'
+              : 'This card will be picked up automatically once every blocker lands in a Done column. No restart needed.';
             d.stmts.createKanbanCardComment.run(
               uuidv4(),
               card.id,
               'system',
-              `⏸️ **Autonomous dispatch skipped — unresolved blockers**\n\nWaiting on:\n${bulletList}\n\nThis card will be picked up automatically once every blocker lands in a Done column. No restart needed.`,
+              `⏸️ **Autonomous dispatch skipped — unresolved blockers**\n\nWaiting on:\n${bulletList}\n\n${footer}`,
             );
             lastBlockerSkipSignature.set(card.id, signature);
             anyBlockerCommentPosted = true;

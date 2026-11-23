@@ -25583,6 +25583,20 @@ paths:
                     type: string
                   blocked_by_card_id:
                     type: string
+                  warning:
+                    type: object
+                    properties:
+                      kind:
+                        type: string
+                        enum:
+                          - later_phase
+                          - other_epic
+                      message:
+                        type: string
+                    required:
+                      - kind
+                      - message
+                    description: "Present when the blocked card is in an epic phase that cannot reach the blocker: the blocker is in a later phase of the same epic (deadlock) or in another epic."
                 required:
                   - id
                   - card_id

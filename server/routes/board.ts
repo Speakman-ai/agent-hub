@@ -28,6 +28,7 @@ import {
   isSystemLockedColumnName,
   isColumnNotStarted,
 } from '../kanban-blockers.js';
+import { blockerPlacementHazardById } from '../kanban-blocker-placement.js';
 import {
   blocksPrematureDoneMove,
   PREMATURE_DONE_ERROR,
@@ -1850,10 +1851,14 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       const id = uuidv4();
       stmts.createBlocker.run(id, cardId, blockedByCardId);
       broadcast({ type: 'kanban_update', projectId: req.params.projectId });
+      // The edge is still created (scoping may reorder phases afterwards), but
+      // a blocker the phase order can never reach is called out right away.
+      const warning = blockerPlacementHazardById(stmts, cardId, blockedByCardId);
       res.status(201).json({
         id,
         card_id: cardId,
         blocked_by_card_id: blockedByCardId,
+        ...(warning ? { warning } : {}),
       });
     },
   );

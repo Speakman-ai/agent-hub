@@ -100,6 +100,7 @@ interface MockStmts {
   updateSessionLinkedSpecItem?: { run: Mock };
   updateSessionSpikeCard?: { run: Mock };
   getKanbanColumns: { all: Mock };
+  getKanbanColumn?: { get: Mock };
   getSession: { get: Mock };
   getKanbanCard: { get: Mock };
   getKanbanCardsByEpic: { all: Mock };
@@ -3331,6 +3332,65 @@ describe('runAutonomousLoop — blocker filter', () => {
     expect(content).toContain('upstream-card'); // blocker id
     // UI gets notified so the comment renders without a manual refresh.
     expect(deps.broadcast).toHaveBeenCalledWith({ type: 'kanban_update', projectId: 'proj-1' });
+  });
+
+  it('explains a blocker the phase order can never reach (blocker in another epic)', async () => {
+    const blocked = makeCard({
+      id: 'stepper-card',
+      title: 'Stepper training step',
+      epic_id: 'epic-1',
+      phase_id: 'ph-1',
+    });
+    const upstream = makeCard({
+      id: 'enroll-card',
+      title: 'Auto-enroll training',
+      epic_id: 'epic-onboarding',
+      phase_id: 'ph-other-2',
+    });
+    const cards: Record<string, KanbanCardRow> = {
+      'stepper-card': blocked,
+      'enroll-card': upstream,
+    };
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [blocked]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [blocked]) },
+      getKanbanCard: { get: vi.fn((id: string) => cards[id]) },
+      getKanbanColumn: { get: vi.fn(() => ({ id: 'col-todo', name: 'To Do' })) },
+      getKanbanPhase: {
+        get: vi.fn((id: string) =>
+          id === 'ph-1'
+            ? { id: 'ph-1', epic_id: 'epic-1', name: 'Phase 1', position: 0 }
+            : undefined,
+        ),
+      },
+      getKanbanEpic: {
+        get: vi.fn((id: string) =>
+          id === 'epic-onboarding' ? { id, name: 'Employee Onboarding' } : undefined,
+        ),
+      },
+      getBlockersForBoard: {
+        all: vi.fn(() => [
+          blockerRow({
+            card: 'stepper-card',
+            blockedBy: 'enroll-card',
+            blockerColumn: 'To Do',
+            blockedColumn: 'To Do',
+          }),
+        ]),
+      },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    const content = stmts.createKanbanCardComment.run.mock.calls[0]?.[3] as string;
+    expect(content).toContain('another epic (Employee Onboarding)');
+    expect(content).toContain('will stall until it is moved');
   });
 
   it('debounces — does not re-comment on subsequent ticks with the same blocker set', async () => {

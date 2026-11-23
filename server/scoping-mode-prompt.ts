@@ -81,6 +81,7 @@ export function buildScopingModePreamble(args: {
     'Use **blockers** between tickets to express dependency order (not parent/child).',
     'Phases run sequentially in their saved order. Phase 2 must not start until every card in Phase 1 is Done, and the same rule applies to every later phase. Parallel work belongs within a phase.',
     'Create prerequisite phases first and record actual ticket dependencies as blockers. An earlier phase must never depend on unfinished work in a later phase.',
+    "A phased ticket must not be blocked by an unfinished card in another epic: this epic's phase runs never dispatch it, so the phase stalls. When you move a ticket into this epic, bring its open blockers into the same or an earlier phase. The blocker API returns a `warning` when an edge has either problem; fix it before moving on.",
     'After creating or changing tickets and blockers, verify the saved order with `POST /api/projects/' +
       (projectId || '{projectId}') +
       '/board/phases/reorder` using `{ "epicId": "<epic-id>", "sortByDependencies": true }` before declaring the epic ready. If the phase graph has a cycle, split or regroup the tickets into sequential phases and retry; do not bypass dependencies by starting later phases.',

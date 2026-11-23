@@ -31,6 +31,7 @@ import {
   priorityStyle,
   ticketHasBlockers,
   ticketsForPhase,
+  unreachableBlocker,
 } from '../../utils/epicScopeStats';
 import { autonomousModelOptions } from '../../utils/epics';
 import { AddPhaseForm, AddTicketForm } from './ScopeForms';
@@ -38,7 +39,7 @@ import { AddPhaseForm, AddTicketForm } from './ScopeForms';
 const DROPPABLE_PREFIX = 'phase-drop:';
 
 /** Ticket card body — shared between the in-column draggable and the drag overlay clone. */
-function TicketCardBody({ ticket, col, blocked }: any) {
+function TicketCardBody({ ticket, col, blocked, stuck }: any) {
   return (
     <div className="flex items-start gap-2">
       <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${columnDotStyle(col)}`} title={col} />
@@ -64,9 +65,17 @@ function TicketCardBody({ ticket, col, blocked }: any) {
             </span>
           )}
           {blocked && (
-            <span className="inline-flex items-center gap-0.5 text-[9px] text-red-400">
+            <span
+              className="inline-flex items-center gap-0.5 text-[9px] text-red-400"
+              title={stuck ? stuckBlockerHint(stuck) : undefined}
+              data-testid={stuck ? `phase-ticket-stuck-${ticket.id}` : undefined}
+            >
               <Ban size={9} />
-              blocked
+              {stuck
+                ? stuck.kind === 'later_phase'
+                  ? 'blocked by later phase'
+                  : 'blocked outside epic'
+                : 'blocked'}
             </span>
           )}
         </div>
@@ -75,13 +84,20 @@ function TicketCardBody({ ticket, col, blocked }: any) {
   );
 }
 
+function stuckBlockerHint(stuck: any): string {
+  if (stuck.kind === 'later_phase') {
+    return `Waits on "${stuck.title}" in ${stuck.phaseName}, which runs after this phase. Neither phase can finish: move the blocker into this phase or an earlier one.`;
+  }
+  return `Waits on "${stuck.title}", which is not in this epic, so this epic's phase runs never dispatch it. Move it into this phase or an earlier one.`;
+}
+
 /**
  * One ticket in a phase column. When `draggable` is on it registers with
  * `useDraggable` so it can be dropped onto another phase column. The
  * PointerSensor's distance activation (see PhaseFlowchartView) keeps a plain
  * click falling through to `onOpenCard` instead of starting a drag.
  */
-function DraggableTicket({ ticket, col, blocked, draggable, moving, onOpenCard }: any) {
+function DraggableTicket({ ticket, col, blocked, stuck, draggable, moving, onOpenCard }: any) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: ticket.id,
     data: { ticketId: ticket.id, phaseId: ticket.phase_id ?? null, ticket, col, blocked },
@@ -103,7 +119,7 @@ function DraggableTicket({ ticket, col, blocked, draggable, moving, onOpenCard }
         {...(draggable ? attributes : {})}
         {...(draggable ? listeners : {})}
       >
-        <TicketCardBody ticket={ticket} col={col} blocked={blocked} />
+        <TicketCardBody ticket={ticket} col={col} blocked={blocked} stuck={stuck} />
       </button>
     </li>
   );
@@ -134,6 +150,7 @@ function PhaseColumn({
   phase,
   index,
   tickets,
+  phases,
   columns,
   phaseForm,
   onPhaseFormChange,
@@ -384,12 +401,14 @@ function PhaseColumn({
           phaseTickets.map((ticket: any) => {
             const col = colMap[ticket.column_id] || 'To Do';
             const blocked = ticketHasBlockers(ticket);
+            const stuck = blocked ? unreachableBlocker(ticket, tickets, phases) : null;
             return (
               <DraggableTicket
                 key={ticket.id}
                 ticket={ticket}
                 col={col}
                 blocked={blocked}
+                stuck={stuck}
                 draggable={ticketsDraggable}
                 moving={movingTicketId === ticket.id}
                 onOpenCard={onOpenCard}
@@ -545,6 +564,7 @@ export default function PhaseFlowchartView({
               phase={phase}
               index={index}
               tickets={tickets}
+              phases={phases}
               columns={columns}
               phaseForm={phaseForms?.[phase.id]}
               onPhaseFormChange={(patch: any) => onPhaseFormChange?.(phase.id, patch)}

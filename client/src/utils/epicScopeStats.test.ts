@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { isColumnCancelled, phaseComplete, phaseProgress, ticketsForEpic } from './epicScopeStats';
+import {
+  isColumnCancelled,
+  phaseComplete,
+  phaseProgress,
+  ticketsForEpic,
+  unreachableBlocker,
+} from './epicScopeStats';
 
 const columns = { c1: 'To Do', c2: 'In Progress', c3: 'Done' };
 
@@ -68,5 +74,44 @@ describe('ticketsForEpic — cancelled exclusion', () => {
   it('keeps every epic card when columns are omitted (back-compat)', () => {
     const tickets = ticketsForEpic(cards, 'e1');
     expect(tickets.map((t: any) => t.id)).toEqual(['a', 'b', 'd']);
+  });
+});
+
+describe('unreachableBlocker', () => {
+  const phases = [
+    { id: 'p1', name: 'Phase 1', position: 0 },
+    { id: 'p2', name: 'Phase 2', position: 1 },
+  ];
+  const late = { id: 'late', phase_id: 'p2', blockers: [] };
+  const early = { id: 'early', phase_id: 'p1', blockers: [] };
+
+  it('reports a blocker in a later phase', () => {
+    const t = { id: 't', phase_id: 'p1', blockers: [{ id: 'late', title: 'Late', done: false }] };
+    expect(unreachableBlocker(t, [t, late], phases)).toEqual({
+      kind: 'later_phase',
+      title: 'Late',
+      phaseName: 'Phase 2',
+    });
+  });
+
+  it('reports a blocker outside the epic', () => {
+    const t = {
+      id: 't',
+      phase_id: 'p2',
+      blockers: [{ id: 'gone', title: 'Elsewhere', done: false }],
+    };
+    expect(unreachableBlocker(t, [t], phases)?.kind).toBe('other_epic');
+  });
+
+  it('ignores done and earlier-phase blockers', () => {
+    const t = {
+      id: 't',
+      phase_id: 'p2',
+      blockers: [
+        { id: 'early', title: 'Early', done: false },
+        { id: 'gone', title: 'Elsewhere', done: true },
+      ],
+    };
+    expect(unreachableBlocker(t, [t, early], phases)).toBeNull();
   });
 });

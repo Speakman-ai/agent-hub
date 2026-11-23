@@ -82,6 +82,36 @@ export function ticketHasBlockers(ticket: any) {
   return (ticket.blockers || []).some((b: any) => !b.done);
 }
 
+/**
+ * First unresolved blocker the epic's phase order can never reach: one outside
+ * this epic (its phase runs never dispatch it) or one in a later phase (that
+ * phase waits on this one, so both stall). Null when every blocker is
+ * reachable or the ticket is not in a phase. Mirrors the server's
+ * `blockerPlacementHazard`.
+ */
+export function unreachableBlocker(
+  ticket: any,
+  epicTickets: any[],
+  phases: any[],
+): { kind: 'later_phase' | 'other_epic'; title: string; phaseName?: string } | null {
+  if (!ticket?.phase_id) return null;
+  const phaseById = new Map((phases || []).map((p: any) => [p.id, p]));
+  const own: any = phaseById.get(ticket.phase_id);
+  if (!own) return null;
+  const ticketById = new Map((epicTickets || []).map((t: any) => [t.id, t]));
+  for (const b of ticket.blockers || []) {
+    if (b.done) continue;
+    const blocker: any = ticketById.get(b.id);
+    if (!blocker) return { kind: 'other_epic', title: b.title };
+    if (!blocker.phase_id || blocker.phase_id === ticket.phase_id) continue;
+    const theirs: any = phaseById.get(blocker.phase_id);
+    if (theirs && (theirs.position ?? 0) > (own.position ?? 0)) {
+      return { kind: 'later_phase', title: b.title, phaseName: theirs.name };
+    }
+  }
+  return null;
+}
+
 export function columnStatusStyle(columnName: string) {
   const n = columnName.toLowerCase();
   if (n === 'done') return 'bg-emerald-500/15 text-emerald-300 ring-emerald-500/25';
