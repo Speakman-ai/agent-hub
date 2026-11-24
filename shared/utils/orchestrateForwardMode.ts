@@ -2,7 +2,7 @@ import {
   SESSION_FORWARD_MODES,
   initialSessionForwardMode,
   type SessionForwardMode,
-} from './extractForwardBlocks';
+} from './extractForwardBlocks.js';
 
 /**
  * The ship level an Orchestrate chat's Default build resolves to for one

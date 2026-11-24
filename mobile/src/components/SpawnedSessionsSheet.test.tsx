@@ -12,6 +12,8 @@ function nativeHost(name: string) {
 const getSpawnedSessions = vi.hoisted(() => vi.fn());
 const deleteSession = vi.hoisted(() => vi.fn());
 const restoreSession = vi.hoisted(() => vi.fn());
+const getOrchestrateLaunch = vi.hoisted(() => vi.fn());
+const putOrchestrateLaunch = vi.hoisted(() => vi.fn());
 const openSpawnedSession = vi.hoisted(() => vi.fn());
 const listeners = vi.hoisted(() => new Set<(data: any) => void>());
 
@@ -32,7 +34,13 @@ vi.mock('lucide-react-native', () => ({
 }));
 vi.mock('./SessionStateIcon', () => ({ default: nativeHost('SessionStateIcon') }));
 vi.mock('../utils/api', () => ({
-  api: { getSpawnedSessions, deleteSession, restoreSession },
+  api: {
+    getSpawnedSessions,
+    deleteSession,
+    restoreSession,
+    getOrchestrateLaunch,
+    putOrchestrateLaunch,
+  },
 }));
 vi.mock('../context/AppContext', () => ({
   useApp: () => ({
@@ -55,8 +63,7 @@ vi.mock('@react-native-async-storage/async-storage', () => ({
 }));
 
 const { default: SpawnedSessionsSheet } = await import('./SpawnedSessionsSheet');
-const { getOrchestrateLaunchSettings, resetOrchestrateLaunchStateForTests } =
-  await import('../context/orchestrateLaunchSettings');
+const { orchestrateLaunch } = await import('../context/orchestrateLaunchSettings');
 
 const parent = { id: 'parent-1', name: 'Project chat', agent_id: 'agent-1' };
 
@@ -102,10 +109,29 @@ describe('SpawnedSessionsSheet', () => {
     restoreSession.mockReset();
     openSpawnedSession.mockReset();
     listeners.clear();
-    resetOrchestrateLaunchStateForTests();
+    orchestrateLaunch.resetForTests();
+    getOrchestrateLaunch.mockReset().mockResolvedValue({
+      settings: { mode: 'manual', autoStart: false, configured: false, revision: 0 },
+      launched: [],
+      cancelled: [],
+      pending: [],
+    });
+    putOrchestrateLaunch
+      .mockReset()
+      .mockImplementation(async (_id: string, patch: Record<string, unknown>) => {
+        const held = orchestrateLaunch.getSettings('parent-1');
+        return {
+          settings: {
+            mode: held?.mode ?? 'manual',
+            autoStart: held?.autoStart ?? false,
+            ...patch,
+            revision: (held?.revision ?? 0) + 1,
+          },
+        };
+      });
   });
 
-  it('opens a spawned session and remembers the default build mode', async () => {
+  it('opens a spawned session and saves the default build mode on the server', async () => {
     const renderer = await renderSheet();
     const status = byId(renderer, 'spawned-session-status-child-1').props.children;
     expect(Array.isArray(status) ? status.join('') : status).toContain('Waiting for user input');
@@ -125,7 +151,43 @@ describe('SpawnedSessionsSheet', () => {
     await TestRenderer.act(async () => {
       byId(renderer, 'orchestrate-auto-start').props.onPress();
     });
-    expect(getOrchestrateLaunchSettings('parent-1')).toEqual({ mode: 'merge', autoStart: true });
+    expect(putOrchestrateLaunch.mock.calls).toEqual([
+      ['parent-1', { mode: 'merge' }],
+      ['parent-1', { autoStart: true }],
+    ]);
+    expect(orchestrateLaunch.getSettings('parent-1')).toMatchObject({
+      mode: 'merge',
+      autoStart: true,
+    });
+    renderer.unmount();
+  });
+
+  it("loads the parent chat's settings when a worker is opened directly", async () => {
+    getOrchestrateLaunch.mockResolvedValue({
+      settings: { mode: 'push', autoStart: true, configured: true, revision: 4 },
+      launched: [],
+    });
+    const renderer = await renderSheet('child-1');
+    await TestRenderer.act(async () => {
+      await Promise.resolve();
+    });
+    expect(getOrchestrateLaunch).toHaveBeenCalledWith('parent-1');
+    const toggle = byId(renderer, 'orchestrate-auto-start');
+    expect(toggle.props.disabled).toBe(false);
+    expect(toggle.props.accessibilityState.checked).toBe(true);
+    renderer.unmount();
+  });
+
+  it('keeps Auto start as it was and says so when a save fails', async () => {
+    putOrchestrateLaunch.mockRejectedValueOnce(new Error('offline'));
+    const renderer = await renderSheet();
+    await TestRenderer.act(async () => {
+      byId(renderer, 'orchestrate-auto-start').props.onPress();
+    });
+    expect(byId(renderer, 'orchestrate-auto-start').props.accessibilityState.checked).toBe(false);
+    expect(
+      renderer.root.findAllByProps({ testID: 'orchestrate-launch-error' }).length,
+    ).toBeGreaterThan(0);
     renderer.unmount();
   });
 

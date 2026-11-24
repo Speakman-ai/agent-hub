@@ -13,7 +13,7 @@ import { organizationCapabilityCanReadProject } from '../organization-capabiliti
 import { createHash, randomUUID } from 'crypto';
 import { Router, type Request, type Response } from 'express';
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
-import type { RouteDeps, SessionRow } from '../types.js';
+import type { Project, RouteDeps, SessionRow } from '../types.js';
 import { canViewProject } from '../project-visibility.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
 import { resolveGoogleConnectionUserId } from '../google-connection-user.js';
@@ -29,6 +29,7 @@ import { formatHubChatRefToken } from '../../shared/utils/hubChatRefTokens.js';
 import { requestOrganizationDispatch } from '../organization-dispatch.js';
 import { sendDispatchOutcome } from './organization-dispatch.js';
 import { parseSessionForwardDispatchKey } from '../../shared/utils/sessionForwardDispatchKey.js';
+import { SESSION_FORWARD_STARTED_EVENT } from '../../shared/utils/orchestrateLaunchClient.js';
 import { publishSessionNeedsInput } from '../session-needs-input.js';
 import { orchestrateParentLinkError, orchestrateSpawnParentId } from '../session-mode.js';
 
@@ -63,6 +64,8 @@ export const DispatchSessionRequestSchema = z
     }),
   })
   .openapi('DispatchSessionRequest');
+
+export type DispatchSessionRequest = z.infer<typeof DispatchSessionRequestSchema>;
 
 const DispatchSessionResponse = registerComponent(
   'DispatchSessionResponse',
@@ -165,8 +168,10 @@ export function sessionNameFromPrompt(prompt: string): string {
   return `${line.slice(0, 57).trimEnd()}...`;
 }
 
+export type SessionDispatchDeps = Pick<RouteDeps, 'stmts'> & Partial<Pick<RouteDeps, 'broadcast'>>;
+
 export default function createSessionDispatchRoutes(
-  deps: Pick<RouteDeps, 'findProject' | 'stmts'> & Partial<Pick<RouteDeps, 'broadcast'>>,
+  deps: Pick<RouteDeps, 'findProject'> & SessionDispatchDeps,
 ): Router {
   const router = Router();
 
@@ -239,8 +244,6 @@ export default function createSessionDispatchRoutes(
       });
       return;
     }
-    const body = parsed.data;
-    const name = body.name ?? sessionNameFromPrompt(body.prompt);
     // The spawn-bound session id wins over the caller-controlled header, the
     // same precedence the owner resolution above uses.
     const callingSessionId =
@@ -250,124 +253,187 @@ export default function createSessionDispatchRoutes(
     const callingSession = callingSessionId
       ? (deps.stmts.getSession.get(callingSessionId) as SessionRow | undefined)
       : undefined;
-    const spawnedFromSessionId = orchestrateSpawnParentId(callingSession);
-    if (spawnedFromSessionId && callingSession) {
-      const parentError = orchestrateParentLinkError(callingSession, ownerUserId);
-      if (parentError) {
-        res.status(parentError.status).json({ error: parentError.error, code: parentError.code });
-        return;
-      }
-    }
-    let sessionAgentId = body.agentId ?? null;
-    if (spawnedFromSessionId) {
-      const resolved = resolveOrchestrateForwardAgent(project.agents, sessionAgentId);
-      if ('error' in resolved) {
-        res.status(400).json({ error: resolved.error, code: 'no_session_agent' });
-        return;
-      }
-      sessionAgentId = resolved.agentId;
-    }
-    // Claim the key before dispatching. Dispatch runs synchronously, so a
-    // second request for the key always finds the claim already completed.
-    const idempotencyKey = body.idempotencyKey ?? null;
-    if (idempotencyKey) {
-      const requestHash = createHash('sha256')
-        .update(JSON.stringify([project.id, body.prompt, body.agentId ?? null]))
-        .digest('hex');
-      deps.stmts.pruneSessionDispatchKeys.run();
-      const claimed =
-        deps.stmts.claimSessionDispatchKey.run(ownerUserId, idempotencyKey, requestHash).changes >
-        0;
-      if (!claimed) {
-        const prior = deps.stmts.getSessionDispatchKey.get(ownerUserId, idempotencyKey) as
-          | DispatchKeyRow
-          | undefined;
-        if (!prior || prior.request_hash !== requestHash) {
-          res.status(409).json({
-            error: 'This idempotency key was already used for a different request',
-            code: 'idempotency_key_reused',
-          });
-          return;
-        }
-        if (!prior.session_id) {
-          res.status(409).json({
-            error: 'A session for this request is already starting',
-            code: 'dispatch_in_progress',
-          });
-          return;
-        }
-        const priorName = prior.name || name;
-        res.status(200).json({
-          sessionId: prior.session_id,
-          agentId: prior.agent_id || '',
-          projectId: prior.project_id || project.id,
-          name: priorName,
-          mode: prior.mode as BackgroundSessionMode,
-          skippedSkills: parseSkippedSkills(prior.skipped_skills),
-          ref: formatHubChatRefToken(priorName, 'session', prior.session_id) ?? '',
-        });
-        return;
-      }
-    }
-    try {
-      const result = dispatchBackgroundAgentSession(
-        project,
-        {
-          id: randomUUID(),
-          name,
-          prompt: body.prompt,
-          ownerUserId,
-          sessionAgentId,
-          sessionMode: body.mode ?? null,
-          engine: body.engine ?? null,
-          model: body.model ?? null,
-          skills: body.skills ?? [],
-          runAsSession: true,
-        },
-        {
-          sessionName: name,
-          ...(spawnedFromSessionId ? { spawnedFromSessionId } : {}),
-        },
-      );
-      if (idempotencyKey) {
-        deps.stmts.completeSessionDispatchKey.run(
-          result.sessionId,
-          result.agentId,
-          project.id,
-          name,
-          JSON.stringify(result.skippedSkills ?? []),
-          result.mode,
-          ownerUserId,
-          idempotencyKey,
-        );
-        // A launched forward card no longer needs the human, so the chat
-        // that posted it can leave "Needs your input".
-        const forwardedFrom = parseSessionForwardDispatchKey(idempotencyKey);
-        if (forwardedFrom && deps.broadcast) {
-          publishSessionNeedsInput(forwardedFrom.sessionId, deps.stmts, deps.broadcast);
-        }
-      }
-      res.status(201).json({
-        sessionId: result.sessionId,
-        agentId: result.agentId,
-        projectId: project.id,
-        name,
-        mode: result.mode,
-        skippedSkills: result.skippedSkills,
-        ref: formatHubChatRefToken(name, 'session', result.sessionId) ?? '',
-      });
-    } catch (err) {
-      if (idempotencyKey) {
-        deps.stmts.releaseSessionDispatchKey.run(ownerUserId, idempotencyKey);
-      }
-      if (err instanceof BackgroundSessionDispatchError) {
-        const status = err.code === 'no_hook' ? 503 : 400;
-        res.status(status).json({ error: err.message, code: err.code });
-        return;
-      }
-      throw err;
-    }
+    const outcome = dispatchProjectSession(deps, {
+      project,
+      body: parsed.data,
+      ownerUserId,
+      callingSession,
+    });
+    res.status(outcome.status).json(outcome.body);
   });
 
   return router;
+}
+
+/**
+ * Tell the owner's clients a forward card started a session, whoever started
+ * it (a press on any device, or the server's Auto start countdown), so every
+ * open copy of the card stops counting down and shows the session.
+ */
+function publishForwardStarted(
+  deps: SessionDispatchDeps,
+  idempotencyKey: string,
+  ownerUserId: string,
+  started: { sessionId: string; agentId: string; name: string; mode: string },
+): void {
+  const forwardedFrom = parseSessionForwardDispatchKey(idempotencyKey);
+  if (!forwardedFrom || !deps.broadcast) return;
+  deps.broadcast({
+    type: SESSION_FORWARD_STARTED_EVENT,
+    sessionId: forwardedFrom.sessionId,
+    ownerUserId,
+    dispatchKey: idempotencyKey,
+    started,
+  });
+}
+
+export interface SessionDispatchOutcome {
+  status: number;
+  body: Record<string, unknown>;
+}
+
+const reply = (status: number, body: Record<string, unknown>): SessionDispatchOutcome => ({
+  status,
+  body,
+});
+
+/**
+ * Start a session on a project agent as `ownerUserId`. Shared by the dispatch
+ * route and the server-side Orchestrate auto start, so both honor the same
+ * idempotency key and Orchestrate parent rules. `callingSession` is the chat
+ * the request came from; an Orchestrate chat becomes the worker's parent.
+ */
+export function dispatchProjectSession(
+  deps: SessionDispatchDeps,
+  args: {
+    project: Project;
+    body: DispatchSessionRequest;
+    ownerUserId: string;
+    callingSession: SessionRow | undefined;
+  },
+): SessionDispatchOutcome {
+  const { project, body, ownerUserId, callingSession } = args;
+  const name = body.name ?? sessionNameFromPrompt(body.prompt);
+  const spawnedFromSessionId = orchestrateSpawnParentId(callingSession);
+  if (spawnedFromSessionId && callingSession) {
+    const parentError = orchestrateParentLinkError(callingSession, ownerUserId);
+    if (parentError) {
+      return reply(parentError.status, { error: parentError.error, code: parentError.code });
+    }
+  }
+  let sessionAgentId = body.agentId ?? null;
+  if (spawnedFromSessionId) {
+    const resolved = resolveOrchestrateForwardAgent(project.agents, sessionAgentId);
+    if ('error' in resolved) {
+      return reply(400, { error: resolved.error, code: 'no_session_agent' });
+    }
+    sessionAgentId = resolved.agentId;
+  }
+  // Claim the key before dispatching. Dispatch runs synchronously, so a
+  // second request for the key always finds the claim already completed.
+  const idempotencyKey = body.idempotencyKey ?? null;
+  if (idempotencyKey) {
+    const requestHash = createHash('sha256')
+      .update(JSON.stringify([project.id, body.prompt, body.agentId ?? null]))
+      .digest('hex');
+    deps.stmts.pruneSessionDispatchKeys.run();
+    const claimed =
+      deps.stmts.claimSessionDispatchKey.run(ownerUserId, idempotencyKey, requestHash).changes > 0;
+    if (!claimed) {
+      const prior = deps.stmts.getSessionDispatchKey.get(ownerUserId, idempotencyKey) as
+        | DispatchKeyRow
+        | undefined;
+      if (!prior || prior.request_hash !== requestHash) {
+        return reply(409, {
+          error: 'This idempotency key was already used for a different request',
+          code: 'idempotency_key_reused',
+        });
+      }
+      if (!prior.session_id) {
+        return reply(409, {
+          error: 'A session for this request is already starting',
+          code: 'dispatch_in_progress',
+        });
+      }
+      const priorName = prior.name || name;
+      publishForwardStarted(deps, idempotencyKey, ownerUserId, {
+        sessionId: prior.session_id,
+        agentId: prior.agent_id || '',
+        name: priorName,
+        mode: prior.mode ?? 'manual',
+      });
+      return reply(200, {
+        sessionId: prior.session_id,
+        agentId: prior.agent_id || '',
+        projectId: prior.project_id || project.id,
+        name: priorName,
+        mode: prior.mode as BackgroundSessionMode,
+        skippedSkills: parseSkippedSkills(prior.skipped_skills),
+        ref: formatHubChatRefToken(priorName, 'session', prior.session_id) ?? '',
+      });
+    }
+  }
+  try {
+    const result = dispatchBackgroundAgentSession(
+      project,
+      {
+        id: randomUUID(),
+        name,
+        prompt: body.prompt,
+        ownerUserId,
+        sessionAgentId,
+        sessionMode: body.mode ?? null,
+        engine: body.engine ?? null,
+        model: body.model ?? null,
+        skills: body.skills ?? [],
+        runAsSession: true,
+      },
+      {
+        sessionName: name,
+        ...(spawnedFromSessionId ? { spawnedFromSessionId } : {}),
+      },
+    );
+    if (idempotencyKey) {
+      deps.stmts.completeSessionDispatchKey.run(
+        result.sessionId,
+        result.agentId,
+        project.id,
+        name,
+        JSON.stringify(result.skippedSkills ?? []),
+        result.mode,
+        ownerUserId,
+        idempotencyKey,
+      );
+      // A launched forward card no longer needs the human, so the chat
+      // that posted it can leave "Needs your input".
+      const forwardedFrom = parseSessionForwardDispatchKey(idempotencyKey);
+      if (forwardedFrom && deps.broadcast) {
+        publishSessionNeedsInput(forwardedFrom.sessionId, deps.stmts, deps.broadcast);
+      }
+      publishForwardStarted(deps, idempotencyKey, ownerUserId, {
+        sessionId: result.sessionId,
+        agentId: result.agentId,
+        name,
+        mode: result.mode,
+      });
+    }
+    return reply(201, {
+      sessionId: result.sessionId,
+      agentId: result.agentId,
+      projectId: project.id,
+      name,
+      mode: result.mode,
+      skippedSkills: result.skippedSkills,
+      ref: formatHubChatRefToken(name, 'session', result.sessionId) ?? '',
+    });
+  } catch (err) {
+    if (idempotencyKey) {
+      deps.stmts.releaseSessionDispatchKey.run(ownerUserId, idempotencyKey);
+    }
+    if (err instanceof BackgroundSessionDispatchError) {
+      const status = err.code === 'no_hook' ? 503 : 400;
+      return reply(status, { error: err.message, code: err.code });
+    }
+    throw err;
+  }
 }

@@ -281,6 +281,54 @@ describe('sessionNameFromPrompt', () => {
       return app;
     }
 
+    it("publishes a forward card's start so every device's copy stops counting", async () => {
+      const broadcast = vi.fn();
+      const deviceA = await mountWithKeys(asOwner, broadcast);
+      const body = {
+        prompt: 'Press start',
+        idempotencyKey: 'session-forward:orch-sess:m-9:card:0',
+      };
+      await request(deviceA).post('/api/projects/web/sessions/dispatch').send(body).expect(201);
+      const started = broadcast.mock.calls
+        .map((c) => c[0])
+        .filter((e) => e.type === 'session_forward_started');
+      expect(started).toEqual([
+        {
+          type: 'session_forward_started',
+          sessionId: 'orch-sess',
+          ownerUserId: 'owner-1',
+          dispatchKey: 'session-forward:orch-sess:m-9:card:0',
+          started: {
+            sessionId: 'new-sess',
+            agentId: 'web-dev',
+            name: 'Press start',
+            mode: 'manual',
+          },
+        },
+      ]);
+
+      // A repeat (another device, or the server countdown) reports the same start.
+      broadcast.mockClear();
+      await request(deviceA).post('/api/projects/web/sessions/dispatch').send(body).expect(200);
+      expect(broadcast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'session_forward_started',
+          dispatchKey: 'session-forward:orch-sess:m-9:card:0',
+          started: expect.objectContaining({ sessionId: 'new-sess' }),
+        }),
+      );
+    });
+
+    it('does not publish a start for keys that are not forward cards', async () => {
+      const broadcast = vi.fn();
+      const app = await mountWithKeys(asOwner, broadcast);
+      await request(app)
+        .post('/api/projects/web/sessions/dispatch')
+        .send({ prompt: 'Plain', idempotencyKey: 'card:plain-1' })
+        .expect(201);
+      expect(broadcast.mock.calls.map((c) => c[0].type)).not.toContain('session_forward_started');
+    });
+
     it('starts one session when two clients send the same card at once', async () => {
       const tabA = await mountWithKeys(asOwner);
       const tabB = await mountWithKeys(asOwner);

@@ -55,7 +55,7 @@ function latestAssistant(messages: readonly MessageRow[]): MessageRow | null {
 const FORWARD_ID_RE = /"forwardId"\s*:\s*"((?:[^"\\]|\\.)*)"/;
 
 /** A forward event's card id. Long payloads can be clamped into invalid JSON. */
-function forwardIdOfPayload(payload: unknown): string {
+export function forwardIdOfPayload(payload: unknown): string {
   if (typeof payload !== 'string') return '';
   try {
     const id = (JSON.parse(payload) as { forwardId?: unknown })?.forwardId;

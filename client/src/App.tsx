@@ -357,7 +357,14 @@ import { resolveDeepLinkTarget, upsertSessionRow } from './utils/sessionDeepLink
 import { openSpawnedSessionWhenCurrent } from '@shared/utils/spawnedSessionRow';
 import { orchestrateComposerCopy } from '@shared/utils/orchestrateComposer';
 import { orchestrateRailParentId } from '@shared/utils/orchestrateRail';
-import { setOrchestrateSessionActive } from './utils/orchestrateLaunchSettings';
+import { orchestrateLaunch, setOrchestrateSessionActive } from './utils/orchestrateLaunchSettings';
+import {
+  ORCHESTRATE_AUTO_START_CANCELLED_EVENT,
+  ORCHESTRATE_AUTO_START_SCHEDULED_EVENT,
+  ORCHESTRATE_AUTO_START_ENDED_EVENT,
+  ORCHESTRATE_LAUNCH_UPDATED_EVENT,
+  SESSION_FORWARD_STARTED_EVENT,
+} from '@shared/utils/orchestrateLaunchClient';
 import { mergeIncomingMessage } from './utils/mergeIncomingMessage';
 import { deriveSessionTimelineMarkers } from '@shared/utils/sessionTimeline';
 import { shouldAutoPresentArtifact } from '@shared/utils/artifactView';
@@ -2756,6 +2763,8 @@ export default function App({ initialView }: any = {}) {
         }
         case 'session-needs-input-snapshot': {
           setNeedsInputBySession(applyNeedsInputSnapshot(data.items));
+          // Sent on every (re)connect: reload launch state the socket may have missed.
+          void orchestrateLaunch.refreshAll();
           break;
         }
         case 'session_needs_input': {
@@ -3195,6 +3204,13 @@ export default function App({ initialView }: any = {}) {
         case 'clone-error':
         case 'clone-preview-defaults':
           window.dispatchEvent(new CustomEvent('clone-ws', { detail: data }));
+          break;
+        case ORCHESTRATE_LAUNCH_UPDATED_EVENT:
+        case ORCHESTRATE_AUTO_START_SCHEDULED_EVENT:
+        case SESSION_FORWARD_STARTED_EVENT:
+        case ORCHESTRATE_AUTO_START_ENDED_EVENT:
+        case ORCHESTRATE_AUTO_START_CANCELLED_EVENT:
+          orchestrateLaunch.handleEvent(data);
           break;
         case 'session_poller_updated':
           window.dispatchEvent(new CustomEvent(SESSION_POLLER_WS_EVENT, { detail: data }));
@@ -6172,6 +6188,11 @@ export default function App({ initialView }: any = {}) {
   useEffect(() => {
     if (!activeSessionId || activeSessionModeForLaunch === undefined) return;
     setOrchestrateSessionActive(activeSessionId, activeSessionModeForLaunch === 'orchestrate');
+    if (activeSessionModeForLaunch === 'orchestrate') {
+      orchestrateLaunch.load(activeSessionId).catch(() => {
+        /* the panel retries when it opens */
+      });
+    }
     const last = lastLaunchModeRef.current;
     lastLaunchModeRef.current = { id: activeSessionId, mode: activeSessionModeForLaunch };
     // Leaving Orchestrate detaches the workers server-side; reload the list so

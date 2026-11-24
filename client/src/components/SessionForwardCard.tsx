@@ -10,7 +10,6 @@ import {
   useContext,
   useEffect,
   useMemo,
-  useRef,
   useState,
   useSyncExternalStore,
 } from 'react';
@@ -37,16 +36,7 @@ import { api } from '../utils/api';
 import { getAuthRecord } from '../utils/auth';
 import { getServerBase } from '../utils/connection';
 import { isWorkflowProject } from '../utils/projectMode';
-import {
-  cancelOrchestrateAutoStart,
-  markOrchestrateAutoStartFired,
-  orchestrateAutoStartDeadline,
-  orchestrateAutoStartRemaining,
-  releaseOrchestrateAutoStart,
-  useOrchestrateAutoStartCancelled,
-  useOrchestrateLaunchSettings,
-  useOrchestrateSessionActive,
-} from '../utils/orchestrateLaunchSettings';
+import { orchestrateLaunch, useOrchestrateSessionActive } from '../utils/orchestrateLaunchSettings';
 
 interface ForwardRecord {
   sessionId: string;
@@ -177,20 +167,20 @@ function SessionForwardCard({
     [sessionId, messageId, forward.forwardId, occurrence],
   );
   const [chosen, setChosen] = useState<{ key: string; mode: SessionForwardMode } | null>(null);
-  const launch = useOrchestrateLaunchSettings(sessionId);
+  // The Orchestrate chat's settings, from the server (null until loaded).
+  const launch = orchestrateLaunch.useSettings(sessionId);
+  const railMode = launch?.mode ?? 'manual';
   // Auto start belongs to Orchestrate: once the chat leaves that mode, the
   // rail holding the switch is gone and cards go back to a manual press.
   const orchestrating = useOrchestrateSessionActive(sessionId);
-  // The Orchestrate chat's Default build for this card; a workflow target
-  // resolves it to consult. It only gates Auto start: the countdown launches
-  // at `mode`, so a level picked on the card during the countdown wins.
-  const autoStartMode = orchestrateLaunchMode(allowedModes, launch.mode);
+  // The level the server starts this card at; a workflow target resolves to consult.
+  const autoStartMode = orchestrateLaunchMode(allowedModes, railMode);
   const mode = forwardCardMode({
     allowed: allowedModes,
     chosen: chosen?.key === identity ? chosen.mode : null,
     suggested: forward.mode,
     orchestrating,
-    railMode: launch.mode,
+    railMode,
   });
   const setMode = (next: SessionForwardMode) => setChosen({ key: identity, mode: next });
   // `loaded` is the saved record for one identity. Until it matches the
@@ -209,15 +199,18 @@ function SessionForwardCard({
   const record = entry?.status === 'done' ? entry.record : savedRecord;
   const dismissed = !record && (entry?.status === 'dismissed' || (hydrated && !!loaded?.dismissed));
   const selected = modeOptions.find((option) => option.value === mode) ?? modeOptions[0];
-  const autoCancelled = useOrchestrateAutoStartCancelled(identity);
-  const autoStartOn =
-    Boolean(sessionId) &&
-    orchestrating &&
-    launch.autoStart &&
-    !dismissed &&
-    !autoCancelled &&
-    allowedModes.includes(autoStartMode);
-  const [remaining, setRemaining] = useState<number | null>(null);
+  const dispatchKey = useMemo(
+    () =>
+      sessionForwardDispatchKey({ sessionId, messageId, forwardId: forward.forwardId, occurrence }),
+    [sessionId, messageId, forward.forwardId, occurrence],
+  );
+  // The server runs the countdown and starts the card; the card shows it.
+  const serverStarted = orchestrateLaunch.useStarted(dispatchKey);
+  const deadline = orchestrateLaunch.useDeadline(dispatchKey);
+  const serverCancelled = orchestrateLaunch.useCancelled(dispatchKey);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
 
   useEffect(() => {
     setLoaded({
@@ -267,39 +260,54 @@ function SessionForwardCard({
       return false;
     }
   };
-  const startRef = useRef(start);
-  startRef.current = start;
-  const modeRef = useRef(mode);
-  modeRef.current = mode;
-
   useEffect(() => {
-    if (!autoStartOn || !hydrated || record) {
-      if (!launch.autoStart || !orchestrating) releaseOrchestrateAutoStart(identity);
-      if (!autoStartOn || record) setRemaining(null);
+    if (!serverStarted || !hydrated || record || pending) return;
+    const next: ForwardRecord = {
+      sessionId: serverStarted.sessionId,
+      agentId: serverStarted.agentId || forward.agentId,
+      name: serverStarted.name || forward.name,
+      mode: parseSessionForwardMode(serverStarted.mode),
+    };
+    writeForwardRecord(storageKey, next);
+    forwardStore.succeed(identity, next);
+  }, [serverStarted, hydrated, record, pending, storageKey, identity, forward]);
+
+  const counting =
+    deadline != null && orchestrating && hydrated && !record && !dismissed && !serverCancelled;
+  useEffect(() => {
+    if (!counting) return;
+    setNowMs(Date.now());
+    const timer = window.setInterval(() => setNowMs(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, [counting]);
+  const remaining = counting ? Math.max(0, Math.ceil((deadline - nowMs) / 1000)) : 0;
+
+  /** Tell the server not to start this card. Resolves false when it did not take it. */
+  const cancelOnServer = async (): Promise<boolean> => {
+    if (!sessionId || messageId == null) return true;
+    setCancelling(true);
+    setCancelError(null);
+    try {
+      await orchestrateLaunch.cancel(sessionId, {
+        messageId,
+        forwardId: forward.forwardId,
+        occurrence,
+      });
+      return true;
+    } catch {
+      return false;
+    } finally {
+      setCancelling(false);
+    }
+  };
+
+  const dismiss = async () => {
+    if (!hydrated || record || pending || cancelling) return;
+    // A dismissed card must not be started by Auto start later either.
+    if (!(await cancelOnServer())) {
+      setCancelError("Couldn't dismiss it on the server. Try again.");
       return;
     }
-    if (pending) return;
-    orchestrateAutoStartDeadline(identity);
-    const tick = () => {
-      const left = orchestrateAutoStartRemaining(identity);
-      setRemaining(left);
-      if (left <= 0 && markOrchestrateAutoStartFired(identity)) {
-        void startRef.current(modeRef.current).then((ok) => {
-          if (!ok && forwardStore.get(identity)?.status === 'failed') {
-            cancelOrchestrateAutoStart(identity);
-          }
-        });
-      }
-    };
-    tick();
-    const timer = window.setInterval(tick, 200);
-    return () => window.clearInterval(timer);
-  }, [autoStartOn, hydrated, record, pending, identity, launch.autoStart, orchestrating]);
-
-  const counting = autoStartOn && hydrated && !record && remaining != null;
-
-  const dismiss = () => {
-    if (!hydrated || record || pending) return;
     if (storageKey) {
       try {
         localStorage.setItem(storageKey, DISMISSED_FORWARD_VALUE);
@@ -365,38 +373,14 @@ function SessionForwardCard({
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
             <p data-testid="session-forward-countdown" className="text-xs text-amber-100">
               {remaining > 0
-                ? `Starting in ${remaining}s as ${sessionForwardModeLabel(mode)}`
+                ? `Starting in ${remaining}s as ${sessionForwardModeLabel(autoStartMode)}`
                 : 'Starting…'}
             </p>
-            {modeOptions.length > 1 && (
-              <select
-                data-testid="session-forward-countdown-mode"
-                aria-label="Automation"
-                value={mode}
-                disabled={pending || remaining <= 0}
-                onChange={(event) => setMode(parseSessionForwardMode(event.target.value))}
-                className="min-w-0 max-w-full rounded-md border border-gray-700 bg-gray-900 px-2 py-1 text-xs text-gray-100 disabled:opacity-60"
-              >
-                {modeOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            )}
             <button
               type="button"
               data-testid="session-forward-start-now"
-              disabled={pending}
-              onClick={() => {
-                if (!markOrchestrateAutoStartFired(identity)) return;
-                setRemaining(0);
-                void start(mode).then((ok) => {
-                  if (!ok && forwardStore.get(identity)?.status === 'failed') {
-                    cancelOrchestrateAutoStart(identity);
-                  }
-                });
-              }}
+              disabled={pending || cancelling}
+              onClick={() => void start(autoStartMode)}
               className="inline-flex items-center gap-1.5 rounded-md border border-amber-700/50 bg-amber-900/40 px-2.5 py-1 text-xs font-medium text-amber-100 transition-colors hover:bg-amber-800/60 disabled:opacity-60"
             >
               Start
@@ -404,14 +388,21 @@ function SessionForwardCard({
             <button
               type="button"
               data-testid="session-forward-cancel-auto"
+              disabled={pending || cancelling}
               onClick={() => {
-                cancelOrchestrateAutoStart(identity);
-                setRemaining(null);
+                void cancelOnServer().then((ok) => {
+                  if (!ok) setCancelError("Couldn't cancel. The server may still start it.");
+                });
               }}
-              className="inline-flex items-center rounded-md border border-gray-700 px-2.5 py-1 text-xs text-gray-300 hover:bg-gray-800"
+              className="inline-flex items-center rounded-md border border-gray-700 px-2.5 py-1 text-xs text-gray-300 hover:bg-gray-800 disabled:opacity-60"
             >
               Cancel
             </button>
+            {cancelError && (
+              <p data-testid="session-forward-cancel-error" className="w-full text-xs text-red-300">
+                {cancelError}
+              </p>
+            )}
           </div>
         ) : (
           <>
@@ -456,6 +447,11 @@ function SessionForwardCard({
             {error && (
               <p data-testid="session-forward-error" className="w-full text-xs text-red-300">
                 {error}
+              </p>
+            )}
+            {cancelError && (
+              <p data-testid="session-forward-cancel-error" className="w-full text-xs text-red-300">
+                {cancelError}
               </p>
             )}
           </>

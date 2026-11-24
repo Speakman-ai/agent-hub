@@ -1,3 +1,7 @@
+import type {
+  ForwardCardRef,
+  OrchestrateLaunchSnapshot,
+} from '@shared/utils/orchestrateLaunchClient';
 import { createOrganizationApi } from '@shared/utils/organizations';
 import { createOrganizationAgentApi } from '@shared/utils/organization-agents';
 import { createOrganizationPortfolioApi } from '@shared/utils/organization-portfolio';
@@ -171,6 +175,21 @@ export const api = {
     }),
   getSpawnedSessions: (sessionId: string) =>
     fetchJSON(`/sessions/${encodeURIComponent(sessionId)}/spawned`),
+  getOrchestrateLaunch: (sessionId: string): Promise<OrchestrateLaunchSnapshot> =>
+    fetchJSON(`/sessions/${encodeURIComponent(sessionId)}/orchestrate-launch`),
+  putOrchestrateLaunch: (
+    sessionId: string,
+    patch: { mode?: string; autoStart?: boolean },
+  ): Promise<{ settings?: OrchestrateLaunchSnapshot['settings'] }> =>
+    fetchJSON(`/sessions/${encodeURIComponent(sessionId)}/orchestrate-launch`, {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    }),
+  cancelOrchestrateAutoStart: (sessionId: string, card: ForwardCardRef) =>
+    fetchJSON(`/sessions/${encodeURIComponent(sessionId)}/orchestrate-launch/cancel`, {
+      method: 'POST',
+      body: JSON.stringify(card),
+    }),
   dispatchSession: (
     projectId: string,
     body: {

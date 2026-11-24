@@ -5750,9 +5750,13 @@ function initDb(dataDir: string): void {
     ),
     // Keys live for 30 days. A claim with no session after 5 minutes belongs
     // to a dispatch that died mid-way, so it can be claimed again.
+    // Completed Session forward keys are kept: they are the permanent record
+    // that a card started, and Auto start rescans old cards, so letting one
+    // expire would let its card start a second session.
     pruneSessionDispatchKeys: db.prepare(
       `DELETE FROM session_dispatch_keys
-        WHERE created_at < datetime('now', '-30 days')
+        WHERE (created_at < datetime('now', '-30 days')
+               AND substr(idem_key, 1, 16) != 'session-forward:')
            OR (session_id IS NULL AND created_at < datetime('now', '-5 minutes'))`,
     ),
     markSessionSpawnedFrom: db.prepare(

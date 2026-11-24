@@ -1,3 +1,4 @@
+import { noteBroadcastForOrchestrateAutoStart } from './orchestrate-auto-start.js';
 import {
   buildNeedsInputSnapshot,
   noteBroadcastForNeedsInput,
@@ -502,6 +503,8 @@ export default function createWebSocket(
     // Questions, approvals, sign-ins and Finalize terminals can put a session
     // into (or take it out of) the "needs your input" state.
     noteBroadcastForNeedsInput(data, { stmts, broadcast });
+    // A turn that ends with Orchestrate forward cards starts their countdown.
+    noteBroadcastForOrchestrateAutoStart(data);
     // A SideBar is answered in its panel; a phone push would deep-link to a
     // session no list shows.
     if (typeof data.sidebarParentId === 'string') return;

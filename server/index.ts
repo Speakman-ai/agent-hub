@@ -217,7 +217,12 @@ import createSkillRoutes, { DEFAULT_SKILLS_DIR, syncSkillsToClaude } from './rou
 import { resolveGlobalSkillsDir } from './global-skills-dir.js';
 import createSkillEvalRoutes from './routes/skill-evals.js';
 import createBackgroundAgentRoutes from './routes/background-agents.js';
-import createSessionDispatchRoutes from './routes/session-dispatch.js';
+import createSessionDispatchRoutes, { dispatchProjectSession } from './routes/session-dispatch.js';
+import createOrchestrateLaunchRoutes from './routes/orchestrate-launch.js';
+import { OrchestrateLaunchStore } from './orchestrate-launch-store.js';
+import { OrchestrateAutoStarter, setOrchestrateAutoStarter } from './orchestrate-auto-start.js';
+import { serverAgentCaller } from './server-agent-skills.js';
+import { canViewProject } from './project-visibility.js';
 import createOrganizationDispatchRoutes from './routes/organization-dispatch.js';
 import { ensureOrganizationDispatchQueue } from './organization-dispatch.js';
 import { initBackgroundAgentSessionHook } from './background-agent-session.js';
@@ -1967,6 +1972,21 @@ const sessionPollerScheduler = new SessionPollerScheduler({
     persistWatchSystemMessage(sessionId, content, meta),
 });
 
+// Orchestrate Auto start: forward cards from turns nobody is watching still
+// start, because the server runs the countdown too.
+const orchestrateLaunchStore = new OrchestrateLaunchStore(getDb());
+const orchestrateAutoStarter = new OrchestrateAutoStarter({
+  stmts: stmts!,
+  store: orchestrateLaunchStore,
+  findProject: (projectId) => findProject(projectId) ?? undefined,
+  canUseProject: (project, ownerUserId) =>
+    !isInternalSystemProject(project) && canViewProject(project, serverAgentCaller(ownerUserId)),
+  dispatch: (args) =>
+    dispatchProjectSession({ stmts: stmts!, broadcast: (e) => broadcast(e) }, args),
+  broadcast: (event) => broadcast(event),
+});
+setOrchestrateAutoStarter(orchestrateAutoStarter);
+
 // The session's environment, owned by the session rather than by whichever
 // feature happened to start first. Preview, terminal, and session commands
 // all resolve the same env from here, so they share one filesystem, one set
@@ -2673,6 +2693,13 @@ app.use(
   createBackgroundShellRoutes({
     ...routeDeps,
     getBackgroundShellRuntime: () => backgroundShellRuntime,
+  }),
+);
+app.use(
+  createOrchestrateLaunchRoutes({
+    ...routeDeps,
+    getOrchestrateLaunchStore: () => orchestrateLaunchStore,
+    getOrchestrateAutoStarter: () => orchestrateAutoStarter,
   }),
 );
 app.use(
@@ -3511,6 +3538,12 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
     }
 
     sessionPollerScheduler.start();
+
+    try {
+      orchestrateAutoStarter.sweep();
+    } catch (err) {
+      console.error('[orchestrate-auto-start] boot sweep failed:', (err as Error).message);
+    }
 
     scheduleAll(allAgents());
 

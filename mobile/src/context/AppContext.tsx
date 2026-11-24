@@ -14,7 +14,14 @@ import {
   createNavigationIntent,
   openSpawnedSessionWhenCurrent,
 } from '@shared/utils/spawnedSessionRow';
-import { setOrchestrateSessionActive } from './orchestrateLaunchSettings';
+import { orchestrateLaunch, setOrchestrateSessionActive } from './orchestrateLaunchSettings';
+import {
+  ORCHESTRATE_AUTO_START_CANCELLED_EVENT,
+  ORCHESTRATE_AUTO_START_SCHEDULED_EVENT,
+  ORCHESTRATE_AUTO_START_ENDED_EVENT,
+  ORCHESTRATE_LAUNCH_UPDATED_EVENT,
+  SESSION_FORWARD_STARTED_EVENT,
+} from '@shared/utils/orchestrateLaunchClient';
 import { isOrganizationAgentId } from '@shared/utils/organization-agents';
 import { isSessionVisibleInOwnSidebar } from '@shared/utils/sessionSidebarOwnership';
 import { promoteQueuedMessage } from '@shared/utils/promoteQueuedMessage';
@@ -426,6 +433,11 @@ export function AppProvider({ children }: any) {
   useEffect(() => {
     if (!activeSessionId || activeSessionModeForLaunch === undefined) return;
     setOrchestrateSessionActive(activeSessionId, activeSessionModeForLaunch === 'orchestrate');
+    if (activeSessionModeForLaunch === 'orchestrate') {
+      orchestrateLaunch.load(activeSessionId).catch(() => {
+        /* the sheet retries when it opens */
+      });
+    }
   }, [activeSessionId, activeSessionModeForLaunch]);
   const activeSessionState = deriveSessionState(activeSession, {
     activeTaskSessionIds: activeTasks,
@@ -765,8 +777,17 @@ export function AppProvider({ children }: any) {
           break;
         case 'session-needs-input-snapshot': {
           setNeedsInputBySession(applyNeedsInputSnapshot(data.items));
+          // Sent on every (re)connect: reload launch state the socket may have missed.
+          void orchestrateLaunch.refreshAll();
           break;
         }
+        case ORCHESTRATE_LAUNCH_UPDATED_EVENT:
+        case ORCHESTRATE_AUTO_START_SCHEDULED_EVENT:
+        case SESSION_FORWARD_STARTED_EVENT:
+        case ORCHESTRATE_AUTO_START_ENDED_EVENT:
+        case ORCHESTRATE_AUTO_START_CANCELLED_EVENT:
+          orchestrateLaunch.handleEvent(data);
+          break;
         case 'session_needs_input': {
           setNeedsInputBySession((prev: NeedsInputMap) => applyNeedsInputEvent(prev, data));
           break;

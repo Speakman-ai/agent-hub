@@ -1,22 +1,34 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import SpawnedSessionsRail, { SPAWNED_SESSION_WS_EVENT } from './SpawnedSessionsRail';
-import {
-  getOrchestrateLaunchSettings,
-  resetOrchestrateLaunchStateForTests,
-} from '../utils/orchestrateLaunchSettings';
+import { orchestrateLaunch } from '../utils/orchestrateLaunchSettings';
 
 const getSpawnedSessions = vi.fn();
+const getOrchestrateLaunch = vi.fn();
+const putOrchestrateLaunch = vi.fn();
 
 vi.mock('../utils/api', () => ({
-  api: { getSpawnedSessions: (...args: unknown[]) => getSpawnedSessions(...args) },
+  api: {
+    getSpawnedSessions: (...args: unknown[]) => getSpawnedSessions(...args),
+    getOrchestrateLaunch: (...args: unknown[]) => getOrchestrateLaunch(...args),
+    putOrchestrateLaunch: (...args: unknown[]) => putOrchestrateLaunch(...args),
+  },
 }));
+
+const launchSnapshot = (mode: string, autoStart: boolean, revision: number) => ({
+  settings: { mode, autoStart, configured: revision > 0, revision },
+  launched: [],
+  cancelled: [],
+  pending: [],
+});
 
 const parent = { id: 'parent-1', name: 'Project chat', agent_id: 'agent-1' };
 
 beforeEach(() => {
   getSpawnedSessions.mockReset();
-  resetOrchestrateLaunchStateForTests();
+  getOrchestrateLaunch.mockReset().mockResolvedValue(launchSnapshot('manual', false, 0));
+  putOrchestrateLaunch.mockReset();
+  orchestrateLaunch.resetForTests();
   localStorage.clear();
   getSpawnedSessions.mockResolvedValue({
     parent,
@@ -211,7 +223,10 @@ describe('SpawnedSessionsRail', () => {
     expect(screen.queryByTestId('spawned-archived-section')).toBeNull();
   });
 
-  it('remembers the default build mode and auto start for this chat', async () => {
+  it('loads and saves the default build mode and auto start on the server', async () => {
+    putOrchestrateLaunch
+      .mockResolvedValueOnce({ settings: { mode: 'merge', autoStart: false, revision: 1 } })
+      .mockResolvedValueOnce({ settings: { mode: 'merge', autoStart: true, revision: 2 } });
     render(
       <SpawnedSessionsRail
         parentSessionId="parent-1"
@@ -220,14 +235,77 @@ describe('SpawnedSessionsRail', () => {
       />,
     );
     const select = (await screen.findByTestId('orchestrate-default-build')) as HTMLSelectElement;
+    await waitFor(() => expect(select.disabled).toBe(false));
     expect(select.value).toBe('manual');
     fireEvent.change(select, { target: { value: 'merge' } });
-    fireEvent.click(screen.getByTestId('orchestrate-auto-start'));
-    expect(getOrchestrateLaunchSettings('parent-1')).toEqual({ mode: 'merge', autoStart: true });
+    await waitFor(() => expect(select.value).toBe('merge'));
+    const autoStart = screen.getByTestId('orchestrate-auto-start') as HTMLInputElement;
+    await waitFor(() => expect(autoStart.disabled).toBe(false));
+    fireEvent.click(autoStart);
+    await waitFor(() => expect(autoStart.checked).toBe(true));
+    expect(putOrchestrateLaunch.mock.calls).toEqual([
+      ['parent-1', { mode: 'merge' }],
+      ['parent-1', { autoStart: true }],
+    ]);
     expect(screen.getByRole('option', { name: 'Build' })).toBeTruthy();
     expect(screen.getByRole('option', { name: 'Build and Review' })).toBeTruthy();
     expect(screen.getByRole('option', { name: 'Build and Push' })).toBeTruthy();
     expect(screen.getByRole('option', { name: 'Auto Merge' })).toBeTruthy();
+  });
+
+  it('keeps the old value and says so when the server does not take a save', async () => {
+    putOrchestrateLaunch.mockRejectedValueOnce(new Error('offline'));
+    render(
+      <SpawnedSessionsRail
+        parentSessionId="parent-1"
+        activeSessionId="parent-1"
+        onOpenSession={vi.fn()}
+      />,
+    );
+    const autoStart = (await screen.findByTestId('orchestrate-auto-start')) as HTMLInputElement;
+    await waitFor(() => expect(autoStart.disabled).toBe(false));
+    fireEvent.click(autoStart);
+    await waitFor(() =>
+      expect(screen.getByTestId('orchestrate-launch-error').textContent).toMatch(/Couldn't save/),
+    );
+    expect(autoStart.checked).toBe(false);
+  });
+
+  it("loads the parent chat's settings when a worker is opened directly", async () => {
+    getOrchestrateLaunch.mockResolvedValue(launchSnapshot('push', true, 4));
+    render(
+      <SpawnedSessionsRail
+        parentSessionId="parent-1"
+        activeSessionId="child-1"
+        onOpenSession={vi.fn()}
+      />,
+    );
+    const autoStart = (await screen.findByTestId('orchestrate-auto-start')) as HTMLInputElement;
+    await waitFor(() => expect(autoStart.checked).toBe(true));
+    expect(getOrchestrateLaunch).toHaveBeenCalledWith('parent-1');
+    expect(autoStart.disabled).toBe(false);
+    expect((screen.getByTestId('orchestrate-default-build') as HTMLSelectElement).value).toBe(
+      'push',
+    );
+  });
+
+  it('offers a retry when the settings do not load', async () => {
+    getOrchestrateLaunch.mockRejectedValueOnce(new Error('offline'));
+    render(
+      <SpawnedSessionsRail
+        parentSessionId="parent-1"
+        activeSessionId="parent-1"
+        onOpenSession={vi.fn()}
+      />,
+    );
+    const error = await screen.findByTestId('orchestrate-launch-error');
+    expect((screen.getByTestId('orchestrate-auto-start') as HTMLInputElement).disabled).toBe(true);
+    fireEvent.click(error.querySelector('button')!);
+    await waitFor(() =>
+      expect((screen.getByTestId('orchestrate-auto-start') as HTMLInputElement).disabled).toBe(
+        false,
+      ),
+    );
   });
 
   it('opens as a drawer from an edge tab below the lg breakpoint', async () => {

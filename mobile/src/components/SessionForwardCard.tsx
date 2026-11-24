@@ -10,7 +10,6 @@ import React, {
   useContext,
   useEffect,
   useMemo,
-  useRef,
   useState,
   useSyncExternalStore,
 } from 'react';
@@ -40,13 +39,7 @@ import { isWorkflowProject } from '../utils/project-mode';
 import { eventsToBlocks } from '../utils/sessionTailBlocks';
 import { messageMayHoldForward } from '@shared/utils/userInputRequest';
 import {
-  cancelOrchestrateAutoStart,
-  markOrchestrateAutoStartFired,
-  orchestrateAutoStartDeadline,
-  orchestrateAutoStartRemaining,
-  releaseOrchestrateAutoStart,
-  useOrchestrateAutoStartCancelled,
-  useOrchestrateLaunchSettings,
+  orchestrateLaunch,
   useOrchestrateSessionActive,
 } from '../context/orchestrateLaunchSettings';
 
@@ -164,20 +157,20 @@ export default function SessionForwardCard({
     [sessionId, messageId, forward.forwardId, occurrence],
   );
   const [chosen, setChosen] = useState<{ key: string; mode: SessionForwardMode } | null>(null);
-  const launch = useOrchestrateLaunchSettings(sessionId);
+  // The Orchestrate chat's settings, from the server (null until loaded).
+  const launch = orchestrateLaunch.useSettings(sessionId);
+  const railMode = launch?.mode ?? 'manual';
   // Auto start belongs to Orchestrate: once the chat leaves that mode, the
   // rail holding the switch is gone and cards go back to a manual press.
   const orchestrating = useOrchestrateSessionActive(sessionId);
-  // The Orchestrate chat's Default build for this card; a workflow target
-  // resolves it to consult. It only gates Auto start: the countdown launches
-  // at `mode`, so a level picked on the card during the countdown wins.
-  const autoStartMode = orchestrateLaunchMode(allowedModes, launch.mode);
+  // The level the server starts this card at; a workflow target resolves to consult.
+  const autoStartMode = orchestrateLaunchMode(allowedModes, railMode);
   const mode = forwardCardMode({
     allowed: allowedModes,
     chosen: chosen?.key === identity ? chosen.mode : null,
     suggested: forward.mode,
     orchestrating,
-    railMode: launch.mode,
+    railMode,
   });
   const setMode = (next: SessionForwardMode) => setChosen({ key: identity, mode: next });
   const [menuOpen, setMenuOpen] = useState(false);
@@ -197,15 +190,18 @@ export default function SessionForwardCard({
   const record = entry?.status === 'done' ? entry.record : savedRecord;
   const dismissed = !record && (entry?.status === 'dismissed' || (hydrated && !!loaded?.dismissed));
   const selected = modeOptions.find((option) => option.value === mode) ?? modeOptions[0];
-  const autoCancelled = useOrchestrateAutoStartCancelled(identity);
-  const autoStartOn =
-    Boolean(sessionId) &&
-    orchestrating &&
-    launch.autoStart &&
-    !dismissed &&
-    !autoCancelled &&
-    allowedModes.includes(autoStartMode);
-  const [remaining, setRemaining] = useState<number | null>(null);
+  const dispatchKey = useMemo(
+    () =>
+      sessionForwardDispatchKey({ sessionId, messageId, forwardId: forward.forwardId, occurrence }),
+    [sessionId, messageId, forward.forwardId, occurrence],
+  );
+  // The server runs the countdown and starts the card; the card shows it.
+  const serverStarted = orchestrateLaunch.useStarted(dispatchKey);
+  const deadline = orchestrateLaunch.useDeadline(dispatchKey);
+  const serverCancelled = orchestrateLaunch.useCancelled(dispatchKey);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
   const toAgent = (agents || []).find(
     (agent: any) => agent?.id === (record?.agentId || forward.agentId),
   );
@@ -268,39 +264,58 @@ export default function SessionForwardCard({
       return false;
     }
   };
-  const startRef = useRef(start);
-  startRef.current = start;
-  const modeRef = useRef(mode);
-  modeRef.current = mode;
-
   useEffect(() => {
-    if (!autoStartOn || !hydrated || record) {
-      if (!launch.autoStart || !orchestrating) releaseOrchestrateAutoStart(identity);
-      if (!autoStartOn || record) setRemaining(null);
+    if (!serverStarted || !hydrated || record || pending) return;
+    const next: ForwardRecord = {
+      sessionId: serverStarted.sessionId,
+      agentId: serverStarted.agentId || forward.agentId,
+      name: serverStarted.name || forward.name,
+      mode: parseSessionForwardMode(serverStarted.mode),
+    };
+    if (storageKey) {
+      AsyncStorage.setItem(storageKey, JSON.stringify(next)).catch(() => {
+        /* the card still shows forwarded for this visit */
+      });
+    }
+    forwardStore.succeed(identity, next);
+  }, [serverStarted, hydrated, record, pending, storageKey, identity, forward]);
+
+  const counting =
+    deadline != null && orchestrating && hydrated && !record && !dismissed && !serverCancelled;
+  useEffect(() => {
+    if (!counting) return;
+    setNowMs(Date.now());
+    const timer = setInterval(() => setNowMs(Date.now()), 250);
+    return () => clearInterval(timer);
+  }, [counting]);
+  const remaining = counting ? Math.max(0, Math.ceil((deadline - nowMs) / 1000)) : 0;
+
+  /** Tell the server not to start this card. Resolves false when it did not take it. */
+  const cancelOnServer = async (): Promise<boolean> => {
+    if (!sessionId || messageId == null) return true;
+    setCancelling(true);
+    setCancelError(null);
+    try {
+      await orchestrateLaunch.cancel(sessionId, {
+        messageId,
+        forwardId: forward.forwardId,
+        occurrence,
+      });
+      return true;
+    } catch {
+      return false;
+    } finally {
+      setCancelling(false);
+    }
+  };
+
+  const dismiss = async () => {
+    if (!hydrated || record || pending || cancelling) return;
+    // A dismissed card must not be started by Auto start later either.
+    if (!(await cancelOnServer())) {
+      setCancelError("Couldn't dismiss it on the server. Try again.");
       return;
     }
-    if (pending) return;
-    orchestrateAutoStartDeadline(identity);
-    const tick = () => {
-      const left = orchestrateAutoStartRemaining(identity);
-      setRemaining(left);
-      if (left <= 0 && markOrchestrateAutoStartFired(identity)) {
-        void startRef.current(modeRef.current).then((ok) => {
-          if (!ok && forwardStore.get(identity)?.status === 'failed') {
-            cancelOrchestrateAutoStart(identity);
-          }
-        });
-      }
-    };
-    tick();
-    const timer = setInterval(tick, 200);
-    return () => clearInterval(timer);
-  }, [autoStartOn, hydrated, record, pending, identity, launch.autoStart, orchestrating]);
-
-  const counting = autoStartOn && hydrated && !record && remaining != null;
-
-  const dismiss = () => {
-    if (!hydrated || record || pending) return;
     forwardStore.dismiss(identity);
     if (storageKey) {
       AsyncStorage.setItem(storageKey, DISMISSED_FORWARD_VALUE).catch(() => {
@@ -345,56 +360,17 @@ export default function SessionForwardCard({
       ) : counting ? (
         <View style={styles.footer}>
           <Text testID="session-forward-countdown" style={styles.countdown}>
-            {remaining != null && remaining > 0
-              ? `Starting in ${remaining}s as ${sessionForwardModeLabel(mode)}`
+            {remaining > 0
+              ? `Starting in ${remaining}s as ${sessionForwardModeLabel(autoStartMode)}`
               : 'Starting…'}
           </Text>
-          {modeOptions.length > 1 ? (
-            <>
-              <Pressable
-                testID="session-forward-countdown-mode"
-                accessibilityRole="button"
-                accessibilityLabel="Automation"
-                disabled={pending || remaining == null || remaining <= 0}
-                onPress={() => setMenuOpen((open) => !open)}
-                style={styles.select}
-              >
-                <Text style={styles.selectText}>{selected?.label}</Text>
-              </Pressable>
-              {menuOpen
-                ? modeOptions.map((option) => (
-                    <Pressable
-                      key={option.value}
-                      testID={`session-forward-countdown-mode-${option.value}`}
-                      accessibilityRole="button"
-                      onPress={() => {
-                        setMode(option.value);
-                        setMenuOpen(false);
-                      }}
-                      style={styles.option}
-                    >
-                      <Text style={styles.optionText}>{option.label}</Text>
-                      <Text style={styles.optionHint}>{option.description}</Text>
-                    </Pressable>
-                  ))
-                : null}
-            </>
-          ) : null}
           <View style={styles.countdownActions}>
             <Pressable
               testID="session-forward-start-now"
               accessibilityRole="button"
               accessibilityLabel="Start"
-              disabled={pending}
-              onPress={() => {
-                if (!markOrchestrateAutoStartFired(identity)) return;
-                setRemaining(0);
-                void start(mode).then((ok) => {
-                  if (!ok && forwardStore.get(identity)?.status === 'failed') {
-                    cancelOrchestrateAutoStart(identity);
-                  }
-                });
-              }}
+              disabled={pending || cancelling}
+              onPress={() => void start(autoStartMode)}
               style={styles.button}
             >
               <Text style={styles.buttonText}>Start</Text>
@@ -403,15 +379,22 @@ export default function SessionForwardCard({
               testID="session-forward-cancel-auto"
               accessibilityRole="button"
               accessibilityLabel="Cancel"
+              disabled={pending || cancelling}
               onPress={() => {
-                cancelOrchestrateAutoStart(identity);
-                setRemaining(null);
+                void cancelOnServer().then((ok) => {
+                  if (!ok) setCancelError("Couldn't cancel. The server may still start it.");
+                });
               }}
               style={styles.cancel}
             >
               <Text style={styles.cancelText}>Cancel</Text>
             </Pressable>
           </View>
+          {cancelError ? (
+            <Text testID="session-forward-cancel-error" style={styles.error}>
+              {cancelError}
+            </Text>
+          ) : null}
         </View>
       ) : (
         <View style={styles.footer}>
@@ -466,6 +449,11 @@ export default function SessionForwardCard({
           {error ? (
             <Text testID="session-forward-error" style={styles.error}>
               {error}
+            </Text>
+          ) : null}
+          {cancelError ? (
+            <Text testID="session-forward-cancel-error" style={styles.error}>
+              {cancelError}
             </Text>
           ) : null}
         </View>

@@ -1,3 +1,7 @@
+import type {
+  ForwardCardRef,
+  OrchestrateLaunchSnapshot,
+} from '@shared/utils/orchestrateLaunchClient';
 import type { SessionPoller } from '@shared/utils/sessionPoller';
 import { createOrganizationApi } from '@shared/utils/organizations';
 import { createOrganizationAgentApi } from '@shared/utils/organization-agents';
@@ -2586,6 +2590,20 @@ export const api = {
    * Start a session on a project agent and send its first prompt. Used by the
    * Session forward card; the caller picks the ship level.
    */
+  getOrchestrateLaunch: (sessionId: string) =>
+    fetchJSON<OrchestrateLaunchSnapshot>(
+      `/sessions/${encodeURIComponent(sessionId)}/orchestrate-launch`,
+    ),
+  putOrchestrateLaunch: (sessionId: string, patch: { mode?: string; autoStart?: boolean }) =>
+    fetchJSON<{ settings?: OrchestrateLaunchSnapshot['settings'] }>(
+      `/sessions/${encodeURIComponent(sessionId)}/orchestrate-launch`,
+      { method: 'PUT', body: JSON.stringify(patch) },
+    ),
+  cancelOrchestrateAutoStart: (sessionId: string, card: ForwardCardRef) =>
+    fetchJSON(`/sessions/${encodeURIComponent(sessionId)}/orchestrate-launch/cancel`, {
+      method: 'POST',
+      body: JSON.stringify(card),
+    }),
   dispatchSession: (
     projectId: string,
     body: {

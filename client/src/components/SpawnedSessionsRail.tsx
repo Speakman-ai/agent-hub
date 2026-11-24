@@ -4,14 +4,12 @@ import { needsInputLabel, sessionStateMeta } from '@shared/utils/sessionState';
 import {
   SESSION_FORWARD_BUILD_MODES,
   SESSION_FORWARD_MODE_OPTIONS,
+  type SessionForwardMode,
 } from '@shared/utils/extractForwardBlocks';
 import { api } from '../utils/api';
 import { deriveSessionState, sessionNeedsInputKind } from '../utils/deriveSessionState';
 import { daysUntilPurge } from '../utils/time';
-import {
-  setOrchestrateLaunchSettings,
-  useOrchestrateLaunchSettings,
-} from '../utils/orchestrateLaunchSettings';
+import { orchestrateLaunch } from '../utils/orchestrateLaunchSettings';
 import {
   applySpawnedSessionEvent,
   reconcileSpawnedSnapshot,
@@ -131,7 +129,30 @@ export default function SpawnedSessionsRail({
   // Below the lg breakpoint the rail is a drawer opened from an edge tab, since
   // workers are not on the left session list either.
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const launch = useOrchestrateLaunchSettings(parentSessionId);
+  // Default build and Auto start live on the server; null until loaded.
+  const launch = orchestrateLaunch.useSettings(parentSessionId);
+  const [launchSaving, setLaunchSaving] = useState(false);
+  const [launchError, setLaunchError] = useState<string | null>(null);
+  const loadLaunch = () => {
+    if (!parentSessionId) return;
+    setLaunchError(null);
+    orchestrateLaunch.load(parentSessionId).catch(() => {
+      setLaunchError("Couldn't load this chat's launch settings.");
+    });
+  };
+  // Load here as well as in the chat view: opening a worker directly never
+  // opens its parent.
+  useEffect(loadLaunch, [parentSessionId]);
+  const saveLaunch = (patch: { mode?: SessionForwardMode; autoStart?: boolean }) => {
+    if (!parentSessionId) return;
+    setLaunchSaving(true);
+    setLaunchError(null);
+    orchestrateLaunch
+      .save(parentSessionId, patch)
+      .catch(() => setLaunchError("Couldn't save. Try again."))
+      .finally(() => setLaunchSaving(false));
+  };
+  const launchDisabled = !launch || launchSaving;
 
   useEffect(() => {
     let cancelled = false;
@@ -311,9 +332,10 @@ export default function SpawnedSessionsRail({
             <select
               data-testid="orchestrate-default-build"
               aria-label="Default build mode"
-              value={launch.mode}
+              value={launch?.mode ?? 'manual'}
+              disabled={launchDisabled}
               onChange={(event) =>
-                setOrchestrateLaunchSettings(parentSessionId, {
+                saveLaunch({
                   mode: event.target.value as (typeof SESSION_FORWARD_BUILD_MODES)[number],
                 })
               }
@@ -332,13 +354,32 @@ export default function SpawnedSessionsRail({
             <input
               type="checkbox"
               data-testid="orchestrate-auto-start"
-              checked={launch.autoStart}
-              onChange={(event) =>
-                setOrchestrateLaunchSettings(parentSessionId, { autoStart: event.target.checked })
-              }
+              checked={launch?.autoStart ?? false}
+              disabled={launchDisabled}
+              onChange={(event) => saveLaunch({ autoStart: event.target.checked })}
             />
             Auto start
           </label>
+          {launchError ? (
+            <p
+              data-testid="orchestrate-launch-error"
+              className="mt-1 text-[11px] normal-case tracking-normal text-red-300"
+            >
+              {launchError}{' '}
+              {!launch ? (
+                <button type="button" onClick={loadLaunch} className="underline">
+                  Retry
+                </button>
+              ) : null}
+            </p>
+          ) : !launch ? (
+            <p
+              data-testid="orchestrate-launch-loading"
+              className="mt-1 text-[11px] normal-case tracking-normal text-gray-500"
+            >
+              Loading this chat&apos;s settings…
+            </p>
+          ) : null}
         </div>
         {backTarget ? (
           <button

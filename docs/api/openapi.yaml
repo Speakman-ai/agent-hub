@@ -13804,6 +13804,32 @@ components:
         - createdAt
         - readAt
       description: One row in the caller's notification inbox.
+    OrchestrateLaunchSettings:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum:
+            - manual
+            - review
+            - push
+            - merge
+          description: Default build for forward cards.
+        autoStart:
+          type: boolean
+          description: Forward cards start on their own after a 30 second countdown.
+        configured:
+          type: boolean
+          description: False until settings were saved for this chat.
+        revision:
+          type: integer
+          description: Bumped on every save (0 before the first). Clients ignore a value older than one they already have.
+      required:
+        - mode
+        - autoStart
+        - configured
+        - revision
+      description: An Orchestrate chat's launch settings.
     OrgTodosErrorResponse:
       type: object
       properties:
@@ -48964,6 +48990,176 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/NotificationsErrorResponse"
+  /api/sessions/{sessionId}/orchestrate-launch:
+    get:
+      summary: Get Orchestrate launch settings
+      tags:
+        - Sessions
+      parameters:
+        - schema:
+            type: string
+            description: Orchestrate chat session id.
+          required: true
+          description: Orchestrate chat session id.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Settings and the forward cards already started.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  settings:
+                    $ref: "#/components/schemas/OrchestrateLaunchSettings"
+                  launched:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        dispatchKey:
+                          type: string
+                          description: The card's dispatch idempotency key.
+                        sessionId:
+                          type: string
+                        agentId:
+                          type: string
+                        name:
+                          type: string
+                        mode:
+                          type: string
+                      required:
+                        - dispatchKey
+                        - sessionId
+                        - agentId
+                        - name
+                        - mode
+                    description: Forward cards in this chat that already started a session.
+                  cancelled:
+                    type: array
+                    items:
+                      type: string
+                    description: Dispatch keys of cards whose auto start was cancelled on any device.
+                  pending:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        dispatchKey:
+                          type: string
+                        remainingMs:
+                          type: integer
+                      required:
+                        - dispatchKey
+                        - remainingMs
+                    description: Cards the server will start on its own, with the time left before it does. Clients count down to this, not to their own 30 seconds.
+                required:
+                  - settings
+                  - launched
+                  - cancelled
+                  - pending
+        "404":
+          description: Session not found
+    put:
+      summary: Update Orchestrate launch settings
+      description: Saves Default build and Auto start and broadcasts `orchestrate_launch_updated` to open clients. With Auto start on, the server starts each forward card posted from then on 30 seconds after its turn ends (cards posted earlier are never started automatically); turning it off stops the running countdowns.
+      tags:
+        - Sessions
+      parameters:
+        - schema:
+            type: string
+            description: Orchestrate chat session id.
+          required: true
+          description: Orchestrate chat session id.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode:
+                  type: string
+                  enum:
+                    - manual
+                    - review
+                    - push
+                    - merge
+                autoStart:
+                  type: boolean
+              additionalProperties: false
+      responses:
+        "200":
+          description: Saved settings.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  settings:
+                    $ref: "#/components/schemas/OrchestrateLaunchSettings"
+                required:
+                  - settings
+        "400":
+          description: Invalid body
+        "404":
+          description: Session not found
+  /api/sessions/{sessionId}/orchestrate-launch/cancel:
+    post:
+      summary: Cancel a forward card's auto start
+      description: Stops the server countdown for the card for good (a manual press still starts it) and broadcasts `orchestrate_auto_start_cancelled` so open clients update the card.
+      tags:
+        - Sessions
+      parameters:
+        - schema:
+            type: string
+            description: Orchestrate chat session id.
+          required: true
+          description: Orchestrate chat session id.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                messageId:
+                  anyOf:
+                    - type: string
+                      minLength: 1
+                    - type: integer
+                forwardId:
+                  type: string
+                  minLength: 1
+                  maxLength: 256
+                occurrence:
+                  type: integer
+                  minimum: 0
+                  maximum: 1000
+              required:
+                - messageId
+                - forwardId
+                - occurrence
+              additionalProperties: false
+      responses:
+        "200":
+          description: Cancelled.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dispatchKey:
+                    type: string
+                required:
+                  - dispatchKey
+        "400":
+          description: Invalid body
+        "404":
+          description: Session not found
   /api/orgs/{orgId}/todos:
     get:
       tags:

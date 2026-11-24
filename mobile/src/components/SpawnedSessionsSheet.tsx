@@ -5,6 +5,7 @@ import {
   SESSION_FORWARD_BUILD_MODES,
   SESSION_FORWARD_MODE_OPTIONS,
   parseSessionForwardMode,
+  type SessionForwardMode,
   sessionForwardModeLabel,
 } from '@shared/utils/extractForwardBlocks';
 import { Archive, ArrowLeft, RotateCcw, X } from 'lucide-react-native';
@@ -13,10 +14,7 @@ import { api } from '../utils/api';
 import { useApp } from '../context/AppContext';
 import { deriveSessionState, sessionNeedsInputKind } from '../utils/deriveSessionState';
 import { daysUntilPurge } from '../utils/time';
-import {
-  setOrchestrateLaunchSettings,
-  useOrchestrateLaunchSettings,
-} from '../context/orchestrateLaunchSettings';
+import { orchestrateLaunch } from '../context/orchestrateLaunchSettings';
 import {
   applySpawnedSessionEvent,
   reconcileSpawnedSnapshot,
@@ -106,7 +104,30 @@ export default function SpawnedSessionsSheet({
     subscribeSpawnedSessionEvents,
     openSpawnedSession,
   } = useApp() as any;
-  const launch = useOrchestrateLaunchSettings(parentSessionId);
+  // Default build and Auto start live on the server; null until loaded.
+  const launch = orchestrateLaunch.useSettings(parentSessionId);
+  const [launchSaving, setLaunchSaving] = useState(false);
+  const [launchError, setLaunchError] = useState<string | null>(null);
+  const loadLaunch = () => {
+    if (!parentSessionId) return;
+    setLaunchError(null);
+    orchestrateLaunch.load(parentSessionId).catch(() => {
+      setLaunchError("Couldn't load this chat's launch settings.");
+    });
+  };
+  // Load here as well as in the chat view: opening a worker directly never
+  // opens its parent.
+  useEffect(loadLaunch, [parentSessionId]);
+  const saveLaunch = (patch: { mode?: SessionForwardMode; autoStart?: boolean }) => {
+    if (!parentSessionId) return;
+    setLaunchSaving(true);
+    setLaunchError(null);
+    orchestrateLaunch
+      .save(parentSessionId, patch)
+      .catch(() => setLaunchError("Couldn't save. Try again."))
+      .finally(() => setLaunchSaving(false));
+  };
+  const launchDisabled = !launch || launchSaving;
   // Everything loaded is tagged with the parent it belongs to. A different
   // parent renders empty until its own GET lands, and late writes for the old
   // parent (GET, archive, restore) are dropped.
@@ -249,7 +270,7 @@ export default function SpawnedSessionsSheet({
     if (!parent || agentId === parent.agent_id) return null;
     return agents?.find((agent: any) => agent.id === agentId)?.name || agentId;
   };
-  const buildLabel = sessionForwardModeLabel(launch.mode === 'consult' ? 'manual' : launch.mode);
+  const buildLabel = sessionForwardModeLabel(launch?.mode ?? 'manual');
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
@@ -266,6 +287,8 @@ export default function SpawnedSessionsSheet({
             testID="orchestrate-default-build"
             accessibilityLabel="Default build mode"
             accessibilityRole="button"
+            accessibilityState={{ disabled: launchDisabled }}
+            disabled={launchDisabled}
             onPress={() => setBuildOpen((open) => !open)}
             style={styles.select}
           >
@@ -280,9 +303,7 @@ export default function SpawnedSessionsSheet({
                   testID={`orchestrate-build-${option.value}`}
                   accessibilityRole="button"
                   onPress={() => {
-                    setOrchestrateLaunchSettings(parentSessionId, {
-                      mode: parseSessionForwardMode(option.value),
-                    });
+                    saveLaunch({ mode: parseSessionForwardMode(option.value) });
                     setBuildOpen(false);
                   }}
                   style={styles.option}
@@ -294,17 +315,32 @@ export default function SpawnedSessionsSheet({
           <Pressable
             testID="orchestrate-auto-start"
             accessibilityRole="checkbox"
-            accessibilityState={{ checked: launch.autoStart }}
-            onPress={() =>
-              setOrchestrateLaunchSettings(parentSessionId, { autoStart: !launch.autoStart })
-            }
+            accessibilityState={{ checked: launch?.autoStart ?? false, disabled: launchDisabled }}
+            disabled={launchDisabled}
+            onPress={() => saveLaunch({ autoStart: !launch?.autoStart })}
             style={styles.checkRow}
           >
-            <View style={[styles.box, launch.autoStart && styles.boxOn]}>
-              {launch.autoStart ? <Text style={styles.boxMark}>✓</Text> : null}
+            <View style={[styles.box, launch?.autoStart && styles.boxOn]}>
+              {launch?.autoStart ? <Text style={styles.boxMark}>✓</Text> : null}
             </View>
             <Text style={styles.checkLabel}>Auto start</Text>
           </Pressable>
+          {launchError ? (
+            <Pressable
+              testID="orchestrate-launch-error"
+              accessibilityRole="button"
+              disabled={Boolean(launch)}
+              onPress={loadLaunch}
+            >
+              <Text style={styles.launchError}>
+                {launch ? launchError : `${launchError} Tap to retry.`}
+              </Text>
+            </Pressable>
+          ) : !launch ? (
+            <Text testID="orchestrate-launch-loading" style={styles.launchNote}>
+              Loading this chat&apos;s settings…
+            </Text>
+          ) : null}
           {backTarget ? (
             <Pressable
               testID="spawned-sessions-back"
@@ -480,6 +516,8 @@ const styles = StyleSheet.create({
   boxOn: { backgroundColor: colors.sky500_15, borderColor: colors.sky300 },
   boxMark: { color: colors.sky300, fontSize: 12, fontWeight: '700' },
   checkLabel: { color: colors.gray200, fontSize: 14 },
+  launchError: { color: colors.red400, fontSize: 12 },
+  launchNote: { color: colors.gray500, fontSize: 12 },
   back: {
     flexDirection: 'row',
     alignItems: 'center',
