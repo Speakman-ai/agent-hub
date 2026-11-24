@@ -690,8 +690,8 @@ export async function runAutonomousLoopForEpic(projectId: string, epicId: string
  * When an autonomous phase completes, start the next armed phase in the same
  * epic so a multi-phase run advances on its own. Mirrors the gates in
  * `startAutonomousPhase`: only an armed phase (`autonomous = 1`) auto-starts,
- * and a resolvable credential owner is required (the next phase's own
- * `autonomous_enabled_by`, falling back to the completed phase's owner). If the
+ * and a resolvable credential owner is required (the completed phase's runner,
+ * falling back to the next phase's own `autonomous_enabled_by`). If the
  * next phase is not armed, there is no next phase, or no owner resolves, we
  * leave it stopped — same as before. Cascades naturally: starting the next
  * phase re-enters the loop, so an already-complete next phase advances again.
@@ -728,7 +728,10 @@ async function maybeAdvanceToNextPhase(
   if (findIncompletePredecessor(epic, next.id)) return;
   if (next.autonomous_running) return; // already running — nothing to do
 
-  const owner = next.autonomous_enabled_by ?? completedPhase.autonomous_enabled_by ?? null;
+  // The user who ran the completed phase owns the continuation. The next
+  // phase's own stamp only records who once armed it, which can be a different
+  // user (or an agent session acting as them), so it is a fallback.
+  const owner = completedPhase.autonomous_enabled_by ?? next.autonomous_enabled_by ?? null;
   if (!owner) {
     console.log(
       `[Autonomous] phase "${completedPhase.name}" complete — cannot auto-start next phase "${next.name}": no resolvable owner for credential resolution`,

@@ -1222,6 +1222,32 @@ describe('runAutonomousLoop — dispatch', () => {
     expect(stmts.setPhaseAutonomousRunning!.run).toHaveBeenCalledWith(1, 'phase-2');
   });
 
+  it("carries the completed phase's runner forward over the next phase's stale arming stamp", async () => {
+    const phase1 = makePhase({ autonomous_enabled_by: 'launcher' });
+    const phase2 = makePhase({
+      id: 'phase-2',
+      name: 'Phase 2',
+      position: 1,
+      autonomous: 1,
+      autonomous_running: 0,
+      autonomous_enabled_by: 'someone-who-armed-it-earlier',
+    });
+    const stmts = makePhaseAdvanceStmts(phase1, phase2);
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoopForPhase('proj-1', 'phase-1');
+
+    expect(stmts.setPhaseAutonomousEnabledBy!.run).toHaveBeenCalledWith('launcher', 'phase-2');
+    expect(stmts.setPhaseAutonomousEnabledBy!.run).not.toHaveBeenCalledWith(
+      'someone-who-armed-it-earlier',
+      'phase-2',
+    );
+    expect(stmts.setPhaseAutonomousRunning!.run).toHaveBeenCalledWith(1, 'phase-2');
+  });
+
   it('treats a phase of Done + Cancelled cards as complete and advances', async () => {
     // A running phase left at "all Done + a few Cancelled" must self-disarm and
     // hand off — a Cancelled card is settled, dropped work, not a reason to stay
