@@ -2530,6 +2530,58 @@ describe('runFinalize — MAX_FIX_DISPATCH_LOOPS', () => {
     }
   });
 
+  it('asks the session to investigate every 10 rounds, then keeps running', async () => {
+    let headCounter = 0;
+    const resolveHead = vi
+      .fn<(...args: unknown[]) => Promise<string>>()
+      .mockImplementation(() => Promise.resolve(`sha-round-${++headCounter}`));
+    const { deps } = makeDeps({
+      runJobPhase: fakeRunSteps({
+        status: 'failure',
+        stepResults: [],
+        activeSecondsBilled: 1,
+        failedStep: { index: 1, name: 'Test', run: 'npm test', exitCode: 1, outputTail: ['x'] },
+      }),
+      resolveHeadSha: resolveHead,
+      budgetSeconds: 999_999_999,
+    });
+
+    await runFinalize(deps, baseOpts());
+
+    const calls = (deps.dispatchFixMessage as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    const flagged = calls
+      .map((c, i) => (c[1].trigger.longRunInvestigation ? i + 1 : null))
+      .filter((r) => r !== null);
+    expect(flagged).toEqual([10, 20, 30, 40, 50]);
+    expect(calls[9][1].trigger.longRunInvestigation).toEqual({ rounds: 10 });
+    // The run carried on past the checkpoint instead of stopping there.
+    expect(calls.length).toBeGreaterThan(10);
+  });
+
+  it('FINALIZE_INVESTIGATE_EVERY_ROUNDS=0 disables the investigation checkpoint', async () => {
+    process.env.FINALIZE_INVESTIGATE_EVERY_ROUNDS = '0';
+    try {
+      let headCounter = 0;
+      const { deps } = makeDeps({
+        runJobPhase: fakeRunSteps({
+          status: 'failure',
+          stepResults: [],
+          activeSecondsBilled: 1,
+          failedStep: { index: 1, name: 'Test', run: 'npm test', exitCode: 1, outputTail: ['x'] },
+        }),
+        resolveHeadSha: vi
+          .fn<(...args: unknown[]) => Promise<string>>()
+          .mockImplementation(() => Promise.resolve(`sha-round-${++headCounter}`)),
+        budgetSeconds: 999_999_999,
+      });
+      await runFinalize(deps, baseOpts());
+      const calls = (deps.dispatchFixMessage as unknown as ReturnType<typeof vi.fn>).mock.calls;
+      expect(calls.some((c) => c[1].trigger.longRunInvestigation)).toBe(false);
+    } finally {
+      delete process.env.FINALIZE_INVESTIGATE_EVERY_ROUNDS;
+    }
+  });
+
   const FROZEN_FAILED_STEPS: StepRunResult = {
     status: 'failure',
     stepResults: [],

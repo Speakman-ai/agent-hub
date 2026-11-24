@@ -312,6 +312,27 @@ export function resolveMaxNonConvergenceRounds(): number {
 }
 
 /**
+ * Every this many rounds within one run, the fix dispatch tells the session
+ * agent to stop and investigate why the loop is not converging before it makes
+ * another change. Long runs were mostly an agent patching finding after
+ * finding when it needed to step back; a human had to intervene to say so.
+ * The run keeps going after the investigation turn.
+ *
+ * Override with `FINALIZE_INVESTIGATE_EVERY_ROUNDS` (non-negative integer;
+ * `0` disables the checkpoint).
+ */
+export const DEFAULT_INVESTIGATE_EVERY_ROUNDS = 10;
+
+export function resolveInvestigateEveryRounds(): number {
+  const raw = process.env.FINALIZE_INVESTIGATE_EVERY_ROUNDS?.trim();
+  if (raw) {
+    const n = Number.parseInt(raw, 10);
+    if (Number.isFinite(n) && n >= 0 && String(n) === raw) return n;
+  }
+  return DEFAULT_INVESTIGATE_EVERY_ROUNDS;
+}
+
+/**
  * How many times the no-progress guard may feed the `fix_no_progress` diagnostic
  * back to the session as a fix turn before giving up.
  *
@@ -1124,6 +1145,7 @@ export async function runFinalize(
     // once a review pass has consumed them.
     let pendingDisputes: ReviewDispute[] = [];
     const rootCauseEscalationRounds = resolveRootCauseEscalationRounds();
+    const investigateEveryRounds = resolveInvestigateEveryRounds();
     // Track the last reviewer + step signals so the combined gate doesn't
     // re-read state from the DB (which would race with the live row).
     let lastReviewerOutcome: ReviewerDispatchOutcome | null = null;
@@ -2858,6 +2880,14 @@ export async function runFinalize(
           rootCauseEscalation: escalation.clusters,
           recurredRounds: escalation.rounds,
         });
+      }
+      if (investigateEveryRounds > 0 && loopCount % investigateEveryRounds === 0) {
+        trigger.longRunInvestigation = { rounds: loopCount };
+        trace('fix_dispatch', { round: loopCount, longRunInvestigation: true });
+        log(
+          `[finalize-orchestrator] run=${runId} reached round ${loopCount}; ` +
+            `asking the session to investigate why the loop is not converging`,
+        );
       }
       // Mirror a step failure onto the card — exactly when there IS a
       // failed step AND the fix-dispatch loop is about to run. Reviewer-

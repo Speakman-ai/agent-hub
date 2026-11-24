@@ -20,6 +20,7 @@ import {
   DISPATCH_TRAILER_REVIEWER,
   TIMEOUT_INVESTIGATION_DIRECTIVE,
   composeDispatchBody,
+  longRunInvestigationDirective,
   dispatchFixMessage,
   type CancelSignal,
   type FixDispatchDeps,
@@ -114,6 +115,26 @@ describe('composeDispatchBody', () => {
     expect(body.indexOf('Root-cause escalation:')).toBeLessThan(body.indexOf('Reviewer notes:'));
     expect(body.endsWith(`\n${DISPATCH_TRAILER_REVIEWER}`)).toBe(true);
     expect(body).toContain(REVIEW_DISPUTE_INSTRUCTIONS);
+  });
+
+  it('leads with the investigation directive on a long-run checkpoint round', () => {
+    const body = composeDispatchBody({
+      reviewerVerdict: 'changes_requested',
+      reviewerThreads: [],
+      longRunInvestigation: { rounds: 10 },
+      rootCauseEscalation: { clusters: ['server/a.ts'], rounds: 3, priorFindings: [] },
+    });
+    expect(body).toContain(longRunInvestigationDirective(10));
+    expect(body).toContain('run 10 rounds without passing');
+    expect(body.indexOf('stop and investigate')).toBeLessThan(
+      body.indexOf('Root-cause escalation:'),
+    );
+    expect(body).toContain(REVIEW_DISPUTE_INSTRUCTIONS);
+  });
+
+  it('omits the investigation directive on ordinary rounds', () => {
+    const body = composeDispatchBody({ reviewerVerdict: 'changes_requested', reviewerThreads: [] });
+    expect(body).not.toContain('stop and investigate');
   });
 
   it('omits the escalation preamble when rootCauseEscalation is absent', () => {

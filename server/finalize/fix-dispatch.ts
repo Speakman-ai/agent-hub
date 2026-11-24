@@ -202,6 +202,13 @@ export interface FixDispatchTrigger {
    */
   stepTimedOut?: { limitMs: number; elapsedMs: number } | null;
   /**
+   * Set every N fix rounds within one run (see
+   * `resolveInvestigateEveryRounds` in the orchestrator). Prepends a directive
+   * telling the agent to stop and work out why the loop is not converging
+   * before it patches the latest findings.
+   */
+  longRunInvestigation?: { rounds: number } | null;
+  /**
    * Set when the session's committed `.agent-hub/ci.yaml` failed to parse.
    * The agent can fix the file in its worktree, so Finalize hands the parse
    * error back as a fix turn instead of ending the run.
@@ -716,6 +723,25 @@ function renderFailedStepEvidence(f: FailedStepContext): string[] {
  * validates the file with the parser in the deployed Hub, so a key added to
  * the parser in this same branch is still rejected until that Hub ships.
  */
+/**
+ * Directive for a long-running fix loop. Many rounds usually mean the agent is
+ * patching each finding instead of noticing that the approach, or the bar the
+ * reviewer is holding it to, is the real problem.
+ */
+export function longRunInvestigationDirective(rounds: number): string {
+  return (
+    `Finalize has now run ${rounds} rounds without passing. Before making another change, stop ` +
+    'and investigate why it is not converging. Read back through the earlier Finalize messages in ' +
+    'this session and look for the pattern: are the findings variations of one underlying problem, ' +
+    'is the approach itself the wrong mechanism for what the card asks, is the reviewer holding ' +
+    'the change to a bar it cannot meet, or is a check failing for a reason outside this branch? ' +
+    'Write down what you found in a few sentences. Then do the one thing that ends the loop: fix ' +
+    'the root cause, dispute findings that no change can satisfy (see below), or narrow or ' +
+    'rework the approach. Do not just patch the latest findings one by one again. Finalize ' +
+    're-runs when you end your turn.'
+  );
+}
+
 export function composeCiConfigInvalidBody(
   err: NonNullable<FixDispatchTrigger['ciConfigInvalid']>,
 ): string {
@@ -804,6 +830,11 @@ export function composeDispatchBody(trigger: FixDispatchTrigger): string {
     // wording ("phase=review, reviewer requested changes.") regardless
     // of which side of the gate the orchestrator entered from.
     lines.push('Finalize Code Changes: phase=review, reviewer requested changes.');
+  }
+
+  if (trigger.longRunInvestigation) {
+    lines.push('');
+    lines.push(longRunInvestigationDirective(trigger.longRunInvestigation.rounds));
   }
 
   // Root-cause escalation preamble — surfaced BEFORE the current round's notes
