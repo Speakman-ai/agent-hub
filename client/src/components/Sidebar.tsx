@@ -51,6 +51,12 @@ import {
   PinOff,
 } from 'lucide-react';
 import { isSessionPinned, pinnedSessionsFirst } from '@shared/utils/sessionPins';
+import {
+  groupSessionsByFolder,
+  type SessionFolderListingWire,
+  type SessionFolderWire,
+} from '@shared/utils/sessionFolders';
+import { FolderNameInput, MoveToFolderMenu, SessionFolderGroup } from './SessionFolderControls';
 import { formatUnreadCount } from '../utils/googleChatPush';
 import { getServerBase } from '../utils/connection';
 import { useClientBuildVersion } from '../hooks/useClientBuildVersion';
@@ -78,6 +84,10 @@ import KanbanSidebarEpicsPanel from './KanbanSidebarEpicsPanel';
 import OrganizationMenu from './OrganizationMenu';
 import { isWorkflowProject } from '../utils/projectMode';
 import { readNavGroupCollapsed, writeNavGroupCollapsed } from '../utils/sidebarNavGroupCollapse';
+import {
+  readCollapsedSessionFolders,
+  writeCollapsedSessionFolders,
+} from '../utils/sidebarSessionFolderCollapse';
 import {
   activeOrganizationSection,
   groupProjectsByOrganization,
@@ -147,6 +157,14 @@ export default function Sidebar({
   onRenameSession,
   /** Pin or unpin a session: `(sessionId, pinned) => void`. Hides the pin control when omitted. */
   onTogglePinSession,
+  /** The caller's folders per agent. Folder controls are hidden when `onCreateSessionFolder` is omitted. */
+  sessionFoldersByAgentId = {},
+  /** Fetch an agent's folders; called for each expanded agent, the handler dedupes. */
+  onLoadSessionFolders,
+  onCreateSessionFolder,
+  onRenameSessionFolder,
+  onDeleteSessionFolder,
+  onMoveSessionToFolder,
   onNavigate,
   /** Open an organization agent's chat. Organization agents are not project agents. */
   onOpenOrganizationChat,
@@ -284,6 +302,14 @@ export default function Sidebar({
   kanbanRefreshKey = 0,
 }: any) {
   const [hoveredSession, setHoveredSession] = useState<any>(null);
+  const [folderMenuSessionId, setFolderMenuSessionId] = useState<string | null>(null);
+  const [creatingFolderAgentId, setCreatingFolderAgentId] = useState<string | null>(null);
+  const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>(
+    readCollapsedSessionFolders,
+  );
+  useEffect(() => {
+    writeCollapsedSessionFolders(collapsedFolders);
+  }, [collapsedFolders]);
   /**
    * Which projects are collapsed in the project list. The authoritative store
    * is per-USER on the server (`/api/auth/me/sidebar-collapsed-projects`), so
@@ -335,6 +361,12 @@ export default function Sidebar({
   const [collapsedAgents, setCollapsedAgents] = useState<Record<string, any>>({});
   /** Agent rows whose session list is expanded in the sidebar (independent of the open chat). */
   const [expandedAgents, setExpandedAgents] = useState<Record<string, any>>({});
+  useEffect(() => {
+    if (!onLoadSessionFolders) return;
+    for (const [agentId, open] of Object.entries(expandedAgents)) {
+      if (open) onLoadSessionFolders(agentId);
+    }
+  }, [expandedAgents, onLoadSessionFolders]);
   /**
    * Collapse state for the labeled project-nav groups (Git / Planning / Support
    * / AI / Settings). Keyed by `${projectId}:${groupKey}`; default collapsed
@@ -1742,272 +1774,345 @@ export default function Sidebar({
                                   ? agentSessions.filter(isSessionActionable)
                                   : agentSessions;
                                 if (agentCollapsed && visibleSessions.length === 0) return null;
-                                return (
-                                  <div className="ml-5 mb-2" data-testid="agent-sessions-list">
-                                    {visibleSessions.map((session: any) => {
-                                      const sessionState = deriveSessionState(session, {
-                                        activeTaskSessionIds,
-                                        finalizeStatusBySession,
-                                        needsInputBySession,
-                                        backgroundShellsBySession,
-                                      });
-                                      const isEditing = editingSessionId === session.id;
-                                      const prReady = changesReadyBySession[session.id];
-                                      const resolvePrHref =
-                                        prReady && isResolvePrSessionTitle(session.name)
-                                          ? inferPrUrlFromSessionTitle(
-                                              session.name,
-                                              project.githubRepo,
-                                              {
-                                                gitHost: project.gitHost,
-                                                projectId: project.id,
-                                              },
-                                            )
-                                          : null;
-                                      const resolvePrNative = parseNativePrUrl(resolvePrHref);
-                                      return (
-                                        <div
-                                          key={session.id}
-                                          onMouseEnter={() => setHoveredSession(session.id)}
-                                          onMouseLeave={() => setHoveredSession(null)}
-                                          className={`group relative flex items-center rounded-md mb-0.5 transition-colors ${
-                                            activeSessionId === session.id
-                                              ? 'bg-gray-800 text-white'
-                                              : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
-                                          }`}
-                                        >
-                                          {isEditing ? (
-                                            <input
-                                              autoFocus
-                                              value={editingSessionName}
-                                              onChange={(e: any) =>
-                                                setEditingSessionName(e.target.value)
-                                              }
-                                              onKeyDown={(e: any) => {
-                                                if (
-                                                  e.key === 'Enter' &&
-                                                  editingSessionName.trim()
-                                                ) {
-                                                  renameSavedRef.current = true;
-                                                  onRenameSession(
-                                                    session.id,
-                                                    editingSessionName.trim(),
+                                const folderListing: SessionFolderListingWire | undefined =
+                                  onCreateSessionFolder
+                                    ? sessionFoldersByAgentId[agent.id]
+                                    : undefined;
+                                const grouped = groupSessionsByFolder(
+                                  visibleSessions as any[],
+                                  folderListing,
+                                );
+                                const folderGroups = agentCollapsed
+                                  ? grouped.folders.filter((g) => g.sessions.length > 0)
+                                  : grouped.folders;
+                                const renderSessionRow = (session: any) => {
+                                  const sessionState = deriveSessionState(session, {
+                                    activeTaskSessionIds,
+                                    finalizeStatusBySession,
+                                    needsInputBySession,
+                                    backgroundShellsBySession,
+                                  });
+                                  const isEditing = editingSessionId === session.id;
+                                  const prReady = changesReadyBySession[session.id];
+                                  const resolvePrHref =
+                                    prReady && isResolvePrSessionTitle(session.name)
+                                      ? inferPrUrlFromSessionTitle(
+                                          session.name,
+                                          project.githubRepo,
+                                          {
+                                            gitHost: project.gitHost,
+                                            projectId: project.id,
+                                          },
+                                        )
+                                      : null;
+                                  const resolvePrNative = parseNativePrUrl(resolvePrHref);
+                                  return (
+                                    <div
+                                      key={session.id}
+                                      onMouseEnter={() => setHoveredSession(session.id)}
+                                      onMouseLeave={() => setHoveredSession(null)}
+                                      className={`group relative flex items-center rounded-md mb-0.5 transition-colors ${
+                                        activeSessionId === session.id
+                                          ? 'bg-gray-800 text-white'
+                                          : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
+                                      }`}
+                                    >
+                                      {isEditing ? (
+                                        <input
+                                          autoFocus
+                                          value={editingSessionName}
+                                          onChange={(e: any) =>
+                                            setEditingSessionName(e.target.value)
+                                          }
+                                          onKeyDown={(e: any) => {
+                                            if (e.key === 'Enter' && editingSessionName.trim()) {
+                                              renameSavedRef.current = true;
+                                              onRenameSession(
+                                                session.id,
+                                                editingSessionName.trim(),
+                                              );
+                                              setEditingSessionId(null);
+                                            } else if (e.key === 'Escape') {
+                                              renameSavedRef.current = true;
+                                              setEditingSessionId(null);
+                                            }
+                                          }}
+                                          onBlur={() => {
+                                            if (renameSavedRef.current) {
+                                              renameSavedRef.current = false;
+                                              return;
+                                            }
+                                            if (
+                                              editingSessionName.trim() &&
+                                              editingSessionName.trim() !== session.name
+                                            ) {
+                                              onRenameSession(
+                                                session.id,
+                                                editingSessionName.trim(),
+                                              );
+                                            }
+                                            setEditingSessionId(null);
+                                          }}
+                                          className="flex-1 text-xs bg-gray-700 text-gray-200 px-2 py-1.5 md:py-1 rounded outline-none focus:ring-1 focus:ring-indigo-500 mx-1"
+                                        />
+                                      ) : (
+                                        <>
+                                          {resolvePrHref && (
+                                            <button
+                                              type="button"
+                                              data-testid="resolve-pr-external-link"
+                                              className="flex-shrink-0 p-1 mr-0.5 rounded text-sky-400 hover:text-sky-300 hover:bg-gray-700/50"
+                                              title={`Open existing PR on ${
+                                                resolvePrNative ? 'Agent Hub' : 'GitHub'
+                                              }`}
+                                              onClick={(e: any) => {
+                                                e.stopPropagation();
+                                                // Native PR URLs are in-app
+                                                // routes — window.open would
+                                                // miss the hash router.
+                                                if (resolvePrNative) {
+                                                  onOpenPrDetail?.(
+                                                    resolvePrNative.projectId,
+                                                    resolvePrNative.number,
                                                   );
-                                                  setEditingSessionId(null);
-                                                } else if (e.key === 'Escape') {
-                                                  renameSavedRef.current = true;
-                                                  setEditingSessionId(null);
-                                                }
-                                              }}
-                                              onBlur={() => {
-                                                if (renameSavedRef.current) {
-                                                  renameSavedRef.current = false;
                                                   return;
                                                 }
-                                                if (
-                                                  editingSessionName.trim() &&
-                                                  editingSessionName.trim() !== session.name
-                                                ) {
-                                                  onRenameSession(
-                                                    session.id,
-                                                    editingSessionName.trim(),
-                                                  );
-                                                }
-                                                setEditingSessionId(null);
+                                                window.open(
+                                                  resolvePrHref,
+                                                  '_blank',
+                                                  'noopener,noreferrer',
+                                                );
                                               }}
-                                              className="flex-1 text-xs bg-gray-700 text-gray-200 px-2 py-1.5 md:py-1 rounded outline-none focus:ring-1 focus:ring-indigo-500 mx-1"
-                                            />
-                                          ) : (
-                                            <>
-                                              {resolvePrHref && (
-                                                <button
-                                                  type="button"
-                                                  data-testid="resolve-pr-external-link"
-                                                  className="flex-shrink-0 p-1 mr-0.5 rounded text-sky-400 hover:text-sky-300 hover:bg-gray-700/50"
-                                                  title={`Open existing PR on ${
-                                                    resolvePrNative ? 'Agent Hub' : 'GitHub'
-                                                  }`}
-                                                  onClick={(e: any) => {
-                                                    e.stopPropagation();
-                                                    // Native PR URLs are in-app
-                                                    // routes — window.open would
-                                                    // miss the hash router.
-                                                    if (resolvePrNative) {
-                                                      onOpenPrDetail?.(
-                                                        resolvePrNative.projectId,
-                                                        resolvePrNative.number,
-                                                      );
-                                                      return;
-                                                    }
-                                                    window.open(
-                                                      resolvePrHref,
-                                                      '_blank',
-                                                      'noopener,noreferrer',
-                                                    );
-                                                  }}
-                                                >
-                                                  <ExternalLink size={11} />
-                                                </button>
-                                              )}
-                                              <button
-                                                type="button"
-                                                onClick={() => focusSession(agent.id, session.id)}
-                                                onDoubleClick={(e: any) => {
-                                                  e.stopPropagation();
-                                                  setEditingSessionId(session.id);
-                                                  setEditingSessionName(session.name);
-                                                }}
-                                                className="flex-1 min-w-0 text-left px-2 py-2 md:py-1.5 pr-7 truncate text-xs flex items-center gap-1.5 cursor-pointer"
-                                              >
-                                                <SessionStateIcon
-                                                  state={sessionState}
-                                                  size={12}
-                                                  testId={`session-state-icon-${session.id}`}
-                                                  label={
-                                                    sessionState === 'needs_input'
-                                                      ? needsInputLabel(
-                                                          sessionNeedsInputKind(session, {
-                                                            needsInputBySession,
-                                                          }),
-                                                        )
-                                                      : sessionState === 'waiting_on_background'
-                                                        ? backgroundStateLabel(
-                                                            backgroundShellsBySession[session.id],
-                                                          )
-                                                        : undefined
-                                                  }
-                                                />
-                                                {subagentsBySession[session.id]?.running > 0 && (
-                                                  <span
-                                                    className="flex items-center gap-0.5 text-[9px] text-indigo-400 flex-shrink-0"
-                                                    title={`${subagentsBySession[session.id].running} subagent${subagentsBySession[session.id].running === 1 ? '' : 's'} running`}
-                                                  >
-                                                    <GitFork size={10} />
-                                                    {subagentsBySession[session.id].running}
-                                                  </span>
-                                                )}
-                                                {(() => {
-                                                  // The state icon already shows it.
-                                                  if (sessionState === 'waiting_on_background') {
-                                                    return null;
-                                                  }
-                                                  const watch = deriveWatchIndicator(
-                                                    backgroundShellsBySession[session.id],
-                                                  );
-                                                  if (!watch) return null;
-                                                  return (
-                                                    <span
-                                                      className={`flex items-center gap-0.5 text-[9px] flex-shrink-0 ${
-                                                        watch.watching > 0
-                                                          ? 'text-amber-400'
-                                                          : 'text-gray-500'
-                                                      }`}
-                                                      title={watchIndicatorTitle(watch)}
-                                                      data-testid={`session-watch-pill-${session.id}`}
-                                                    >
-                                                      <Radio
-                                                        size={10}
-                                                        className={
-                                                          watch.watching > 0 ? 'animate-pulse' : ''
-                                                        }
-                                                      />
-                                                      {watch.watching > 0
-                                                        ? watch.watching
-                                                        : watch.running}
-                                                    </span>
-                                                  );
-                                                })()}
-                                                {(() => {
-                                                  const preview = derivePreviewIndicator(
-                                                    previewEventBySession[session.id],
-                                                    !!previewStartingBySession[session.id],
-                                                  );
-                                                  if (!preview) return null;
-                                                  const building = preview.status === 'building';
-                                                  return (
-                                                    <span
-                                                      className={`flex items-center flex-shrink-0 ${
-                                                        building
-                                                          ? 'text-sky-400'
-                                                          : 'text-emerald-400'
-                                                      }`}
-                                                      title={previewIndicatorTitle(preview)}
-                                                      data-testid={`session-preview-pill-${session.id}`}
-                                                    >
-                                                      <MonitorPlay
-                                                        size={10}
-                                                        className={building ? 'animate-pulse' : ''}
-                                                      />
-                                                    </span>
-                                                  );
-                                                })()}
-                                                {isSessionPinned(session) && (
-                                                  <Pin
-                                                    size={10}
-                                                    className="flex-shrink-0 text-gray-500"
-                                                    aria-label="Pinned"
-                                                    data-testid={`session-pinned-icon-${session.id}`}
-                                                  />
-                                                )}
-                                                <span className="truncate">{session.name}</span>
-                                                {session.advisor_count > 0 && (
-                                                  <span
-                                                    className="flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/50 text-indigo-300 border border-indigo-800/50"
-                                                    title={`${session.advisor_count} advisor${session.advisor_count !== 1 ? 's' : ''}`}
-                                                  >
-                                                    +{session.advisor_count}
-                                                  </span>
-                                                )}
-                                              </button>
-                                            </>
+                                            >
+                                              <ExternalLink size={11} />
+                                            </button>
                                           )}
-                                          {deletingSessionIds.has(session.id) ? (
-                                            <span className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 text-xs animate-spin pointer-events-none">
-                                              ⟳
-                                            </span>
-                                          ) : hoveredSession === session.id && !isEditing ? (
-                                            <div className="absolute right-1 top-1/2 -translate-y-1/2 z-10 flex items-center rounded bg-gray-800">
-                                              {onTogglePinSession && (
-                                                <button
-                                                  type="button"
-                                                  onClick={(e: any) => {
-                                                    e.stopPropagation();
-                                                    onTogglePinSession(
-                                                      session.id,
-                                                      !isSessionPinned(session),
-                                                    );
-                                                  }}
-                                                  className="p-1.5 text-gray-600 hover:text-gray-200 rounded hover:bg-gray-700/80"
-                                                  title={
-                                                    isSessionPinned(session)
-                                                      ? 'Unpin session'
-                                                      : 'Pin session to top'
-                                                  }
-                                                  data-testid={`session-pin-toggle-${session.id}`}
-                                                >
-                                                  {isSessionPinned(session) ? (
-                                                    <PinOff size={11} />
-                                                  ) : (
-                                                    <Pin size={11} />
-                                                  )}
-                                                </button>
-                                              )}
-                                              <button
-                                                type="button"
-                                                onClick={(e: any) => {
-                                                  e.stopPropagation();
-                                                  onDeleteSession(session.id);
-                                                }}
-                                                className="p-1.5 text-gray-600 hover:text-red-400 text-xs rounded hover:bg-gray-700/80"
-                                                title="Delete session"
+                                          <button
+                                            type="button"
+                                            onClick={() => focusSession(agent.id, session.id)}
+                                            onDoubleClick={(e: any) => {
+                                              e.stopPropagation();
+                                              setEditingSessionId(session.id);
+                                              setEditingSessionName(session.name);
+                                            }}
+                                            className="flex-1 min-w-0 text-left px-2 py-2 md:py-1.5 pr-7 truncate text-xs flex items-center gap-1.5 cursor-pointer"
+                                          >
+                                            <SessionStateIcon
+                                              state={sessionState}
+                                              size={12}
+                                              testId={`session-state-icon-${session.id}`}
+                                              label={
+                                                sessionState === 'needs_input'
+                                                  ? needsInputLabel(
+                                                      sessionNeedsInputKind(session, {
+                                                        needsInputBySession,
+                                                      }),
+                                                    )
+                                                  : sessionState === 'waiting_on_background'
+                                                    ? backgroundStateLabel(
+                                                        backgroundShellsBySession[session.id],
+                                                      )
+                                                    : undefined
+                                              }
+                                            />
+                                            {subagentsBySession[session.id]?.running > 0 && (
+                                              <span
+                                                className="flex items-center gap-0.5 text-[9px] text-indigo-400 flex-shrink-0"
+                                                title={`${subagentsBySession[session.id].running} subagent${subagentsBySession[session.id].running === 1 ? '' : 's'} running`}
                                               >
-                                                ✕
-                                              </button>
-                                            </div>
-                                          ) : null}
+                                                <GitFork size={10} />
+                                                {subagentsBySession[session.id].running}
+                                              </span>
+                                            )}
+                                            {(() => {
+                                              // The state icon already shows it.
+                                              if (sessionState === 'waiting_on_background') {
+                                                return null;
+                                              }
+                                              const watch = deriveWatchIndicator(
+                                                backgroundShellsBySession[session.id],
+                                              );
+                                              if (!watch) return null;
+                                              return (
+                                                <span
+                                                  className={`flex items-center gap-0.5 text-[9px] flex-shrink-0 ${
+                                                    watch.watching > 0
+                                                      ? 'text-amber-400'
+                                                      : 'text-gray-500'
+                                                  }`}
+                                                  title={watchIndicatorTitle(watch)}
+                                                  data-testid={`session-watch-pill-${session.id}`}
+                                                >
+                                                  <Radio
+                                                    size={10}
+                                                    className={
+                                                      watch.watching > 0 ? 'animate-pulse' : ''
+                                                    }
+                                                  />
+                                                  {watch.watching > 0
+                                                    ? watch.watching
+                                                    : watch.running}
+                                                </span>
+                                              );
+                                            })()}
+                                            {(() => {
+                                              const preview = derivePreviewIndicator(
+                                                previewEventBySession[session.id],
+                                                !!previewStartingBySession[session.id],
+                                              );
+                                              if (!preview) return null;
+                                              const building = preview.status === 'building';
+                                              return (
+                                                <span
+                                                  className={`flex items-center flex-shrink-0 ${
+                                                    building ? 'text-sky-400' : 'text-emerald-400'
+                                                  }`}
+                                                  title={previewIndicatorTitle(preview)}
+                                                  data-testid={`session-preview-pill-${session.id}`}
+                                                >
+                                                  <MonitorPlay
+                                                    size={10}
+                                                    className={building ? 'animate-pulse' : ''}
+                                                  />
+                                                </span>
+                                              );
+                                            })()}
+                                            {isSessionPinned(session) && (
+                                              <Pin
+                                                size={10}
+                                                className="flex-shrink-0 text-gray-500"
+                                                aria-label="Pinned"
+                                                data-testid={`session-pinned-icon-${session.id}`}
+                                              />
+                                            )}
+                                            <span className="truncate">{session.name}</span>
+                                            {session.advisor_count > 0 && (
+                                              <span
+                                                className="flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/50 text-indigo-300 border border-indigo-800/50"
+                                                title={`${session.advisor_count} advisor${session.advisor_count !== 1 ? 's' : ''}`}
+                                              >
+                                                +{session.advisor_count}
+                                              </span>
+                                            )}
+                                          </button>
+                                        </>
+                                      )}
+                                      {deletingSessionIds.has(session.id) ? (
+                                        <span className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 text-xs animate-spin pointer-events-none">
+                                          ⟳
+                                        </span>
+                                      ) : hoveredSession === session.id && !isEditing ? (
+                                        <div className="absolute right-1 top-1/2 -translate-y-1/2 z-10 flex items-center rounded bg-gray-800">
+                                          {onCreateSessionFolder && onMoveSessionToFolder && (
+                                            <button
+                                              type="button"
+                                              onClick={(e: any) => {
+                                                e.stopPropagation();
+                                                setFolderMenuSessionId((cur) =>
+                                                  cur === session.id ? null : session.id,
+                                                );
+                                              }}
+                                              className="p-1.5 text-gray-600 hover:text-gray-200 rounded hover:bg-gray-700/80"
+                                              title="Move to folder"
+                                              aria-haspopup="menu"
+                                              data-testid={`session-folder-move-${session.id}`}
+                                            >
+                                              <FolderInput size={11} />
+                                            </button>
+                                          )}
+                                          {onTogglePinSession && (
+                                            <button
+                                              type="button"
+                                              onClick={(e: any) => {
+                                                e.stopPropagation();
+                                                onTogglePinSession(
+                                                  session.id,
+                                                  !isSessionPinned(session),
+                                                );
+                                              }}
+                                              className="p-1.5 text-gray-600 hover:text-gray-200 rounded hover:bg-gray-700/80"
+                                              title={
+                                                isSessionPinned(session)
+                                                  ? 'Unpin session'
+                                                  : 'Pin session to top'
+                                              }
+                                              data-testid={`session-pin-toggle-${session.id}`}
+                                            >
+                                              {isSessionPinned(session) ? (
+                                                <PinOff size={11} />
+                                              ) : (
+                                                <Pin size={11} />
+                                              )}
+                                            </button>
+                                          )}
+                                          <button
+                                            type="button"
+                                            onClick={(e: any) => {
+                                              e.stopPropagation();
+                                              onDeleteSession(session.id);
+                                            }}
+                                            className="p-1.5 text-gray-600 hover:text-red-400 text-xs rounded hover:bg-gray-700/80"
+                                            title="Delete session"
+                                          >
+                                            ✕
+                                          </button>
                                         </div>
-                                      );
-                                    })}
+                                      ) : null}
+                                      {folderMenuSessionId === session.id &&
+                                        onMoveSessionToFolder && (
+                                          <MoveToFolderMenu
+                                            sessionId={session.id}
+                                            folders={folderListing?.folders ?? []}
+                                            currentFolderId={
+                                              folderListing?.assignments[session.id] ?? null
+                                            }
+                                            onClose={() => setFolderMenuSessionId(null)}
+                                            onMove={(folderId) => {
+                                              setFolderMenuSessionId(null);
+                                              onMoveSessionToFolder(agent.id, session.id, folderId);
+                                            }}
+                                            onCreateAndMove={async (name) => {
+                                              setFolderMenuSessionId(null);
+                                              const folder: SessionFolderWire | null =
+                                                await onCreateSessionFolder?.(agent.id, name);
+                                              if (folder) {
+                                                onMoveSessionToFolder(
+                                                  agent.id,
+                                                  session.id,
+                                                  folder.id,
+                                                );
+                                              }
+                                            }}
+                                          />
+                                        )}
+                                    </div>
+                                  );
+                                };
+                                return (
+                                  <div className="ml-5 mb-2" data-testid="agent-sessions-list">
+                                    {folderGroups.map((group) => (
+                                      <SessionFolderGroup
+                                        key={group.folder.id}
+                                        folder={group.folder}
+                                        count={group.sessions.length}
+                                        collapsed={!!collapsedFolders[group.folder.id]}
+                                        onToggle={() =>
+                                          setCollapsedFolders((prev) => ({
+                                            ...prev,
+                                            [group.folder.id]: !prev[group.folder.id],
+                                          }))
+                                        }
+                                        onRename={(name) =>
+                                          onRenameSessionFolder?.(agent.id, group.folder.id, name)
+                                        }
+                                        onDelete={() =>
+                                          onDeleteSessionFolder?.(agent.id, group.folder.id)
+                                        }
+                                      >
+                                        {group.sessions.map(renderSessionRow)}
+                                      </SessionFolderGroup>
+                                    ))}
+                                    {grouped.unfiled.map(renderSessionRow)}
                                     {!agentCollapsed && (
                                       <>
                                         <div className="flex items-center gap-1 mt-1">
@@ -2017,6 +2122,26 @@ export default function Sidebar({
                                           >
                                             + New Session
                                           </button>
+                                          {onCreateSessionFolder &&
+                                            (creatingFolderAgentId === agent.id ? (
+                                              <FolderNameInput
+                                                testId={`session-folder-new-input-${agent.id}`}
+                                                onCommit={(name) => {
+                                                  setCreatingFolderAgentId(null);
+                                                  void onCreateSessionFolder(agent.id, name);
+                                                }}
+                                                onCancel={() => setCreatingFolderAgentId(null)}
+                                              />
+                                            ) : (
+                                              <button
+                                                type="button"
+                                                onClick={() => setCreatingFolderAgentId(agent.id)}
+                                                className="text-xs text-gray-600 hover:text-gray-400 px-2 py-1 transition-colors"
+                                                data-testid={`session-folder-new-${agent.id}`}
+                                              >
+                                                + New Folder
+                                              </button>
+                                            ))}
                                           {agentSessions.length > 0 && (
                                             <div className="ml-auto flex items-center gap-0.5 pr-1">
                                               {/* Single bulk-clear affordance. The

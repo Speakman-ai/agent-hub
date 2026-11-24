@@ -61,6 +61,7 @@ import { collapseReviewColumn } from './migrations/collapse-review-column.js';
 import { backfillPhaseAutonomousDefaults } from './migrations/backfill-phase-autonomous-defaults.js';
 import { backfillEpicStates } from './migrations/backfill-epic-states.js';
 import { ensureUserNotificationPrefsSchema } from './migrations/user-notification-prefs.js';
+import { ensureSessionFoldersSchema } from './migrations/session-folders.js';
 import { ensureOrganizationDispatchSchema } from './organization-dispatch-schema.js';
 import { repairCardSessionLinks } from './migrations/repair-card-session-links.js';
 import { repairPushCiSucceededRuns } from './migrations/repair-push-ci-succeeded-runs.js';
@@ -3608,6 +3609,7 @@ function initDb(dataDir: string): void {
   // Per-user notification prefs. The first init that creates the table also
   // folds each device's enabled_events into its owner's push switches.
   ensureUserNotificationPrefsSchema(db);
+  ensureSessionFoldersSchema(db);
   // Keep privacy/runtime identity after an organization agent is removed from its roster.
   // The session remains owned by its initiating user under normal retention.
   db.exec(`CREATE TABLE IF NOT EXISTS organization_workflow_sessions (

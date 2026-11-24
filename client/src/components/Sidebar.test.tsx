@@ -2281,3 +2281,153 @@ describe('Sidebar — pinned sessions', () => {
     expect(onTogglePinSession).toHaveBeenCalledWith('s-old', false);
   });
 });
+
+describe('Sidebar session folders', () => {
+  const rows = [
+    { id: 's-a', name: 'Alpha' },
+    { id: 's-b', name: 'Bravo' },
+    { id: 's-c', name: 'Charlie' },
+  ];
+  const folder = (id: string, name: string, position: number) => ({
+    id,
+    agentId: AGENT_ID,
+    name,
+    position,
+    createdAt: '2026-01-01 00:00:00',
+  });
+  const listing = {
+    folders: [folder('f-infra', 'Infra', 0), folder('f-empty', 'Empty', 1)],
+    assignments: { 's-b': 'f-infra' },
+  };
+  const folderHandlers = () => ({
+    onLoadSessionFolders: vi.fn(),
+    onCreateSessionFolder: vi.fn().mockResolvedValue(folder('f-new', 'New', 2)),
+    onRenameSessionFolder: vi.fn(),
+    onDeleteSessionFolder: vi.fn(),
+    onMoveSessionToFolder: vi.fn(),
+  });
+
+  beforeEach(() => localStorage.clear());
+
+  it('renders filed sessions inside their folder and the rest below', () => {
+    render(
+      <Sidebar
+        {...buildProps({
+          sessions: rows,
+          activeTaskSessionIds: {},
+          sessionFoldersByAgentId: { [AGENT_ID]: listing },
+          ...folderHandlers(),
+        })}
+      />,
+    );
+    const infra = screen.getByTestId('session-folder-f-infra');
+    expect(within(infra).getByText('Bravo')).toBeInTheDocument();
+    expect(within(infra).queryByText('Alpha')).toBeNull();
+    expect(screen.getByTestId('session-folder-f-empty')).toBeInTheDocument();
+    const list = screen.getByTestId('agent-sessions-list');
+    const names = within(list)
+      .getAllByText(/Alpha|Bravo|Charlie/)
+      .map((el) => el.textContent);
+    expect(names).toEqual(['Bravo', 'Alpha', 'Charlie']);
+  });
+
+  it('collapses a folder and hides folder controls without handlers', () => {
+    const { unmount } = render(
+      <Sidebar
+        {...buildProps({
+          sessions: rows,
+          activeTaskSessionIds: {},
+          sessionFoldersByAgentId: { [AGENT_ID]: listing },
+          ...folderHandlers(),
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('session-folder-toggle-f-infra'));
+    expect(screen.queryByText('Bravo')).toBeNull();
+    unmount();
+
+    render(
+      <Sidebar
+        {...buildProps({
+          sessions: rows,
+          activeTaskSessionIds: {},
+          sessionFoldersByAgentId: { [AGENT_ID]: listing },
+        })}
+      />,
+    );
+    expect(screen.queryByTestId('session-folder-f-infra')).toBeNull();
+    expect(screen.getByText('Bravo')).toBeInTheDocument();
+    expect(screen.queryByTestId(`session-folder-new-${AGENT_ID}`)).toBeNull();
+  });
+
+  it('moves a session through the hover menu and creates folders', async () => {
+    const handlers = folderHandlers();
+    render(
+      <Sidebar
+        {...buildProps({
+          sessions: rows,
+          activeTaskSessionIds: {},
+          sessionFoldersByAgentId: { [AGENT_ID]: listing },
+          ...handlers,
+        })}
+      />,
+    );
+    expect(handlers.onLoadSessionFolders).toHaveBeenCalledWith(AGENT_ID);
+
+    const list = screen.getByTestId('agent-sessions-list');
+    fireEvent.mouseEnter(within(list).getByText('Alpha').closest('.group') as Element);
+    fireEvent.click(screen.getByTestId('session-folder-move-s-a'));
+    const menu = screen.getByTestId('session-folder-menu-s-a');
+    fireEvent.click(within(menu).getByText('Infra'));
+    expect(handlers.onMoveSessionToFolder).toHaveBeenCalledWith(AGENT_ID, 's-a', 'f-infra');
+
+    // Filed session offers "Remove from folder".
+    fireEvent.mouseEnter(within(list).getByText('Bravo').closest('.group') as Element);
+    fireEvent.click(screen.getByTestId('session-folder-move-s-b'));
+    fireEvent.click(
+      within(screen.getByTestId('session-folder-menu-s-b')).getByText('Remove from folder'),
+    );
+    expect(handlers.onMoveSessionToFolder).toHaveBeenCalledWith(AGENT_ID, 's-b', null);
+
+    // New folder from the menu creates it and files the session.
+    fireEvent.mouseEnter(within(list).getByText('Charlie').closest('.group') as Element);
+    fireEvent.click(screen.getByTestId('session-folder-move-s-c'));
+    fireEvent.click(within(screen.getByTestId('session-folder-menu-s-c')).getByText(/New folder/));
+    const input = screen.getByTestId('session-folder-menu-new-input-s-c');
+    fireEvent.change(input, { target: { value: 'New' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(handlers.onCreateSessionFolder).toHaveBeenCalledWith(AGENT_ID, 'New');
+    await waitFor(() =>
+      expect(handlers.onMoveSessionToFolder).toHaveBeenCalledWith(AGENT_ID, 's-c', 'f-new'),
+    );
+
+    // "+ New Folder" under the list.
+    fireEvent.click(screen.getByTestId(`session-folder-new-${AGENT_ID}`));
+    const newInput = screen.getByTestId(`session-folder-new-input-${AGENT_ID}`);
+    fireEvent.change(newInput, { target: { value: 'Ops' } });
+    fireEvent.keyDown(newInput, { key: 'Enter' });
+    expect(handlers.onCreateSessionFolder).toHaveBeenCalledWith(AGENT_ID, 'Ops');
+  });
+
+  it('renames and deletes a folder', () => {
+    const handlers = folderHandlers();
+    render(
+      <Sidebar
+        {...buildProps({
+          sessions: rows,
+          activeTaskSessionIds: {},
+          sessionFoldersByAgentId: { [AGENT_ID]: listing },
+          ...handlers,
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('session-folder-rename-f-infra'));
+    const input = screen.getByTestId('session-folder-rename-input-f-infra');
+    fireEvent.change(input, { target: { value: 'Platform' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(handlers.onRenameSessionFolder).toHaveBeenCalledWith(AGENT_ID, 'f-infra', 'Platform');
+
+    fireEvent.click(screen.getByTestId('session-folder-delete-f-empty'));
+    expect(handlers.onDeleteSessionFolder).toHaveBeenCalledWith(AGENT_ID, 'f-empty');
+  });
+});

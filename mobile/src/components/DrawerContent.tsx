@@ -1,6 +1,6 @@
 import ProjectIcon from './ProjectIcon';
 import AiSignInHint from './AiSignInHint';
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -14,8 +14,11 @@ import {
   TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Pin, PinOff } from 'lucide-react-native';
+import { FolderInput, Pin, PinOff } from 'lucide-react-native';
 import { isSessionPinned, pinnedSessionsFirst } from '@shared/utils/sessionPins';
+import { groupSessionsByFolder } from '@shared/utils/sessionFolders';
+import { createUseSessionFolders } from '@shared/hooks/useSessionFolders';
+import { FolderNameField, MoveToFolderPicker, SessionFolderGroup } from './SessionFolderControls';
 import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
 import { getActiveOrg } from '../utils/orgs';
@@ -68,6 +71,8 @@ import { serverAgentDisplayName, useServerAgentSettings } from '../utils/serverA
  */
 const putCollapsedProject = (projectId: string, collapsed: boolean) =>
   api.putMySidebarCollapsedProject(projectId, collapsed);
+
+const useSessionFolders = createUseSessionFolders({ useState, useRef, useCallback });
 
 export default function DrawerContent({ navigation }: any) {
   const chatBadge = useHubChatBadge();
@@ -253,6 +258,16 @@ export default function DrawerContent({ navigation }: any) {
   // Session-list open state, independent of which agent is the active chat.
   // `collapsedAgents` (below) is the "actionable only" filter, matching web.
   const [expandedAgents, setExpandedAgents] = useState<Record<string, boolean>>({});
+  const sessionFolders = useSessionFolders(api);
+  const { loadFolders } = sessionFolders;
+  const [folderMenuSessionId, setFolderMenuSessionId] = useState<string | null>(null);
+  const [creatingFolderAgentId, setCreatingFolderAgentId] = useState<string | null>(null);
+  const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    for (const [agentId, open] of Object.entries(expandedAgents)) {
+      if (open) loadFolders(agentId);
+    }
+  }, [expandedAgents, loadFolders]);
   const [sessionsByAgentId, setSessionsByAgentId] = useState<Record<string, any[]>>({});
   const [archivedByAgentId, setArchivedByAgentId] = useState<Record<string, any[]>>({});
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
@@ -542,6 +557,107 @@ export default function DrawerContent({ navigation }: any) {
       </View>
     );
   };
+  const renderSessionRow = (session: any, agent: any) => {
+    const listing = sessionFolders.foldersByAgentId[agent.id];
+    return (
+      <React.Fragment key={session.id}>
+        <View
+          style={[styles.sessionItem, activeSessionId === session.id && styles.sessionItemActive]}
+        >
+          {editingSessionId === session.id ? (
+            <TextInput
+              style={styles.sessionRenameInput}
+              value={editingSessionName}
+              autoFocus
+              onChangeText={setEditingSessionName}
+              onSubmitEditing={() => saveSessionName(session)}
+              onBlur={() => saveSessionName(session)}
+            />
+          ) : (
+            <TouchableOpacity
+              style={styles.sessionMain}
+              onPress={() => focusSession(agent.id, session.id)}
+              onLongPress={() => confirmDeleteSession(session.id, session, agent.id)}
+              delayLongPress={400}
+            >
+              <SessionStateIcon
+                state={deriveSessionState(session, {
+                  activeTaskSessionIds: activeTasks,
+                  finalizeStatusBySession,
+                  needsInputBySession,
+                })}
+                testID={`session-state-icon-${session.id}`}
+              />
+              {isSessionPinned(session) && (
+                <Pin
+                  size={10}
+                  color={colors.gray500}
+                  testID={`session-pinned-icon-${session.id}`}
+                />
+              )}
+              <Text
+                style={[
+                  styles.sessionName,
+                  activeSessionId === session.id && styles.sessionNameActive,
+                ]}
+                numberOfLines={1}
+              >
+                {session.name}
+              </Text>
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity
+            onPress={() =>
+              setFolderMenuSessionId((cur) => (cur === session.id ? null : session.id))
+            }
+            accessibilityLabel="Move to folder"
+            testID={`session-folder-move-${session.id}`}
+            hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+            style={styles.sessionPin}
+          >
+            <FolderInput size={12} color={colors.gray600} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => togglePin({ ...session, agent_id: session.agent_id || agent.id })}
+            accessibilityLabel={isSessionPinned(session) ? 'Unpin session' : 'Pin session'}
+            testID={`session-pin-toggle-${session.id}`}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 4 }}
+            style={styles.sessionPin}
+          >
+            {isSessionPinned(session) ? (
+              <PinOff size={12} color={colors.gray400} />
+            ) : (
+              <Pin size={12} color={colors.gray600} />
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => confirmDeleteSession(session.id, session, agent.id)}
+            accessibilityLabel="Delete session"
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Text style={styles.sessionDelete}>✕</Text>
+          </TouchableOpacity>
+        </View>
+        {folderMenuSessionId === session.id && (
+          <MoveToFolderPicker
+            sessionId={session.id}
+            folders={listing?.folders ?? []}
+            currentFolderId={listing?.assignments[session.id] ?? null}
+            onClose={() => setFolderMenuSessionId(null)}
+            onMove={(folderId) => {
+              setFolderMenuSessionId(null);
+              void sessionFolders.moveSession(agent.id, session.id, folderId);
+            }}
+            onCreateAndMove={async (name) => {
+              setFolderMenuSessionId(null);
+              const folder = await sessionFolders.createFolder(agent.id, name);
+              if (folder) void sessionFolders.moveSession(agent.id, session.id, folder.id);
+            }}
+          />
+        )}
+      </React.Fragment>
+    );
+  };
   const renderAgentRow = (agent: any, project: any) => {
     if (isSidebarHiddenAgent(agent)) return null;
     const isExpanded = !!expandedAgents[agent.id];
@@ -553,6 +669,13 @@ export default function DrawerContent({ navigation }: any) {
       : agentSessions;
     const isActive = activeAgentId === agent.id;
     const review = project?.mode === 'workflow' ? null : activeReviews?.[agent.name];
+    const grouped = groupSessionsByFolder(
+      visibleSessions as any[],
+      sessionFolders.foldersByAgentId[agent.id],
+    );
+    const folderGroups = actionableOnly
+      ? grouped.folders.filter((g) => g.sessions.length > 0)
+      : grouped.folders;
     return (
       <View key={agent.id}>
         <View style={[styles.agentItem, isActive && styles.agentItemActive]}>
@@ -595,78 +718,27 @@ export default function DrawerContent({ navigation }: any) {
 
         {isExpanded && !(actionableOnly && visibleSessions.length === 0) && (
           <View style={styles.sessionsContainer} testID="agent-sessions-list">
-            {visibleSessions.map((session: any) => (
-              <View
-                key={session.id}
-                style={[
-                  styles.sessionItem,
-                  activeSessionId === session.id && styles.sessionItemActive,
-                ]}
+            {folderGroups.map((group) => (
+              <SessionFolderGroup
+                key={group.folder.id}
+                folder={group.folder}
+                count={group.sessions.length}
+                collapsed={!!collapsedFolders[group.folder.id]}
+                onToggle={() =>
+                  setCollapsedFolders((prev) => ({
+                    ...prev,
+                    [group.folder.id]: !prev[group.folder.id],
+                  }))
+                }
+                onRename={(name) =>
+                  void sessionFolders.renameFolder(agent.id, group.folder.id, name)
+                }
+                onDelete={() => void sessionFolders.deleteFolder(agent.id, group.folder.id)}
               >
-                {editingSessionId === session.id ? (
-                  <TextInput
-                    style={styles.sessionRenameInput}
-                    value={editingSessionName}
-                    autoFocus
-                    onChangeText={setEditingSessionName}
-                    onSubmitEditing={() => saveSessionName(session)}
-                    onBlur={() => saveSessionName(session)}
-                  />
-                ) : (
-                  <TouchableOpacity
-                    style={styles.sessionMain}
-                    onPress={() => focusSession(agent.id, session.id)}
-                    onLongPress={() => confirmDeleteSession(session.id, session, agent.id)}
-                    delayLongPress={400}
-                  >
-                    <SessionStateIcon
-                      state={deriveSessionState(session, {
-                        activeTaskSessionIds: activeTasks,
-                        finalizeStatusBySession,
-                        needsInputBySession,
-                      })}
-                      testID={`session-state-icon-${session.id}`}
-                    />
-                    {isSessionPinned(session) && (
-                      <Pin
-                        size={10}
-                        color={colors.gray500}
-                        testID={`session-pinned-icon-${session.id}`}
-                      />
-                    )}
-                    <Text
-                      style={[
-                        styles.sessionName,
-                        activeSessionId === session.id && styles.sessionNameActive,
-                      ]}
-                      numberOfLines={1}
-                    >
-                      {session.name}
-                    </Text>
-                  </TouchableOpacity>
-                )}
-                <TouchableOpacity
-                  onPress={() => togglePin({ ...session, agent_id: session.agent_id || agent.id })}
-                  accessibilityLabel={isSessionPinned(session) ? 'Unpin session' : 'Pin session'}
-                  testID={`session-pin-toggle-${session.id}`}
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 4 }}
-                  style={styles.sessionPin}
-                >
-                  {isSessionPinned(session) ? (
-                    <PinOff size={12} color={colors.gray400} />
-                  ) : (
-                    <Pin size={12} color={colors.gray600} />
-                  )}
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() => confirmDeleteSession(session.id, session, agent.id)}
-                  accessibilityLabel="Delete session"
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                >
-                  <Text style={styles.sessionDelete}>✕</Text>
-                </TouchableOpacity>
-              </View>
+                {group.sessions.map((session: any) => renderSessionRow(session, agent))}
+              </SessionFolderGroup>
             ))}
+            {grouped.unfiled.map((session: any) => renderSessionRow(session, agent))}
             {!actionableOnly && (
               <>
                 <View style={styles.sessionActions}>
@@ -680,6 +752,24 @@ export default function DrawerContent({ navigation }: any) {
                   >
                     <Text style={styles.newSessionText}>+ New Session</Text>
                   </TouchableOpacity>
+                  {creatingFolderAgentId === agent.id ? (
+                    <FolderNameField
+                      testID={`session-folder-new-input-${agent.id}`}
+                      onCommit={(name) => {
+                        setCreatingFolderAgentId(null);
+                        void sessionFolders.createFolder(agent.id, name);
+                      }}
+                      onCancel={() => setCreatingFolderAgentId(null)}
+                    />
+                  ) : (
+                    <TouchableOpacity
+                      style={styles.newSessionButton}
+                      onPress={() => setCreatingFolderAgentId(agent.id)}
+                      testID={`session-folder-new-${agent.id}`}
+                    >
+                      <Text style={styles.newSessionText}>+ New Folder</Text>
+                    </TouchableOpacity>
+                  )}
                   {agentSessions.length > 0 && (
                     <View style={styles.sessionBulk}>
                       <TouchableOpacity

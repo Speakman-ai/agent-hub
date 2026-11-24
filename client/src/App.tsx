@@ -288,6 +288,7 @@ import {
   type ShellMode,
 } from './utils/shellMode';
 import { useResizablePaneWidth } from './hooks/useResizablePaneWidth';
+import { useSessionFolders } from './hooks/useSessionFolders';
 import { SIDEBAR_WS_EVENT, isSidebarWsEvent } from '@shared/utils/sessionSidebar';
 import {
   migrateFromLegacy,
@@ -5973,6 +5974,8 @@ export default function App({ initialView }: any = {}) {
     );
   };
 
+  const sessionFolders = useSessionFolders();
+
   const handleTogglePinSession = async (sessionId: string, pinned: boolean) => {
     // Apply the response directly rather than waiting on the `session-updated`
     // broadcast; the sidebar re-partitions pinned rows to the top on render.
@@ -7462,6 +7465,12 @@ export default function App({ initialView }: any = {}) {
                 deletingBulk={deletingBulk}
                 onRenameSession={handleRenameSession}
                 onTogglePinSession={handleTogglePinSession}
+                sessionFoldersByAgentId={sessionFolders.foldersByAgentId}
+                onLoadSessionFolders={sessionFolders.loadFolders}
+                onCreateSessionFolder={sessionFolders.createFolder}
+                onRenameSessionFolder={sessionFolders.renameFolder}
+                onDeleteSessionFolder={sessionFolders.deleteFolder}
+                onMoveSessionToFolder={sessionFolders.moveSession}
                 onOpenOrganizationChat={handleOpenOrganizationChat}
                 hubPane={currentView === 'hub' ? hubPane : hubPaneFromLegacyView(currentView)}
                 onNavigate={(view: any, extra: any) => {

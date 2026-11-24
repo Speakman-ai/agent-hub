@@ -19,6 +19,11 @@ const testState = vi.hoisted(() => ({
     getMySidebarCollapsedProjects: vi.fn(),
     putMySidebarCollapsedProject: vi.fn(),
     deleteProject: vi.fn(),
+    getSessionFolders: vi.fn(),
+    createSessionFolder: vi.fn(),
+    renameSessionFolder: vi.fn(),
+    deleteSessionFolder: vi.fn(),
+    setSessionFolder: vi.fn(),
   },
   navGroups: (() => []) as (project?: any, agents?: any) => any[],
   app: {
@@ -69,13 +74,21 @@ vi.mock('react-native', () => ({
   ScrollView: nativeHost('ScrollView'),
   StyleSheet: { create: (styles: any) => styles },
   Text: nativeHost('Text'),
+  TextInput: nativeHost('TextInput'),
   TouchableOpacity: nativeHost('TouchableOpacity'),
   View: nativeHost('View'),
 }));
 vi.mock('react-native-safe-area-context', () => ({ SafeAreaView: nativeHost('SafeAreaView') }));
 // ProjectIcon renders lucide-react-native, which does not load under vitest.
 vi.mock('./ProjectIcon', () => ({ default: nativeHost('ProjectIcon') }));
-vi.mock('lucide-react-native', () => ({ Pin: nativeHost('Pin'), PinOff: nativeHost('PinOff') }));
+vi.mock('lucide-react-native', () => ({
+  Pin: nativeHost('Pin'),
+  PinOff: nativeHost('PinOff'),
+  Folder: nativeHost('Folder'),
+  FolderInput: nativeHost('FolderInput'),
+  FolderPlus: nativeHost('FolderPlus'),
+  Check: nativeHost('Check'),
+}));
 vi.mock('../context/AppContext', () => ({ useApp: () => testState.app }));
 vi.mock('../utils/api', () => ({ api: testState.api }));
 vi.mock('../utils/config', () => ({ getApiBaseUrl: () => '', getWsUrl: () => '' }));
@@ -678,5 +691,82 @@ describe('mobile DrawerContent pinned sessions', () => {
       await toggle.props.onPress();
     });
     expect(testState.app.handleTogglePinSession).toHaveBeenCalledWith('new', true);
+  });
+});
+
+describe('mobile DrawerContent session folders', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    testState.cacheLoad.mockResolvedValue([]);
+    testState.cacheSaverFactory.mockImplementation(() => ({ save: vi.fn(), cancel: vi.fn() }));
+    testState.api.getHealth.mockResolvedValue({});
+    testState.api.getGoogleStatus.mockResolvedValue({ connected: false });
+    testState.api.getMySidebarCollapsedProjects.mockResolvedValue({
+      sidebarCollapsedProjects: [],
+    });
+    testState.api.getSessionFolders.mockResolvedValue({
+      folders: [
+        { id: 'f1', agentId: 'agent-1', name: 'Infra', position: 0, createdAt: '2026-01-01' },
+      ],
+      assignments: { filed: 'f1' },
+    });
+    testState.api.setSessionFolder.mockResolvedValue({});
+    testState.navGroups = () => [];
+    testState.app.activeAgentId = 'agent-1';
+    (testState.app as any).sessions = [
+      { id: 'loose', agent_id: 'agent-1', name: 'Loose' },
+      { id: 'filed', agent_id: 'agent-1', name: 'Filed' },
+    ];
+  });
+
+  async function openAgent() {
+    const renderer = await renderDrawer(navigation());
+    await flush();
+    await TestRenderer.act(async () => {
+      renderer.root.findByProps({ accessibilityLabel: 'Expand Agent sessions' }).props.onPress();
+    });
+    await flush();
+    return renderer;
+  }
+
+  const textsIn = (node: any) =>
+    node
+      .findAll((n: any) => n.type === 'Text')
+      .flatMap((n: any) => [n.props.children].flat())
+      .filter((t: any) => typeof t === 'string');
+
+  it('loads folders on expand and groups filed sessions under them', async () => {
+    const renderer = await openAgent();
+    expect(testState.api.getSessionFolders).toHaveBeenCalledWith('agent-1');
+    const folder = renderer.root.findAll(
+      (n: any) => n.type === 'View' && n.props.testID === 'session-folder-f1',
+    )[0];
+    expect(textsIn(folder)).toContain('Filed');
+    expect(textsIn(folder)).not.toContain('Loose');
+  });
+
+  it('moves a session into a folder from the picker', async () => {
+    const renderer = await openAgent();
+    const move = renderer.root.findAll(
+      (n: any) => n.type === 'TouchableOpacity' && n.props.testID === 'session-folder-move-loose',
+    )[0];
+    await TestRenderer.act(async () => {
+      move.props.onPress();
+    });
+    const picker = renderer.root.findAll(
+      (n: any) => n.type === 'View' && n.props.testID === 'session-folder-menu-loose',
+    )[0];
+    const option = picker.findAll(
+      (n: any) => n.type === 'TouchableOpacity' && textsIn(n).includes('Infra'),
+    )[0];
+    await TestRenderer.act(async () => {
+      option.props.onPress();
+    });
+    await flush();
+    expect(testState.api.setSessionFolder).toHaveBeenCalledWith('loose', 'f1');
+    const folder = renderer.root.findAll(
+      (n: any) => n.type === 'View' && n.props.testID === 'session-folder-f1',
+    )[0];
+    expect(textsIn(folder)).toEqual(expect.arrayContaining(['Loose', 'Filed']));
   });
 });

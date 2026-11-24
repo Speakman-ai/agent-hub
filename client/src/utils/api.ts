@@ -16,6 +16,7 @@ import type {
   QaProjectSettingsWire,
 } from '@shared/utils/qaEnvironments';
 import type { QaSessionStateWire } from '@shared/utils/qaSessionRequest';
+import type { SessionFolderListingWire, SessionFolderWire } from '@shared/utils/sessionFolders';
 import { getApiBase, getAuthHeaders } from './connection';
 import { getToken as getJwt, clearToken, isLocalBundledDeployment } from './auth';
 import { normalizeSessionMessagesResponse } from '@shared/utils/sessionMessagesResponse';
@@ -3117,6 +3118,27 @@ export const api = {
     fetchJSON<SessionWire & Record<string, unknown>>(`/sessions/${sessionId}`, {
       method: 'PATCH',
       body: JSON.stringify({ pinned }),
+    }),
+  getSessionFolders: (agentId: string) =>
+    fetchJSON<SessionFolderListingWire>(`/agents/${encodeURIComponent(agentId)}/session-folders`),
+  createSessionFolder: (agentId: string, name: string) =>
+    fetchJSON<{ folder: SessionFolderWire }>(
+      `/agents/${encodeURIComponent(agentId)}/session-folders`,
+      { method: 'POST', body: JSON.stringify({ name }) },
+    ),
+  renameSessionFolder: (folderId: string, name: string) =>
+    fetchJSON<{ folder: SessionFolderWire }>(`/session-folders/${encodeURIComponent(folderId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    }),
+  deleteSessionFolder: (folderId: string) =>
+    fetchJSON<{ ok: true }>(`/session-folders/${encodeURIComponent(folderId)}`, {
+      method: 'DELETE',
+    }),
+  setSessionFolder: (sessionId: string, folderId: string | null) =>
+    fetchJSON<{ sessionId: string; folderId: string | null }>(`/sessions/${sessionId}/folder`, {
+      method: 'PUT',
+      body: JSON.stringify({ folderId }),
     }),
   /** Session detail with agents roster (executor + advisors). */
   getSessionDetail: (sessionId: string) =>

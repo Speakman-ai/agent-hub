@@ -17638,6 +17638,80 @@ components:
         - skippedSkills
         - ref
       description: The started session. Its first turn streams in the background.
+    SessionFolderErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope.
+    SessionFolder:
+      type: object
+      properties:
+        id:
+          type: string
+        agentId:
+          type: string
+        name:
+          type: string
+        position:
+          type: integer
+        createdAt:
+          type: string
+      required:
+        - id
+        - agentId
+        - name
+        - position
+        - createdAt
+      description: A folder in the caller's sidebar list for one agent.
+    SessionFolderListing:
+      type: object
+      properties:
+        folders:
+          type: array
+          items:
+            $ref: "#/components/schemas/SessionFolder"
+        assignments:
+          type: object
+          additionalProperties:
+            type: string
+          description: Session id to folder id for the sessions the caller has filed.
+      required:
+        - folders
+        - assignments
+      description: The caller's folders for one agent and which sessions are in them.
+    CreateSessionFolderRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+      required:
+        - name
+      additionalProperties: false
+    RenameSessionFolderRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+      required:
+        - name
+      additionalProperties: false
+    SetSessionFolderRequest:
+      type: object
+      properties:
+        folderId:
+          type: string
+          nullable: true
+          description: Folder to file the session into, or null to unfile it.
+      required:
+        - folderId
+      additionalProperties: false
     SessionPoller:
       type: object
       properties:
@@ -64873,6 +64947,225 @@ paths:
                     type: string
                 required:
                   - error
+  /api/agents/{agentId}/session-folders:
+    get:
+      tags:
+        - Sessions
+      summary: List the caller's session folders for an agent
+      parameters:
+        - schema:
+            type: string
+            description: Agent id.
+          required: true
+          description: Agent id.
+          name: agentId
+          in: path
+      responses:
+        "200":
+          description: Folders in display order plus session filing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionFolderListing"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionFolderErrorResponse"
+        "404":
+          description: Agent, folder, or session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionFolderErrorResponse"
+    post:
+      tags:
+        - Sessions
+      summary: Create a session folder
+      parameters:
+        - schema:
+            type: string
+            description: Agent id.
+          required: true
+          description: Agent id.
+          name: agentId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSessionFolderRequest"
+      responses:
+        "201":
+          description: Folder created at the end of the list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  folder:
+                    $ref: "#/components/schemas/SessionFolder"
+                required:
+                  - folder
+        "400":
+          description: Invalid body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionFolderErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionFolderErrorResponse"
+        "404":
+          description: Agent, folder, or session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionFolderErrorResponse"
+  /api/session-folders/{folderId}:
+    patch:
+      tags:
+        - Sessions
+      summary: Rename a session folder
+      parameters:
+        - schema:
+            type: string
+            description: Session folder id.
+          required: true
+          description: Session folder id.
+          name: folderId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RenameSessionFolderRequest"
+      responses:
+        "200":
+          description: Renamed folder.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  folder:
+                    $ref: "#/components/schemas/SessionFolder"
+                required:
+                  - folder
+        "400":
+          description: Invalid body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionFolderErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionFolderErrorResponse"
+        "404":
+          description: Agent, folder, or session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionFolderErrorResponse"
+    delete:
+      tags:
+        - Sessions
+      summary: Delete a session folder
+      description: Sessions in the folder are kept and return to the unfiled list.
+      parameters:
+        - schema:
+            type: string
+            description: Session folder id.
+          required: true
+          description: Session folder id.
+          name: folderId
+          in: path
+      responses:
+        "200":
+          description: Folder deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionFolderErrorResponse"
+        "404":
+          description: Agent, folder, or session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionFolderErrorResponse"
+  /api/sessions/{sessionId}/folder:
+    put:
+      tags:
+        - Sessions
+      summary: Move a session into a folder or out of one
+      description: Filing is per user. The folder must belong to the caller and the session's agent.
+      parameters:
+        - schema:
+            type: string
+            description: Chat session id.
+          required: true
+          description: Chat session id.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetSessionFolderRequest"
+      responses:
+        "200":
+          description: Session filing after the change.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId:
+                    type: string
+                  folderId:
+                    type: string
+                    nullable: true
+                required:
+                  - sessionId
+                  - folderId
+        "400":
+          description: Invalid body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionFolderErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionFolderErrorResponse"
+        "404":
+          description: Agent, folder, or session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionFolderErrorResponse"
   /api/sessions/{sessionId}/pollers:
     get:
       summary: List session pollers

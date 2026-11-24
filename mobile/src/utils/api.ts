@@ -247,6 +247,25 @@ export const api = {
       body: JSON.stringify({ pinned }),
     }),
   getSessionDetail: (sessionId: any) => fetchJSON(`/sessions/${sessionId}`),
+  getSessionFolders: (agentId: string) =>
+    fetchJSON(`/agents/${encodeURIComponent(agentId)}/session-folders`),
+  createSessionFolder: (agentId: string, name: string) =>
+    fetchJSON(`/agents/${encodeURIComponent(agentId)}/session-folders`, {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+  renameSessionFolder: (folderId: string, name: string) =>
+    fetchJSON(`/session-folders/${encodeURIComponent(folderId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    }),
+  deleteSessionFolder: (folderId: string) =>
+    fetchJSON(`/session-folders/${encodeURIComponent(folderId)}`, { method: 'DELETE' }),
+  setSessionFolder: (sessionId: string, folderId: string | null) =>
+    fetchJSON(`/sessions/${sessionId}/folder`, {
+      method: 'PUT',
+      body: JSON.stringify({ folderId }),
+    }),
   updateSession: (sessionId: any, data: any) =>
     fetchJSON(`/sessions/${sessionId}`, {
       method: 'PATCH',
