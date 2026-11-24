@@ -4540,6 +4540,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       const committable = shouldPinLocalCommitReminder({
         hasWorktree: cwdIsOwnWorktree,
         askMode: readOnlyCliSession,
+        blockCodeMutationTools: cliAccess.blockCodeMutationTools,
       });
       if (engine === 'cursor-agent') {
         // Cursor has no --system-prompt-file, no stdin, and no per-invocation
@@ -5086,6 +5087,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         }
         applySessionGitGuards(base, session!.worktree_path, {
           noGuardrails: sessionRunsWithoutGuardrails(project as Project, session),
+          blockGitWrites: cliAccess.blockGitWrites,
         });
         return base;
       })();

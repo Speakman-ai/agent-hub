@@ -62,6 +62,7 @@ import {
   hasCommitNudgeSinceLastUser,
   shouldNudgeUncommittedCommit,
 } from './local-commit-reminder.js';
+import { isNonShippingSessionBehavior } from './session-mode.js';
 
 /** Max full check passes (initial + post-heal retries). */
 const DEFAULT_CHECK_HEAL_MAX_ROUNDS = 2;
@@ -2885,7 +2886,7 @@ export async function autoCommitAndPR(
             hasUncommitted: changes.hasUncommitted,
             hasUnpushed: changes.hasUnpushed,
             allowFinalizeAutoStart,
-            askMode: Number(sessionRow.ask_mode ?? 0) !== 0,
+            askMode: isNonShippingSessionBehavior(sessionRow),
             alreadyNudged,
             awaitingAsk,
             role: agent.role,

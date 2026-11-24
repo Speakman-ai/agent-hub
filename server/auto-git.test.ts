@@ -879,6 +879,60 @@ describe('autoCommitAndPR — ad-hoc session with existing PR (no auto-push)', (
     );
   });
 
+  it('never nudges a non-shipping Orchestrate session to commit', async () => {
+    const triggerUncommittedCommitNudge = vi.fn().mockResolvedValue({ ok: true });
+    initAutoGit({
+      stmts: {
+        getKanbanCardBySession: { get: vi.fn(() => undefined) },
+        getSession: {
+          get: vi.fn(() => ({
+            id: 'sess-orch',
+            name: 'Plan the release',
+            ask_mode: 0,
+            session_mode: 'orchestrate',
+            agent_id: 'agent-1',
+            worktree_path: '/worktree',
+          })),
+        },
+        getMessages: { all: vi.fn(() => [{ role: 'user', metadata: null }]) },
+        updateSessionChangesReady: { run: vi.fn() },
+        clearSessionChangesReady: { run: vi.fn() },
+      } as never,
+      broadcast: vi.fn(),
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/skills',
+      triggerUncommittedCommitNudge,
+    });
+
+    installExecAndGhMock(
+      (
+        cmd: string,
+        _opts: Record<string, unknown>,
+        callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
+      ) => {
+        const ok = (stdout: string) => callback?.(null, { stdout, stderr: '' });
+        if (cmd.includes('git remote -v'))
+          return ok('origin\thttps://github.com/test/repo.git (fetch)\n');
+        if (cmd.includes('git status --porcelain')) return ok('M server/foo.ts\n');
+        if (cmd.includes('git log @{upstream}..HEAD')) return ok('');
+        if (cmd.includes('git rev-parse --abbrev-ref HEAD')) return ok('feature/nudge\n');
+        return ok('');
+      },
+    );
+
+    await autoCommitAndPR(
+      'sess-orch',
+      'agent-1',
+      { id: 'test', cwd: '/repo', githubRepo: 'test/repo' } as never,
+      { name: 'test-agent', role: 'dev' } as never,
+      '/worktree',
+      '',
+    );
+    await Promise.resolve();
+
+    expect(triggerUncommittedCommitNudge).not.toHaveBeenCalled();
+  });
+
   it('does not re-nudge when a commit_nudge exists since the last user message', async () => {
     const triggerUncommittedCommitNudge = vi.fn().mockResolvedValue({ ok: true });
     const mockStmtsAdHoc = {

@@ -1,14 +1,351 @@
 #!/bin/sh
 # Agent Hub spawn guard — wraps `git` for spawned session agents to:
 #   1. block branch creation / switching inside a session worktree
-#      (the one-session-one-branch invariant), and
-#   2. block `git push` when Finalize disallows direct ship.
+#      (the one-session-one-branch invariant),
+#   2. block every repository or file write in sessions that must not change
+#      code (AGENT_HUB_BLOCK_GIT_WRITES=1, e.g. Orchestrate), and
+#   3. block `git push` when Finalize disallows direct ship.
 # Transparent passthrough for every other invocation.
+#
+# These are guardrails on the git command, not a sandbox: Bash can still
+# write files or run another git binary directly.
+#
+# How the command is read. Git accepts several spellings of the same thing:
+# global options before the command (`-C dir`, `-c k=v`), combined short
+# flags (`-qd` is `-q -d`), unambiguous long-option prefixes (`--del` is
+# `--delete`), and aliases. Every check below goes through the helpers in
+# this section so it sees what git will actually run:
+#   - the command is found past global options and expanded through aliases
+#     the same way git does (an alias never replaces an existing command);
+#   - `_has_short` matches a letter anywhere in a short-flag cluster;
+#   - `_has_long` matches any prefix git would accept for a long option;
+#   - `_opts_only` passes only when EVERY option is on an allowlist, so a
+#     spelling nobody listed is refused rather than let through.
 GUARD_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck source=/dev/null
 . "$GUARD_DIR/_finalize-ship-gate.sh"
 
 REAL_GIT="${AGENT_HUB_REAL_GIT:-git}"
+
+_protect=0
+if [ "${AGENT_HUB_PROTECT_SESSION_BRANCH:-}" = "1" ] && [ "${AGENT_HUB_ALLOW_BRANCH_OPS:-}" != "1" ]; then
+  _protect=1
+fi
+_block=0
+[ "${AGENT_HUB_BLOCK_GIT_WRITES:-}" = "1" ] && _block=1
+_ship=0
+if [ -n "${AGENT_HUB_SESSION_ID:-}" ] && [ "${AGENT_HUB_NO_GUARDRAILS:-}" != "1" ]; then
+  _ship=1
+fi
+# A write-blocked session clears the environment that makes git write
+# trace files, run a named program or fetch, before the shim starts any git
+# process of its own (alias and config lookups), not only the final one.
+if [ "$_block" = "1" ]; then
+  for _v in $(env | sed -n 's/^\(GIT_TRACE[A-Za-z0-9_]*\)=.*/\1/p'); do
+    unset "$_v"
+  done
+  unset GIT_EXTERNAL_DIFF GIT_SSH GIT_SSH_COMMAND GIT_SSH_VARIANT GIT_ASKPASS \
+    SSH_ASKPASS GIT_PROXY_COMMAND PAGER GIT_PAGER GIT_EDITOR EDITOR VISUAL
+  GIT_NO_LAZY_FETCH=1
+  # Trace2 takes its targets only from system / global config and these
+  # variables (a -c override is ignored), so the variables are set to 0
+  # rather than left unset, which would expose a global trace2.*Target.
+  GIT_TRACE2=0
+  GIT_TRACE2_EVENT=0
+  GIT_TRACE2_PERF=0
+  export GIT_NO_LAZY_FETCH GIT_TRACE2 GIT_TRACE2_EVENT GIT_TRACE2_PERF
+fi
+
+if [ "$_protect" = "0" ] && [ "$_block" = "0" ] && [ "$_ship" = "0" ]; then
+  exec "$REAL_GIT" "$@"
+fi
+
+# ── Command parse ───────────────────────────────────────────────────
+# Rule for everything below: when the shim cannot tell exactly how git will
+# read a command, it refuses instead of guessing. Unknown global options,
+# aliases in write-blocked sessions, and quoted aliases for guarded commands
+# are refused rather than approximated.
+#
+#   _sub        the command after alias expansion (empty for `git --version`)
+#   _first      the first word after the command, raw (subcommand slot)
+#   _sub2       the first positional after the command, before `--`
+#   _npos       positionals after the command, including paths after `--`
+#   _after      options after the command and before `--`, one per line
+#               (newline-delimited, so an argument with spaces stays one
+#               argument; see _split_begin)
+#   _nglobal    how many leading arguments are global options
+#   _bad_global a global option write-blocked sessions refuse
+#   _refuse     why the shim cannot verify this command (refused when set)
+_sub=""
+_nglobal=0
+_bad_global=""
+_refuse=""
+
+# Classify one word in global-option position (git.c handle_options). Sets
+# _gkind to flag, value (the next word is its value), or command.
+_global_kind() {
+  case "$1" in
+    # --exec-path points git at other helper binaries; --help runs the
+    # man / web viewer.
+    --exec-path | --exec-path=* | --help)
+      _bad_global="$1"
+      _gkind=flag
+      ;;
+    -C | -c | --git-dir | --work-tree | --namespace | --super-prefix | --config-env | --shallow-file | --attr-source)
+      _gkind=value
+      ;;
+    --git-dir=* | --work-tree=* | --namespace=* | --super-prefix=* | --config-env=* | --shallow-file=* | --attr-source=* | --list-cmds=*)
+      _gkind=flag
+      ;;
+    -p | --paginate | -P | --no-pager | --bare | --no-replace-objects | --literal-pathspecs | --no-literal-pathspecs | --glob-pathspecs | --noglob-pathspecs | --icase-pathspecs | --no-optional-locks | --no-advice | -h | --version | -v | --html-path | --man-path | --info-path)
+      _gkind=flag
+      ;;
+    -*)
+      # A global option the shim does not know could take the next word as
+      # its value, and then the command is not what it looks like.
+      [ -n "$_refuse" ] || _refuse="unknown global option $1"
+      _gkind=flag
+      ;;
+    *) _gkind=command ;;
+  esac
+}
+
+# _gq holds the caller's global options, shell-quoted, so the shim's own
+# lookups (_git) see the same repository and config the command will.
+_gq=""
+_quote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+_git() {
+  eval '"$REAL_GIT" '"$_gq"' "$@"'
+}
+
+_skip_next=0
+for _a in "$@"; do
+  if [ "$_skip_next" = "1" ]; then
+    _skip_next=0
+    _nglobal=$((_nglobal + 1))
+    _gq="$_gq $(_quote "$_a")"
+    continue
+  fi
+  _global_kind "$_a"
+  [ "$_gkind" = "command" ] || _gq="$_gq $(_quote "$_a")"
+  case "$_gkind" in
+    command)
+      _sub="$_a"
+      break
+      ;;
+    value) _skip_next=1 ;;
+  esac
+  _nglobal=$((_nglobal + 1))
+done
+
+# Aliases are not run in guarded sessions. Git resolves an alias with its
+# own quoting rules, through chains of any length, and with `-c` options
+# inside an expansion that change the config the next lookup sees. Every
+# attempt to mirror that left a gap, so the shim no longer expands aliases:
+# if the command word names an alias, the command is refused. Git only
+# consults aliases for names that are not commands (a builtin or a
+# `git-<name>` helper), so the same rule decides here; a name like
+# `status` always runs the builtin. The lookup uses the caller's global
+# options, so `-c alias.x=…` counts.
+_alias_name=""
+if [ -n "$_sub" ]; then
+  case "$_sub" in
+    add | branch | checkout | cherry-pick | clone | commit | config | diff | fetch | grep | log | merge | pull | push | rebase | remote | reset | restore | rev-parse | show | stash | status | switch | symbolic-ref | tag | worktree) : ;;
+    *)
+      _alias_val=$(_git config --get "alias.$_sub" 2>/dev/null) || _alias_val=""
+      if [ -n "$_alias_val" ] &&
+        ! "$REAL_GIT" --list-cmds=builtins,main,others 2>/dev/null | grep -qxF -- "$_sub"; then
+        _alias_name="$_sub"
+      fi
+      ;;
+  esac
+fi
+
+_first=""
+_have_first=0
+_sub2=""
+_npos=0
+# Option arguments are kept one per line so a value with spaces
+# (`--format= --list `) is checked as the single argument git receives,
+# never as several words. An option argument holding a newline cannot be
+# kept apart that way and is refused.
+_NL='
+'
+_after="$_NL"
+_ddash=0
+_value_next=0
+# Options of the command that take the NEXT word as their value, so that
+# word is neither an option nor a positional (`git branch --format -d x`
+# formats with "-d" and creates x). Only listed where a check depends on it;
+# anywhere else a value is over-counted, which only ever refuses more.
+_takes_value() {
+  case "$_sub:$1" in
+    branch:--fo | branch:--for | branch:--form | branch:--forma | branch:--format | branch:--so | branch:--sor | branch:--sort)
+      return 0
+      ;;
+  esac
+  return 1
+}
+_scan_word() {
+  if [ "$_have_first" = "0" ]; then
+    _first="$1"
+    _have_first=1
+  fi
+  if [ "$_value_next" = "1" ]; then
+    _value_next=0
+    return
+  fi
+  if [ "$_ddash" = "1" ]; then
+    # `--` may not have ended the options: it can be the value of the
+    # option before it (`grep -e -- --open-files-in-pager=…`), and then git
+    # reads what follows as options. Rather than track every option that
+    # takes a value, an argument starting with '-' after a `--` is refused.
+    # If `--` was the separator, that only costs passing a path that starts
+    # with '-'; if it was a value, the hidden option is caught.
+    case "$1" in
+      -?*) [ -n "$_refuse" ] || _refuse="an argument starting with '-' after --" ;;
+    esac
+    _npos=$((_npos + 1))
+    return
+  fi
+  case "$1" in
+    --) _ddash=1 ;;
+    -?*)
+      case "$1" in
+        *"$_NL"*) [ -n "$_refuse" ] || _refuse="an option argument containing a newline" ;;
+      esac
+      _after="$_after$1$_NL"
+      _takes_value "$1" && _value_next=1
+      ;;
+    *)
+      _npos=$((_npos + 1))
+      [ -z "$_sub2" ] && _sub2="$1"
+      ;;
+  esac
+}
+_i=0
+for _a in "$@"; do
+  _i=$((_i + 1))
+  [ "$_i" -le $((_nglobal + 1)) ] && continue
+  _scan_word "$_a"
+done
+
+# Split _after on newlines only, with globbing off. Every loop over
+# _after goes between these two, so no helper ever sees a partial argument.
+_split_begin() {
+  _saved_ifs=$IFS
+  IFS=$_NL
+  set -f
+}
+_split_end() {
+  IFS=$_saved_ifs
+  set +f
+}
+
+# True when any option after the command is exactly one of the arguments.
+_has_flag() {
+  for _f in "$@"; do
+    case "$_after" in *"$_NL$_f$_NL"*) return 0 ;; esac
+  done
+  return 1
+}
+
+# True when a short-flag cluster (`-x`, `-qx`, `-xvalue`) holds any of the
+# given letters.
+_has_short() {
+  _split_begin
+  for _w in $_after; do
+    case "$_w" in
+      --*) continue ;;
+    esac
+    for _l in "$@"; do
+      case "$_w" in
+        -*"$_l"*)
+          _split_end
+          return 0
+          ;;
+      esac
+    done
+  done
+  _split_end
+  return 1
+}
+
+# True when a long option is a prefix git would accept for one of the given
+# names. Each argument is "<shortest-unique-prefix>:<full-name>", e.g.
+# "--del:--delete": `--del`, `--dele` … `--delete` and `--delete=…` match.
+_has_long() {
+  _split_begin
+  for _w in $_after; do
+    case "$_w" in
+      --?*) : ;;
+      *) continue ;;
+    esac
+    _name="${_w%%=*}"
+    for _spec in "$@"; do
+      _min="${_spec%%:*}"
+      _full="${_spec#*:}"
+      case "$_name" in
+        "$_min"*)
+          case "$_full" in
+            "$_name"*)
+              _split_end
+              return 0
+              ;;
+          esac
+          ;;
+      esac
+    done
+  done
+  _split_end
+  return 1
+}
+
+# True when EVERY option after the command matches one of the patterns.
+_opts_only() {
+  _split_begin
+  for _w in $_after; do
+    _m=0
+    for _p in "$@"; do
+      # shellcheck disable=SC2254
+      case "$_w" in
+        $_p)
+          _m=1
+          break
+          ;;
+      esac
+    done
+    if [ "$_m" = "0" ]; then
+      _split_end
+      return 1
+    fi
+  done
+  _split_end
+  return 0
+}
+
+if [ -n "$_refuse" ]; then
+  cat >&2 <<UNVERIFIED
+error: git blocked: cannot verify this command (${_refuse}).
+
+The Agent Hub session guards refuse a git command they cannot read
+exactly. Spell the command out without aliases or unusual global options.
+UNVERIFIED
+  exit 5
+fi
+
+if [ -n "$_alias_name" ]; then
+  cat >&2 <<ALIAS
+error: git ${_alias_name} blocked: git aliases do not run in Agent Hub sessions.
+
+'${_alias_name}' is an alias. The session guards check the command git
+will run, and an alias hides it. Run the git command it stands for
+directly.
+ALIAS
+  exit 5
+fi
 
 # ── (1) One-session-one-branch invariant ────────────────────────────
 # A session worktree is created once on a dedicated branch and the
@@ -18,54 +355,61 @@ REAL_GIT="${AGENT_HUB_REAL_GIT:-git}"
 # Active for any worktree-backed session (AGENT_HUB_PROTECT_SESSION_BRANCH=1),
 # regardless of whether Finalize CI is configured. Operator override:
 # AGENT_HUB_ALLOW_BRANCH_OPS=1.
-if [ "${AGENT_HUB_PROTECT_SESSION_BRANCH:-}" = "1" ] && [ "${AGENT_HUB_ALLOW_BRANCH_OPS:-}" != "1" ]; then
+# `git checkout x` / `git switch x` create local branch x when only a
+# remote has it (--guess, on by default).
+_dwim_creates() {
+  [ -n "$_sub2" ] || return 1
+  _has_long --no-g:--no-guess --det:--detach && return 1
+  [ "$_sub" = "switch" ] && _has_short d && return 1
+  _git rev-parse --verify --quiet "refs/heads/$_sub2" >/dev/null 2>&1 && return 1
+  [ -n "$(_git for-each-ref --format='%(refname)' "refs/remotes/*/$_sub2" 2>/dev/null)" ]
+}
+
+if [ "$_protect" = "1" ]; then
   _blocked=""
-  case "$1" in
+  case "$_sub" in
     checkout)
-      for _a in "$@"; do
-        case "$_a" in
-          -b | -B)
-            _blocked="git checkout $_a"
-            break
-            ;;
-        esac
-      done
+      if _has_short b B t || _has_long --or:--orphan --tr:--track; then
+        _blocked="git checkout -b"
+      elif _dwim_creates; then
+        _blocked="git checkout $_sub2 (creates a local branch from a remote one)"
+      fi
       ;;
     switch)
-      for _a in "$@"; do
-        case "$_a" in
-          -c | -C | --create | --force-create)
-            _blocked="git switch $_a"
-            break
-            ;;
-        esac
-      done
+      if _has_short c C t || _has_long --cr:--create --force-c:--force-create \
+        --or:--orphan --tr:--track; then
+        _blocked="git switch -c"
+      elif _dwim_creates; then
+        _blocked="git switch $_sub2 (creates a local branch from a remote one)"
+      fi
+      ;;
+    worktree)
+      # A second worktree checks out (and by default creates) another branch.
+      [ "$_first" = "add" ] && _blocked="git worktree add"
       ;;
     branch)
-      # `git branch <name>` creates a branch; read / delete / move / list
-      # / config forms are allowed. Detect a bare positional name with no
-      # management flag. (Do not `shift` — it would corrupt the exec below.)
-      _has_name=0
-      _is_mgmt=0
-      _i=0
-      for _a in "$@"; do
-        _i=$((_i + 1))
-        [ "$_i" -eq 1 ] && continue # skip the "branch" token itself
-        case "$_a" in
-          -d | -D | --delete | -m | -M | --move | -c | -C | --copy | -l | --list | -a | --all | -r | --remotes | --show-current | --edit-description | --set-upstream-to=* | -u | --unset-upstream | --contains | --no-contains | --merged | --no-merged | -v | -vv | --verbose | --format=* | --sort=* | --color* | --column* | --no-column | --points-at*)
-            _is_mgmt=1
-            ;;
-          -*) : ;; # any other flag: ignore
-          *) _has_name=1 ;;
-        esac
-      done
-      if [ "$_is_mgmt" = "0" ] && [ "$_has_name" = "1" ]; then
-        _blocked="git branch <new-branch>"
+      # `git branch <name>` creates a branch, copying one (`-c`) creates
+      # one, and renaming (`-m`) moves the session branch. Other modes with
+      # a positional (list, delete, upstream, description, show-current,
+      # the --contains / --merged / --points-at filters) are allowed.
+      # Verbosity is not one of them: `git branch -v new` creates `new`.
+      if [ "$_npos" -gt 0 ]; then
+        if _has_short c C || _has_long --cop:--copy; then
+          _blocked="git branch --copy"
+        elif _has_short m M || _has_long --mo:--move; then
+          _blocked="git branch --move"
+        elif ! _has_short d D l u \
+          && ! _has_long --d:--delete --l:--list \
+            --u:--unset-upstream --set-u:--set-upstream-to --sh:--show-current \
+            --e:--edit-description --con:--contains --no-con:--no-contains \
+            --me:--merged --no-me:--no-merged --p:--points-at; then
+          _blocked="git branch <new-branch>"
+        fi
       fi
       ;;
   esac
   if [ -n "$_blocked" ]; then
-    _cur=$("$REAL_GIT" symbolic-ref --short HEAD 2>/dev/null) || _cur="your session branch"
+    _cur=$(_git symbolic-ref --short HEAD 2>/dev/null) || _cur="your session branch"
     [ -n "$_cur" ] || _cur="your session branch"
     cat >&2 <<BR
 error: ${_blocked} blocked — Agent Hub sessions use exactly one branch.
@@ -81,9 +425,429 @@ BR
   fi
 fi
 
-# ── (2) Direct-ship gate ────────────────────────────────────────────
-if [ "$1" = "push" ]; then
+# ── (2) No-code-change sessions ────────────────────────────────────
+# Orchestrate sessions plan and start worker sessions; code changes belong
+# in those workers. No git invocation may write the repository (objects,
+# refs, index, working tree, config) or any other file, or run a program.
+#
+# Everything here is an allowlist, so a spelling nobody listed is refused
+# rather than let through:
+#   - Commands: only ones that read. Anything else is refused. Left out on
+#     purpose because no option list makes them safe: fetch (writes refs
+#     from --refmap / remote.*.fetch), ls-remote and `remote show` without
+#     -n (run remote.*.uploadpack), verify-commit / verify-tag (run
+#     gpg.program), help and --help (run the man/web viewer), range-diff and
+#     `stash show` (diff machinery the shim does not pass its overrides to).
+#   - Options: every option of every allowed command must be on that
+#     command's list (_read_opts). Long options match exactly, so git's
+#     abbreviations are refused. Short clusters may only hold that command's
+#     listed letters, so `-O<pager>` in grep or any unlisted letter is
+#     refused. Write-capable and program-running options (--output,
+#     --ext-diff, --textconv, --filters, -O / --open-files-in-pager,
+#     --show-signature, --dirty, --upload-pack) are simply not listed.
+#   - Config and environment that make a read run a program or write are
+#     switched off at exec time (see "Allowed reads" below).
+
+# True when every option after the command is allowed: a long option that
+# matches one of the patterns, or a short cluster made only of the letters
+# in $1. Option values passed as separate words are not options and are
+# not checked; one that starts with '-' is checked like an option, which
+# only ever refuses more.
+_read_opts() {
+  _letters="$1"
+  shift
+  _split_begin
+  for _w in $_after; do
+    case "$_w" in
+      --*)
+        _m=0
+        for _p in "$@"; do
+          # shellcheck disable=SC2254
+          case "$_w" in
+            $_p)
+              _m=1
+              break
+              ;;
+          esac
+        done
+        if [ "$_m" = "0" ]; then
+          _bad_opt=" $_w"
+          _split_end
+          return 1
+        fi
+        ;;
+      -?*)
+        _r="${_w#-}"
+        while [ -n "$_r" ]; do
+          _c="${_r%"${_r#?}"}"
+          _r="${_r#?}"
+          case "$_letters" in
+            *"$_c"*) : ;;
+            *)
+              _bad_opt=" -$_c"
+              _split_end
+              return 1
+              ;;
+          esac
+        done
+        ;;
+    esac
+  done
+  _split_end
+  return 0
+}
+
+if [ "$_block" = "1" ]; then
+  _ok=0
+  _bad_opt=""
+  _refs='--contains --contains=* --no-contains --no-contains=* --merged --merged=* --no-merged --no-merged=* --points-at --points-at=*'
+  _fmt='--sort=* --format=* --color --color=* --no-color --column --column=* --no-column -i --ignore-case'
+  # Revision walking and diff output shared by log, show, diff and the
+  # diff-* plumbing. None of these write or run anything.
+  _revs='--all --branches --branches=* --tags --tags=* --remotes --remotes=* --exclude=* --not --since=* --until=* --after=* --before=* --author=* --committer=* --grep=* --all-match --invert-grep --regexp-ignore-case --extended-regexp --fixed-strings --perl-regexp --basic-regexp --max-count=* --skip=* --merges --no-merges --min-parents=* --max-parents=* --first-parent --ancestry-path --simplify-by-decoration --full-history --follow --reverse --topo-order --date-order --author-date-order --boundary --left-right --left-only --right-only --cherry --cherry-pick --cherry-mark --graph --no-walk --no-walk=* --do-walk --parents --children --walk-reflogs --merge --count --objects --objects-edge --no-object-names --timestamp --in-commit-order'
+  _pretty='--oneline --pretty --pretty=* --format=* --abbrev-commit --no-abbrev-commit --abbrev --abbrev=* --no-abbrev --date=* --relative-date --decorate --decorate=* --no-decorate --source --mailmap --use-mailmap --no-mailmap --log-size --notes --notes=* --no-notes --show-notes --show-notes=* --encoding=* --expand-tabs --expand-tabs=* --no-expand-tabs --show-linear-break --show-linear-break=* --color --color=* --no-color'
+  _diffo='--patch --no-patch --unified=* --raw --patch-with-raw --stat --stat=* --numstat --shortstat --dirstat --dirstat=* --compact-summary --summary --name-only --name-status --submodule --submodule=* --word-diff --word-diff=* --word-diff-regex=* --color-words --color-words=* --color-moved --color-moved=* --no-color-moved --color-moved-ws=* --no-renames --rename-empty --no-rename-empty --check --full-index --binary --find-renames --find-renames=* --find-copies --find-copies=* --find-copies-harder --break-rewrites --break-rewrites=* --irreversible-delete --diff-filter=* --pickaxe-all --pickaxe-regex --relative --relative=* --no-relative --text --ignore-cr-at-eol --ignore-space-at-eol --ignore-space-change --ignore-all-space --ignore-blank-lines --ignore-matching-lines=* --inter-hunk-context=* --function-context --exit-code --quiet --no-ext-diff --no-textconv --ignore-submodules --ignore-submodules=* --src-prefix=* --dst-prefix=* --no-prefix --default-prefix --line-prefix=* --minimal --patience --histogram --anchored=* --diff-algorithm=* --indent-heuristic --no-indent-heuristic --full-diff --combined-all-paths --diff-merges=off --diff-merges=none --diff-merges=on --diff-merges=first-parent --diff-merges=1 --diff-merges=separate --diff-merges=m --diff-merges=combined --diff-merges=c --diff-merges=dense-combined --diff-merges=cc --no-diff-merges --cc --dd --root --no-commit-id --always --cached --staged --merge-base --no-index --ours --theirs --base --ita-invisible-in-index --ita-visible-in-index --stdin'
+  # Short letters for the same family; digits cover -5, -U3, -M50%, …
+  _diffs='0123456789pusznwbatrRMCBDlWiEFPmcUSGLvhX123'
+  case "$_sub" in
+    "")
+      # `git --version` and friends; --help is refused (it runs a viewer).
+      case "$_bad_global" in "") _ok=1 ;; esac
+      ;;
+    log | show | whatchanged | diff | diff-tree | diff-index | diff-files | rev-list)
+      set -f
+      # shellcheck disable=SC2086
+      _read_opts "$_diffs" $_revs $_pretty $_diffo && _ok=1
+      set +f
+      ;;
+    status)
+      _read_opts 'sbvuz' --short --branch --porcelain '--porcelain=*' --long --verbose \
+        --show-stash --untracked-files '--untracked-files=*' --ignored '--ignored=*' \
+        --ignore-submodules '--ignore-submodules=*' --column '--column=*' --no-column \
+        --ahead-behind --no-ahead-behind --renames --no-renames '--find-renames=*' --null \
+        && _ok=1
+      ;;
+    grep)
+      # -O / --open-files-in-pager runs a program on the matches.
+      _read_opts '0123456789niwlLcvEFPGIhHzoqrxefABCmpWa' --cached --untracked \
+        --no-index --exclude-standard --no-exclude-standard --recurse-submodules --text \
+        --ignore-case --word-regexp --invert-match --full-name --extended-regexp \
+        --basic-regexp --fixed-strings --perl-regexp --line-number --column \
+        --files-with-matches --name-only --files-without-match --null --only-matching \
+        --count --color '--color=*' --no-color --break --heading --show-function \
+        --function-context '--context=*' '--after-context=*' '--before-context=*' \
+        '--threads=*' '--max-depth=*' '--max-count=*' --and --or --not --all-match \
+        --quiet --recursive --no-recursive --no-textconv && _ok=1
+      ;;
+    blame | annotate)
+      _read_opts '0123456789seltwbnfcpMCL' --porcelain --line-porcelain --incremental \
+        --show-stats --show-name --show-number --show-email --root --reverse \
+        --first-parent '--date=*' '--abbrev=*' --color-lines --color-by-age \
+        --no-textconv --minimal --progress --no-progress '--ignore-rev=*' && _ok=1
+      ;;
+    shortlog)
+      _read_opts 'snecw0123456789' --summary --numbered --email --committer \
+        '--format=*' '--group=*' --all --branches --tags --remotes && _ok=1
+      ;;
+    describe)
+      # --dirty / --broken refresh (and so write) the index.
+      _read_opts '' --all --tags --contains '--abbrev=*' '--candidates=*' --exact-match \
+        --long '--match=*' '--exclude=*' --always --first-parent && _ok=1
+      ;;
+    rev-parse)
+      _read_opts 'q' --verify --quiet --short '--short=*' --abbrev-ref '--abbrev-ref=*' \
+        --symbolic --symbolic-full-name --show-toplevel --show-prefix --show-cdup \
+        --git-dir --absolute-git-dir --git-common-dir --is-inside-work-tree \
+        --is-inside-git-dir --is-bare-repository --is-shallow-repository --all \
+        --branches '--branches=*' --tags '--tags=*' --remotes '--remotes=*' --default \
+        --git-path --show-superproject-working-tree --show-object-format \
+        '--show-object-format=*' '--path-format=*' --sq --not '--since=*' '--until=*' \
+        && _ok=1
+      ;;
+    ls-files)
+      _read_opts 'cdmoiskutvfzxX' --cached --deleted --modified --others --ignored \
+        --stage --unmerged --killed --directory --no-empty-directory '--exclude=*' \
+        '--exclude-from=*' --exclude-standard --error-unmatch --full-name \
+        --recurse-submodules --abbrev '--abbrev=*' --eol '--format=*' --deduplicate \
+        --sparse && _ok=1
+      ;;
+    ls-tree)
+      _read_opts 'drtlz' --long --name-only --name-status --object-only --full-name \
+        --full-tree --abbrev '--abbrev=*' '--format=*' && _ok=1
+      ;;
+    cat-file)
+      # --textconv and --filters run configured programs.
+      _read_opts 'tsepZ' --batch --batch-check '--batch=*' '--batch-check=*' \
+        --batch-all-objects --follow-symlinks --unordered --buffer --allow-unknown-type \
+        --use-mailmap --mailmap && _ok=1
+      ;;
+    show-ref)
+      _read_opts 'dsq' --head --heads --tags --branches --dereference --hash '--hash=*' \
+        --abbrev '--abbrev=*' --verify --quiet --exists && _ok=1
+      ;;
+    for-each-ref)
+      set -f
+      # shellcheck disable=SC2086
+      _read_opts 'sp' '--count=*' --shell --perl --python --tcl --ignore-case \
+        --omit-empty '--exclude=*' $_refs $_fmt && _ok=1
+      set +f
+      ;;
+    merge-base)
+      _read_opts 'a' --all --octopus --independent --is-ancestor --fork-point && _ok=1
+      ;;
+    name-rev)
+      _read_opts '' --tags '--refs=*' '--exclude=*' --all --name-only --no-undefined \
+        --always && _ok=1
+      ;;
+    show-branch)
+      _read_opts 'arg' --all --remotes --topo-order --date-order --current --color \
+        '--color=*' --no-color --sha1-name --no-name '--more=*' --list --merge-base \
+        --independent --topics --reflog '--reflog=*' && _ok=1
+      ;;
+    cherry)
+      _read_opts 'v' --abbrev '--abbrev=*' && _ok=1
+      ;;
+    var)
+      _read_opts 'l' && _ok=1
+      ;;
+    version)
+      _read_opts '' --build-options && _ok=1
+      ;;
+    check-ignore)
+      _read_opts 'qvnz' --quiet --verbose --non-matching --no-index && _ok=1
+      ;;
+    check-attr)
+      _read_opts 'az' --all --cached '--source=*' && _ok=1
+      ;;
+    check-ref-format)
+      _read_opts '' --normalize --allow-onelevel --no-allow-onelevel \
+        --refspec-pattern --branch && _ok=1
+      ;;
+    count-objects)
+      _read_opts 'vH' --verbose --human-readable && _ok=1
+      ;;
+    reflog)
+      # Log options are not allowed here: `reflog show -p` would reach the
+      # diff machinery without the overrides below.
+      case "$_first" in
+        "" | show | exists) _read_opts '' && _ok=1 ;;
+      esac
+      ;;
+    stash)
+      [ "$_first" = "list" ] && _read_opts '' && _ok=1
+      ;;
+    worktree)
+      if [ "$_first" = "list" ] && _opts_only --porcelain -v --verbose -z; then
+        _ok=1
+      fi
+      ;;
+    remote)
+      case "$_first" in
+        "" | -v | --verbose)
+          if [ "$_npos" = "0" ] && _opts_only -v --verbose; then _ok=1; fi
+          ;;
+        get-url)
+          if _opts_only --push --all; then _ok=1; fi
+          ;;
+        show)
+          # Without -n, `remote show` contacts the remote (uploadpack).
+          if _opts_only -n && _has_flag -n; then _ok=1; fi
+          ;;
+      esac
+      ;;
+    config)
+      # shellcheck disable=SC2086
+      if _opts_only --get --get-all --get-regexp --get-urlmatch --list -l \
+        --show-origin --show-scope --name-only -z --null --global --system \
+        --local --worktree --includes --no-includes --type=* --bool --int \
+        --bool-or-int --path --expiry-date --default=* --all --regexp \
+        --value=* --url=* --show-names --no-show-names; then
+        if _has_flag --get --get-all --get-regexp --get-urlmatch --list -l; then
+          _ok=1
+        else
+          case "$_first" in get | list) _ok=1 ;; esac
+        fi
+      fi
+      ;;
+    branch)
+      # Without a list-mode option a positional is a branch to create.
+      set -f
+      # shellcheck disable=SC2086
+      if _opts_only -a --all -r --remotes -l --list --show-current -v -vv \
+        --verbose --abbrev=* --no-abbrev $_refs $_fmt; then
+        # List mode must be explicit: -l/--list or a filter. Verbosity does
+        # not count (`git branch -v new` creates new).
+        if [ "$_npos" = "0" ] || _has_flag -l --list \
+          || _has_long --con:--contains --no-con:--no-contains --me:--merged \
+            --no-me:--no-merged --p:--points-at; then
+          _ok=1
+        fi
+      fi
+      set +f
+      ;;
+    tag)
+      set -f
+      # shellcheck disable=SC2086
+      if _opts_only -l --list -n '-n[0-9]' '-n[0-9][0-9]' $_refs $_fmt; then
+        if [ "$_npos" = "0" ] || _has_flag -l --list; then _ok=1; fi
+      fi
+      set +f
+      ;;
+    symbolic-ref)
+      if [ "$_npos" = "1" ] && _opts_only -q --quiet --short --no-recurse; then
+        _ok=1
+      fi
+      ;;
+  esac
+  [ -n "$_bad_global" ] && _ok=0
+  if [ "$_ok" != "1" ]; then
+    _shown="${_sub:-$_bad_global}$_bad_opt"
+    cat >&2 <<NOWRITE
+error: git ${_shown} blocked: this session cannot change code.
+
+Orchestrate sessions plan work and start other sessions, so only read-only
+git runs here (status, log, diff, show, grep, blame and the like), with
+read-only options. To change code, start a build session with an
+agenthub:forward card.
+NOWRITE
+    exit 4
+  fi
+fi
+
+# ── (3) Direct-ship gate ────────────────────────────────────────────
+if [ "$_ship" = "1" ] && [ "$_sub" = "push" ]; then
   _finalize_direct_ship_gate "git push" "git_push" || exit $?
+fi
+
+# ── Allowed reads in a write-blocked session ────────────────────────
+# Config and environment can make a read write or run a program with
+# nothing on the command line, so an allowed read runs with those
+# mechanisms switched off instead of trusting the repository's config:
+#   --no-optional-locks       status does not rewrite the index
+#   diff.autoRefreshIndex     nor does diff (it ignores optional locks)
+#   core.hooksPath=/dev/null  no hook runs (post-index-change, …)
+#   core.fsmonitor=false      no fsmonitor command runs
+#   --no-pager                no pager command runs
+#   log.showSignature=false   gpg.program does not run
+#   diff.<d>.cachetextconv    textconv output is not cached into notes refs
+#   filter.<d>.clean/smudge/  no filter program runs when diff or status
+#     process = ""            reads the working tree
+#   filter.<d>.required=false so the emptied filter passes the file
+#                             through instead of failing the read
+#   --no-ext-diff             diff.external / diff.<d>.command do not run
+#   --no-textconv             diff.<d>.textconv programs do not run
+#   GIT_EXTERNAL_DIFF unset
+#
+# Beyond those, the git process runs with no way to reach a program or the
+# network, so a mechanism nobody listed above still has nothing to run:
+#   PATH=/nonexistent         a program named without a path cannot be
+#                             found. Git finds its own helpers through
+#                             its exec path. This does NOT stop a value
+#                             git runs through /bin/sh: a shell builtin
+#                             with a redirect (`printf x > f`) or an
+#                             absolute path needs no PATH. Those are the
+#                             next line's job.
+#   command-valued keys       every key pattern git documents as a command
+#                             it runs (merge.*.driver, diff.*.command /
+#                             textconv, diff.external, pager.*,
+#                             mergetool / difftool / man / browser cmds,
+#                             interactive.diffFilter, trailer cmds,
+#                             core.pager / editor / sshCommand / gitProxy /
+#                             askPass / alternateRefsCommand,
+#                             sequence.editor, web.browser,
+#                             uploadpack.packObjectsHook,
+#                             remote.*.uploadpack / receivepack,
+#                             gpg.*program, gpg.ssh.defaultKeyCommand) is
+#                             looked up in the effective config and each
+#                             key found points at a path that does not
+#                             exist, so the shell has nothing to run.
+#                             gpg / ssh / pager / editor keys are also set
+#                             unconditionally, which covers signature
+#                             checks requested by %G? / %(signature).
+#   credential.*helper=       every helper list is emptied
+#   log.diffMerges=separate   with --remerge-diff off the option list, no
+#                             read re-merges a commit (and so reaches a
+#                             merge driver)
+#   protocol.allow=never      no transport works, so nothing is fetched:
+#                             not a lazy fetch of a missing object in a
+#                             partial clone, not a submodule.
+#                             GIT_NO_LAZY_FETCH=1 says the same to git
+#                             versions that read it.
+# The environment side (GIT_TRACE* cleared and GIT_TRACE2* set to 0, so no
+# trace file is written even with a global trace2.*Target; GIT_SSH*,
+# askpass, pager and editor variables; GIT_NO_LAZY_FETCH) is set at the
+# top of the script.
+# The per-driver keys come from the effective config (files, includes,
+# GIT_CONFIG_*, the caller's -c). All -c go after the caller's global
+# options so they win, and command-line -c wins over every other source.
+# --no-ext-diff / --no-textconv go right after the command word; the
+# option allowlist above keeps --ext-diff / --textconv from undoing them.
+if [ "$_block" = "1" ]; then
+  _harden="--no-optional-locks --no-pager -c diff.autoRefreshIndex=false -c core.hooksPath=/dev/null -c core.fsmonitor=false -c log.showSignature=false -c log.diffMerges=separate"
+  _keys=$(_git config --name-only --get-regexp '^diff\..*\.cachetextconv$' 2>/dev/null) || _keys=""
+  _fkeys=$(_git config --name-only --get-regexp '^filter\..*\.(clean|smudge|process)$' 2>/dev/null) || _fkeys=""
+  # A required filter whose commands are emptied makes git fail the read
+  # ("clean filter failed") instead of passing the file through, so the
+  # required flag is turned off too. It only says "fail if the filter
+  # cannot run"; with no command, the file is read as-is.
+  _rkeys=$(_git config --name-only --get-regexp '^filter\..*\.required$' 2>/dev/null) || _rkeys=""
+  # Every key git documents as a command it runs, usually through /bin/sh,
+  # where a builtin plus a redirect (`printf x > file`) or an absolute path
+  # needs no PATH. Each one present in the effective config is pointed at a
+  # path that does not exist, so the shell has nothing to run.
+  _ckeys=$(_git config --name-only --get-regexp '^(merge\..*\.driver|diff\..*\.(command|textconv)|diff\.external|(mergetool|difftool|man|browser)\..*\.(cmd|path)|pager\..*|interactive\.difffilter|trailer\..*\.(cmd|command)|core\.(pager|editor|sshcommand|gitproxy|askpass|alternaterefscommand)|sequence\.editor|web\.browser|uploadpack\.packobjectshook|remote\..*\.(uploadpack|receivepack)|gpg\.(.*\.)?program|gpg\.ssh\.defaultkeycommand)$' 2>/dev/null) || _ckeys=""
+  _hkeys=$(_git config --name-only --get-regexp '^credential\.(.*\.)?helper$' 2>/dev/null) || _hkeys=""
+  # One key per line; a subsection name may hold spaces or glob characters.
+  _old_ifs=$IFS
+  IFS='
+'
+  set -f
+  for _k in $_keys; do
+    _harden="$_harden -c $(_quote "$_k=false")"
+  done
+  for _k in $_fkeys; do
+    _harden="$_harden -c $(_quote "$_k=")"
+  done
+  for _k in $_rkeys; do
+    _harden="$_harden -c $(_quote "$_k=false")"
+  done
+  for _k in $_ckeys; do
+    _harden="$_harden -c $(_quote "$_k=/nonexistent/agent-hub-no-program")"
+  done
+  for _k in $_hkeys; do
+    _harden="$_harden -c $(_quote "$_k=")"
+  done
+  set +f
+  IFS=$_old_ifs
+  case "$_sub" in
+    log | show | whatchanged | diff | diff-tree | diff-index | diff-files | rev-list)
+      _inject="--no-ext-diff --no-textconv"
+      ;;
+    grep | blame | annotate) _inject="--no-textconv" ;;
+    *) _inject="" ;;
+  esac
+  _none=/nonexistent/agent-hub-no-program
+  for _k in gpg.program gpg.openpgp.program gpg.x509.program gpg.ssh.program \
+    gpg.ssh.defaultKeyCommand core.sshCommand core.gitProxy core.askPass \
+    core.pager core.editor sequence.editor; do
+    _harden="$_harden -c $_k=$_none"
+  done
+  _harden="$_harden -c credential.helper= -c protocol.allow=never"
+  # Resolve git itself before PATH goes away.
+  case "$REAL_GIT" in
+    */*) : ;;
+    *) REAL_GIT=$(command -v "$REAL_GIT") || REAL_GIT=git ;;
+  esac
+  PATH=/nonexistent
+  export PATH
+  shift "$_nglobal"
+  if [ "$#" -gt 0 ]; then
+    _cmdw="$1"
+    shift
+    eval 'exec "$REAL_GIT" '"$_gq $_harden"' "$_cmdw" '"$_inject"' "$@"'
+  fi
+  # No command (`git --version`): the overrides must come before it.
+  eval 'exec "$REAL_GIT" '"$_harden $_gq"
 fi
 
 exec "$REAL_GIT" "$@"

@@ -90,7 +90,7 @@ describe('qa session mode', () => {
   it('blocks native code edits even with a worktree', () => {
     expect(
       resolveCliWorkspaceAccess({ session: qaSession, workflowProject: false, hasWorktree: true }),
-    ).toEqual({ readOnly: false, blockCodeMutationTools: true });
+    ).toEqual({ readOnly: false, blockCodeMutationTools: true, blockGitWrites: false });
   });
 
   it('binds qa mode and the qa role to each other', () => {

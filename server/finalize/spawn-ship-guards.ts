@@ -4,6 +4,9 @@ import { fileURLToPath } from 'url';
 import { worktreeHasFinalizeCi } from './worktree-has-ci.js';
 import { NO_GUARDRAILS_ENV } from '../no-guardrails.js';
 
+/** Env flag the `git` shim reads to refuse every write (see `spawn-guards/git`). */
+export const BLOCK_GIT_WRITES_ENV = 'AGENT_HUB_BLOCK_GIT_WRITES';
+
 const GUARD_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'spawn-guards');
 
 function resolveRealBinary(binaryName: string, pathEnv: string, skipDir: string): string {
@@ -31,11 +34,15 @@ function resolveRealBinary(binaryName: string, pathEnv: string, skipDir: string)
  *      without a worktree or CI config. Platform shipping uses its own env.
  *      Skipped only when `opts.noGuardrails` is set, i.e. the session is in
  *      No Guardrails mode on a project that allows it.
+ *   3. **No-code-change block**: with `opts.blockGitWrites` (Orchestrate),
+ *      refuses commit, add, reset, merge, rebase and every other git write.
+ *      Like the No Guardrails flag, always written explicitly so an inherited
+ *      value can neither lift nor wrongly impose it.
  */
 export function applySessionGitGuards(
   env: NodeJS.ProcessEnv,
   worktreePath: string | null | undefined,
-  opts: { noGuardrails?: boolean } = {},
+  opts: { noGuardrails?: boolean; blockGitWrites?: boolean } = {},
 ): void {
   const pathBefore = env.PATH ?? process.env.PATH ?? '';
   env.AGENT_HUB_REAL_GIT = resolveRealBinary('git', pathBefore, GUARD_DIR);
@@ -48,5 +55,7 @@ export function applySessionGitGuards(
   // Always written explicitly so an inherited value can never lift the gate.
   if (opts.noGuardrails) env[NO_GUARDRAILS_ENV] = '1';
   else delete env[NO_GUARDRAILS_ENV];
+  if (opts.blockGitWrites) env[BLOCK_GIT_WRITES_ENV] = '1';
+  else delete env[BLOCK_GIT_WRITES_ENV];
   env.PATH = `${GUARD_DIR}${path.delimiter}${pathBefore}`;
 }

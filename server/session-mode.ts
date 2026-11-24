@@ -332,12 +332,17 @@ export function sessionHasUsableWorktree(
  * `blockCodeMutationTools` disables Claude's native Edit/Write tools while
  * keeping Bash for Hub wrappers: Hub-only sessions (consult, hub, qa) always, and scoping sessions
  * that run in the shared project checkout instead of their own worktree.
+ *
+ * `blockGitWrites` turns on the spawn `git` shim's write block, which covers
+ * every engine (not just Claude's native tools) and Bash-driven commits.
+ * Orchestrate gets it: the parent chat plans and starts worker sessions, and
+ * any code change belongs in one of those workers.
  */
 export function resolveCliWorkspaceAccess(args: {
   session: { session_mode?: string | null; ask_mode?: number | null };
   workflowProject: boolean;
   hasWorktree: boolean;
-}): { readOnly: boolean; blockCodeMutationTools: boolean } {
+}): { readOnly: boolean; blockCodeMutationTools: boolean; blockGitWrites: boolean } {
   const { session, workflowProject, hasWorktree } = args;
   const hubOnly =
     workflowProject ||
@@ -350,5 +355,6 @@ export function resolveCliWorkspaceAccess(args: {
   return {
     readOnly: legacyAsk && !hubOnly && !scoping,
     blockCodeMutationTools: hubOnly || (scoping && !hasWorktree),
+    blockGitWrites: isOrchestrateModeActive(session),
   };
 }

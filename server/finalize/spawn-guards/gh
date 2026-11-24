@@ -1,13 +1,113 @@
 #!/bin/sh
 # Finalize spawn guard — blocks `gh pr create` when direct ship is not allowed.
+#
+# gh accepts the same request in several spellings, so the command is read
+# the way gh reads it rather than from "$1 $2":
+#   - flags may sit between `pr` and `create` (`gh pr -R o/r create`);
+#   - `gh pr new` is gh's own name for `gh pr create`;
+#   - a user alias (`gh alias set pc 'pr create'`) expands first. A shell
+#     alias (`!…`) runs a command line the guard cannot see into, an alias
+#     with $1-style placeholders takes its words from the caller's
+#     arguments at run time, and a quoted alias would need gh's quoting
+#     rules to read; all three are refused.
 GUARD_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck source=/dev/null
 . "$GUARD_DIR/_finalize-ship-gate.sh"
 
 REAL_GH="${AGENT_HUB_REAL_GH:-gh}"
 
-if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
-  _finalize_direct_ship_gate "gh pr create" "gh_pr_create" || exit $?
+if [ -z "${AGENT_HUB_SESSION_ID:-}" ] || [ "${AGENT_HUB_NO_GUARDRAILS:-}" = "1" ]; then
+  exec "$REAL_GH" "$@"
 fi
+
+# Words of the command with flags (and the values of flags that take one)
+# removed, space-delimited.
+_words() {
+  _out=""
+  _skip=0
+  for _a in "$@"; do
+    if [ "$_skip" = "1" ]; then
+      _skip=0
+      continue
+    fi
+    case "$_a" in
+      -R | --repo | --hostname) _skip=1 ;;
+      -*) : ;;
+      *) _out="$_out$_a " ;;
+    esac
+  done
+  printf '%s' "$_out"
+}
+
+_cmd=$(_words "$@")
+_top="${_cmd%% *}"
+
+# Alias lookup runs for every first word. There is no list of "real"
+# commands to skip: gh ships configurable aliases with command-like names
+# (`co: pr checkout`), so any name may be an alias. The name is matched as
+# a plain string, never as a pattern. When an alias exists, the gate below
+# checks both the literal command and the expansion, so it errs toward
+# gating whichever one gh actually runs.
+_literal="$_cmd"
+_alias=""
+if [ -n "$_top" ]; then
+  _alias=$("$REAL_GH" alias list 2>/dev/null |
+    awk -v n="$_top" 'index($0, n ": ") == 1 { print substr($0, length(n) + 3); exit }')
+fi
+if [ -n "$_alias" ]; then
+  case "$_alias" in
+    '!'*)
+      cat >&2 <<SHELLALIAS
+error: gh ${_top} blocked: shell aliases do not run in Agent Hub sessions.
+
+'${_top}' is a '!' alias, which runs outside the session's shipping guard.
+Run the gh command it stands for directly.
+SHELLALIAS
+      exit 5
+      ;;
+  esac
+  # gh fills $1, $2, … from the caller's arguments at run time
+  # (`pc: pr $1` + `gh pc create` runs `pr create`), so the command is
+  # not known until then. Refuse rather than guess.
+  case "$_alias" in
+    *'$'*)
+      cat >&2 <<PLACEHOLDER
+error: gh ${_top} blocked: cannot verify an alias with \$ placeholders.
+
+'${_top}' expands to '${_alias}'. gh fills the placeholders from your
+arguments when it runs, so the shipping guard cannot tell what it does.
+Run the gh command it stands for directly.
+PLACEHOLDER
+      exit 5
+      ;;
+  esac
+  # gh splits an alias with shell-style quoting. Approximating it can
+  # change which words are flag values (`pr -R 'a b' create` would lose
+  # "create"), so an alias with a quote or backslash is refused; an
+  # unquoted one splits on whitespace exactly as gh splits it.
+  case "$_alias" in
+    *[\'\"\\]*)
+      cat >&2 <<QUOTED
+error: gh ${_top} blocked: cannot verify an alias that uses quotes.
+
+'${_top}' expands to '${_alias}'. Run the gh command it stands for
+directly.
+QUOTED
+      exit 5
+      ;;
+  esac
+  set -f
+  # shellcheck disable=SC2086
+  _cmd="$(_words $_alias)${_cmd#"$_top "}"
+  set +f
+fi
+
+for _c in "$_literal" "$_cmd"; do
+  case " $_c" in
+    " pr create "* | " pr new "*)
+      _finalize_direct_ship_gate "gh pr create" "gh_pr_create" || exit $?
+      ;;
+  esac
+done
 
 exec "$REAL_GH" "$@"

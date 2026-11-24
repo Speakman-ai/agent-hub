@@ -237,6 +237,7 @@ describe('session-mode helpers', () => {
       expect(access({ session_mode: 'chat', ask_mode: 1 })).toEqual({
         readOnly: true,
         blockCodeMutationTools: false,
+        blockGitWrites: false,
       });
     });
 
@@ -244,20 +245,35 @@ describe('session-mode helpers', () => {
       for (const s of [
         { session_mode: 'consult', ask_mode: 1 },
         { session_mode: 'hub', ask_mode: 0 },
-        { session_mode: 'orchestrate', ask_mode: 0 },
       ]) {
-        expect(access(s)).toEqual({ readOnly: false, blockCodeMutationTools: true });
+        expect(access(s)).toEqual({
+          readOnly: false,
+          blockCodeMutationTools: true,
+          blockGitWrites: false,
+        });
       }
       expect(access({ session_mode: 'chat', ask_mode: 1 }, { workflowProject: true })).toEqual({
         readOnly: false,
         blockCodeMutationTools: true,
+        blockGitWrites: false,
       });
+    });
+
+    it('blocks native edits and every git write in Orchestrate, worktree or not', () => {
+      for (const hasWorktree of [true, false]) {
+        expect(access({ session_mode: 'orchestrate', ask_mode: 0 }, { hasWorktree })).toEqual({
+          readOnly: false,
+          blockCodeMutationTools: true,
+          blockGitWrites: true,
+        });
+      }
     });
 
     it('leaves a plain build session fully writable', () => {
       expect(access({ session_mode: 'chat', ask_mode: 0 }, { hasWorktree: true })).toEqual({
         readOnly: false,
         blockCodeMutationTools: false,
+        blockGitWrites: false,
       });
     });
   });

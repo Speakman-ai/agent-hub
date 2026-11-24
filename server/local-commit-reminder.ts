@@ -38,8 +38,10 @@ export function withLocalCommitReminder(prompt: string): string {
 export function shouldPinLocalCommitReminder(input: {
   hasWorktree: boolean;
   askMode?: boolean;
+  /** Hub-only sessions (Consult, Orchestrate, Hub, QA) never commit. */
+  blockCodeMutationTools?: boolean;
 }): boolean {
-  return input.hasWorktree && !input.askMode;
+  return input.hasWorktree && !input.askMode && !input.blockCodeMutationTools;
 }
 
 export function parseCommitNudgeMetadata(metadataString: string | null | undefined): {

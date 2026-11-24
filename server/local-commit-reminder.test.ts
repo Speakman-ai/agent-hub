@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { MessageRow } from './types.js';
+import { resolveCliWorkspaceAccess } from './session-mode.js';
 import {
   LOCAL_COMMIT_REMINDER,
   LOCAL_COMMIT_REMINDER_MARKER,
@@ -112,6 +113,32 @@ describe('shouldPinLocalCommitReminder', () => {
     expect(shouldPinLocalCommitReminder({ hasWorktree: true, askMode: true })).toBe(false);
     expect(shouldPinLocalCommitReminder({ hasWorktree: false, askMode: false })).toBe(false);
     expect(shouldPinLocalCommitReminder({ hasWorktree: false })).toBe(false);
+  });
+});
+
+describe('shouldPinLocalCommitReminder for each session mode', () => {
+  const pinned = (session_mode: string, ask_mode = 0) => {
+    const access = resolveCliWorkspaceAccess({
+      session: { session_mode, ask_mode },
+      workflowProject: false,
+      hasWorktree: true,
+    });
+    return shouldPinLocalCommitReminder({
+      hasWorktree: true,
+      askMode: access.readOnly,
+      blockCodeMutationTools: access.blockCodeMutationTools,
+    });
+  };
+
+  it.each(['orchestrate', 'consult', 'hub', 'qa'])(
+    'never tells a %s session in a worktree to commit',
+    (mode) => {
+      expect(pinned(mode)).toBe(false);
+    },
+  );
+
+  it('still pins the reminder for a writable build session', () => {
+    expect(pinned('chat')).toBe(true);
   });
 });
 
