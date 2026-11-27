@@ -154,7 +154,10 @@ import {
 } from './session-env/ephemeral-host-port.js';
 import { HostWorktreeIo, type SessionWorktreeIo } from './session-env/worktree-io.js';
 import { setSessionWorktreeIoResolver } from './session-worktree-io.js';
-import { setSessionProjectResolver } from './session-checkpoint-rewind.js';
+import {
+  enrichSessionForClient as enrichSessionForClientForEpic,
+  setSessionProjectResolver,
+} from './session-checkpoint-rewind.js';
 import { resolveSessionStartupCommands } from './session-env/session-startup-hooks.js';
 import {
   emitSessionStartupProgress,
@@ -541,7 +544,12 @@ import {
   tryAutonomousDispatch,
   scheduleAutonomousEpic,
   restoreAutonomousCrons,
+  attachEpicManager,
+  spawnEpicWorkerForCard,
 } from './autonomous.js';
+import { EpicManager, setEpicManager } from './epic-manager.js';
+import { setSessionOwner } from './session-ownership.js';
+import { setEpicWorkerStarter } from './epic-worker-dispatch.js';
 
 import type {
   BroadcastFn,
@@ -1998,6 +2006,55 @@ const orchestrateAutoStarter = new OrchestrateAutoStarter({
   broadcast: (event) => broadcast(event),
 });
 setOrchestrateAutoStarter(orchestrateAutoStarter);
+
+// Epic manager threads: kicking off an epic starts one Orchestrate session that
+// forwards each ready card to a worker. Readiness stays in the autonomous tick.
+const epicReevaluationTimers = new Map<string, NodeJS.Timeout>();
+const epicManager = new EpicManager({
+  stmts: stmts!,
+  db: getDb(),
+  findProject: (projectId) => findProject(projectId) ?? undefined,
+  getConfig: () => config,
+  setSessionOwner,
+  enableAutoStart: (sessionId) =>
+    orchestrateLaunchStore.setSettings(sessionId, { autoStart: true, mode: 'merge' }),
+  cancelAutoStarts: (sessionId) => {
+    const prefix = `session-forward:${sessionId}:`;
+    for (const key of orchestrateAutoStarter.pendingKeys()) {
+      if (key.startsWith(prefix)) orchestrateAutoStarter.cancel(key);
+    }
+  },
+  dispatchChat: (msg) => handleChat!(null, msg as unknown as ChatMessage),
+  isSessionBusy: (sessionId) =>
+    isSessionChatBusy(
+      sessionId,
+      activeProcesses,
+      stmts!.getActiveTask.get(sessionId) as ActiveTaskRow | undefined,
+    ),
+  persistSystemMessage: (sessionId, content, meta) =>
+    persistWatchSystemMessage(sessionId, content, meta),
+  broadcast: (event) => broadcast(event),
+  enrichSession: (row) => enrichSessionForClientForEpic(row, stmts!),
+  // A board change (often the manager's own override) re-runs readiness for
+  // projects with a running epic. Debounced: one change usually broadcasts
+  // several kanban updates.
+  requestReevaluation: (projectId) => {
+    if (!autonomousProjects.has(projectId)) return;
+    const prior = epicReevaluationTimers.get(projectId);
+    if (prior) clearTimeout(prior);
+    const timer = setTimeout(() => {
+      epicReevaluationTimers.delete(projectId);
+      runAutonomousLoop(projectId).catch((err: unknown) => {
+        console.error('[epic-manager] re-evaluation failed:', (err as Error).message);
+      });
+    }, 2_000);
+    timer.unref?.();
+    epicReevaluationTimers.set(projectId, timer);
+  },
+});
+setEpicManager(epicManager);
+attachEpicManager(epicManager);
+setEpicWorkerStarter(spawnEpicWorkerForCard);
 
 // The session's environment, owned by the session rather than by whichever
 // feature happened to start first. Preview, terminal, and session commands
@@ -3545,6 +3602,12 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
       orchestrateAutoStarter.sweep();
     } catch (err) {
       console.error('[orchestrate-auto-start] boot sweep failed:', (err as Error).message);
+    }
+    // Epic manager wakes that were queued but not delivered before the restart.
+    try {
+      epicManager.resume();
+    } catch (err) {
+      console.error('[epic-manager] boot resume failed:', (err as Error).message);
     }
 
     scheduleAll(allAgents());

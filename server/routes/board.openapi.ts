@@ -271,6 +271,14 @@ export const KanbanEpicComponent = registerComponent(
       autonomous_model: z.string().nullable(),
       orchestration_budgets_json: z.string().nullable().optional(),
       pr_base_branch: z.string().nullable().optional(),
+      manager_session_id: z.string().nullable().optional().openapi({
+        description:
+          "The epic's manager thread: the Orchestrate session that starts a worker for each ready card. Set on the first kickoff.",
+      }),
+      manager_agent_id: z.string().nullable().optional().openapi({
+        description:
+          "Agent of the manager thread, for opening it. Null when the manager was archived. Only on the board's epic list.",
+      }),
       position: z.number().int(),
       created_at: z.string(),
       updated_at: z.string(),

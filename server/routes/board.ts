@@ -62,6 +62,7 @@ import { normalizeTemplatePriority, templateRowToClient } from '../kanban-card-t
 import { getDb } from '../db.js';
 import { readAll } from '../db-async/read-facade.js';
 import {
+  handOverEpicManager,
   scheduleAutonomousPhase,
   startAutonomousPhase,
   stopAutonomousPhase,
@@ -2097,6 +2098,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       const enablerId = resolveOwnerUserId(req as AuthenticatedRequest);
       if (enablerId) {
         stmts.setEpicAutonomousEnabledBy.run(enablerId, req.params.epicId);
+        handOverEpicManager(req.params.epicId as string, enablerId);
       }
     }
 

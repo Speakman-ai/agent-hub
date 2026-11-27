@@ -80,3 +80,50 @@ export function buildOrchestrateModePreamble(args: {
     '',
   ].join('\n');
 }
+
+/**
+ * Extra rules for an Orchestrate chat that manages an epic (see
+ * `server/epic-manager.ts`). The server decides which cards are ready and
+ * wakes this chat with them; this chat writes each worker's brief and starts
+ * it with a forward card naming the kanban card.
+ */
+export function buildEpicManagerPreamble(args: {
+  project: Pick<Project, 'id' | 'name'>;
+  epic: { id: string; name: string };
+  maxWorkerAttempts: number;
+  holdLabel: string;
+}): string {
+  const { project, epic, maxWorkerAttempts, holdLabel } = args;
+  const api = `/api/projects/${project.id}/board`;
+  return [
+    '## Epic manager',
+    '',
+    `This chat manages epic **${epic.name}** (\`${epic.id}\`). Most turns are server wake-ups: they list cards that are ready to start and what workers did since the last wake. No person is driving those turns, so act on them without asking.`,
+    '',
+    '### Starting ready cards',
+    '',
+    '- For every card under **Ready to start**, emit one `agenthub:forward` block. One message may hold several; the one-card-per-kickoff and `agenthub:ask` rules above do not apply to server wake-ups.',
+    '- Add `"cardId": "<the card id>"` to each block. Without it the session is not linked to the card and the epic cannot track it.',
+    '- Use the suggested agent unless another Dev agent fits the card better.',
+    '- The `prompt` is your brief for the worker. The server always gives the worker the full card (description and acceptance criteria), spec decisions, replays, support comments and attachments, so do not copy those. Add what the card cannot say: what finished sibling cards changed (files, APIs, PRs) that this card builds on, and any ordering or scope decision you made.',
+    "- Auto start starts each card 30 seconds after your turn ends. Workers show on this chat's rail. Their Finalize level follows the epic's Auto Merge setting; the `mode` you set is ignored.",
+    "- Only forward cards from a wake's ready list. The server refuses a card that is blocked, already claimed, over the concurrency cap, waiting on open decisions, or past " +
+      `${maxWorkerAttempts} worker attempts.`,
+    '',
+    '### Changing the plan',
+    '',
+    'When the order has to change you may rearrange the epic through the board API (`board.sh`, `epics.sh`, or `ah-api.sh`):',
+    `- Reorder phases: \`POST ${api}/phases/reorder\` with \`{"epicId":"${epic.id}","sortByDependencies":true}\`.`,
+    `- Add or remove a blocker: \`POST ${api}/cards/<cardId>/blockers\` with \`{"blockedByCardId":"…"}\`, or \`DELETE ${api}/cards/<cardId>/blockers/<blockedByCardId>\`.`,
+    '- Move a card to another phase, or split it into new cards on this epic with blockers between them.',
+    `- Hold a card by adding the \`${holdLabel}\` label; remove the label to release it. A pending forward for a held card will not start.`,
+    '- Retry a failed card by moving it back to To Do with no assignee; the server offers it again.',
+    '',
+    'Post a comment on every card (or the epic) you change, with a one-line reason. The server re-checks readiness after each board change.',
+    '',
+    '### When a worker is stuck',
+    '',
+    "A card the server reports as held for a person (retry limit, or offered too often unused) is the person's to release; do not move it to hand it back yourself. A wake reports Finalize failures, errors, and workers waiting on input. Retry, re-scope, split, or ask the person in this chat. If you cannot move the epic forward, say so plainly in one message and stop. Do not retry the same thing in a loop; the server holds a card that keeps failing and notifies the epic owner.",
+    '',
+  ].join('\n');
+}

@@ -57,7 +57,7 @@ function ProgressBar({ pct, tone = 'emerald' }: { pct: number; tone?: 'emerald' 
 }
 
 /** Epic banner with spec + ticket progress. Mirrors web EpicScopeHeader. */
-export function EpicSummary({ epic, phases, tickets, columns, specItems }: any) {
+export function EpicSummary({ epic, phases, tickets, columns, specItems, onOpenManager }: any) {
   if (!epic) return null;
   const colMap = columnNameById(columns);
   const done = countDoneTickets(tickets, colMap);
@@ -81,6 +81,15 @@ export function EpicSummary({ epic, phases, tickets, columns, specItems }: any) 
         ) : null}
       </View>
       {epic.description ? <Text style={styles.summaryDesc}>{epic.description}</Text> : null}
+      {onOpenManager && epic.manager_session_id && epic.manager_agent_id ? (
+        <TouchableOpacity
+          style={styles.secondaryBtn}
+          testID="epic-open-manager"
+          onPress={() => onOpenManager(epic.manager_agent_id, epic.manager_session_id)}
+        >
+          <Text style={styles.secondaryBtnText}>Open manager</Text>
+        </TouchableOpacity>
+      ) : null}
 
       <View style={styles.statsRow}>
         <View style={styles.statCell}>
@@ -314,6 +323,12 @@ export function PhaseCard({
           >
             <Text style={styles.runBtnText}>{specReady ? 'Run phase' : 'Lock spec to run'}</Text>
           </TouchableOpacity>
+        ) : null}
+        {!running && autonomous ? (
+          <Text style={styles.runHint}>
+            Run phase starts the epic&apos;s manager thread, which starts a session for each ready
+            ticket.
+          </Text>
         ) : null}
 
         {/* Session model — shown unconditionally to mirror web PhaseFlowchartView,
@@ -778,6 +793,11 @@ export default function EpicDetailScreen({ route, navigation }: any) {
             tickets={tickets}
             columns={columns}
             specItems={specItems}
+            onOpenManager={(agentId: string, sessionId: string) => {
+              setActiveAgentId(agentId);
+              setActiveSessionId(sessionId);
+              navigation.navigate('Chat');
+            }}
           />
 
           <View style={styles.actionRow}>
@@ -1156,6 +1176,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   runBtnText: { color: colors.emerald400, fontWeight: '600', fontSize: 13 },
+  runHint: { color: colors.gray500, fontSize: 11, marginTop: 6, lineHeight: 15 },
   stopBtn: {
     backgroundColor: colors.red900_50,
     paddingVertical: 6,

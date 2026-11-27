@@ -72,6 +72,7 @@ import {
   type PushEventType,
 } from '../shared/utils/notificationCategories.js';
 import type { BroadcastFn } from './types.js';
+import { EPIC_MANAGER_STALLED_EVENT } from './epic-manager-events.js';
 
 export const NOTIFICATION_CREATED_EVENT = 'notification_created';
 
@@ -565,6 +566,32 @@ export function mapBroadcastToNotification(data: BroadcastData): NotificationInt
         projectId: str(data.projectId) ?? null,
         sourceKey: `card_assigned:${cardId}:${userId}:${str(data.assignmentId) ?? uuidv4()}`,
         recipients: { kind: 'users', userIds: [userId] },
+      };
+    }
+
+    case EPIC_MANAGER_STALLED_EVENT: {
+      const owner = str(data.ownerUserId);
+      const sessionId = str(data.sessionId);
+      const cardId = str(data.cardId);
+      if (!owner || !sessionId || !cardId) return null;
+      const epicName = str(data.epicName);
+      const reason = str(data.reason);
+      return {
+        category: 'escalation',
+        pushEvent: null,
+        deviceScope: 'recipients',
+        title: epicName ? `Epic manager needs you: ${epicName}` : 'Epic manager needs you',
+        body: `"${str(data.cardTitle) ?? 'A card'}" is held${reason ? `: ${reason}` : ''}`,
+        data: {
+          projectId: data.projectId,
+          sessionId,
+          epicId: data.epicId,
+          cardId,
+          type: 'escalation',
+        },
+        projectId: str(data.projectId) ?? null,
+        sourceKey: `epic_manager_stalled:${sessionId}:${cardId}`,
+        recipients: { kind: 'users', userIds: [owner] },
       };
     }
 

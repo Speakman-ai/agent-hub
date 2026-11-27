@@ -28,6 +28,7 @@ import {
 } from './kanban-blockers.js';
 import { pickAgentForCard, pickLead } from './routing.js';
 import { agentAcceptsAutonomousTickets } from './agent-autonomy.js';
+import { hasHoldLabel } from './epic-manager-events.js';
 import type {
   Stmts,
   Project,
@@ -47,7 +48,10 @@ import { enrichSessionForClient } from './session-checkpoint-rewind.js';
 import { cardNeedsDevHubKey, getDevHubApiKey } from './secrets.js';
 import { autoGitChildEnv, resolveOrgOwnerGithubToken } from './auto-git.js';
 import { markSessionAutoShipOnComplete, markSessionFinalizeAutomation } from './session-ship.js';
-import { assignedFinalizeAutomationLevel } from './finalize/automation.js';
+import {
+  assignedFinalizeAutomationLevel,
+  type FinalizeAutomationLevel,
+} from './finalize/automation.js';
 import { resolveShouldAutoMerge } from './auto-merge.js';
 import { loadCardReplayContext } from './replays/replay-context-loader.js';
 import { loadCardSupportTicketCommentContext } from './support-ticket-comment-context.js';
@@ -398,6 +402,71 @@ export async function ensureOperatorBaseBranch(
 
 // Dependency Types
 
+/** A card the tick found ready, with the agent routing suggests for it. */
+export interface ReadyCardOffer {
+  card: KanbanCardRow;
+  agentId: string;
+  phaseId: string | null;
+}
+
+/** Something a worker or the board did that the epic's manager should hear about. */
+export type EpicWorkerEventKind =
+  | 'done'
+  | 'cancelled'
+  | 'requeued'
+  | 'turn_finished'
+  | 'needs_input'
+  | 'finalize_failed'
+  | 'error'
+  | 'phase_complete'
+  | 'epic_complete';
+
+export interface EpicWorkerEvent {
+  kind: EpicWorkerEventKind;
+  cardId?: string | null;
+  sessionId?: string | null;
+  /** The phase a phase-level event is about (phase_complete). */
+  phaseId?: string | null;
+  detail?: string | null;
+}
+
+/**
+ * The epic's manager thread, as the tick sees it. Readiness stays here; the
+ * manager writes the worker brief and starts the worker from a forward card,
+ * which lands back in `spawnEpicWorkerForCard`.
+ */
+export interface EpicManagerPort {
+  offerReady(args: {
+    projectId: string;
+    epic: KanbanEpicRow;
+    phase: KanbanPhaseRow | null;
+    ready: ReadyCardOffer[];
+    ownerUserId: string;
+  }): void | Promise<void>;
+  /** Cards with an offer the manager has not acted on yet (they hold a slot). */
+  liveOffers(epicId: string): string[];
+  withdrawOffer(cardId: string): void;
+  isOffered(cardId: string): boolean;
+  /** Held by the manager, at the retry cap, or reported stalled. */
+  isHeld(cardId: string): boolean;
+  isAtRetryCap(cardId: string): boolean;
+  noteWorkerStarted(cardId: string, epicId: string): void;
+  /** An explicit kickoff by a different person makes the manager theirs. */
+  handOver(epicId: string, ownerUserId: string): boolean;
+  noteWorkerEvent(epicId: string, event: EpicWorkerEvent): void;
+  /** Create or reuse the manager on kickoff; a new one gets its brief. */
+  kickoff(projectId: string, epic: KanbanEpicRow, ownerUserId: string): unknown;
+  /** The epic stopped: no more wakes, offers lapse, pending Auto starts cancelled. */
+  pause(epicId: string): void;
+  noteRetryCapRefusal(epicId: string, cardId: string): void;
+  /** Diff the epic's cards against the last look; Done and Cancelled moves become events. */
+  observeCards(
+    epic: KanbanEpicRow,
+    cards: KanbanCardRow[],
+    columnNameById: Record<string, string>,
+  ): void;
+}
+
 interface AutonomousDeps {
   stmts: Stmts;
   broadcast: BroadcastFn;
@@ -427,6 +496,8 @@ interface AutonomousDeps {
   getDb: () => Database;
   /** Drain per-session message queues when no CLI is in flight. */
   drainIdleSessionQueues?: () => number;
+  /** The epic manager threads. Ready cards are only ever handed to these. */
+  epicManager?: EpicManagerPort;
 }
 
 // Module-level state
@@ -524,6 +595,11 @@ function sessionEngineAndModelForAutonomousDispatch(
 
 export function initAutonomous(d: AutonomousDeps): void {
   deps = d;
+}
+
+/** Attach the epic manager threads (built after `initAutonomous` in index.ts). */
+export function attachEpicManager(manager: EpicManagerPort | null): void {
+  getDeps().epicManager = manager ?? undefined;
 }
 
 // Getters for shared state (used by index.ts)
@@ -784,6 +860,121 @@ function findIncompletePredecessor(
   });
 }
 
+/**
+ * Live autonomous-dispatched sessions per agent within one dispatch scope
+ * (the phase when dispatching a phase, else the epic). The tick's routing and
+ * the worker start both read capacity from here, so they cannot disagree.
+ */
+function scopeAgentActiveCounts(
+  epic: KanbanEpicRow,
+  phase: KanbanPhaseRow | null,
+): Map<string, number> {
+  const d = getDeps();
+  const activeProcesses = d.getActiveProcesses();
+  const agentSessionCounts = new Map<string, number>();
+  // Only autonomous-dispatched sessions count toward the per-agent slot cap.
+  // An interactive human chat with the same agent is unrelated to the
+  // autonomous concurrency budget (and unrelated to integration-branch
+  // serialization, which exists to keep two *autonomous* PRs from racing onto
+  // the same umbrella branch). Previously every active process — interactive
+  // or autonomous — consumed a slot, so a single human chat could pin the
+  // only assignable agent at 0 slots forever and the dispatch loop would
+  // silently break with no log line.
+  //
+  // DO NOT "fix" this by filtering on `session.ask_mode`
+  // It looks tempting — `ask_mode` is on the SessionRow and easy to read
+  // here — but `ask_mode` is the read-only / plan-mode flag (see
+  // `chat.ts:~2319` where it gates `--yolo`), not a dispatch-origin marker.
+  // Autonomous-dispatched sessions are created with `ask_mode = 0`
+  // (`createSession.run(..., 0, 1)` at the autonomous spawn site below;
+  // column order at `db.ts: createSession`'s prepare), *identical* to a
+  // default interactive chat. So `session.ask_mode !== 0` would only
+  // separate plan-mode sessions from everything else, and the original
+  // bug (regular human chat consuming an autonomous slot) would still fire.
+  // The kanban card's `dispatched_by_autonomous` flag is the only signal
+  // that distinguishes the two; it's set inside the slot-claim transaction
+  // (`markCardDispatchedByAutonomous` further down) before the session is
+  // created, so any session linked to a card with that flag is autonomous
+  // by construction. Sessions without a linked card (interactive chat,
+  // cron-spawned, ad-hoc heartbeats) are never autonomous-dispatched by
+  // this loop. (See PR #1064 history if a reviewer flags this filter again.)
+  for (const [sid] of activeProcesses) {
+    const session = d.stmts.getSession.get(sid) as { agent_id: string } | undefined;
+    if (!session) continue;
+    const linkedCard = d.stmts.getKanbanCardBySession.get(sid) as KanbanCardRow | undefined;
+    if (!linkedCard || !linkedCard.dispatched_by_autonomous) continue;
+    // Per-agent slot accounting is scoped to the CURRENT dispatch scope
+    // A session that belongs to a *different* epic (or, when dispatching a
+    // phase, a different phase) is unrelated to THIS scope's concurrency
+    // budget: epics and phases run independently and must never starve one
+    // another through a shared board-wide per-agent cap. Previously this
+    // counted every autonomous-dispatched session board-wide, so a single Dev
+    // agent already working two *other* epics' cards would show 0 remaining
+    // slots here, and this scope's dispatch loop would hit
+    // `agentsWithSlots.length === 0` and silently return — the exact "I turned
+    // on the phase but nothing gets picked up, those are different epics
+    // though" report. The only real ceiling on dispatch volume is the
+    // per-scope `slotsAvailable` (In Progress + Review cards within this
+    // epic/phase vs. its own `max_concurrent`), which is already scoped the
+    // same way (`allScopeCards`). Aligning the per-agent count with it makes
+    // "different epics don't block each other" true by construction.
+    const inCurrentScope = phase
+      ? linkedCard.phase_id === phase.id
+      : linkedCard.epic_id === epic.id;
+    if (!inCurrentScope) continue;
+    agentSessionCounts.set(session.agent_id, (agentSessionCounts.get(session.agent_id) || 0) + 1);
+  }
+  return agentSessionCounts;
+}
+
+/**
+ * Why this card may not start a worker right now, or null when it may. The
+ * single definition of "ready to start" (apart from the scope's concurrency
+ * cap): the tick runs it before offering a card and on every live offer before
+ * counting slots, and the worker start runs it inside its claim transaction.
+ */
+export function cardStartRefusal(
+  card: KanbanCardRow | undefined,
+  epic: KanbanEpicRow,
+  todoColId: string | undefined,
+): { code: SpawnEpicWorkerRefusal; error: string } | null {
+  const d = getDeps();
+  if (!card || card.epic_id !== epic.id) {
+    return { code: 'not_found', error: 'The card is gone or no longer on this epic' };
+  }
+  if (
+    card.column_id !== todoColId ||
+    (card.assignee != null && String(card.assignee).trim() !== '')
+  ) {
+    return { code: 'ineligible', error: `"${card.title}" is no longer in To Do and unassigned` };
+  }
+  if (d.epicManager?.isAtRetryCap(card.id)) {
+    return { code: 'retry_cap', error: `"${card.title}" reached its worker retry limit` };
+  }
+  if (hasHoldLabel(card.labels) || d.epicManager?.isHeld(card.id)) {
+    return { code: 'held', error: `"${card.title}" is on hold` };
+  }
+  if (card.phase_id && findIncompletePredecessor(epic, card.phase_id)) {
+    return { code: 'ineligible', error: `An earlier phase than "${card.title}"'s is still open` };
+  }
+  if (hasUnresolvedBlockers(card.id, loadBoardBlockers(d.stmts, epic.board_id))) {
+    return { code: 'ineligible', error: `"${card.title}" still has unresolved blockers` };
+  }
+  if (!isSpikeCard(card)) {
+    const { phase } = dispatchScopeForCard(epic, card);
+    const openSpec = phase
+      ? countOpenSpecItemsForPhase(d.stmts, epic.id, phase.id)
+      : countOpenSpecItems(d.stmts, epic.id);
+    if (openSpec > 0) {
+      return {
+        code: 'ineligible',
+        error: `Spec decisions are still open; "${card.title}" waits for them`,
+      };
+    }
+  }
+  return null;
+}
+
 async function runAutonomousLoopInner(
   projectId: string,
   epic: KanbanEpicRow,
@@ -851,6 +1042,14 @@ async function runAutonomousLoopInner(
     allScopeCards.length > 0 &&
     allScopeCards.every((c) => isCardSettled(colNameByIdForEpic[c.column_id]));
 
+  // Done / Cancelled / requeued moves, however they happened (merge, manual
+  // move, the manager's own override), reach the manager from here.
+  d.epicManager?.observeCards(
+    epic,
+    phase ? (d.stmts.getKanbanCardsByEpic.all(epic.id) as KanbanCardRow[]) : allScopeCards,
+    colNameByIdForEpic,
+  );
+
   if (scopeWorkComplete && settings.autonomous) {
     if (epic.pr_base_branch && !epic.pr_base_branch.startsWith(AUTONOMOUS_BRANCH_PREFIX)) {
       console.log(
@@ -875,6 +1074,11 @@ async function runAutonomousLoopInner(
       scheduleAutonomousPhase(projectId, clearedPhase);
       d.broadcast({ type: 'kanban_update', projectId });
       console.log(`[Autonomous] ${scopeLabel} — all cards are Done; autonomous mode disabled`);
+      d.epicManager?.noteWorkerEvent(epic.id, {
+        kind: 'phase_complete',
+        phaseId: phase.id,
+        detail: `phase "${phase.name}" is complete`,
+      });
       // Sequential phases: when one finishes, automatically start the next
       // armed phase in the epic instead of stranding the operator on a manual
       // "Run phase" click. Cascades through already-complete phases.
@@ -894,6 +1098,12 @@ async function runAutonomousLoopInner(
         epic.labels ?? null,
         epic.id,
       );
+      // Tell the manager before the epic stops, so the wrap-up is not dropped
+      // as a paused epic's wake.
+      d.epicManager?.noteWorkerEvent(epic.id, {
+        kind: 'epic_complete',
+        detail: 'every card is Done or Cancelled',
+      });
       const clearedEpic = d.stmts.getKanbanEpic.get(epic.id) as KanbanEpicRow;
       scheduleAutonomousEpic(projectId, clearedEpic);
     }
@@ -1008,60 +1218,7 @@ async function runAutonomousLoopInner(
     await ensureOperatorBaseBranch(project, epic.pr_base_branch, { config: d.getConfig() });
   }
 
-  const activeProcesses = d.getActiveProcesses();
-  const agentSessionCounts = new Map<string, number>();
-  // Only autonomous-dispatched sessions count toward the per-agent slot cap.
-  // An interactive human chat with the same agent is unrelated to the
-  // autonomous concurrency budget (and unrelated to integration-branch
-  // serialization, which exists to keep two *autonomous* PRs from racing onto
-  // the same umbrella branch). Previously every active process — interactive
-  // or autonomous — consumed a slot, so a single human chat could pin the
-  // only assignable agent at 0 slots forever and the dispatch loop would
-  // silently break with no log line.
-  //
-  // DO NOT "fix" this by filtering on `session.ask_mode`
-  // It looks tempting — `ask_mode` is on the SessionRow and easy to read
-  // here — but `ask_mode` is the read-only / plan-mode flag (see
-  // `chat.ts:~2319` where it gates `--yolo`), not a dispatch-origin marker.
-  // Autonomous-dispatched sessions are created with `ask_mode = 0`
-  // (`createSession.run(..., 0, 1)` at the autonomous spawn site below;
-  // column order at `db.ts: createSession`'s prepare), *identical* to a
-  // default interactive chat. So `session.ask_mode !== 0` would only
-  // separate plan-mode sessions from everything else, and the original
-  // bug (regular human chat consuming an autonomous slot) would still fire.
-  // The kanban card's `dispatched_by_autonomous` flag is the only signal
-  // that distinguishes the two; it's set inside the slot-claim transaction
-  // (`markCardDispatchedByAutonomous` further down) before the session is
-  // created, so any session linked to a card with that flag is autonomous
-  // by construction. Sessions without a linked card (interactive chat,
-  // cron-spawned, ad-hoc heartbeats) are never autonomous-dispatched by
-  // this loop. (See PR #1064 history if a reviewer flags this filter again.)
-  for (const [sid] of activeProcesses) {
-    const session = d.stmts.getSession.get(sid) as { agent_id: string } | undefined;
-    if (!session) continue;
-    const linkedCard = d.stmts.getKanbanCardBySession.get(sid) as KanbanCardRow | undefined;
-    if (!linkedCard || !linkedCard.dispatched_by_autonomous) continue;
-    // Per-agent slot accounting is scoped to the CURRENT dispatch scope
-    // A session that belongs to a *different* epic (or, when dispatching a
-    // phase, a different phase) is unrelated to THIS scope's concurrency
-    // budget: epics and phases run independently and must never starve one
-    // another through a shared board-wide per-agent cap. Previously this
-    // counted every autonomous-dispatched session board-wide, so a single Dev
-    // agent already working two *other* epics' cards would show 0 remaining
-    // slots here, and this scope's dispatch loop would hit
-    // `agentsWithSlots.length === 0` and silently return — the exact "I turned
-    // on the phase but nothing gets picked up, those are different epics
-    // though" report. The only real ceiling on dispatch volume is the
-    // per-scope `slotsAvailable` (In Progress + Review cards within this
-    // epic/phase vs. its own `max_concurrent`), which is already scoped the
-    // same way (`allScopeCards`). Aligning the per-agent count with it makes
-    // "different epics don't block each other" true by construction.
-    const inCurrentScope = phase
-      ? linkedCard.phase_id === phase.id
-      : linkedCard.epic_id === epic.id;
-    if (!inCurrentScope) continue;
-    agentSessionCounts.set(session.agent_id, (agentSessionCounts.get(session.agent_id) || 0) + 1);
-  }
+  const agentSessionCounts = scopeAgentActiveCounts(epic, phase ?? null);
 
   // Reviewer/docs are out-of-band roles — never autonomously assigned.
   // Leads are always assignable and are the safety net for cards without a
@@ -1157,20 +1314,40 @@ async function runAutonomousLoopInner(
     return;
   }
 
-  let assigned = 0;
-  const agentSlotsCopy = agentsWithSlots.map((a) => ({ ...a }));
+  // Cards already offered to the manager hold a slot until the manager's
+  // forward claims them (or the offer lapses), so the next tick does not
+  // offer more work than the cap allows.
+  const manager = d.epicManager;
+  if (!manager) {
+    console.error(`[Autonomous] No epic manager wired; ${scopeLabel} cannot hand out ready cards`);
+    return;
+  }
+  // Reconcile live offers against the same readiness check a worker start
+  // uses: an offered card that was held, deleted, moved out of the epic, or
+  // otherwise became unstartable releases its slot now, not when it lapses.
+  const todoColId = findColumnByName(cols, 'To Do')?.id;
+  let outstanding = 0;
+  for (const cardId of manager.liveOffers(epic.id)) {
+    const offered = d.stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined;
+    if (cardStartRefusal(offered, epic, todoColId)) {
+      manager.withdrawOffer(cardId);
+      continue;
+    }
+    if (phase && offered?.phase_id !== phase.id) continue;
+    outstanding++;
+  }
+  const offerSlots = Math.max(0, slotsAvailable - outstanding);
+  if (offerSlots === 0) return;
 
   // Routing pool for `pickAgentForCard`:
   //   - The project lead is treated as fallback-only; it never matches as a
   //     specialist. Even when the dispatcher's `assignableAgents` includes
-  //     the lead, we strip it from the routing
-  //     pool here so a card labelled "lead" doesn't accidentally land on
-  //     the lead via id/role-match.
+  //     the lead, we strip it from the routing pool here so a card labelled
+  //     "lead" doesn't accidentally land on the lead via id/role-match.
   //   - The lead's slot count comes from `agentSlotsCopy` if it's already
   //     in the assignable pool, otherwise from a synthetic per-agent cap so
-  //     the lead can absorb overflow on specialist-scoped projects too. The
-  //     synthetic cap mirrors `perAgentLimit` (= epic.autonomous_max_concurrent)
-  //     so a fallback lead isn't artificially capped at one overflow card.
+  //     the lead can absorb overflow on specialist-scoped projects too.
+  const agentSlotsCopy = agentsWithSlots.map((a) => ({ ...a }));
   const lead = pickLead(project);
   const slotsByAgentId = new Map<string, number>();
   for (const slot of agentSlotsCopy) {
@@ -1181,45 +1358,45 @@ async function runAutonomousLoopInner(
     slotsByAgentId.set(lead.id, perAgentLimit);
   }
 
-  // Label-based routing: every eligible card is dispatchable. Cards carry
-  // specialty labels; we route to the first specialist whose id/role/name
-  // matches a label, falling back to the project lead.
-  const dispatchable = eligible;
-
-  // `cursor` walks the eligible list; `assigned` counts only *actual*
-  // dispatches and is what bounds the budget (`slotsAvailable`). Keeping the
-  // two separate means a card we skip — no resolvable owner — advances past
-  // that card WITHOUT consuming a dispatch slot. Otherwise a single
-  // unresolvable high-priority card would burn the only slot under
-  // `max_concurrent = 1` and starve every later card that would resolve fine.
-  let cursor = 0;
-  while (assigned < slotsAvailable && cursor < dispatchable.length) {
-    const card = dispatchable[cursor];
-    cursor++;
-
-    // Resolve the session owner BEFORE consuming any agent/dispatch capacity.
-    // A card with no resolvable owner is skipped here, before the agent-slot
-    // decrement and without incrementing `assigned`, so it cannot starve
-    // later eligible cards.
-    const autonomousOwnerId = resolveAutonomousOwnerUserId(card, dispatchEpic);
-    if (!autonomousOwnerId) {
-      console.log(
-        `[Autonomous] Skipping "${card.title}" — no authenticated owner for credential resolution (run phase while logged in)`,
+  // The manager's workers run as the person who kicked the epic (or phase)
+  // off; scheduled kickoffs fall back to the card-level owner chain.
+  const ownerUserId =
+    resolveAutonomousOwnerUserId(null, dispatchEpic) ??
+    eligible.map((card) => resolveAutonomousOwnerUserId(card, dispatchEpic)).find(Boolean) ??
+    null;
+  if (!ownerUserId) {
+    console.log(
+      `[Autonomous] Skipping ${scopeLabel} — no authenticated owner for credential resolution (run phase while logged in)`,
+    );
+    const firstCard = eligible[0];
+    try {
+      d.stmts.createKanbanCardComment.run(
+        uuidv4(),
+        firstCard.id,
+        'system',
+        `⚠️ **Autonomous dispatch skipped — no session owner**\n\nRun phase while logged in so your account credentials are used, or assign the spike manually from the card.`,
       );
-      try {
-        d.stmts.createKanbanCardComment.run(
-          uuidv4(),
-          card.id,
-          'system',
-          `⚠️ **Autonomous dispatch skipped — no session owner**\n\nRun phase while logged in so your account credentials are used, or assign the spike manually from the card.`,
-        );
-        d.broadcast({ type: 'kanban_update', projectId });
-      } catch (_) {
-        /* best-effort */
-      }
+      d.broadcast({ type: 'kanban_update', projectId });
+    } catch (_) {
+      /* best-effort */
+    }
+    return;
+  }
+
+  // Label-based routing: route to the first specialist whose id/role/name
+  // matches a card label, falling back to the project lead. The pick is a
+  // suggestion the manager may override when it writes the forward card.
+  const ready: ReadyCardOffer[] = [];
+  for (const card of eligible) {
+    if (ready.length >= offerSlots) break;
+    if (manager.isOffered(card.id)) continue;
+    const refusal = cardStartRefusal(card, epic, todoColId);
+    if (refusal) {
+      // A card back in To Do after its last allowed worker needs a person;
+      // say so (once) rather than skipping it silently.
+      if (refusal.code === 'retry_cap') manager.noteRetryCapRefusal(epic.id, card.id);
       continue;
     }
-
     const picked = pickAgentForCard({
       card,
       assignableAgents: routingPool,
@@ -1227,272 +1404,211 @@ async function runAutonomousLoopInner(
       ctx: { slotsByAgentId },
     });
     if (!picked) break;
-
-    const agent = picked;
-    // Decrement bookkeeping. Pool members also decrement their per-agent
-    // slot in `agentSlotsCopy` so the caps stay enforced across the loop;
-    // an out-of-pool lead only decrements the synthetic slots map.
-    const poolIdx = agentSlotsCopy.findIndex((s) => s.agent.id === agent.id);
+    const poolIdx = agentSlotsCopy.findIndex((s) => s.agent.id === picked.id);
     if (poolIdx >= 0) agentSlotsCopy[poolIdx].slots--;
-    slotsByAgentId.set(agent.id, (slotsByAgentId.get(agent.id) ?? 1) - 1);
+    slotsByAgentId.set(picked.id, (slotsByAgentId.get(picked.id) ?? 1) - 1);
+    ready.push({ card, agentId: picked.id, phaseId: card.phase_id ?? null });
+  }
+  if (ready.length === 0) return;
 
-    const rollbackCard = (err: unknown): void => {
-      try {
-        d.stmts.updateKanbanCard.run(
-          card.title,
-          card.description,
-          card.priority,
-          card.assignee,
-          card.labels,
-          card.session_id,
-          card.github_issue_url,
-          card.pr_url,
-          card.epic_id,
-          card.phase_id ?? null,
-          card.assign_model,
-          card.assign_engine ?? null,
-          card.pr_base_branch ?? null,
-          card.id,
-        );
-        d.stmts.moveKanbanCard.run(card.column_id, card.position, card.id);
-      } catch (rollbackErr: unknown) {
-        const msg = rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr);
-        console.error(`[Autonomous] Rollback failed for card "${card.title}":`, msg);
-      }
-      const reason = err instanceof Error ? err.message : String(err);
-      console.error(
-        `[Autonomous] Dispatch failed for card "${card.title}" (${card.id}) on agent ${agent.name}: ${reason}`,
-      );
+  await manager.offerReady({ projectId, epic, phase: phase ?? null, ready, ownerUserId });
+  console.log(
+    `[Autonomous] Offered ${ready.length} ready card(s) for ${scopeLabel} to the epic manager`,
+  );
+}
+
+/** The epic or phase whose run settings (cap, model, Auto Merge) govern a card. */
+function dispatchScopeForCard(
+  epic: KanbanEpicRow,
+  card: Pick<KanbanCardRow, 'phase_id'>,
+): { phase: KanbanPhaseRow | null; dispatchEpic: KanbanEpicRow; running: boolean } {
+  const d = getDeps();
+  const phase = card.phase_id
+    ? ((d.stmts.getKanbanPhase?.get(card.phase_id) as KanbanPhaseRow | undefined) ?? null)
+    : null;
+  if (phase?.autonomous_running) {
+    return {
+      phase,
+      dispatchEpic: {
+        ...epic,
+        autonomous_model: phase.autonomous_model,
+        autonomous_send_it: phase.autonomous_send_it ?? 0,
+        autonomous_max_concurrent: phase.autonomous_max_concurrent,
+        autonomous_enabled_by: phase.autonomous_enabled_by ?? null,
+      },
+      running: true,
     };
+  }
+  return { phase: null, dispatchEpic: epic, running: !!epic.autonomous };
+}
 
+export interface SpawnEpicWorkerArgs {
+  projectId: string;
+  cardId: string;
+  /** The manager's choice; falls back to routing when it cannot take tickets. */
+  agentId?: string | null;
+  /** The worker brief the manager wrote. Null uses the card's own text. */
+  prompt?: string | null;
+  ownerUserId: string;
+  /** The manager session; the worker shows on its rail. */
+  parentSessionId?: string | null;
+}
+
+export type SpawnEpicWorkerRefusal =
+  | 'not_found'
+  | 'paused'
+  | 'ineligible'
+  | 'cap'
+  | 'no_agent'
+  | 'retry_cap'
+  | 'held'
+  | 'agent_busy';
+
+export type SpawnEpicWorkerResult =
+  | {
+      status: 'started';
+      sessionId: string;
+      agentId: string;
+      name: string;
+      /** Finalize automation level the worker runs at. */
+      mode: string;
+      /** Settles once the worker's first turn is handed to the CLI. */
+      turn: Promise<void>;
+    }
+  | { status: 'refused'; code: SpawnEpicWorkerRefusal; error: string };
+
+function pickWorkerAgent(
+  project: Project,
+  card: KanbanCardRow,
+  requested: string | null | undefined,
+  activeByAgent: Map<string, number>,
+  perAgentLimit: number,
+): Agent | null {
+  const assignable = project.agents.filter(
+    (a) => a.role !== 'docs' && a.role !== 'reviewer' && agentAcceptsAutonomousTickets(a),
+  );
+  const lead = pickLead(project);
+  const slotsByAgentId = new Map(
+    [...assignable, ...(lead ? [lead] : [])].map((a) => [
+      a.id,
+      Math.max(0, perAgentLimit - (activeByAgent.get(a.id) ?? 0)),
+    ]),
+  );
+  const chosen = requested ? assignable.find((a) => a.id === requested) : undefined;
+  if (chosen && (slotsByAgentId.get(chosen.id) ?? 0) > 0) return chosen;
+  return (
+    pickAgentForCard({
+      card,
+      assignableAgents: assignable.filter((a) => !lead || a.id !== lead.id),
+      lead: lead ?? null,
+      ctx: { slotsByAgentId },
+    }) ?? null
+  );
+}
+
+/**
+ * Start a worker session for one epic card: claim the card (To Do → In
+ * Progress under the scope's concurrency cap), create the session linked to
+ * the card, and hand it its first turn. The epic manager's forward cards are
+ * the only caller in production, so every worker goes through the manager.
+ *
+ * Synchronous up to the session row so the dispatch route can answer with the
+ * session id; the first turn (replay, attachments, env prep) runs after.
+ */
+export function spawnEpicWorkerForCard(args: SpawnEpicWorkerArgs): SpawnEpicWorkerResult {
+  const d = getDeps();
+  const refuse = (code: SpawnEpicWorkerRefusal, error: string): SpawnEpicWorkerResult => ({
+    status: 'refused',
+    code,
+    error,
+  });
+  const { projectId, ownerUserId } = args;
+  const project = d.findProject(projectId);
+  if (!project) return refuse('not_found', 'Project not found');
+  const boardData = getOrCreateBoard(d.stmts, projectId);
+  if (!boardData?.board) return refuse('not_found', 'Board not found');
+  const card = d.stmts.getKanbanCard.get(args.cardId) as KanbanCardRow | undefined;
+  if (!card || !card.epic_id) return refuse('not_found', 'Card not found on an epic');
+  const epic = d.stmts.getKanbanEpic.get(card.epic_id) as KanbanEpicRow | undefined;
+  if (!epic || epic.board_id !== boardData.board.id) return refuse('not_found', 'Epic not found');
+  const { phase, dispatchEpic, running } = dispatchScopeForCard(epic, card);
+  if (!running) return refuse('paused', `Epic "${epic.name}" is not running`);
+
+  const isIntegrationBranch = !!epic.pr_base_branch && epic.pr_base_branch.trim().length > 0;
+  const effectiveMaxConcurrent = isIntegrationBranch ? 1 : dispatchEpic.autonomous_max_concurrent;
+  // Same per-agent capacity the tick routes with. The manager may pick
+  // another agent, so a full one is rerouted, or the start refused.
+  const agentCounts = scopeAgentActiveCounts(epic, phase);
+  const agent = pickWorkerAgent(project, card, args.agentId, agentCounts, effectiveMaxConcurrent);
+  if (!agent) {
+    return refuse('agent_busy', `No agent has room for "${card.title}" right now`);
+  }
+
+  const cols = d.stmts.getKanbanColumns.all(boardData.board.id) as Array<{
+    id: string;
+    name: string;
+  }>;
+  const inProgressColId = findColumnByName(cols, 'In Progress')?.id;
+  const reviewColId = findColumnByName(cols, 'Review')?.id;
+  const todoColId = findColumnByName(cols, 'To Do')?.id;
+  if (!inProgressColId) return refuse('not_found', 'Board has no In Progress column');
+
+  // Transactional slot claim. `BEGIN IMMEDIATE` serializes this against every
+  // other writer, so the re-read below sees the latest board: either the card
+  // is still claimable under the cap, or we refuse.
+  //
+  // Column + assignee are the only re-verification signals. Do NOT gate on
+  // `dispatched_by_autonomous` (sticky: set on first dispatch and kept when a
+  // card is returned to To Do) or on `session_id` (a stale link can survive a
+  // requeue); either would reject a requeued card forever.
+  const db = d.getDb();
+  // Readiness is the server's call, whatever the manager forwards. The shared
+  // check runs on the freshly read row inside the transaction, so a hold, a
+  // move, or a new blocker that landed after the offer refuses the start.
+  let refusal: { code: SpawnEpicWorkerRefusal; error: string } | null = null;
+  const claimSlot = db.transaction((cardId: string): 'claimed' | 'cap' | 'refused' => {
+    const fresh = d.stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined;
+    refusal = cardStartRefusal(fresh, epic, todoColId);
+    if (refusal) return 'refused';
+    const scopeCardsNow = (
+      phase
+        ? d.stmts.getKanbanCardsByPhase.all(phase.id)
+        : d.stmts.getKanbanCardsByEpic.all(epic.id)
+    ) as KanbanCardRow[];
+    const activeNow = scopeCardsNow.filter(
+      (c) => c.column_id === inProgressColId || c.column_id === reviewColId,
+    ).length;
+    if (activeNow >= effectiveMaxConcurrent) return 'cap';
+    d.stmts.markCardDispatchedByAutonomous.run(cardId);
+    d.stmts.moveKanbanCard.run(inProgressColId, 0, cardId);
+    return 'claimed';
+  });
+  const claimResult = claimSlot.immediate(card.id);
+  if (claimResult === 'cap') {
+    console.log(
+      `[Autonomous] Slot claim refused for "${card.title}" — ${effectiveMaxConcurrent} active${isIntegrationBranch ? ' (integration branch serial cap)' : ''}`,
+    );
+    return refuse(
+      'cap',
+      `Epic "${epic.name}" is at its concurrency cap (${effectiveMaxConcurrent})`,
+    );
+  }
+  if (claimResult === 'refused' && refusal) {
+    const { code, error } = refusal as { code: SpawnEpicWorkerRefusal; error: string };
+    if (code === 'retry_cap') d.epicManager?.noteRetryCapRefusal(epic.id, card.id);
+    return refuse(code, error);
+  }
+  console.log(`[Autonomous] Assigning "${card.title}" to ${agent.name}`);
+
+  const rollbackCard = (err: unknown): void => {
     try {
-      // Transactional slot claim (defense-in-depth)
-      // The per-epic mutex above already prevents two `runAutonomousLoop`
-      // invocations from interleaving, but the move-to-In-Progress can
-      // still race with manual user moves, the webhook handler, or future
-      // callers we don't yet have. Wrap the re-read of `activeCardCount`
-      // and the move in a `BEGIN IMMEDIATE` so SQLite refuses concurrent
-      // writers: either we observe the latest state and proceed, or we
-      // observe `>= max_concurrent` and bail.
-      //
-      // We also re-read the count here (not just at the top of the loop)
-      // because the previous iteration of this `while` block may have just
-      // claimed a slot — that's the in-loop check the description calls out.
-      const db = d.getDb();
-      const claimSlot = db.transaction((cardId: string): 'claimed' | 'cap' | 'ineligible' => {
-        // Atomically re-verify the target card is STILL eligible before
-        // moving/marking it. Phase and epic dispatch loops use different
-        // single-flight keys (`phase:<id>` vs `<epicId>`), so they can run
-        // concurrently over overlapping card sets (a phase's cards are a
-        // subset of its epic's). `BEGIN IMMEDIATE` serializes the two claim
-        // transactions, but the active-count check alone is not enough: both
-        // could observe `activeNow < max` and move the SAME To Do card,
-        // spawning two sessions for it. Re-read the row and bail if it has
-        // already been claimed (marked dispatched, assigned, or moved out of
-        // its original column by the other loop or a manual move).
-        //
-        // This MUST mirror the `getEligibleAutonomousCards` SQL predicate
-        // (To Do column + no assignee). The concurrency case the guard exists
-        // for — a sibling loop claiming the SAME To Do card first — is caught
-        // by the column move alone: the winning loop runs
-        // `markCardDispatchedByAutonomous` + `moveKanbanCard(inProgress)`
-        // together inside this same BEGIN IMMEDIATE, so the loser's re-read
-        // always sees `fresh.column_id !== card.column_id` (To Do → In
-        // Progress) and bails. The move and the flag are written atomically, so
-        // the flag is never observable without the move.
-        //
-        // Do NOT gate on `dispatched_by_autonomous` here. Unlike the column, it
-        // is a *sticky* marker (set on first dispatch, backfilled from
-        // `autonomous_iterations`, read later by auto-ship). A card that was
-        // dispatched once and then legitimately returned to To Do keeps the
-        // flag: the dispatch `rollbackCard` (session spawn failed after
-        // the claim) and manual requeue both return it to To Do WITHOUT clearing
-        // it. Gating on the flag rejected those cards at claim on every subsequent tick while the candidate SQL (which ignores
-        // the flag) kept re-selecting them — "already claimed by a concurrent
-        // dispatch loop or moved" forever, and the epic/phase never resumes.
-        //
-        // Do NOT gate on `session_id` either: a card can carry a stale
-        // session_id from a dead/cancelled prior link while still sitting
-        // unassigned in To Do, for the same "selected-then-rejected forever"
-        // reason. Column + assignee are the only re-verification signals.
-        const fresh = d.stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined;
-        if (
-          !fresh ||
-          (fresh.assignee != null && String(fresh.assignee).trim() !== '') ||
-          fresh.column_id !== card.column_id
-        ) {
-          return 'ineligible';
-        }
-        // Recheck order inside the claim transaction: an earlier card can be
-        // reopened or phases reordered while credential/branch work awaits.
-        const dispatchPhaseId = phase?.id ?? card.phase_id;
-        if (dispatchPhaseId && findIncompletePredecessor(epic, dispatchPhaseId)) {
-          return 'ineligible';
-        }
-        // Re-read the SAME scope the loop-top count used: phase-local when
-        // dispatching a phase, epic-wide otherwise. Counting epic-wide here
-        // while `effectiveMaxConcurrent` is the phase cap would let a busy
-        // sibling phase starve this phase of its own free slots.
-        const scopeCardsNow = (
-          phase
-            ? d.stmts.getKanbanCardsByPhase.all(phase.id)
-            : d.stmts.getKanbanCardsByEpic.all(epic.id)
-        ) as KanbanCardRow[];
-        const activeNow = scopeCardsNow.filter(
-          (c) => c.column_id === inProgressColId || c.column_id === reviewColId,
-        ).length;
-        if (activeNow >= effectiveMaxConcurrent) return 'cap';
-        d.stmts.markCardDispatchedByAutonomous.run(cardId);
-        d.stmts.moveKanbanCard.run(inProgressColId, 0, cardId);
-        return 'claimed';
-      });
-      const claimResult = claimSlot.immediate(card.id);
-      if (claimResult === 'cap') {
-        console.log(
-          `[Autonomous] Slot claim aborted for "${card.title}" — cap reached during dispatch (${effectiveMaxConcurrent} active${isIntegrationBranch ? ', integration branch serial cap' : ''})`,
-        );
-        break;
-      }
-      if (claimResult === 'ineligible') {
-        // A concurrent loop (overlapping epic/phase scope) or a manual move
-        // already took this card. Hand the agent's slot back and try the next
-        // eligible card rather than creating a duplicate session.
-        if (poolIdx >= 0) agentSlotsCopy[poolIdx].slots++;
-        slotsByAgentId.set(agent.id, (slotsByAgentId.get(agent.id) ?? 0) + 1);
-        console.log(
-          `[Autonomous] Skipping "${card.title}" — already claimed by a concurrent dispatch loop or moved`,
-        );
-        continue;
-      }
-      console.log(`[Autonomous] Assigning "${card.title}" to ${agent.name}`);
-
-      const sessionId = crypto.randomUUID();
-      const cfg = d.getConfig();
-      const engineValidModels = cfg.engineValidModels || {};
-      const agentEngine = resolveAgentSpawnEngineAndModel(cfg, agent, autonomousOwnerId).engine;
-
-      // Resolve the (engine, model) pair for the spawn. Card-level
-      // `assign_engine` (when set) hard-pins the engine; `assign_model` then
-      // wins over epic-level `autonomous_model`. Either may cross engines
-      // (e.g. operator picks `composer-2.5` for an agent whose default
-      // engine is `claude-code`), in which case we spawn under the
-      // engine that owns the model so the operator's selection isn't
-      // silently dropped.
-      //
-      // Falls back to the epic-level resolver (and ultimately the agent's
-      // default model + engine) when no override is set or the override
-      // isn't recognised by any configured engine.
-      let engine: string;
-      let model: string;
-      const cardRawModel = typeof card.assign_model === 'string' ? card.assign_model.trim() : '';
-      const cardRawEngine = typeof card.assign_engine === 'string' ? card.assign_engine.trim() : '';
-      const cardEngineValid =
-        cardRawEngine && Object.prototype.hasOwnProperty.call(engineValidModels, cardRawEngine)
-          ? cardRawEngine
-          : '';
-      if (cardEngineValid) {
-        // Explicit engine override always wins — pair it with the chosen
-        // model when that model is valid for the override engine, otherwise
-        // fall back to the engine's default.
-        engine = cardEngineValid;
-        const allowedForEngine = engineValidModels[cardEngineValid] || [];
-        if (cardRawModel && allowedForEngine.includes(cardRawModel)) {
-          model = cardRawModel;
-        } else {
-          model = cfg.engineDefaultModels?.[cardEngineValid] || allowedForEngine[0] || '';
-        }
-      } else if (cardRawModel) {
-        const agentAllowed = engineValidModels[agentEngine] || [];
-        if (agentAllowed.includes(cardRawModel)) {
-          engine = agentEngine;
-          model = cardRawModel;
-        } else {
-          const otherEngine = engineForModel(cardRawModel, engineValidModels);
-          if (otherEngine) {
-            engine = otherEngine;
-            model = cardRawModel;
-          } else {
-            ({ engine, model } = sessionEngineAndModelForAutonomousDispatch(
-              dispatchEpic,
-              agent,
-              engineValidModels,
-              cfg,
-              autonomousOwnerId,
-            ));
-          }
-        }
-      } else {
-        ({ engine, model } = sessionEngineAndModelForAutonomousDispatch(
-          dispatchEpic,
-          agent,
-          engineValidModels,
-          cfg,
-          autonomousOwnerId,
-        ));
-      }
-      const projRow = d.findProject(projectId);
-      const spikeAssign = isSpikeCard(card);
-      // Spikes get a worktree so they can try code; ship routes refuse them.
-      const wt = defaultSessionUseWorktreeFlag(projRow);
-      let linkedSpecItem = spikeAssign ? getSpecItemForSpikeCard(d.stmts, card.id) : null;
-      if (spikeAssign && card.epic_id) {
-        linkedSpecItem = ensureSpecItemForSpikeCard(d.stmts, card) ?? linkedSpecItem;
-      }
-      d.stmts.createSession.run(sessionId, agent.id, card.title, engine, model, wt, 0, 1);
-      if (spikeAssign) {
-        d.stmts.updateSessionMode.run('scoping', sessionId);
-        d.stmts.updateSessionSpikeCard.run(card.id, sessionId);
-        if (card.epic_id) d.stmts.updateSessionLinkedEpic.run(card.epic_id, sessionId);
-        if (linkedSpecItem) {
-          d.stmts.updateSessionLinkedSpecItem.run(linkedSpecItem.id, sessionId);
-        }
-        markSessionFinalizeAutomation(d.stmts, sessionId, 'manual');
-      } else {
-        if (card.epic_id) {
-          d.stmts.updateSessionLinkedEpic.run(card.epic_id, sessionId);
-        }
-        markSessionAutoShipOnComplete(d.stmts, sessionId);
-        // Autonomous cards run at least "Build and Push"; they escalate to
-        // "Auto Merge" (auto-merge) only when the project's auto-merge is enabled.
-        // The epic's "Auto Merge" override forces `merge` regardless of project
-        // auto-merge config — operators opt into auto-merge per autonomous epic.
-        const finalizeLevel = dispatchEpic.autonomous_send_it
-          ? 'merge'
-          : assignedFinalizeAutomationLevel(
-              resolveShouldAutoMerge(undefined, projRow?.githubWorkflow),
-            );
-        markSessionFinalizeAutomation(d.stmts, sessionId, finalizeLevel);
-      }
-      // Autonomous-dispatch sessions are created by the system (no
-      // human caller in scope), but we still want to attribute them to
-      // the real human responsible so per-user GitHub tokens, CLI
-      // credentials, and skill secrets resolve correctly — and so the
-      // session actually shows up on that user's session list under
-      // strict-mode auth. `resolveAutonomousOwnerUserId` walks
-      // card.created_by → card.session_id owner → epic.autonomous_enabled_by
-      // → org owner; only the last hop matches the old behaviour.
-      setSessionOwner(sessionId, autonomousOwnerId);
-      {
-        const row = d.stmts.getSession.get(sessionId) as SessionRow | undefined;
-        if (row) {
-          d.broadcast({
-            type: 'session_created',
-            agentId: agent.id,
-            session: enrichSessionForClient(row, d.stmts),
-          });
-        }
-      }
-
-      // `moveKanbanCard` already ran inside the transactional slot claim
-      // above. We still need to stamp `session_id` (and the agent name as
-      // assignee) onto the card now that the session exists.
       d.stmts.updateKanbanCard.run(
         card.title,
         card.description,
         card.priority,
-        agent.name,
+        card.assignee,
         card.labels,
-        sessionId,
+        card.session_id,
         card.github_issue_url,
         card.pr_url,
         card.epic_id,
@@ -1502,113 +1618,317 @@ async function runAutonomousLoopInner(
         card.pr_base_branch ?? null,
         card.id,
       );
-
-      const contextLines: string[] = [];
-      if (spikeAssign) {
-        contextLines.push(
-          linkedSpecItem
-            ? buildSpikeSessionContext({
-                card,
-                specItem: linkedSpecItem,
-                projectId,
-              })
-            : buildSpikeSessionContextFallback({ card, projectId }),
-        );
-      } else {
-        contextLines.push(`# Task: ${card.title}`);
-        if (card.description) contextLines.push(`\n## Description\n${card.description}`);
-        if (card.priority) contextLines.push(`\n**Priority:** ${card.priority}`);
-        if (card.labels) contextLines.push(`**Labels:** ${card.labels}`);
-        if (card.epic_id) {
-          const specBlock = formatEpicSpecDecisionsForContext(
-            loadChosenSpecItemsForEpic(d.stmts, card.epic_id),
-          );
-          if (specBlock) contextLines.push(`\n${specBlock}`);
-        }
-        // Same replay seeding as the manual assign path (server/routes/board.ts):
-        // an autonomously-dispatched bug card must see what the customer did,
-        // not just the ticket text. Non-fatal — returns null when the card has
-        // no replay or the capture can't be read.
-        const replayContext = await loadCardReplayContext(
-          { stmts: d.stmts, config: d.getConfig() },
-          card.id,
-        );
-        if (replayContext) contextLines.push(`\n${replayContext}`);
-        contextLines.push(
-          `\n---\nYou have been assigned this task by the autonomous dispatch system. Review the description above and begin working on it.`,
-          ``,
-          `**This session is linked to kanban card \`${card.id}\`.** Do **NOT** create a new card for this work. Comment and update this card via the board API as you progress, but do **not** move it to Done yourself — Done means merged, and the platform closes the card automatically when your change lands.`,
-        );
-      }
-
-      const commentContext = loadCardSupportTicketCommentContext(d.stmts, card, projectId);
-      if (commentContext) contextLines.push(`\n${commentContext}`);
-      const images = await loadCardUploadAttachments(
-        { stmts: d.stmts, config: d.getConfig() },
-        card,
-        projectId,
-      );
-
-      // Scoped cross-hub secret injection: only cards that carry an opt-in
-      // label (`cross-hub:dev` or one from `AGENT_HUB_CROSS_HUB_LABELS`) receive `DEV_HUB_API_KEY`
-      // in their spawn environment. The fetch is best-effort — if Secrets
-      // Manager is unreachable the session starts without the key and the
-      // error is logged via the TOOL_ERROR pattern (see server/secrets.ts).
-      const extraEnv: Record<string, string> = {};
-      if (cardNeedsDevHubKey(card.labels)) {
-        const devHubKey = await getDevHubApiKey();
-        if (devHubKey) {
-          extraEnv.DEV_HUB_API_KEY = devHubKey;
-        }
-      }
-
-      if (d.prepareSessionEnv) {
-        try {
-          await d.prepareSessionEnv(sessionId);
-        } catch (err: unknown) {
-          rollbackCard(err);
-          continue;
-        }
-      }
-
-      d.handleChat(null, {
-        type: 'chat',
-        agentId: agent.id,
-        sessionId,
-        content: contextLines.join('\n'),
-        ...(images.length > 0 ? { images } : {}),
-        hookSpecificOutput: { sessionTitle: card.title },
-        // Mark this chat as an autonomous-dispatch origin so the spawn
-        // credential policy in `chat.ts` (`resolveGithubSpawnToken` in
-        // `github-spawn-token-resolver.ts`) strips the org owner's
-        // per-user OAuth token from the env.
-        // Without this, an agent in an autonomous-dispatch session can
-        // bypass the `gh-pr.sh` wrapper guard by calling
-        // `gh api repos/.../reviews -X POST` directly and posting a
-        // formal PR review under the human-owner identity.
-        _fromAutonomousDispatch: true,
-        ...(Object.keys(extraEnv).length > 0 ? { extraEnv } : {}),
-      }).catch(rollbackCard);
-
-      d.broadcast({
-        type: 'autonomous_assigned',
-        projectId,
-        epicId: epic.id,
-        cardId: card.id,
-        cardTitle: card.title,
-        agentId: agent.id,
-        agentName: agent.name,
-      });
-      assigned++;
-    } catch (err: unknown) {
-      rollbackCard(err);
+      d.stmts.moveKanbanCard.run(card.column_id, card.position, card.id);
+    } catch (rollbackErr: unknown) {
+      const msg = rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr);
+      console.error(`[Autonomous] Rollback failed for card "${card.title}":`, msg);
     }
-  }
+    const reason = err instanceof Error ? err.message : String(err);
+    console.error(
+      `[Autonomous] Dispatch failed for card "${card.title}" (${card.id}) on agent ${agent.name}: ${reason}`,
+    );
+    d.epicManager?.noteWorkerEvent(epic.id, {
+      kind: 'error',
+      cardId: card.id,
+      detail: `the worker could not start: ${reason}`,
+    });
+  };
 
-  if (assigned > 0) {
-    d.broadcast({ type: 'kanban_update', projectId });
-    console.log(`[Autonomous] Dispatched ${assigned} card(s) for epic "${epic.name}"`);
+  let sessionId: string;
+  let finalizeLevel: FinalizeAutomationLevel;
+  let spikeAssign: boolean;
+  let linkedSpecItem: ReturnType<typeof getSpecItemForSpikeCard>;
+  try {
+    sessionId = crypto.randomUUID();
+    const cfg = d.getConfig();
+    const { engine, model } = engineAndModelForCard(card, agent, dispatchEpic, cfg, ownerUserId);
+    const projRow = d.findProject(projectId);
+    spikeAssign = isSpikeCard(card);
+    // Spikes get a worktree so they can try code; ship routes refuse them.
+    const wt = defaultSessionUseWorktreeFlag(projRow);
+    linkedSpecItem = spikeAssign ? getSpecItemForSpikeCard(d.stmts, card.id) : null;
+    if (spikeAssign && card.epic_id) {
+      linkedSpecItem = ensureSpecItemForSpikeCard(d.stmts, card) ?? linkedSpecItem;
+    }
+    d.stmts.createSession.run(sessionId, agent.id, card.title, engine, model, wt, 0, 1);
+    if (spikeAssign) {
+      d.stmts.updateSessionMode.run('scoping', sessionId);
+      d.stmts.updateSessionSpikeCard.run(card.id, sessionId);
+      d.stmts.updateSessionLinkedEpic.run(epic.id, sessionId);
+      if (linkedSpecItem) {
+        d.stmts.updateSessionLinkedSpecItem.run(linkedSpecItem.id, sessionId);
+      }
+      finalizeLevel = 'manual';
+      markSessionFinalizeAutomation(d.stmts, sessionId, finalizeLevel);
+    } else {
+      d.stmts.updateSessionLinkedEpic.run(epic.id, sessionId);
+      markSessionAutoShipOnComplete(d.stmts, sessionId);
+      // Autonomous cards run at least "Build and Push"; they escalate to
+      // "Auto Merge" only when the project's auto-merge is enabled. The
+      // epic's (or phase's) "Auto Merge" override forces `merge`.
+      finalizeLevel = dispatchEpic.autonomous_send_it
+        ? 'merge'
+        : assignedFinalizeAutomationLevel(
+            resolveShouldAutoMerge(undefined, projRow?.githubWorkflow),
+          );
+      markSessionFinalizeAutomation(d.stmts, sessionId, finalizeLevel);
+    }
+    // Attributed to the person who kicked the epic off so per-user GitHub
+    // tokens, CLI credentials, and skill secrets resolve, and the session is
+    // theirs under strict-mode auth.
+    setSessionOwner(sessionId, ownerUserId);
+    if (args.parentSessionId) {
+      d.stmts.markSessionSpawnedFrom?.run(args.parentSessionId, sessionId);
+    }
+    const row = d.stmts.getSession.get(sessionId) as SessionRow | undefined;
+    if (row) {
+      d.broadcast({
+        type: 'session_created',
+        agentId: agent.id,
+        session: enrichSessionForClient(row, d.stmts),
+      });
+    }
+    // The claim already moved the card; stamp the session and the assignee.
+    d.stmts.updateKanbanCard.run(
+      card.title,
+      card.description,
+      card.priority,
+      agent.name,
+      card.labels,
+      sessionId,
+      card.github_issue_url,
+      card.pr_url,
+      card.epic_id,
+      card.phase_id ?? null,
+      card.assign_model,
+      card.assign_engine ?? null,
+      card.pr_base_branch ?? null,
+      card.id,
+    );
+  } catch (err: unknown) {
+    rollbackCard(err);
+    return refuse('ineligible', err instanceof Error ? err.message : String(err));
   }
+  d.epicManager?.noteWorkerStarted(card.id, epic.id);
+
+  d.broadcast({
+    type: 'autonomous_assigned',
+    projectId,
+    epicId: epic.id,
+    cardId: card.id,
+    cardTitle: card.title,
+    agentId: agent.id,
+    agentName: agent.name,
+  });
+  d.broadcast({ type: 'kanban_update', projectId });
+
+  const turn = startEpicWorkerTurn({
+    projectId,
+    card,
+    agent,
+    sessionId,
+    spikeAssign,
+    linkedSpecItem,
+    managerPrompt: args.prompt?.trim() || null,
+    rollbackCard,
+  });
+  return {
+    status: 'started',
+    sessionId,
+    agentId: agent.id,
+    name: card.title,
+    mode: finalizeLevel,
+    turn,
+  };
+}
+
+/**
+ * Engine + model for a worker. Card-level `assign_engine` hard-pins the
+ * engine; `assign_model` then wins over the epic/phase `autonomous_model`.
+ * Either may cross engines (an operator picks `composer-2.5` for an agent
+ * whose default engine is `claude-code`), in which case the spawn runs under
+ * the engine that owns the model. Falls back to the epic-level resolver.
+ */
+function engineAndModelForCard(
+  card: KanbanCardRow,
+  agent: Agent,
+  dispatchEpic: KanbanEpicRow,
+  cfg: AppConfig,
+  ownerUserId: string,
+): { engine: string; model: string } {
+  const engineValidModels = cfg.engineValidModels || {};
+  const agentEngine = resolveAgentSpawnEngineAndModel(cfg, agent, ownerUserId).engine;
+  const cardRawModel = typeof card.assign_model === 'string' ? card.assign_model.trim() : '';
+  const cardRawEngine = typeof card.assign_engine === 'string' ? card.assign_engine.trim() : '';
+  const cardEngineValid =
+    cardRawEngine && Object.prototype.hasOwnProperty.call(engineValidModels, cardRawEngine)
+      ? cardRawEngine
+      : '';
+  if (cardEngineValid) {
+    const allowedForEngine = engineValidModels[cardEngineValid] || [];
+    if (cardRawModel && allowedForEngine.includes(cardRawModel)) {
+      return { engine: cardEngineValid, model: cardRawModel };
+    }
+    return {
+      engine: cardEngineValid,
+      model: cfg.engineDefaultModels?.[cardEngineValid] || allowedForEngine[0] || '',
+    };
+  }
+  if (cardRawModel) {
+    const agentAllowed = engineValidModels[agentEngine] || [];
+    if (agentAllowed.includes(cardRawModel)) return { engine: agentEngine, model: cardRawModel };
+    const otherEngine = engineForModel(cardRawModel, engineValidModels);
+    if (otherEngine) return { engine: otherEngine, model: cardRawModel };
+  }
+  return sessionEngineAndModelForAutonomousDispatch(
+    dispatchEpic,
+    agent,
+    engineValidModels,
+    cfg,
+    ownerUserId,
+  );
+}
+
+/** The worker's first turn: the manager's brief plus the context the server owns. */
+async function startEpicWorkerTurn(args: {
+  projectId: string;
+  card: KanbanCardRow;
+  agent: Agent;
+  sessionId: string;
+  spikeAssign: boolean;
+  linkedSpecItem: ReturnType<typeof getSpecItemForSpikeCard>;
+  managerPrompt: string | null;
+  rollbackCard: (err: unknown) => void;
+}): Promise<void> {
+  const d = getDeps();
+  const { projectId, card, agent, sessionId, spikeAssign, linkedSpecItem, managerPrompt } = args;
+  try {
+    const contextLines: string[] = [];
+    if (spikeAssign) {
+      if (managerPrompt) contextLines.push(`## From the epic manager\n${managerPrompt}\n`);
+      contextLines.push(
+        linkedSpecItem
+          ? buildSpikeSessionContext({ card, specItem: linkedSpecItem, projectId })
+          : buildSpikeSessionContextFallback({ card, projectId }),
+      );
+    } else {
+      // The card is the requirement of record and always goes in whole, from
+      // the board. The manager's brief adds context on top; it never stands in
+      // for the card, so nothing it shortened or left out is lost.
+      contextLines.push(`# Task: ${card.title}`);
+      if (card.description) contextLines.push(`\n## Description\n${card.description}`);
+      if (card.priority) contextLines.push(`\n**Priority:** ${card.priority}`);
+      if (card.labels) contextLines.push(`**Labels:** ${card.labels}`);
+      if (managerPrompt) contextLines.push(`\n## Brief from the epic manager\n${managerPrompt}`);
+      if (card.epic_id) {
+        const specBlock = formatEpicSpecDecisionsForContext(
+          loadChosenSpecItemsForEpic(d.stmts, card.epic_id),
+        );
+        if (specBlock) contextLines.push(`\n${specBlock}`);
+      }
+      // Same replay seeding as the manual assign path (server/routes/board.ts):
+      // a bug card must see what the customer did, not just the ticket text.
+      const replayContext = await loadCardReplayContext(
+        { stmts: d.stmts, config: d.getConfig() },
+        card.id,
+      );
+      if (replayContext) contextLines.push(`\n${replayContext}`);
+      contextLines.push(
+        `\n---\nYou have been assigned this task by the epic's manager thread. Review the brief above and begin working on it.`,
+        ``,
+        `**This session is linked to kanban card \`${card.id}\`.** Do **NOT** create a new card for this work. Comment and update this card via the board API as you progress, but do **not** move it to Done yourself — Done means merged, and the platform closes the card automatically when your change lands.`,
+      );
+    }
+
+    const commentContext = loadCardSupportTicketCommentContext(d.stmts, card, projectId);
+    if (commentContext) contextLines.push(`\n${commentContext}`);
+    const images = await loadCardUploadAttachments(
+      { stmts: d.stmts, config: d.getConfig() },
+      card,
+      projectId,
+    );
+
+    // Scoped cross-hub secret injection: only cards with an opt-in label
+    // receive `DEV_HUB_API_KEY`. Best-effort (see server/secrets.ts).
+    const extraEnv: Record<string, string> = {};
+    if (cardNeedsDevHubKey(card.labels)) {
+      const devHubKey = await getDevHubApiKey();
+      if (devHubKey) extraEnv.DEV_HUB_API_KEY = devHubKey;
+    }
+
+    if (d.prepareSessionEnv) await d.prepareSessionEnv(sessionId);
+
+    d.handleChat(null, {
+      type: 'chat',
+      agentId: agent.id,
+      sessionId,
+      content: contextLines.join('\n'),
+      ...(images.length > 0 ? { images } : {}),
+      hookSpecificOutput: { sessionTitle: card.title },
+      // Autonomous-dispatch origin: the spawn credential policy in `chat.ts`
+      // (`resolveGithubSpawnToken`) strips the owner's per-user OAuth token so
+      // the worker cannot post a formal PR review as the human.
+      _fromAutonomousDispatch: true,
+      ...(Object.keys(extraEnv).length > 0 ? { extraEnv } : {}),
+    }).catch(args.rollbackCard);
+  } catch (err: unknown) {
+    args.rollbackCard(err);
+  }
+}
+
+/**
+ * Start (or reuse) the epic's manager thread. The kicker owns it; a scheduled
+ * kickoff with no recorded kicker falls back to the card-level owner chain.
+ */
+function kickoffEpicManager(
+  projectId: string,
+  epic: KanbanEpicRow,
+  kickedBy: string | null | undefined,
+): void {
+  const d = getDeps();
+  if (!d.epicManager) return;
+  try {
+    let owner = resolveAutonomousOwnerUserId(null, { autonomous_enabled_by: kickedBy ?? null });
+    if (!owner) {
+      const cards = d.stmts.getKanbanCardsByEpic.all(epic.id) as KanbanCardRow[];
+      owner = cards.map((card) => resolveAutonomousOwnerUserId(card, epic)).find(Boolean) ?? null;
+    }
+    if (!owner) {
+      console.log(`[Autonomous] Epic "${epic.name}" has no resolvable owner for its manager`);
+      return;
+    }
+    d.epicManager.kickoff(projectId, epic, owner);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[Autonomous] Could not start the manager for epic "${epic.name}":`, msg);
+  }
+}
+
+/**
+ * An explicit kickoff (Run phase, or turning the epic on) by a person other
+ * than the manager's owner hands the manager to them. No-op without a manager.
+ */
+export function handOverEpicManager(epicId: string, userId: string | null | undefined): void {
+  const d = getDeps();
+  if (!d.epicManager || !userId) return;
+  try {
+    d.epicManager.handOver(epicId, userId);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[Autonomous] Could not hand over the manager for epic ${epicId}:`, msg);
+  }
+}
+
+/** Pause the manager once neither the epic nor any of its phases is running. */
+function pauseEpicManagerIfIdle(epicId: string): void {
+  const d = getDeps();
+  if (!d.epicManager) return;
+  const epic = d.stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined;
+  if (!epic) return;
+  if (epic.autonomous) return;
+  const phases = (d.stmts.getKanbanPhasesByEpic?.all(epicId) as KanbanPhaseRow[] | undefined) ?? [];
+  if (phases.some((p) => p.autonomous_running)) return;
+  d.epicManager.pause(epicId);
 }
 
 export function tryAutonomousDispatch(): void {
@@ -1643,9 +1963,11 @@ export function scheduleAutonomousEpic(projectId: string, epic: KanbanEpicRow): 
     } else {
       autonomousProjects.delete(projectId);
     }
+    pauseEpicManagerIfIdle(epic.id);
     console.log(`[Autonomous] Stopped for epic "${epic.name}"`);
     return;
   }
+  kickoffEpicManager(projectId, epic, epic.autonomous_enabled_by);
 
   let liveEpics = autonomousEpicsByProject.get(projectId);
   if (!liveEpics) {
@@ -1697,8 +2019,13 @@ export function scheduleAutonomousPhase(projectId: string, phase: KanbanPhaseRow
   }
 
   if (!phase.autonomous_running) {
+    pauseEpicManagerIfIdle(phase.epic_id);
     console.log(`[Autonomous] Stopped phase "${phase.name}"`);
     return;
+  }
+  {
+    const phaseEpic = getDeps().stmts.getKanbanEpic.get(phase.epic_id) as KanbanEpicRow | undefined;
+    if (phaseEpic) kickoffEpicManager(projectId, phaseEpic, phase.autonomous_enabled_by);
   }
 
   autonomousProjects.add(projectId);
@@ -1786,6 +2113,7 @@ export async function startAutonomousPhase(
     );
   }
   d.stmts.setPhaseAutonomousEnabledBy.run(operatorUserId, phaseId);
+  handOverEpicManager(epic.id, operatorUserId);
 
   d.stmts.setPhaseAutonomousRunning.run(1, phaseId);
   const updated = d.stmts.getKanbanPhase.get(phaseId) as KanbanPhaseRow;

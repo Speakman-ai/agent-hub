@@ -54,6 +54,37 @@ describe('EpicDetailScreen — EpicSummary', () => {
     expect(html).toContain('Lock all open spec decisions');
   });
 
+  it('links to the epic manager thread once the epic has one', () => {
+    const managed = {
+      id: 'e1',
+      name: 'Mobile parity',
+      manager_session_id: 's1',
+      manager_agent_id: 'lead',
+    };
+    const withManager = renderToStaticMarkup(
+      <EpicSummary
+        epic={managed}
+        phases={[]}
+        tickets={[]}
+        columns={columns}
+        specItems={[]}
+        onOpenManager={noop}
+      />,
+    );
+    expect(withManager).toContain('Open manager');
+    const without = renderToStaticMarkup(
+      <EpicSummary
+        epic={{ id: 'e1', name: 'Mobile parity' }}
+        phases={[]}
+        tickets={[]}
+        columns={columns}
+        specItems={[]}
+        onOpenManager={noop}
+      />,
+    );
+    expect(without).not.toContain('Open manager');
+  });
+
   it('renders nothing without an epic', () => {
     const html = renderToStaticMarkup(
       <EpicSummary epic={null} phases={[]} tickets={[]} columns={columns} specItems={[]} />,

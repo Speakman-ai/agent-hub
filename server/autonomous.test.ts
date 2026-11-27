@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, onTestFinished, type Mock } from 'vitest';
 import type { Project, KanbanCardRow, KanbanEpicRow, KanbanPhaseRow, SessionRow } from './types.js';
+import type { EpicManagerPort, ReadyCardOffer } from './autonomous.js';
 
 // Module mocks (hoisted before imports)
 
@@ -54,6 +55,7 @@ vi.mock('./secrets.js', async (importOriginal) => {
 
 const {
   initAutonomous,
+  spawnEpicWorkerForCard,
   runAutonomousLoop,
   runAutonomousLoopForEpic,
   runAutonomousLoopForPhase,
@@ -76,6 +78,51 @@ const mockGetDevHubApiKeyFn = mockGetDevHubApiKey as Mock;
 const { markSessionFinalizeAutomation: mockMarkFinalizeAutomation } =
   await import('./session-ship.js');
 const mockMarkFinalizeAutomationFn = mockMarkFinalizeAutomation as Mock;
+
+// Rows the instant-forward manager below has seen. The default card/epic
+// lookups read these, so the worker spawn (which re-reads the card and epic by
+// id) sees the same rows the loop offered.
+const cardRegistry = new Map<string, KanbanCardRow>();
+const epicRegistry = new Map<string, KanbanEpicRow>();
+
+/**
+ * Stand-in for the epic manager thread that forwards every ready card at once,
+ * the way a manager's forward cards do after Auto start. Lets these tests
+ * drive the loop and the worker spawn end to end.
+ */
+function instantForwardManager(): EpicManagerPort & { offered: ReadyCardOffer[][] } {
+  const offered: ReadyCardOffer[][] = [];
+  return {
+    offered,
+    async offerReady({ projectId, epic, ready, ownerUserId }) {
+      offered.push(ready);
+      epicRegistry.set(epic.id, epic);
+      for (const offer of ready) {
+        if (!cardRegistry.has(offer.card.id)) cardRegistry.set(offer.card.id, offer.card);
+        const result = spawnEpicWorkerForCard({
+          projectId,
+          cardId: offer.card.id,
+          agentId: offer.agentId,
+          ownerUserId,
+        });
+        if (result.status === 'started') await result.turn;
+        else if (result.code === 'cap') break;
+      }
+    },
+    liveOffers: () => [],
+    withdrawOffer: () => {},
+    isOffered: () => false,
+    isHeld: () => false,
+    isAtRetryCap: () => false,
+    noteWorkerStarted: () => {},
+    handOver: () => false,
+    noteWorkerEvent: () => {},
+    observeCards: () => {},
+    kickoff: () => null,
+    pause: () => {},
+    noteRetryCapRefusal: () => {},
+  };
+}
 
 interface MockStmts {
   getSupportTicket?: { get: Mock };
@@ -151,9 +198,9 @@ function makeStmts(overrides: Partial<MockStmts> = {}): MockStmts {
     // Default: the card re-read inside the transactional slot claim is still
     // eligible (To Do, not dispatched, no session). Tests that simulate a
     // concurrent claim override this to return an already-claimed row.
-    getKanbanCard: { get: vi.fn((id: string) => makeCard({ id })) },
+    getKanbanCard: { get: vi.fn((id: string) => cardRegistry.get(id) ?? makeCard({ id })) },
     getKanbanCardsByEpic: { all: vi.fn(() => []) },
-    getKanbanEpic: { get: vi.fn() },
+    getKanbanEpic: { get: vi.fn((id: string) => epicRegistry.get(id)) },
     updateKanbanEpic: { run: vi.fn() },
     createSession: { run: vi.fn() },
     updateKanbanCard: { run: vi.fn() },
@@ -180,6 +227,7 @@ interface MockDeps {
   getConfig: Mock;
   getGhAuthenticatedUser: Mock;
   getDb: Mock;
+  epicManager: EpicManagerPort & { offered: ReadyCardOffer[][] };
 }
 
 /**
@@ -214,6 +262,7 @@ function makeDeps(stmts: MockStmts = makeStmts()): MockDeps {
     getConfig: vi.fn(() => ({}) as never),
     getGhAuthenticatedUser: vi.fn(() => null),
     getDb: vi.fn(() => makeFakeDb()),
+    epicManager: instantForwardManager(),
   };
 }
 
@@ -271,6 +320,8 @@ const ACTIVE_EPIC: KanbanEpicRow = {
 } as unknown as KanbanEpicRow;
 
 beforeEach(async () => {
+  cardRegistry.clear();
+  epicRegistry.clear();
   mockGetOrCreateBoard.mockReset();
   mockMarkFinalizeAutomationFn.mockClear();
   autonomousProjects.clear();
@@ -793,8 +844,9 @@ describe('runAutonomousLoop — dispatch', () => {
     initAutonomous(deps as never);
     await runAutonomousLoopForPhase('proj-1', 'phase-1');
 
+    // The phase's kicker owns the run: the chain is asked with no card first.
     expect(mockResolve).toHaveBeenCalledWith(
-      expect.objectContaining({ id: card.id }),
+      null,
       expect.objectContaining({ autonomous_enabled_by: 'operator-user' }),
     );
     expect(mockSetOwner).toHaveBeenCalledWith(expect.any(String), 'operator-user');
@@ -1881,10 +1933,9 @@ describe('runAutonomousLoop — dispatch', () => {
     expect(stmts.markCardDispatchedByAutonomous.run).not.toHaveBeenCalled();
   });
 
-  it('an owner-less card does not consume the slot that a later card needs (max_concurrent=1)', async () => {
-    // Regression: the no-owner skip used to run AFTER the dispatch budget was
-    // consumed, so under max_concurrent=1 one unresolvable high-priority card
-    // starved every later eligible card on the same tick.
+  it('with no recorded kicker, workers run as the first card-level owner the chain resolves', async () => {
+    // Workers sit on the manager's rail, so one owner covers the whole run.
+    // A scheduled kickoff with no kicker falls back to the card-level chain.
     const ownerlessCard = makeCard({ id: 'no-owner', title: 'No owner card' });
     const dispatchableCard = makeCard({ id: 'has-owner', title: 'Has owner card' });
     const singleSlotEpic = { ...ACTIVE_EPIC, autonomous_max_concurrent: 1 } as KanbanEpicRow;
@@ -1900,19 +1951,17 @@ describe('runAutonomousLoop — dispatch', () => {
     deps.findProject.mockReturnValue(makeProject());
     mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
     const ownership = await import('./session-ownership.js');
-    (ownership.resolveAutonomousOwnerUserId as Mock).mockImplementation((card: KanbanCardRow) =>
-      card.id === 'has-owner' ? 'operator-user' : null,
+    (ownership.resolveAutonomousOwnerUserId as Mock).mockImplementation(
+      (card: KanbanCardRow | null) => (card?.id === 'has-owner' ? 'operator-user' : null),
     );
     initAutonomous(deps as never);
 
     await runAutonomousLoop('proj-1');
 
-    // The owner-less card is skipped (with a comment) but the later card with
-    // a resolvable owner still dispatches into the single free slot.
-    expect(stmts.createKanbanCardComment.run).toHaveBeenCalled();
+    // The top card takes the single slot, run as the resolved owner.
     expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
-    expect(stmts.createSession.run.mock.calls[0][2]).toBe('Has owner card');
-    expect(stmts.markCardDispatchedByAutonomous.run).toHaveBeenCalledWith('has-owner');
+    expect(stmts.createSession.run.mock.calls[0][2]).toBe('No owner card');
+    expect(ownership.setSessionOwner).toHaveBeenCalledWith(expect.any(String), 'operator-user');
   });
 
   it('skips implementation tickets while open spec decisions remain but still dispatches spikes', async () => {
@@ -1929,6 +1978,10 @@ describe('runAutonomousLoop — dispatch', () => {
       countOpenKanbanSpecItemsByEpic: { get: vi.fn(() => ({ n: 2 })) },
       getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
       getKanbanCardsByEpic: { all: vi.fn(() => [spikeCard, buildCard]) },
+      // The spike already has its decision row, so starting it creates none.
+      getKanbanSpecItemBySpikeCard: {
+        get: vi.fn(() => ({ id: 'spec-1', tag: 'D1', title: 'Auth', status: 'open' })),
+      },
     });
     const deps = makeDeps(stmts);
     deps.findProject.mockReturnValue(makeProject());
@@ -2416,7 +2469,7 @@ describe('engineForModel', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('runAutonomousLoop — owner attribution', () => {
-  it('attributes the spawned session to the user returned by resolveAutonomousOwnerUserId', async () => {
+  it('attributes the spawned session to the epic kicker', async () => {
     const card = makeCard({ created_by: 'userA' });
     const epicWithEnabler = {
       ...ACTIVE_EPIC,
@@ -2437,27 +2490,24 @@ describe('runAutonomousLoop — owner attribution', () => {
     const mockSetSessionOwner = ownership.setSessionOwner as Mock;
     mockResolveAutonomousOwner.mockReset();
     mockSetSessionOwner.mockReset();
-    mockResolveAutonomousOwner.mockReturnValue('userA');
+    // The real chain: card creator first, then the epic's kicker.
+    mockResolveAutonomousOwner.mockImplementation(
+      (c: { created_by?: string } | null, e: { autonomous_enabled_by?: string | null }) =>
+        c?.created_by ?? e?.autonomous_enabled_by ?? null,
+    );
 
     initAutonomous(deps as never);
     await runAutonomousLoop('proj-1');
 
-    // The dispatcher must consult the chain with BOTH the card and the
-    // epic so created_by → session_id owner → autonomous_enabled_by →
-    // org owner all have a chance to resolve.
-    expect(mockResolveAutonomousOwner).toHaveBeenCalledTimes(1);
+    // The kicker owns the epic's workers (they sit on the manager's rail), so
+    // the chain is asked with no card first and the card creator is not used.
     const [calledCard, calledEpic] = mockResolveAutonomousOwner.mock.calls[0] as [unknown, unknown];
-    expect((calledCard as { id: string }).id).toBe('card-1');
-    expect((calledCard as { created_by: string }).created_by).toBe('userA');
+    expect(calledCard).toBeNull();
     expect((calledEpic as { id: string }).id).toBe('epic-1');
-    expect((calledEpic as { autonomous_enabled_by: string }).autonomous_enabled_by).toBe(
-      'enabler-user',
-    );
 
-    // And the resolved id must be stamped onto the new session.
     expect(mockSetSessionOwner).toHaveBeenCalledTimes(1);
     const sessionId = stmts.createSession.run.mock.calls[0]?.[0] as string;
-    expect(mockSetSessionOwner).toHaveBeenCalledWith(sessionId, 'userA');
+    expect(mockSetSessionOwner).toHaveBeenCalledWith(sessionId, 'enabler-user');
   });
 
   it('skips dispatch when owner chain resolves to null (no credential borrower)', async () => {
@@ -2482,7 +2532,7 @@ describe('runAutonomousLoop — owner attribution', () => {
     initAutonomous(deps as never);
     await runAutonomousLoop('proj-1');
 
-    expect(mockResolveAutonomousOwner).toHaveBeenCalledTimes(1);
+    expect(mockResolveAutonomousOwner).toHaveBeenCalled();
     expect(stmts.createSession.run).not.toHaveBeenCalled();
     expect(mockSetSessionOwner).not.toHaveBeenCalled();
   });
@@ -2874,7 +2924,7 @@ describe('runAutonomousLoop — concurrency', () => {
       expect(stmts.markCardDispatchedByAutonomous.run).toHaveBeenCalledTimes(1);
       // The abort log is the observable proof that the defense-in-depth branch ran.
       expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('[Autonomous] Slot claim aborted'),
+        expect.stringContaining('[Autonomous] Slot claim refused'),
       );
     } finally {
       consoleSpy.mockRestore();
@@ -3517,11 +3567,9 @@ describe('runAutonomousLoop — blocker filter', () => {
         blockedColumn: 'To Do',
       }),
     ];
-    const getBlockersForBoard = vi
-      .fn()
-      .mockReturnValueOnce(blockedRows)
-      .mockReturnValueOnce(clearedRows)
-      .mockReturnValueOnce(blockedAgainRows);
+    // State-driven: the tick and the worker start each read the board.
+    let blockerState = blockedRows;
+    const getBlockersForBoard = vi.fn(() => blockerState);
     const stmts = makeStmts({
       getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
       getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
@@ -3540,10 +3588,12 @@ describe('runAutonomousLoop — blocker filter', () => {
     expect(lastBlockerSkipSignature.has('flappy-card')).toBe(true);
 
     // Tick 2: blocker now Done → card eligible, debounce key cleared.
+    blockerState = clearedRows;
     await runAutonomousLoop('proj-1');
     expect(lastBlockerSkipSignature.has('flappy-card')).toBe(false);
 
     // Tick 3: blocker regressed → fresh comment (not silenced by stale signature).
+    blockerState = blockedAgainRows;
     await runAutonomousLoop('proj-1');
     expect(stmts.createKanbanCardComment.run).toHaveBeenCalledTimes(2);
   });
@@ -3954,5 +4004,516 @@ describe('runAutonomousLoop — prepareSessionEnv before first chat', () => {
 
     expect(deps.prepareSessionEnv).toHaveBeenCalledTimes(1);
     expect(deps.handleChat).not.toHaveBeenCalled();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Epic manager thread: the tick offers, the manager's forward starts workers
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** A manager that only records what it is told. */
+function recordingManager(overrides: Partial<Record<keyof EpicManagerPort, Mock>> = {}) {
+  return {
+    offerReady: vi.fn(),
+    liveOffers: vi.fn((): string[] => []),
+    withdrawOffer: vi.fn(),
+    isOffered: vi.fn(() => false),
+    isHeld: vi.fn(() => false),
+    isAtRetryCap: vi.fn(() => false),
+    noteWorkerStarted: vi.fn(),
+    handOver: vi.fn(() => false),
+    noteWorkerEvent: vi.fn(),
+    observeCards: vi.fn(),
+    kickoff: vi.fn(),
+    pause: vi.fn(),
+    noteRetryCapRefusal: vi.fn(),
+    ...overrides,
+  };
+}
+
+function epicDeps(cards: KanbanCardRow[], epic: KanbanEpicRow = ACTIVE_EPIC) {
+  for (const card of cards) cardRegistry.set(card.id, card);
+  epicRegistry.set(epic.id, epic);
+  const stmts = makeStmts({
+    getAutonomousEpic: { get: vi.fn(() => epic) },
+    getEligibleAutonomousCards: { all: vi.fn(() => cards) },
+    getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+    getKanbanCardsByEpic: { all: vi.fn(() => cards) },
+  });
+  const markSessionSpawnedFrom = { run: vi.fn() };
+  (stmts as unknown as Record<string, unknown>).markSessionSpawnedFrom = markSessionSpawnedFrom;
+  const deps = makeDeps(stmts);
+  deps.findProject.mockReturnValue(makeProject());
+  mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+  return { stmts, deps, markSessionSpawnedFrom };
+}
+
+describe('autonomous tick with an epic manager', () => {
+  it('offers ready cards to the manager instead of spawning workers', async () => {
+    const card = makeCard({ id: 'ready-1', title: 'Ready card' });
+    const { stmts, deps } = epicDeps([card]);
+    const manager = recordingManager();
+    initAutonomous({ ...deps, epicManager: manager } as never);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(manager.offerReady).toHaveBeenCalledTimes(1);
+    const args = manager.offerReady.mock.calls[0][0] as {
+      ready: ReadyCardOffer[];
+      ownerUserId: string;
+    };
+    expect(args.ready.map((r) => r.card.id)).toEqual(['ready-1']);
+    expect(args.ready[0].agentId).toBe('dev-1');
+    expect(args.ownerUserId).toBe('test-operator');
+    expect(stmts.createSession.run).not.toHaveBeenCalled();
+    expect(stmts.moveKanbanCard.run).not.toHaveBeenCalled();
+    expect(deps.handleChat).not.toHaveBeenCalled();
+  });
+
+  it('does not re-offer a card the manager has not answered, and offers hold slots', async () => {
+    const a = makeCard({ id: 'a', title: 'A' });
+    const b = makeCard({ id: 'b', title: 'B' });
+    const epic = { ...ACTIVE_EPIC, autonomous_max_concurrent: 2 } as KanbanEpicRow;
+    const { deps } = epicDeps([a, b], epic);
+    const manager = recordingManager({
+      isOffered: vi.fn((id: string) => id === 'a'),
+      liveOffers: vi.fn(() => ['a']),
+    });
+    initAutonomous({ ...deps, epicManager: manager } as never);
+
+    await runAutonomousLoop('proj-1');
+
+    const ready = (manager.offerReady.mock.calls[0][0] as { ready: ReadyCardOffer[] }).ready;
+    expect(ready.map((r) => r.card.id)).toEqual(['b']);
+  });
+
+  it('offers nothing while unanswered offers fill the cap', async () => {
+    const offered = makeCard({ id: 'offered' });
+    const card = makeCard({ id: 'a' });
+    const epic = { ...ACTIVE_EPIC, autonomous_max_concurrent: 1 } as KanbanEpicRow;
+    const { deps } = epicDeps([card], epic);
+    cardRegistry.set(offered.id, offered);
+    const manager = recordingManager({ liveOffers: vi.fn(() => ['offered']) });
+    initAutonomous({ ...deps, epicManager: manager } as never);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(manager.offerReady).not.toHaveBeenCalled();
+  });
+
+  it('skips cards the manager holds', async () => {
+    const card = makeCard({ id: 'held' });
+    const { deps } = epicDeps([card]);
+    const manager = recordingManager({ isHeld: vi.fn(() => true) });
+    initAutonomous({ ...deps, epicManager: manager } as never);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(manager.offerReady).not.toHaveBeenCalled();
+  });
+
+  it('hands the epic cards to the manager for the Done diff every tick', async () => {
+    const card = makeCard({ id: 'a' });
+    const { deps } = epicDeps([card]);
+    const manager = recordingManager();
+    initAutonomous({ ...deps, epicManager: manager } as never);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(manager.observeCards).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'epic-1' }),
+      [card],
+      expect.objectContaining({ 'col-done': 'Done' }),
+    );
+  });
+
+  it('kicks the manager off when the epic starts and pauses it when it stops', async () => {
+    const { deps } = epicDeps([]);
+    const manager = recordingManager();
+    initAutonomous({ ...deps, epicManager: manager } as never);
+    const epic = { ...ACTIVE_EPIC, autonomous_enabled_by: 'kicker' } as KanbanEpicRow;
+
+    scheduleAutonomousEpic('proj-1', epic);
+    expect(manager.kickoff).toHaveBeenCalledWith('proj-1', epic, 'test-operator');
+    const ownership = await import('./session-ownership.js');
+    expect(ownership.resolveAutonomousOwnerUserId).toHaveBeenCalledWith(null, {
+      autonomous_enabled_by: 'kicker',
+    });
+
+    const stopped = { ...epic, autonomous: 0 } as KanbanEpicRow;
+    epicRegistry.set(stopped.id, stopped);
+    scheduleAutonomousEpic('proj-1', stopped);
+    expect(manager.pause).toHaveBeenCalledWith('epic-1');
+  });
+
+  it('wakes the manager when the epic completes', async () => {
+    const done = makeCard({ id: 'done-1', column_id: 'col-done' });
+    const { stmts, deps } = epicDeps([done]);
+    // Completion turns the epic off; the re-read must see that.
+    stmts.updateKanbanEpic.run.mockImplementation(() =>
+      epicRegistry.set('epic-1', { ...ACTIVE_EPIC, autonomous: 0 } as KanbanEpicRow),
+    );
+    const manager = recordingManager();
+    initAutonomous({ ...deps, epicManager: manager } as never);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(manager.noteWorkerEvent).toHaveBeenCalledWith(
+      'epic-1',
+      expect.objectContaining({ kind: 'epic_complete' }),
+    );
+  });
+});
+
+describe('spawnEpicWorkerForCard', () => {
+  it('claims the card, links session and card, and parents the worker to the manager', async () => {
+    const card = makeCard({ id: 'c1', title: 'Payment form', description: 'Card text' });
+    const { stmts, deps, markSessionSpawnedFrom } = epicDeps([card]);
+    const manager = recordingManager();
+    initAutonomous({ ...deps, epicManager: manager } as never);
+
+    const result = spawnEpicWorkerForCard({
+      projectId: 'proj-1',
+      cardId: 'c1',
+      agentId: 'dev-2',
+      prompt: 'Manager brief: build the payment form.',
+      ownerUserId: 'kicker',
+      parentSessionId: 'manager-session',
+    });
+    expect(result.status).toBe('started');
+    if (result.status !== 'started') return;
+    await result.turn;
+
+    expect(result.agentId).toBe('dev-2');
+    expect(stmts.markCardDispatchedByAutonomous.run).toHaveBeenCalledWith('c1');
+    expect(stmts.moveKanbanCard.run).toHaveBeenCalledWith('col-progress', 0, 'c1');
+    expect(markSessionSpawnedFrom.run).toHaveBeenCalledWith('manager-session', result.sessionId);
+    // Card stamped with the worker session and the agent as assignee.
+    const update = stmts.updateKanbanCard.run.mock.calls.at(-1)!;
+    expect(update[3]).toBe('Dev Two');
+    expect(update[5]).toBe(result.sessionId);
+    const ownership = await import('./session-ownership.js');
+    expect(ownership.setSessionOwner).toHaveBeenCalledWith(result.sessionId, 'kicker');
+    expect(manager.noteWorkerStarted).toHaveBeenCalledWith('c1', 'epic-1');
+    // The worker gets the manager's brief plus the card-link contract.
+    const content = deps.handleChat.mock.calls[0][1].content as string;
+    expect(content).toContain('Manager brief: build the payment form.');
+    expect(content).toContain('linked to kanban card `c1`');
+    // The card of record goes in whole, with the manager's brief on top.
+    expect(content).toContain('# Task: Payment form');
+    expect(content).toContain('Card text');
+    expect(content).toContain('## Brief from the epic manager');
+    expect(mockMarkFinalizeAutomationFn).toHaveBeenCalledWith(
+      expect.anything(),
+      result.sessionId,
+      'push',
+    );
+  });
+
+  it('refuses when the epic is paused', () => {
+    const card = makeCard({ id: 'c1' });
+    const paused = { ...ACTIVE_EPIC, autonomous: 0 } as KanbanEpicRow;
+    const { stmts, deps } = epicDeps([card], paused);
+    initAutonomous({ ...deps, epicManager: recordingManager() } as never);
+
+    const result = spawnEpicWorkerForCard({ projectId: 'proj-1', cardId: 'c1', ownerUserId: 'k' });
+
+    expect(result).toMatchObject({ status: 'refused', code: 'paused' });
+    expect(stmts.createSession.run).not.toHaveBeenCalled();
+  });
+
+  it('refuses a card that is still blocked, whatever the manager forwards', () => {
+    const card = makeCard({ id: 'c1', title: 'Blocked' });
+    const { stmts, deps } = epicDeps([card]);
+    stmts.getBlockersForBoard.all.mockReturnValue([
+      {
+        card_id: 'c1',
+        blocked_by_card_id: 'up',
+        blocker_id: 'up',
+        blocker_title: 'Upstream',
+        blocker_column_id: 'col-progress',
+        blocker_column_name: 'In Progress',
+        blocked_id: 'c1',
+        blocked_title: 'Blocked',
+        blocked_column_id: 'col-todo',
+        blocked_column_name: 'To Do',
+      },
+    ]);
+    initAutonomous({ ...deps, epicManager: recordingManager() } as never);
+
+    const result = spawnEpicWorkerForCard({ projectId: 'proj-1', cardId: 'c1', ownerUserId: 'k' });
+
+    expect(result).toMatchObject({ status: 'refused', code: 'ineligible' });
+    expect(stmts.moveKanbanCard.run).not.toHaveBeenCalled();
+  });
+
+  it('refuses a card already claimed by another start', () => {
+    const card = makeCard({ id: 'c1', column_id: 'col-progress', assignee: 'Dev One' });
+    const { stmts, deps } = epicDeps([card]);
+    initAutonomous({ ...deps, epicManager: recordingManager() } as never);
+
+    const result = spawnEpicWorkerForCard({ projectId: 'proj-1', cardId: 'c1', ownerUserId: 'k' });
+
+    expect(result).toMatchObject({ status: 'refused', code: 'ineligible' });
+    expect(stmts.createSession.run).not.toHaveBeenCalled();
+  });
+
+  it('refuses past the retry cap and tells the manager', () => {
+    const card = makeCard({ id: 'c1' });
+    const { stmts, deps } = epicDeps([card]);
+    const manager = recordingManager({ isAtRetryCap: vi.fn(() => true) });
+    initAutonomous({ ...deps, epicManager: manager } as never);
+
+    const result = spawnEpicWorkerForCard({ projectId: 'proj-1', cardId: 'c1', ownerUserId: 'k' });
+
+    expect(result).toMatchObject({ status: 'refused', code: 'retry_cap' });
+    expect(manager.noteRetryCapRefusal).toHaveBeenCalledWith('epic-1', 'c1');
+    expect(stmts.createSession.run).not.toHaveBeenCalled();
+  });
+
+  it('falls back to routing when the manager names an agent that cannot take tickets', async () => {
+    const card = makeCard({ id: 'c1' });
+    const { deps } = epicDeps([card]);
+    deps.findProject.mockReturnValue(
+      makeProject({
+        agents: [
+          { id: 'dev-1', name: 'Dev One', role: 'sub', engine: 'claude-code' },
+          { id: 'docs', name: 'Docs', role: 'docs', engine: 'claude-code' },
+        ] as Project['agents'],
+      }),
+    );
+    initAutonomous({ ...deps, epicManager: recordingManager() } as never);
+
+    const result = spawnEpicWorkerForCard({
+      projectId: 'proj-1',
+      cardId: 'c1',
+      agentId: 'docs',
+      ownerUserId: 'k',
+    });
+
+    expect(result).toMatchObject({ status: 'started', agentId: 'dev-1' });
+  });
+});
+
+describe('epic manager holds and retry exhaustion', () => {
+  it('a hold set after the offer stops the pending forward from starting a worker', async () => {
+    const card = makeCard({ id: 'c1', title: 'Payment form' });
+    const { stmts, deps } = epicDeps([card]);
+    let held = false;
+    const manager = recordingManager({ isHeld: vi.fn(() => held) });
+    initAutonomous({ ...deps, epicManager: manager } as never);
+
+    // Offered while not held.
+    await runAutonomousLoop('proj-1');
+    expect(manager.offerReady).toHaveBeenCalledTimes(1);
+
+    // The manager (or a person) holds it before the countdown fires.
+    held = true;
+    const result = spawnEpicWorkerForCard({ projectId: 'proj-1', cardId: 'c1', ownerUserId: 'k' });
+
+    expect(result).toMatchObject({ status: 'refused', code: 'held' });
+    expect(stmts.moveKanbanCard.run).not.toHaveBeenCalled();
+    expect(stmts.createSession.run).not.toHaveBeenCalled();
+  });
+
+  it('re-reads the hold label inside the claim', () => {
+    const card = makeCard({ id: 'c1', labels: 'backend, hold' });
+    const { stmts, deps } = epicDeps([card]);
+    initAutonomous({ ...deps, epicManager: recordingManager() } as never);
+
+    const result = spawnEpicWorkerForCard({ projectId: 'proj-1', cardId: 'c1', ownerUserId: 'k' });
+
+    expect(result).toMatchObject({ status: 'refused', code: 'held' });
+    expect(stmts.markCardDispatchedByAutonomous.run).not.toHaveBeenCalled();
+    expect(stmts.moveKanbanCard.run).not.toHaveBeenCalled();
+  });
+
+  it('reports a requeued card at the retry cap instead of skipping it silently', async () => {
+    const card = makeCard({ id: 'c1' });
+    const { deps } = epicDeps([card]);
+    const manager = recordingManager({
+      isAtRetryCap: vi.fn(() => true),
+      isHeld: vi.fn(() => true),
+    });
+    initAutonomous({ ...deps, epicManager: manager } as never);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(manager.noteRetryCapRefusal).toHaveBeenCalledWith('epic-1', 'c1');
+    expect(manager.offerReady).not.toHaveBeenCalled();
+  });
+});
+
+describe('explicit phase kickoff hands over the manager', () => {
+  it('Run phase by another user hands the epic manager to them', async () => {
+    const phase = {
+      id: 'phase-1',
+      epic_id: 'epic-1',
+      board_id: 'board-1',
+      name: 'Phase 1',
+      autonomous: 1,
+      autonomous_running: 0,
+      autonomous_max_concurrent: 1,
+      autonomous_model: null,
+      autonomous_interval: 60,
+      description: null,
+    } as unknown as KanbanPhaseRow;
+    const { stmts, deps } = epicDeps([]);
+    (stmts as unknown as Record<string, unknown>).getKanbanPhase = { get: vi.fn(() => phase) };
+    (stmts as unknown as Record<string, unknown>).setPhaseAutonomousEnabledBy = { run: vi.fn() };
+    (stmts as unknown as Record<string, unknown>).setPhaseAutonomousRunning = { run: vi.fn() };
+    const manager = recordingManager();
+    initAutonomous({ ...deps, epicManager: manager } as never);
+
+    await startAutonomousPhase('proj-1', 'phase-1', 'user-b');
+
+    expect(manager.handOver).toHaveBeenCalledWith('epic-1', 'user-b');
+  });
+});
+
+describe('offers and worker starts share one readiness check', () => {
+  it('an offered card put on hold releases its slot on the next tick', async () => {
+    const held = makeCard({ id: 'held', labels: 'hold' });
+    const next = makeCard({ id: 'next', title: 'Next' });
+    const epic = { ...ACTIVE_EPIC, autonomous_max_concurrent: 1 } as KanbanEpicRow;
+    const { deps } = epicDeps([next], epic);
+    cardRegistry.set(held.id, held);
+    const manager = recordingManager({ liveOffers: vi.fn(() => ['held']) });
+    initAutonomous({ ...deps, epicManager: manager } as never);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(manager.withdrawOffer).toHaveBeenCalledWith('held');
+    const ready = (manager.offerReady.mock.calls[0][0] as { ready: ReadyCardOffer[] }).ready;
+    expect(ready.map((r) => r.card.id)).toEqual(['next']);
+  });
+
+  it('offers for deleted cards and cards moved off the epic stop holding slots', async () => {
+    const moved = makeCard({ id: 'moved', epic_id: 'other-epic' });
+    const next = makeCard({ id: 'next' });
+    const epic = { ...ACTIVE_EPIC, autonomous_max_concurrent: 2 } as KanbanEpicRow;
+    const { stmts, deps } = epicDeps([next], epic);
+    cardRegistry.set(moved.id, moved);
+    stmts.getKanbanCard.get.mockImplementation((id: string) =>
+      id === 'deleted' ? undefined : (cardRegistry.get(id) ?? makeCard({ id })),
+    );
+    const manager = recordingManager({ liveOffers: vi.fn(() => ['deleted', 'moved']) });
+    initAutonomous({ ...deps, epicManager: manager } as never);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(manager.withdrawOffer).toHaveBeenCalledWith('deleted');
+    expect(manager.withdrawOffer).toHaveBeenCalledWith('moved');
+    expect(manager.offerReady).toHaveBeenCalledTimes(1);
+  });
+
+  it('reroutes a worker start away from an agent already at its limit', () => {
+    const busyCard = makeCard({ id: 'busy-card', column_id: 'col-progress' });
+    const card = makeCard({ id: 'c1' });
+    const epic = { ...ACTIVE_EPIC, autonomous_max_concurrent: 1 } as KanbanEpicRow;
+    const { stmts, deps } = epicDeps([card], epic);
+    // dev-1 already runs a worker in this epic. The scope cap counts the
+    // epic's cards; give it room so only the agent limit is in play.
+    deps.getActiveProcesses.mockReturnValue(new Map([['busy-session', {}]]));
+    stmts.getSession.get.mockImplementation((id: string) =>
+      id === 'busy-session' ? { id, agent_id: 'dev-1' } : null,
+    );
+    stmts.getKanbanCardBySession.get.mockImplementation((id: string) =>
+      id === 'busy-session' ? { ...busyCard, dispatched_by_autonomous: 1 } : undefined,
+    );
+    initAutonomous({ ...deps, epicManager: recordingManager() } as never);
+
+    const result = spawnEpicWorkerForCard({
+      projectId: 'proj-1',
+      cardId: 'c1',
+      agentId: 'dev-1',
+      ownerUserId: 'k',
+    });
+
+    expect(result).toMatchObject({ status: 'started', agentId: 'dev-2' });
+  });
+
+  it('refuses a worker start when every agent is at its limit', () => {
+    const card = makeCard({ id: 'c1' });
+    const epic = { ...ACTIVE_EPIC, autonomous_max_concurrent: 1 } as KanbanEpicRow;
+    const { stmts, deps } = epicDeps([card], epic);
+    deps.getActiveProcesses.mockReturnValue(
+      new Map([
+        ['s1', {}],
+        ['s2', {}],
+      ]),
+    );
+    stmts.getSession.get.mockImplementation((id: string) =>
+      id === 's1' ? { id, agent_id: 'dev-1' } : id === 's2' ? { id, agent_id: 'dev-2' } : null,
+    );
+    stmts.getKanbanCardBySession.get.mockImplementation(() =>
+      makeCard({ id: 'x', column_id: 'col-done', dispatched_by_autonomous: 1 }),
+    );
+    initAutonomous({ ...deps, epicManager: recordingManager() } as never);
+
+    const result = spawnEpicWorkerForCard({ projectId: 'proj-1', cardId: 'c1', ownerUserId: 'k' });
+
+    expect(result).toMatchObject({ status: 'refused', code: 'agent_busy' });
+    expect(stmts.moveKanbanCard.run).not.toHaveBeenCalled();
+  });
+});
+
+describe('worker prompt keeps the full card', () => {
+  it('requirements past the wake-message cutoff still reach the worker', async () => {
+    const acceptance = '## Acceptance criteria\n- [ ] Refunds post to the ledger within 5s';
+    const description = `${'Background. '.repeat(500)}\n\n${acceptance}`;
+    expect(description.length).toBeGreaterThan(4_000);
+    const card = makeCard({ id: 'long', title: 'Refunds', description });
+    const { deps } = epicDeps([card]);
+    initAutonomous({ ...deps, epicManager: recordingManager() } as never);
+
+    const result = spawnEpicWorkerForCard({
+      projectId: 'proj-1',
+      cardId: 'long',
+      prompt: 'Builds on the ledger API from card a1.',
+      ownerUserId: 'k',
+    });
+    if (result.status !== 'started') throw new Error(`refused: ${JSON.stringify(result)}`);
+    await result.turn;
+
+    const content = deps.handleChat.mock.calls[0][1].content as string;
+    expect(content).toContain(description);
+    expect(content).toContain('Refunds post to the ledger within 5s');
+    expect(content).toContain('Builds on the ledger API from card a1.');
+  });
+});
+
+describe('phase completion reaches the manager with its phase', () => {
+  it('names the completed phase on the event', async () => {
+    const phase = {
+      id: 'phase-1',
+      epic_id: 'epic-1',
+      board_id: 'board-1',
+      name: 'Phase 1',
+      autonomous: 1,
+      autonomous_running: 1,
+      autonomous_max_concurrent: 1,
+      autonomous_model: null,
+      autonomous_interval: 60,
+      description: null,
+    } as unknown as KanbanPhaseRow;
+    const done = makeCard({ id: 'd1', column_id: 'col-done', phase_id: 'phase-1' });
+    const { stmts, deps } = epicDeps([done], { ...ACTIVE_EPIC, autonomous: 0 } as KanbanEpicRow);
+    let running = 1;
+    const extra = stmts as unknown as Record<string, unknown>;
+    extra.getKanbanPhase = { get: vi.fn(() => ({ ...phase, autonomous_running: running })) };
+    extra.getKanbanCardsByPhase = { all: vi.fn(() => [done]) };
+    extra.getKanbanPhasesByEpic = { all: vi.fn(() => [phase]) };
+    extra.updateKanbanPhase = { run: vi.fn() };
+    extra.setPhaseAutonomousRunning = { run: vi.fn((v: number) => (running = v)) };
+    const manager = recordingManager();
+    initAutonomous({ ...deps, epicManager: manager } as never);
+
+    await runAutonomousLoopForPhase('proj-1', 'phase-1');
+
+    expect(manager.noteWorkerEvent).toHaveBeenCalledWith(
+      'epic-1',
+      expect.objectContaining({ kind: 'phase_complete', phaseId: 'phase-1' }),
+    );
   });
 });

@@ -71,6 +71,7 @@ export default function EpicScopeWorkbench({
   onAssignTicket,
   assigningTicketId,
   modelConfig,
+  onOpenManager,
   variant = 'page',
   defaultTab = 'flowchart',
   showManageTab = true,
@@ -121,6 +122,7 @@ export default function EpicScopeWorkbench({
           tickets={tickets}
           columns={columns}
           specItems={epicSpecItems}
+          onOpenManager={onOpenManager}
         />
 
         <div>
@@ -252,6 +254,7 @@ export default function EpicScopeWorkbench({
           tickets={tickets}
           columns={columns}
           specItems={epicSpecItems}
+          onOpenManager={onOpenManager}
           compact
         />
       )}

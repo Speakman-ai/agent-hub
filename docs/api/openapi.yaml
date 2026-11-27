@@ -2317,6 +2317,14 @@ components:
         pr_base_branch:
           type: string
           nullable: true
+        manager_session_id:
+          type: string
+          nullable: true
+          description: "The epic's manager thread: the Orchestrate session that starts a worker for each ready card. Set on the first kickoff."
+        manager_agent_id:
+          type: string
+          nullable: true
+          description: Agent of the manager thread, for opening it. Null when the manager was archived. Only on the board's epic list.
         position:
           type: integer
         created_at:
@@ -64639,7 +64647,7 @@ paths:
                 required:
                   - error
         "409":
-          description: Organization capability reused an Idempotency-Key with a different payload, `idempotencyKey` reused with a different payload (`idempotency_key_reused`), or the calling Orchestrate session is archived (`parent_session_archived`).
+          description: Organization capability reused an Idempotency-Key with a different payload, `idempotencyKey` reused with a different payload (`idempotency_key_reused`), the calling Orchestrate session is archived (`parent_session_archived`), an epic manager asked for anything but a forward card naming a card on its epic (`epic_forward_invalid`), or the worker for that card could not start (`epic_card_paused`, `epic_card_ineligible`, `epic_card_cap`, `epic_card_held`, `epic_card_retry_cap`, `epic_card_no_agent`, `epic_card_agent_busy`).
           content:
             application/json:
               schema:

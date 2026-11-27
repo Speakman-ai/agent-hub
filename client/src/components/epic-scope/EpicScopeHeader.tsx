@@ -1,3 +1,4 @@
+import { MessagesSquare } from 'lucide-react';
 import { countDoneTickets, columnNameById, specProgress } from '../../utils/epicScopeStats';
 
 /** Epic banner with ticket + spec progress — top of the epic page. */
@@ -8,6 +9,7 @@ export default function EpicScopeHeader({
   columns,
   specItems = [],
   compact = false,
+  onOpenManager,
 }: any) {
   if (!epic) return null;
 
@@ -42,6 +44,18 @@ export default function EpicScopeHeader({
               {epic.name}
             </h2>
           </div>
+          {onOpenManager ? (
+            <button
+              type="button"
+              onClick={onOpenManager}
+              data-testid="epic-open-manager"
+              title="The Orchestrate chat that starts a worker session for each ready ticket"
+              className="mb-1.5 inline-flex items-center gap-1 text-[11px] font-medium text-indigo-300 hover:text-indigo-200 bg-indigo-500/10 hover:bg-indigo-500/15 px-2 py-1 rounded-md transition-colors"
+            >
+              <MessagesSquare size={12} />
+              Open manager
+            </button>
+          ) : null}
           {epic.description ? (
             <p
               className={`text-gray-500 leading-snug max-w-3xl ${compact ? 'text-xs line-clamp-2' : 'text-sm'}`}

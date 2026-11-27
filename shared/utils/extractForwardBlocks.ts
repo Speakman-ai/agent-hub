@@ -67,6 +67,7 @@ export const SESSION_FORWARD_MODE_OPTIONS: ReadonlyArray<{
 const MAX_PROMPT = 50_000;
 const MAX_SUMMARY = 2_000;
 const MAX_NAME = 120;
+const CARD_ID_RE = /^[A-Za-z0-9_-]{1,80}$/;
 
 export interface ExtractedForward {
   forwardId: string;
@@ -76,6 +77,8 @@ export interface ExtractedForward {
   summary: string;
   prompt: string;
   mode: SessionForwardMode;
+  /** Kanban card the session works, set by an epic manager's forward cards. */
+  cardId?: string;
 }
 
 export interface ForwardExtractionResult {
@@ -209,6 +212,7 @@ function normalizeForward(value: unknown): ExtractedForward | null {
   const forwardId = /^[A-Za-z0-9_-]{1,80}$/.test(suppliedId)
     ? suppliedId
     : forwardIdFor(projectId, agentId, name, prompt);
+  const cardId = typeof row.cardId === 'string' ? row.cardId.trim() : '';
   return {
     forwardId,
     projectId,
@@ -217,6 +221,7 @@ function normalizeForward(value: unknown): ExtractedForward | null {
     summary,
     prompt: clip(prompt, MAX_PROMPT),
     mode: parseSessionForwardMode(row.mode),
+    ...(CARD_ID_RE.test(cardId) ? { cardId } : {}),
   };
 }
 

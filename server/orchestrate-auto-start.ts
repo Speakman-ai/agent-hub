@@ -125,6 +125,7 @@ function parsePayload(payload: unknown): ExtractedForward | null {
       summary: typeof raw.summary === 'string' ? raw.summary : '',
       prompt: raw.prompt,
       mode: parseSessionForwardMode(raw.mode),
+      ...(typeof raw.cardId === 'string' && raw.cardId ? { cardId: raw.cardId } : {}),
     };
   } catch {
     // A long payload can be clamped into invalid JSON; that card has no full

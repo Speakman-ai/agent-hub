@@ -32,6 +32,7 @@ import { parseSessionForwardDispatchKey } from '../../shared/utils/sessionForwar
 import { SESSION_FORWARD_STARTED_EVENT } from '../../shared/utils/orchestrateLaunchClient.js';
 import { publishSessionNeedsInput } from '../session-needs-input.js';
 import { orchestrateParentLinkError, orchestrateSpawnParentId } from '../session-mode.js';
+import { getEpicWorkerStarter, resolveEpicForwardTarget } from '../epic-worker-dispatch.js';
 
 const MAX_PROMPT_CHARS = 50_000;
 const MAX_NAME_CHARS = 120;
@@ -131,7 +132,7 @@ registerPath({
     404: { description: 'Project not found or not visible.', content: errorContent },
     409: {
       description:
-        'Organization capability reused an Idempotency-Key with a different payload, `idempotencyKey` reused with a different payload (`idempotency_key_reused`), or the calling Orchestrate session is archived (`parent_session_archived`).',
+        'Organization capability reused an Idempotency-Key with a different payload, `idempotencyKey` reused with a different payload (`idempotency_key_reused`), the calling Orchestrate session is archived (`parent_session_archived`), an epic manager asked for anything but a forward card naming a card on its epic (`epic_forward_invalid`), or the worker for that card could not start (`epic_card_paused`, `epic_card_ineligible`, `epic_card_cap`, `epic_card_held`, `epic_card_retry_cap`, `epic_card_no_agent`, `epic_card_agent_busy`).',
       content: errorContent,
     },
     422: {
@@ -373,7 +374,65 @@ export function dispatchProjectSession(
       });
     }
   }
+  // A forward card from an epic manager that names a card starts that card's
+  // worker: claimed, linked to the card, and parented to the manager.
+  const epicTarget = resolveEpicForwardTarget(deps.stmts, callingSession, idempotencyKey);
+  if (epicTarget.kind === 'invalid') {
+    if (idempotencyKey) deps.stmts.releaseSessionDispatchKey.run(ownerUserId, idempotencyKey);
+    return reply(409, { error: epicTarget.error, code: 'epic_forward_invalid' });
+  }
   try {
+    if (epicTarget.kind === 'card') {
+      const start = getEpicWorkerStarter();
+      if (!start) throw new Error('Epic worker starts are not available');
+      const started = start({
+        projectId: project.id,
+        cardId: epicTarget.card.id,
+        agentId: sessionAgentId,
+        prompt: body.prompt,
+        ownerUserId,
+        parentSessionId: callingSession?.id ?? null,
+      });
+      if (started.status === 'refused') {
+        if (idempotencyKey) deps.stmts.releaseSessionDispatchKey.run(ownerUserId, idempotencyKey);
+        return reply(started.code === 'not_found' ? 404 : 409, {
+          error: started.error,
+          code: `epic_card_${started.code}`,
+        });
+      }
+      const workerName = started.name.slice(0, MAX_NAME_CHARS);
+      if (idempotencyKey) {
+        deps.stmts.completeSessionDispatchKey.run(
+          started.sessionId,
+          started.agentId,
+          project.id,
+          workerName,
+          JSON.stringify([]),
+          started.mode,
+          ownerUserId,
+          idempotencyKey,
+        );
+        const forwardedFrom = parseSessionForwardDispatchKey(idempotencyKey);
+        if (forwardedFrom && deps.broadcast) {
+          publishSessionNeedsInput(forwardedFrom.sessionId, deps.stmts, deps.broadcast);
+        }
+        publishForwardStarted(deps, idempotencyKey, ownerUserId, {
+          sessionId: started.sessionId,
+          agentId: started.agentId,
+          name: workerName,
+          mode: started.mode,
+        });
+      }
+      return reply(201, {
+        sessionId: started.sessionId,
+        agentId: started.agentId,
+        projectId: project.id,
+        name: workerName,
+        mode: started.mode as BackgroundSessionMode,
+        skippedSkills: [],
+        ref: formatHubChatRefToken(workerName, 'session', started.sessionId) ?? '',
+      });
+    }
     const result = dispatchBackgroundAgentSession(
       project,
       {

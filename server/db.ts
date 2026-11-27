@@ -3169,6 +3169,79 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE kanban_epics ADD COLUMN labels TEXT DEFAULT NULL');
   }
 
+  // The epic's manager thread: one Orchestrate session that forwards each
+  // ready card to a worker session (server/epic-manager.ts).
+  try {
+    db.prepare('SELECT manager_session_id FROM kanban_epics LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE kanban_epics ADD COLUMN manager_session_id TEXT DEFAULT NULL');
+  }
+  // Per-card bookkeeping for the manager: when a card was last offered to it
+  // (null once claimed or withdrawn), how often, and how many workers it has
+  // started for the card (the retry cap).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS epic_manager_offers (
+      card_id TEXT PRIMARY KEY,
+      epic_id TEXT NOT NULL,
+      agent_id TEXT,
+      offered_at INTEGER,
+      offer_count INTEGER NOT NULL DEFAULT 0,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      stalled_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_epic_manager_offers_epic ON epic_manager_offers(epic_id);
+  `);
+  // The epic manager's outbox: events, ready cards, and the kickoff brief
+  // waiting to wake the manager. A row is deleted only once its wake was
+  // delivered, so a failed send or a restart loses nothing.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS epic_manager_wake_queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      epic_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      card_id TEXT,
+      session_id TEXT,
+      agent_id TEXT,
+      phase_id TEXT,
+      detail TEXT,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_epic_manager_wake_queue_epic
+      ON epic_manager_wake_queue(epic_id, id);
+  `);
+  // The column each epic card was in at the manager's last look, so the
+  // Done / Cancelled / requeued diff survives a restart.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS epic_manager_card_columns (
+      card_id TEXT PRIMARY KEY,
+      epic_id TEXT NOT NULL,
+      column_name TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_epic_manager_card_columns_epic
+      ON epic_manager_card_columns(epic_id);
+  `);
+  // A card the server reported as held goes back to the manager when a person
+  // changes it (moves it, re-phases, relabels, or edits it): the stall clears
+  // and its worker attempts start over. Done in the write itself, so no change
+  // is missed between ticks. Rewrites with unchanged values (the server
+  // re-stamping a row) do not count. The requeue after a failed worker comes
+  // before the stall is reported, so it never resets the retry cap.
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_epic_manager_release_stall
+    AFTER UPDATE OF column_id, phase_id, labels, title, description, priority ON kanban_cards
+    WHEN OLD.column_id IS NOT NEW.column_id
+      OR OLD.phase_id IS NOT NEW.phase_id
+      OR OLD.labels IS NOT NEW.labels
+      OR OLD.title IS NOT NEW.title
+      OR OLD.description IS NOT NEW.description
+      OR OLD.priority IS NOT NEW.priority
+    BEGIN
+      UPDATE epic_manager_offers
+         SET stalled_at = NULL, attempts = 0, offer_count = 0
+       WHERE card_id = NEW.id AND stalled_at IS NOT NULL;
+    END;
+  `);
+
   // `kanban_epics.state` is migrated earlier (just before
   // installStatsCompletionTimestamps), which the completion backfill depends on.
 
@@ -6601,8 +6674,14 @@ function initDb(dataDir: string): void {
     ),
 
     // Kanban epics
+    // manager_agent_id lets clients open the epic's manager thread; null once
+    // that session is archived.
     getKanbanEpics: db.prepare(
-      'SELECT * FROM kanban_epics WHERE board_id = ? ORDER BY position ASC',
+      `SELECT e.*, s.agent_id AS manager_agent_id
+         FROM kanban_epics e
+         LEFT JOIN sessions s ON s.id = e.manager_session_id AND s.deleted_at IS NULL
+        WHERE e.board_id = ?
+        ORDER BY e.position ASC`,
     ),
     getKanbanEpic: db.prepare('SELECT * FROM kanban_epics WHERE id = ?'),
     createKanbanEpic: db.prepare(
@@ -6633,6 +6712,10 @@ function initDb(dataDir: string): void {
     setKanbanEpicAssignedUser: db.prepare(
       `UPDATE kanban_epics SET assigned_user_id = ?, updated_at = datetime('now') WHERE id = ?`,
     ),
+    setEpicManagerSession: db.prepare(
+      `UPDATE kanban_epics SET manager_session_id = ?, updated_at = datetime('now') WHERE id = ?`,
+    ),
+    getEpicByManagerSession: db.prepare('SELECT * FROM kanban_epics WHERE manager_session_id = ?'),
     getKanbanCardTemplates: db.prepare(
       'SELECT * FROM kanban_card_templates WHERE board_id = ? ORDER BY name ASC, created_at ASC',
     ),

@@ -197,7 +197,11 @@ import type { BrowserSessionOptions } from './browser.js';
 import { buildScopingModePreamble } from './scoping-mode-prompt.js';
 import { buildSkillBuilderModePreamble } from './skill-builder-mode-prompt.js';
 import { buildConsultModePreamble } from './consult-mode-prompt.js';
-import { buildOrchestrateModePreamble } from './orchestrate-mode-prompt.js';
+import {
+  buildEpicManagerPreamble,
+  buildOrchestrateModePreamble,
+} from './orchestrate-mode-prompt.js';
+import { EPIC_MANAGER_HOLD_LABEL, EPIC_MANAGER_MAX_WORKER_ATTEMPTS } from './epic-manager.js';
 import { buildSessionForwardGuidance } from './session-forward-prompt.js';
 import { buildQaModePreamble } from './qa-mode-prompt.js';
 import { qaBorrowedPreviewStartRefusal, qaRunPreviewOwnerSessionId } from './qa-run-kickoff.js';
@@ -603,6 +607,8 @@ interface InternalChatMessage extends ChatMessage {
   _backgroundShellWake?: boolean;
   /** This turn is a scheduled run of a session poller (`session-pollers/`). */
   _sessionPollerRun?: boolean;
+  /** This turn is a server wake-up of an epic manager (`epic-manager.ts`). */
+  _epicManagerWake?: boolean;
 }
 
 interface ProjectWithCommands extends Project {
@@ -3233,7 +3239,8 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         isAutoContinuation,
         skipUserMessagePersist: msg._skipUserMessagePersist,
         seedTurn: msg._seedTurn,
-        backgroundShellWake: msg._backgroundShellWake || msg._sessionPollerRun,
+        backgroundShellWake:
+          msg._backgroundShellWake || msg._sessionPollerRun || msg._epicManagerWake,
       });
 
       // Auto-rename while the title is still owned by the automatic title flow.
@@ -3731,10 +3738,21 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             loadedRoutedSkillIds.add(requiredId);
           }
         }
-        const orchestratePreamble = buildOrchestrateModePreamble({
+        let orchestratePreamble = buildOrchestrateModePreamble({
           project: project as Project,
           agentId: agent?.id ?? null,
         });
+        const managedEpic = (stmts as Stmts).getEpicByManagerSession?.get(sessionId) as
+          | KanbanEpicRow
+          | undefined;
+        if (managedEpic) {
+          orchestratePreamble += `\n${buildEpicManagerPreamble({
+            project: project as Project,
+            epic: managedEpic,
+            maxWorkerAttempts: EPIC_MANAGER_MAX_WORKER_ATTEMPTS,
+            holdLabel: EPIC_MANAGER_HOLD_LABEL,
+          })}`;
+        }
         enrichedPrompt = `${orchestratePreamble}\n\n${enrichedPrompt}`;
       } else if (isConsultBehaviorActive(session!)) {
         if (!isAutoContinuation) {

@@ -1260,6 +1260,11 @@ export default function EpicView({
                 onDecideForMe={handleDecideForMe}
                 specSavingId={specSavingId}
                 onOpenCard={cardDetail.openDetail}
+                onOpenManager={
+                  onNavigateToSession && epic?.manager_session_id && epic?.manager_agent_id
+                    ? () => onNavigateToSession(epic.manager_agent_id, epic.manager_session_id)
+                    : undefined
+                }
               />
 
               {/* Reverse (bidirectional) display: the caller's own personal

@@ -1363,6 +1363,10 @@ export interface KanbanEpicRow {
    * is on, else `push`).
    */
   autonomous_send_it?: number;
+  /** The epic's manager thread (an Orchestrate session), once kicked off. */
+  manager_session_id?: string | null;
+  /** Agent of the manager session; only on the board's epic list (`getKanbanEpics`). */
+  manager_agent_id?: string | null;
   position: number;
   created_at: string;
   updated_at: string;
@@ -2668,6 +2672,8 @@ export interface Stmts {
   updateKanbanEpic: Stmt;
   updateKanbanEpicState: Stmt;
   setEpicAutonomousEnabledBy: Stmt;
+  setEpicManagerSession: Stmt;
+  getEpicByManagerSession: Stmt;
   setEpicAutonomousSendIt: Stmt;
   setKanbanEpicAssignedUser: Stmt;
   getKanbanCardTemplates: Stmt;
@@ -4663,6 +4669,8 @@ export interface SessionForwardEvent extends BaseStreamEvent {
   summary: string;
   prompt: string;
   mode: 'manual' | 'review' | 'push' | 'merge' | 'consult';
+  /** Kanban card the session works, set by an epic manager's forward cards. */
+  cardId?: string;
 }
 
 export interface ProgressStepEvent extends BaseStreamEvent {

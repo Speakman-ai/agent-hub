@@ -517,6 +517,31 @@ describe('mapBroadcastToNotification: new producers', () => {
     });
   });
 
+  it('a stalled epic manager escalates to the epic owner only', () => {
+    expect(
+      mapBroadcastToNotification({
+        type: 'epic_manager_stalled',
+        sessionId: 'mgr',
+        ownerUserId: 'u1',
+        projectId: 'p1',
+        epicId: 'e1',
+        epicName: 'Checkout',
+        cardId: 'c1',
+        cardTitle: 'Pay',
+        reason: '3 workers have already tried it',
+      }),
+    ).toMatchObject({
+      category: 'escalation',
+      title: 'Epic manager needs you: Checkout',
+      body: '"Pay" is held: 3 workers have already tried it',
+      recipients: { kind: 'users', userIds: ['u1'] },
+      sourceKey: 'epic_manager_stalled:mgr:c1',
+    });
+    expect(
+      mapBroadcastToNotification({ type: 'epic_manager_stalled', sessionId: 'mgr', cardId: 'c1' }),
+    ).toBeNull();
+  });
+
   it('default_branch_ci_failed notifies project viewers and links the breakage card', () => {
     expect(
       mapBroadcastToNotification({

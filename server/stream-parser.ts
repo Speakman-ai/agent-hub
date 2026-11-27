@@ -289,6 +289,7 @@ function forwardEvent(forward: ExtractedForward): SessionForwardEvent {
     summary: forward.summary,
     prompt: forward.prompt,
     mode: forward.mode,
+    ...(forward.cardId ? { cardId: forward.cardId } : {}),
   };
 }
 
