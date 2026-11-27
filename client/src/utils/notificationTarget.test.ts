@@ -110,16 +110,13 @@ describe('notificationTarget', () => {
     ).toEqual({ kind: 'route', route: { view: 'pulls', projectId: 'acme', prNumber: 12 } });
   });
 
-  it('opens a routine run session, or the cron jobs when the run never got one', () => {
+  it('opens a historical routine run session, and nothing when the run never got one', () => {
     expect(
       notificationTarget(
         row({ category: 'routine_run', data: { sessionId: 's9', agentId: 'ops' } }),
       ),
     ).toEqual({ kind: 'session', sessionId: 's9', agentId: 'ops' });
-    expect(notificationTarget(row({ category: 'routine_run', data: { cronId: 7 } }))).toEqual({
-      kind: 'route',
-      route: { view: 'project-crons:acme' },
-    });
+    expect(notificationTarget(row({ category: 'routine_run', data: { cronId: 7 } }))).toBeNull();
   });
 
   it('honors an explicit route hash', () => {

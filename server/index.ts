@@ -100,13 +100,7 @@ import {
 } from './project-model.js';
 import { backfillSkillBuilderAgents } from './migrations/backfill-skill-builder-agents.js';
 import { backfillQaAgents } from './migrations/backfill-qa-agents.js';
-import {
-  scheduleAll,
-  rescheduleCron,
-  setOnCronSessionUpdate,
-  setBroadcast,
-  runClaude,
-} from './heartbeat.js';
+import { scheduleAll, runClaude } from './heartbeat.js';
 import { startSlack } from './slack.js';
 import { startStalePrChecker } from './stale-pr-check.js';
 import { ensureOperatorBaseBranch } from './autonomous.js';
@@ -210,7 +204,6 @@ import createLogMetricsRoutes from './routes/log-metrics.js';
 import createLogIngestRoutes from './routes/log-ingest.js';
 import createLogQueryRoutes from './routes/log-query.js';
 import createLogIssueRoutes from './routes/log-issues.js';
-import createCronRoutes from './routes/crons.js';
 import createMemoryRoutes from './routes/memory.js';
 import createDesignRoutes from './routes/designs.js';
 import createSkillRoutes, { DEFAULT_SKILLS_DIR, syncSkillsToClaude } from './routes/skills.js';
@@ -275,7 +268,6 @@ import createDashboardRoutes from './routes/dashboard.js';
 import createUploadRoutes from './routes/uploads.js';
 import createArtifactRoutes from './routes/artifacts.js';
 import createRoutineRoutes from './routes/routines.js';
-import { reconcileRoutineRunsOnBoot } from './routine-runs.js';
 import createBackgroundShellRoutes from './routes/background-shells.js';
 import createSessionPollerRoutes from './routes/session-pollers.js';
 import { SessionPollerStore } from './session-pollers/session-poller-store.js';
@@ -2673,7 +2665,6 @@ app.use(createLogIngestRoutes(routeDeps));
 // operator's own account. Public on the same terms; self-authenticates from an
 // `ahhealth_` token.
 app.use(createInfraHealthIngestRoutes(routeDeps));
-app.use(createCronRoutes(routeDeps));
 app.use(createDesignRoutes({ ...routeDeps, getDesignsRoot }));
 app.use(createSkillRoutes(routeDeps));
 app.use(createSkillEvalRoutes(routeDeps));
@@ -3009,7 +3000,6 @@ const chatHandler = createChatHandler({
     await whenSessionEnvSelectionReady();
     return sessionEnvManager.ensure(sessionId, opts);
   },
-  rescheduleCron,
   getDevServerRuntime: () => devServerRuntime,
   getPtyHost: () => ptyHost,
   listWatchedBackgroundShells: (sessionId: string) =>
@@ -3500,15 +3490,6 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
     });
 
     try {
-      reconcileRoutineRunsOnBoot(
-        { stmts: stmts!, broadcast },
-        sessionsToResume.map((r) => r.sessionId),
-      );
-    } catch (err) {
-      console.error('[Routine] Boot reconcile failed:', (err as Error).message);
-    }
-
-    try {
       const drained = drainIdleQueuedSessions({
         stmts: stmts!,
         activeProcesses,
@@ -3633,11 +3614,6 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
     } catch (e) {
       console.error('[gmail-importance] init on boot', (e as Error).message);
     }
-
-    setOnCronSessionUpdate((info: Record<string, unknown>) => {
-      broadcast(info);
-    });
-    setBroadcast(broadcast);
 
     startSlack(allAgents(), stmts!).catch((err: Error) => {
       console.error('Failed to start Slack bots:', err.message);

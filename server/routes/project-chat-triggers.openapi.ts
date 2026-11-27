@@ -34,8 +34,8 @@ export const ChatTriggerFilterSchema = z
     labels: shortList.optional().openapi({
       description: 'card_created / card_moved: cards with any of these labels.',
     }),
-    outcome: z.enum(['pass', 'fail', 'success', 'error']).optional().openapi({
-      description: 'finalize_run_completed: pass | fail. cron_finished: success | error.',
+    outcome: z.enum(['pass', 'fail']).optional().openapi({
+      description: 'finalize_run_completed: pass | fail.',
     }),
     agentIds: shortList.optional().openapi({
       description: 'Session events: only sessions of these agents.',

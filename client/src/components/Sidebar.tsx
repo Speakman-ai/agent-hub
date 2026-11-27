@@ -5,7 +5,6 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import {
   BookOpen,
   Settings,
-  Clock,
   LayoutGrid,
   Trash2,
   GitFork,
@@ -62,7 +61,6 @@ import { getServerBase } from '../utils/connection';
 import { useClientBuildVersion } from '../hooks/useClientBuildVersion';
 import OrgSwitcher from './OrgSwitcher';
 import { isElectron } from '../utils/isElectron';
-import humanCron from '@shared/utils/humanCron';
 import { isSidebarHiddenAgent } from '@shared/utils/sidebarAgents';
 import { inferPrUrlFromSessionTitle, isResolvePrSessionTitle } from '@shared/utils/sessionTitlePr';
 import { parseNativePrUrl } from '../utils/prFormatting';
@@ -194,7 +192,6 @@ export default function Sidebar({
    * is disabled and project headers render without the grip handle.
    */
   onReorderProjects,
-  cronSessions = [],
   reviewerProjectId,
   supportProjectId,
   deploymentsProjectId,
@@ -753,8 +750,6 @@ export default function Sidebar({
     return Date.now() - d.getTime() < 30 * 60 * 1000;
   };
 
-  // humanCron imported from utils/humanCron.js
-
   // Find which project the active agent belongs to
   const activeProject = projects.find((p: any) =>
     p.agents.some((a: any) => a.id === activeAgentId),
@@ -774,52 +769,6 @@ export default function Sidebar({
     !!changesReadyBySession[session.id] ||
     !!awaitingInputBySession[session.id] ||
     finalizeStatusBySession[session.id] === 'ready_to_push';
-
-  // Single source of truth for "does this project render its own Scheduled
-  // Tasks block?" — used both by the per-project block gate below AND by the
-  // Ungrouped-bucket filter, so the two can never drift (a project must appear
-  // in exactly one place). A project shows its block iff it has ≥1 active agent
-  // AND it is expanded (or auto-expanded because it has a single active agent).
-  // A collapsed multi-agent project therefore does NOT host its crons here, so
-  // they fall through to the Ungrouped bucket and stay reachable — matching the
-  // old always-visible global list.
-  const projectShowsScheduledTasks = (project: any): boolean => {
-    const activeAgents = (project.agents || []).filter((a: any) => a.active !== false);
-    if (activeAgents.length === 0) return false;
-    const isCollapsed = collapsedProjects[project.id];
-    const canCollapse = activeAgents.length > 1 || isWorkflowProject(project);
-    return !isCollapsed || !canCollapse;
-  };
-  const scheduledTaskHomeProjectIds = new Set(
-    (projects || []).filter(projectShowsScheduledTasks).map((p: any) => p.id),
-  );
-
-  // Shared cron-row renderer so the per-project block and the Ungrouped bucket
-  // stay in lockstep — a future tweak (badge, title attr, …) changes one place.
-  const renderCronRow = (cs: any) => {
-    const sessionState = deriveSessionState(cs, {
-      activeTaskSessionIds,
-      finalizeStatusBySession,
-      needsInputBySession,
-      backgroundShellsBySession,
-    });
-    return (
-      <button
-        type="button"
-        key={cs.id}
-        onClick={() => focusSession(cs.agent_id || activeAgentId, cs.id)}
-        className={`w-full text-left px-3 py-2 rounded-lg mb-0.5 flex items-center gap-2 transition-colors cursor-pointer ${
-          activeSessionId === cs.id && currentView === 'chat'
-            ? 'bg-gray-800 text-white'
-            : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
-        }`}
-      >
-        <SessionStateIcon state={sessionState} size={12} testId={`session-state-icon-${cs.id}`} />
-        <span className="flex-1 truncate text-sm">{cs.cron_name}</span>
-        <span className="text-xs text-gray-600 flex-shrink-0">{humanCron(cs.cron_schedule)}</span>
-      </button>
-    );
-  };
 
   const isKanbanView = Boolean(kanbanProjectId);
   const kanbanProject = isKanbanView ? projects.find((p: any) => p.id === kanbanProjectId) : null;
@@ -975,31 +924,6 @@ export default function Sidebar({
               </button>
             );
           })}
-
-          {/* Scheduled Tasks (cron sessions) render per-project inside each
-              project block below. But a cron may have no rendered home: its
-              `project_id` is nullable, points at a project not visible to this
-              user, OR points at a project whose per-project block isn't showing
-              right now (a collapsed multi-agent project). Surface all of those
-              in an "Ungrouped" bucket at the top — restoring the old global
-              list's guarantee that EVERY scheduled task stays reachable. The
-              `scheduledTaskHomeProjectIds` set is the SAME predicate the
-              per-project block uses, so a cron lands in exactly one place. */}
-          {(() => {
-            const ungroupedCronSessions = cronSessions.filter(
-              (cs: any) => !cs.project_id || !scheduledTaskHomeProjectIds.has(cs.project_id),
-            );
-            if (ungroupedCronSessions.length === 0) return null;
-            return (
-              <div className="mb-4" data-testid="sidebar-ungrouped-scheduled-tasks">
-                <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-2 flex items-center gap-1.5">
-                  <Clock size={12} />
-                  Scheduled Tasks
-                </div>
-                {ungroupedCronSessions.map((cs: any) => renderCronRow(cs))}
-              </div>
-            );
-          })()}
 
           {isKanbanView &&
           kanbanProjectId &&
@@ -1634,16 +1558,6 @@ export default function Sidebar({
                                   <span className="truncate">Previews</span>
                                 </button>
                               )}
-                              <button
-                                type="button"
-                                onClick={() => onNavigate(`project-crons:${project.id}`)}
-                                className={projectMenuLinkClass(
-                                  currentView === `project-crons:${project.id}`,
-                                )}
-                              >
-                                <Clock size={14} className="flex-shrink-0" />
-                                <span className="truncate">Cron Jobs</span>
-                              </button>
                             </div>
                           )}
                         </div>
@@ -2315,34 +2229,6 @@ export default function Sidebar({
                     })()}
                   </div>
                 )}
-
-                {/* Scheduled Tasks (cron sessions) for THIS project. Grouped
-                    here — under the project they belong to — rather than in a
-                    single global list. Cron sessions carry `project_id` from
-                    the cron row (see getAllCronSessions). The render gate is the
-                    shared `projectShowsScheduledTasks` predicate (NOT an inline
-                    copy) so it can never drift from the Ungrouped-bucket filter:
-                    a collapsed multi-agent project fails this gate, and its
-                    crons fall back to the Ungrouped bucket instead of vanishing. */}
-                {projectShowsScheduledTasks(project) &&
-                  (() => {
-                    const projectCronSessions = cronSessions.filter(
-                      (cs: any) => cs.project_id === project.id,
-                    );
-                    if (projectCronSessions.length === 0) return null;
-                    return (
-                      <div
-                        className={`order-3 mb-2 ${activeAgents.length > 1 ? 'ml-3' : ''}`}
-                        data-testid={`sidebar-project-scheduled-tasks-${project.id}`}
-                      >
-                        <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1 px-2 flex items-center gap-1.5">
-                          <Clock size={12} />
-                          Scheduled Tasks
-                        </div>
-                        {projectCronSessions.map((cs: any) => renderCronRow(cs))}
-                      </div>
-                    );
-                  })()}
 
                 {/* When the project is collapsed we still surface any actionable
                     sessions (running / PR-ready) belonging to the active agent in

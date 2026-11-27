@@ -96,7 +96,6 @@ const ctl = vi.hoisted(() => ({
       getArchivedSessions: vi.fn().mockResolvedValue([]),
       getSkills: vi.fn().mockResolvedValue([]),
       getDesigns: vi.fn().mockResolvedValue([]),
-      getCronSessions: vi.fn().mockResolvedValue([]),
       // Empty messages list — drives the empty-state branch.
       getMessages: vi.fn().mockResolvedValue([]),
       getSessionHandoffs: vi.fn().mockResolvedValue([]),

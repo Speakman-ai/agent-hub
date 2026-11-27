@@ -50,7 +50,7 @@ source-time freeze. Resolution order:
 
 1. `AGENT_HUB_API_KEY` environment variable (the normal path; injected
    by `buildSpawnEnv` from `cfg.apiKey` at every spawn, so a config
-   rotation reaches every new heartbeat/cron/room-chat/
+   rotation reaches every new background-agent/room-chat/
    slack/design-chat process without a server restart).
 2. **Per-session spawn-creds file** at
    `$AGENT_HUB_DATA_DIR/spawn-creds/$AGENT_HUB_SESSION_ID.token`
@@ -453,7 +453,7 @@ userId, cfg.dataDir)` whenever the per-user `auth.json` is populated
 `CODEX_HOME` is **explicitly deleted** from the spawn env so a stale
 host-process value cannot leak the operator's Codex cache into a user
 spawn. Net effect: once a user completes the per-user device login,
-every chat / heartbeat / cron / room / Slack spawn owned
+every chat / background agent / room / Slack spawn owned
 by them reads the same `~/.codex` clone without re-prompting.
 
 The matching Cursor/Gemini wiring is a planned follow-up (the cleanup
@@ -601,19 +601,18 @@ There is **no org-owner fallback** anywhere below — when no real human can
 be resolved, the principal is `null`, skill creds are merged for nobody,
 and any per-account AI engine spawn hard-fails.
 
-| Surface                                                            | Call path                                                                     | Whose credential rows (`user_id`)                                                  |
-| ------------------------------------------------------------------ | ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| Interactive 1:1 chat                                               | `server/chat.ts`                                                              | Session owner (`ownerId` from the session row)                                     |
-| Session rewind                                                     | `server/routes/sessions.ts` (`mergeSkillCredentialSpawnEnv` on rewind env)    | Session owner (`getSessionOwner`); `null` when unknown                             |
-| Session summarize — REST `POST /api/sessions/:sessionId/summarize` | `server/routes/sessions.ts` → `summarizeTranscript`                           | Session owner; `null` when unknown                                                 |
-| Chat auto-summarize (long reply)                                   | `server/chat.ts` → `summarizeTranscript`                                      | Interactive session owner (`ownerId` in chat)                                      |
-| Conference room — WebSocket one-shot CLI                           | `server/room-chat.ts`                                                         | Authenticated WebSocket user (`getWsAuthUserId`); `null` when absent               |
-| Conference room — REST **summarize**                               | `server/routes/rooms.ts` → `summarizeTranscript`                              | Authenticated caller; `null` when absent                                           |
-| Design Studio chat                                                 | `server/design-chat.ts`                                                       | WebSocket user (`getWsAuthUserId`); `null` when absent                             |
-| Heartbeats                                                         | `server/heartbeat.ts` (`runClaude` `skillCredentialMerge`)                    | `null` — no human in-context (per-account AI hard-fails; only host Gemini can run) |
-| Crons                                                              | `server/heartbeat.ts` (`runCronJob` → `runClaude`; `cron-skill-principal.ts`) | `null` — no human in-context                                                       |
-| Workflows                                                          | `server/workflow-runner.ts`                                                   | `null` — workflow steps carry no human attribution                                 |
-| Slack bot replies                                                  | `server/slack.ts`                                                             | `null` — no human in-context                                                       |
+| Surface                                                            | Call path                                                                  | Whose credential rows (`user_id`)                                                  |
+| ------------------------------------------------------------------ | -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Interactive 1:1 chat                                               | `server/chat.ts`                                                           | Session owner (`ownerId` from the session row)                                     |
+| Session rewind                                                     | `server/routes/sessions.ts` (`mergeSkillCredentialSpawnEnv` on rewind env) | Session owner (`getSessionOwner`); `null` when unknown                             |
+| Session summarize — REST `POST /api/sessions/:sessionId/summarize` | `server/routes/sessions.ts` → `summarizeTranscript`                        | Session owner; `null` when unknown                                                 |
+| Chat auto-summarize (long reply)                                   | `server/chat.ts` → `summarizeTranscript`                                   | Interactive session owner (`ownerId` in chat)                                      |
+| Conference room — WebSocket one-shot CLI                           | `server/room-chat.ts`                                                      | Authenticated WebSocket user (`getWsAuthUserId`); `null` when absent               |
+| Conference room — REST **summarize**                               | `server/routes/rooms.ts` → `summarizeTranscript`                           | Authenticated caller; `null` when absent                                           |
+| Design Studio chat                                                 | `server/design-chat.ts`                                                    | WebSocket user (`getWsAuthUserId`); `null` when absent                             |
+| Heartbeats                                                         | `server/heartbeat.ts` (`runClaude` `skillCredentialMerge`)                 | `null` — no human in-context (per-account AI hard-fails; only host Gemini can run) |
+| Workflows                                                          | `server/workflow-runner.ts`                                                | `null` — workflow steps carry no human attribution                                 |
+| Slack bot replies                                                  | `server/slack.ts`                                                          | `null` — no human in-context                                                       |
 
 Saved secrets follow the `user_id` column, not the agent. System spawns
 with no resolvable human (`null` principal) merge no per-user skill creds

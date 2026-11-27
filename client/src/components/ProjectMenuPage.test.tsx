@@ -5,7 +5,6 @@ import ProjectMenuPage from './ProjectMenuPage';
 (vi as any).mock('./SettingsPage.jsx', () => ({
   AgentConfigSection: () => <div data-testid="agent-config-section" />,
   ProjectsSection: () => <div data-testid="projects-section" />,
-  CronSection: () => <div data-testid="cron-section" />,
 }));
 
 describe('ProjectMenuPage', () => {
@@ -36,10 +35,10 @@ describe('ProjectMenuPage', () => {
     expect(screen.getByText('Project settings')).toBeInTheDocument();
   });
 
-  it('renders Cron section for crons tab', () => {
+  it('falls back to Agents for the removed crons tab', () => {
     render(<ProjectMenuPage {...baseProps} tab="crons" />);
-    expect(screen.getByTestId('cron-section')).toBeInTheDocument();
-    expect(screen.getByText('Cron Jobs')).toBeInTheDocument();
+    expect(screen.getByTestId('agent-config-section')).toBeInTheDocument();
+    expect(screen.queryByText('Cron Jobs')).not.toBeInTheDocument();
   });
 
   it('falls back to Agents for the retired heartbeats tab', () => {

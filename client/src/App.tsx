@@ -837,8 +837,6 @@ export default function App({ initialView }: any = {}) {
   // Skills sidebar badge so a captured lesson is discoverable without opening
   // the Skills page.
   const [skillImprovementCounts, setSkillImprovementCounts] = useState<Record<string, number>>({});
-  // Cron-linked sessions (scheduled tasks)
-  const [cronSessions, setCronSessions] = useState<any[]>([]);
   // Skills for the active agent (for /slash-command autocomplete)
   const [skills, setSkills] = useState<any[]>([]);
   // First-run setup
@@ -1140,10 +1138,6 @@ export default function App({ initialView }: any = {}) {
     // to `agentId`, so React skips the update (no spurious re-render).
     setSessions(plan.sessions);
   }, []);
-  useEffect(() => {
-    indexSessionsById(sessionsByIdRef.current, cronSessions);
-    bumpSessionsIndex();
-  }, [cronSessions, bumpSessionsIndex]);
   const agentsRef = useRef(agents);
   agentsRef.current = agents;
   // Mirror of `changesReady` accessible inside WebSocket callbacks (used to
@@ -1626,9 +1620,6 @@ export default function App({ initialView }: any = {}) {
     }
     if (currentView.startsWith('project-settings:')) {
       return { tab: 'settings', projectId: currentView.slice('project-settings:'.length) };
-    }
-    if (currentView.startsWith('project-crons:')) {
-      return { tab: 'crons', projectId: currentView.slice('project-crons:'.length) };
     }
     return null;
   }, [currentView]);
@@ -2792,9 +2783,6 @@ export default function App({ initialView }: any = {}) {
           setSessionsByAgentId((prev: any) =>
             patchSessionInAgentCaches(prev, sid, (s: any) => ({ ...s, state: data.state })),
           );
-          setCronSessions((prev: any) =>
-            prev.map((s: any) => (s.id === sid ? { ...s, state: data.state } : s)),
-          );
           break;
         }
         case 'session-worktree-detected':
@@ -3316,13 +3304,6 @@ export default function App({ initialView }: any = {}) {
           setMessages((prev: any) =>
             prev.map((m: any) => (m.id === data.messageId ? { ...m, content: data.content } : m)),
           );
-          break;
-
-        case 'cron_session_update':
-          api
-            .getCronSessions()
-            .then(setCronSessions)
-            .catch(() => {});
           break;
 
         case 'kanban_update':
@@ -4991,18 +4972,6 @@ export default function App({ initialView }: any = {}) {
       cancelled = true;
     };
   }, [activeSessionId]);
-
-  // Cron sessions (scheduled tasks)
-  const refreshCronSessions = useCallback(() => {
-    api
-      .getCronSessions()
-      .then(setCronSessions)
-      .catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    refreshCronSessions();
-  }, [refreshCronSessions]);
 
   const handleSessionAgentsUpdated = useCallback((detail: any) => {
     if (!detail?.id) return;
@@ -7173,9 +7142,8 @@ export default function App({ initialView }: any = {}) {
                 !streamingContent && (
                   <p className="text-sm text-gray-500 px-1" data-testid="server-agent-empty">
                     Ask {serverAgentName} anything about Agent Hub: what to focus on next, to start
-                    an agent, to manage cards, wiki, crons, or settings. It works through the API as
-                    you, so it sees only the projects you can access and can do what your role
-                    allows.
+                    an agent, to manage cards, wiki, or settings. It works through the API as you,
+                    so it sees only the projects you can access and can do what your role allows.
                   </p>
                 )}
               {hubAssistantTranscriptLive && (
@@ -7549,7 +7517,6 @@ export default function App({ initialView }: any = {}) {
                 onOpenProject={openAdaptiveProjectWizard}
                 onImportProject={openImportProjectWizard}
                 onReorderProjects={handleReorderProjects}
-                cronSessions={cronSessions}
                 wikiProjectId={wikiProjectId}
                 notesProjectId={notesProjectId}
                 reviewerProjectId={reviewerProjectId}

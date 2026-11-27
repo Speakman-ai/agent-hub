@@ -1,18 +1,12 @@
 import { useState } from 'react';
 import type { FormEvent } from 'react';
-import { CalendarClock, Loader2, Wand2, X } from 'lucide-react';
-import humanCron from '@shared/utils/humanCron';
+import { Loader2, Wand2, X } from 'lucide-react';
 import {
-  ROUTINE_DEFAULT_SCHEDULE,
-  localTimezone,
-  looksLikeCronExpression,
-  routineCronCreateBody,
   routineSkillCreateBody,
   routineSkillProblems,
   type RoutineDraftWire,
 } from '@shared/utils/routineFromRecording';
 import { api } from '../utils/api';
-import CronSchedulePicker from './CronSchedulePicker';
 
 export interface RoutineDialogApi {
   draftRoutineFromRecording: (
@@ -20,19 +14,17 @@ export interface RoutineDialogApi {
     body: { artifactId: string; goal?: string },
   ) => Promise<RoutineDraftWire>;
   createProjectSkill: (projectId: string, body: unknown) => Promise<unknown>;
-  createCron: (body: unknown) => Promise<unknown>;
 }
 
-type Step = 'goal' | 'drafting' | 'edit' | 'saving' | 'schedule' | 'scheduling' | 'done';
+type Step = 'goal' | 'drafting' | 'edit' | 'saving' | 'done';
 
 const inputClass =
   'w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-sky-600';
 
 /**
  * Make routine (SPEC-7): the session agent drafts a project skill from a
- * browser demo recording, the human edits and saves it, then can attach it to
- * a schedule. Scheduled runs act as the cron owner (their browser profile and
- * approval gates) and report into the notification inbox.
+ * browser demo recording, and the human edits and saves it. The flow ends once
+ * the skill is saved.
  */
 export default function RoutineFromRecordingDialog({
   sessionId,
@@ -53,10 +45,8 @@ export default function RoutineFromRecordingDialog({
   const [description, setDescription] = useState('');
   const [body, setBody] = useState('');
   const [savedName, setSavedName] = useState('');
-  const [schedule, setSchedule] = useState(ROUTINE_DEFAULT_SCHEDULE);
-  const [notes, setNotes] = useState('');
 
-  const busy = step === 'drafting' || step === 'saving' || step === 'scheduling';
+  const busy = step === 'drafting' || step === 'saving';
   const problems = routineSkillProblems({ name, description, body });
 
   const requestDraft = async (e?: FormEvent) => {
@@ -90,33 +80,10 @@ export default function RoutineFromRecordingDialog({
         routineSkillCreateBody({ name, description, body }),
       );
       setSavedName(name.trim());
-      setStep('schedule');
+      setStep('done');
     } catch (err) {
       setError((err as Error).message || 'Saving the skill failed');
       setStep('edit');
-    }
-  };
-
-  const attachSchedule = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!meta || !looksLikeCronExpression(schedule)) return;
-    setError('');
-    setStep('scheduling');
-    try {
-      await client.createCron(
-        routineCronCreateBody({
-          projectId: meta.projectId,
-          agentId: meta.agentId,
-          skillName: savedName,
-          schedule,
-          timezone: localTimezone(),
-          notes,
-        }),
-      );
-      setStep('done');
-    } catch (err) {
-      setError((err as Error).message || 'Scheduling failed');
-      setStep('schedule');
     }
   };
 
@@ -251,59 +218,10 @@ export default function RoutineFromRecordingDialog({
             </form>
           )}
 
-          {(step === 'schedule' || step === 'scheduling') && (
-            <form onSubmit={attachSchedule} className="space-y-3">
-              <p className="text-xs text-emerald-300" data-testid="routine-saved">
-                Saved skill <span className="font-mono">{savedName}</span>.
-              </p>
-              <p className="text-xs text-gray-400">
-                Attach it to a schedule. Each run uses your browser logins and asks you before
-                anything irreversible. Results arrive in your notifications.
-              </p>
-              <CronSchedulePicker value={schedule} onChange={setSchedule} />
-              <label className="block text-xs text-gray-400">
-                Notes for each run (optional)
-                <textarea
-                  className={`${inputClass} mt-1`}
-                  rows={2}
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  disabled={busy}
-                  placeholder="Only the EU account"
-                  data-testid="routine-notes"
-                />
-              </label>
-              <div className="flex items-center gap-2">
-                <button
-                  type="submit"
-                  disabled={busy || !looksLikeCronExpression(schedule)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-700 hover:bg-sky-600 text-white text-xs font-medium disabled:opacity-50"
-                  data-testid="routine-schedule"
-                >
-                  {step === 'scheduling' ? (
-                    <Loader2 size={13} className="animate-spin" />
-                  ) : (
-                    <CalendarClock size={13} />
-                  )}
-                  Schedule routine
-                </button>
-                <button
-                  type="button"
-                  onClick={onClose}
-                  disabled={busy}
-                  className="px-3 py-1.5 rounded-lg text-xs text-gray-300 hover:bg-gray-800 disabled:opacity-50"
-                >
-                  Not now
-                </button>
-              </div>
-            </form>
-          )}
-
           {step === 'done' && (
             <div className="space-y-3" data-testid="routine-done">
-              <p className="text-xs text-emerald-300">
-                Scheduled <span className="font-mono">{savedName}</span>: {humanCron(schedule)}.
-                Results arrive in your notifications.
+              <p className="text-xs text-emerald-300" data-testid="routine-saved">
+                Saved skill <span className="font-mono">{savedName}</span>.
               </p>
               <button
                 type="button"

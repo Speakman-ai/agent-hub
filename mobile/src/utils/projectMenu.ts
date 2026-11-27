@@ -126,7 +126,6 @@ export function projectNavGroups(project: any, agents?: any[]) {
           icon: 'Terminal',
           screen: 'DevServer',
         },
-        { key: 'project-crons', label: 'Cron Jobs', icon: 'Clock', screen: 'ProjectCrons' },
       ],
     },
   ];

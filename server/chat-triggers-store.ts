@@ -5,7 +5,11 @@
  */
 import { randomUUID } from 'crypto';
 import { getDb } from './db.js';
-import type { ChatTriggerEvent, ChatTriggerFilter } from '../shared/utils/chatTriggers.js';
+import {
+  isChatTriggerEvent,
+  type ChatTriggerEvent,
+  type ChatTriggerFilter,
+} from '../shared/utils/chatTriggers.js';
 
 export interface ChatTriggerRow {
   id: string;
@@ -49,10 +53,15 @@ export function getTrigger(id: string): ChatTriggerRow | null {
   );
 }
 
+/**
+ * A project's triggers for events that still exist. Rows for a retired event
+ * (the removed `cron_finished`) stay in the table but are not listed.
+ */
 export function listTriggersForProject(projectId: string): ChatTriggerRow[] {
-  return getDb()
+  const rows = getDb()
     .prepare('SELECT * FROM project_chat_triggers WHERE project_id = ? ORDER BY created_at, id')
     .all(projectId) as ChatTriggerRow[];
+  return rows.filter((row) => isChatTriggerEvent(row.event));
 }
 
 /** Enabled triggers for one project event, oldest first. */

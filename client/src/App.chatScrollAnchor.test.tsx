@@ -92,7 +92,6 @@ const ctl = vi.hoisted(() => ({
       getArchivedSessions: vi.fn().mockResolvedValue([]),
       getSkills: vi.fn().mockResolvedValue([]),
       getDesigns: vi.fn().mockResolvedValue([]),
-      getCronSessions: vi.fn().mockResolvedValue([]),
       getMessages: vi
         .fn()
         .mockResolvedValue([{ id: 'm-a', role: 'user', content: 'from-a', created_at: '' }]),

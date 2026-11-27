@@ -32,8 +32,8 @@
  * the rest of the tool surface remain untouched.
  *
  * Apply this to every Claude Code spawn that runs an Agent-Hub-enriched
- * system prompt (chat, room chat, heartbeats/crons via
- * `runClaude`, workflow runner, slack, memory, design).
+ * system prompt (chat, room chat, `runClaude`, workflow runner, slack,
+ * memory, design).
  */
 
 /**
@@ -47,7 +47,7 @@
  *                         → replaced by the `agenthub:poller` fenced block.
  *     The native schedulers live inside the per-turn CLI process, so a
  *     "every 30 min" job dies when the turn ends; seeing them, the model
- *     concludes scheduling needs a project cron and never offers a poller.
+ *     concludes scheduling needs its own scheduler and never offers a poller.
  */
 export const SHADOWED_NATIVE_TOOLS = [
   'Skill',

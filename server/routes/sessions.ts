@@ -239,20 +239,6 @@ import {
 import { resolveProjectSkillsDir } from '../project-skill-paths.js';
 import { agentAcceptsAutonomousTickets } from '../agent-autonomy.js';
 
-/**
- * A session row joined with its parent cron's metadata, as returned by
- * `stmts.getAllCronSessions`. The extra columns don't exist on `sessions`
- * itself — the cron row is the authoritative source of `project_id` (cron
- * sessions use the `_cron` pseudo agent) and `cron_shared` drives sidebar
- * visibility.
- */
-type CronSessionRow = SessionRow & {
-  cron_name: string | null;
-  cron_schedule: string | null;
-  project_id: string | null;
-  cron_shared: number | null;
-};
-
 function safeParse(s: string): Record<string, unknown> {
   try {
     const parsed = JSON.parse(s) as Record<string, unknown>;
@@ -922,25 +908,10 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     res.json(sessionWire);
   });
 
-  router.get('/api/sessions/cron', (req: Request, res: Response) => {
-    const all = stmts.getAllCronSessions.all() as CronSessionRow[];
-    // A shared cron (crons.shared = 1) is a project-wide scheduled task:
-    // list it for every org member, mirroring GET /api/crons. Non-shared
-    // cron sessions stay private to their owner. Keeping this in lock-step
-    // with `userCanReadSession` (which also treats shared crons as readable)
-    // means a shared cron shown in the sidebar can actually be opened —
-    // otherwise a listed row would 404 on the per-session read gate.
-    const sessions = all.filter(
-      (s) => Boolean(s.cron_shared) || userOwnsSession(req as AuthenticatedRequest, s.id),
-    );
-    res.json(sessions.map((s) => enrichSessionForClient(s, stmts)));
-  });
-
   /**
    * Per-user gate for everything under `/api/sessions/:sessionId`.
    * Returns 404 (not 403) so non-owners can't probe for the existence
-   * of another user's sessions. Registered here so the static
-   * `/api/sessions/cron` handler above is reached first.
+   * of another user's sessions.
    *
    * Reads (GET, HEAD) use the permissive `userCanReadSession` predicate
    * so shared session types (reviewer threads) are visible to all
@@ -965,7 +936,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
   router.use('/api/sessions/:sessionId', (req, res, next) => {
     const sid = (req.params as { sessionId?: string }).sessionId;
-    if (!sid || sid === 'cron') return next();
+    if (!sid) return next();
     // PWA manifest fetches under /preview/proxy/*.webmanifest are allowed
     // unauthenticated by the auth middleware (browsers omit credentials per
     // the App Manifest spec). The auth middleware signals this with

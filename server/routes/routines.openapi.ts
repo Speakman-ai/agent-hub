@@ -42,7 +42,7 @@ const RoutineDraftComponent = registerComponent(
     })
     .openapi({
       description:
-        'A draft project skill the session agent wrote from the recording. Nothing is saved: the client saves it with `POST /api/projects/{projectId}/skills` and schedules it with `POST /api/crons` (`routine_skill`).',
+        'A draft project skill the session agent wrote from the recording. Nothing is saved: the client saves it with `POST /api/projects/{projectId}/skills`.',
     }),
 );
 

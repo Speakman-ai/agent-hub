@@ -116,7 +116,6 @@ vi.mock('../utils/api', () => {
     getProjects: async () => [{ id: 'p', name: 'Hub' }],
     getSessions: async (agentId: string) => SESSIONS[agentId] ?? [],
     getArchivedSessions: async () => [],
-    getCronSessions: async () => [],
     getMessages: async () => [],
     getSessionHandoffs: async () => [],
     getSkills: async () => [],

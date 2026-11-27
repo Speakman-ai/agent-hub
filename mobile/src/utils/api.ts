@@ -1322,14 +1322,6 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
-  // Crons
-  getCrons: () => fetchJSON('/crons'),
-  getCronLogs: (id: any, limit: any = 3) => fetchJSON(`/crons/${id}/logs?limit=${limit}`),
-  createCron: (data: any) => fetchJSON('/crons', { method: 'POST', body: JSON.stringify(data) }),
-  updateCron: (id: any, data: any) =>
-    fetchJSON(`/crons/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-  deleteCron: (id: any) => fetchJSON(`/crons/${id}`, { method: 'DELETE' }),
-  runCron: (id: any) => fetchJSON(`/crons/${id}/run`, { method: 'POST' }),
   // Skills & Context
   getProjectSkills: (projectId: any) => fetchJSON(`/projects/${projectId}/skills`),
   getProjectSkill: (projectId: any, skillId: any) =>
@@ -2085,8 +2077,6 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
-  // Cron sessions
-  getCronSessions: () => fetchJSON('/sessions/cron'),
   // Finalize Code Changes — design doc: finalize-code-changes-architecture-v0
   // Returns the most-recent finalize_runs row for a session, or `{ run: null }`
   // when none exists yet. Used by the mobile FinalizeButton for both initial

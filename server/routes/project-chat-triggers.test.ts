@@ -242,9 +242,25 @@ describe('project chat triggers routes', () => {
   it('rejects a filter outcome the event cannot produce', async () => {
     const res = await request(as(alice))
       .post(base)
-      .send({ event: 'cron_finished', filter: { outcome: 'pass' }, newChannel: { name: 'x' } })
+      .send({ event: 'card_created', filter: { outcome: 'pass' }, newChannel: { name: 'x' } })
       .expect(400);
     expect(res.body.code).toBe('invalid_filter');
+  });
+
+  it('does not list a stored trigger for the removed cron_finished event', async () => {
+    const res = await request(as(alice))
+      .post(base)
+      .send({ event: 'pr_merged', newChannel: { name: 'web-activity' } })
+      .expect(201);
+    const { getDb } = await import('../db.js');
+    getDb()
+      .prepare(
+        `INSERT INTO project_chat_triggers (id, project_id, event, channel_id, created_by)
+         VALUES ('legacy-cron', 'web', 'cron_finished', ?, ?)`,
+      )
+      .run(res.body.trigger.channelId, alice);
+    const list = await request(as(alice)).get(base).expect(200);
+    expect(list.body.triggers.map((t: { event: string }) => t.event)).toEqual(['pr_merged']);
   });
 
   it('requires exactly one destination', async () => {

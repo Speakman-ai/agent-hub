@@ -183,8 +183,8 @@ Outside of projects, the **Hub** is a team workspace:
   that render live beside the chat.
 - **Skills**: project and global skills, a Skill Builder session mode with eval runs,
   and routines drafted from a recorded browser demo.
-- **Background agents and crons**: project-scoped scheduled jobs and custom
-  background agents.
+- **Background agents and session pollers**: project-scoped background agents,
+  and recurring checks scheduled from inside a session.
 - **Stats**: per-project charts for PRs merged, tickets, epics, model usage, and
   time to ship.
 - **Organizations**: multi-user orgs with Owner/Admin/User roles, MFA, invites,
@@ -434,7 +434,7 @@ graph TB
             REST[REST API]
             WS[WebSocket]
             PROMPT[Prompt Builder]
-            CRON[Crons / Background agents]
+            CRON[Background agents / Pollers]
             FIN[Finalize CI Runners]
         end
         subgraph Storage
@@ -541,7 +541,6 @@ The server exposes a REST API at `http://localhost:3051/api`:
 | QA       | `/api/projects/:id/qa/plans`               | QA plans, runs, and verdicts            |
 | Finalize | `/api/projects/:id/sessions/:sid/finalize` | Review + CI gating for a session        |
 | Webhooks | `/api/webhooks`                            | GitHub webhook configuration            |
-| Crons    | `/api/crons`                               | Scheduled task management               |
 | Config   | `/api/config`                              | Server configuration                    |
 
 The full surface is generated from Zod schemas in
@@ -568,7 +567,6 @@ erDiagram
     PROJECTS ||--o{ QA_PLANS : has
     QA_PLANS ||--o{ QA_RUNS : produces
     SESSIONS ||--o{ FINALIZE_RUNS : gated_by
-    CRONS ||--o{ CRON_LOGS : produces
 ```
 
 The file lives at `~/.agent-hub/data/agent-hub.db` (or under `AGENT_HUB_DATA_DIR`
@@ -615,7 +613,7 @@ agent-hub/
 │   ├── db.ts               # SQLite setup with auto-migrations
 │   ├── config.ts           # Centralized configuration resolution
 │   ├── wiki.ts             # Wiki CRUD + FTS5 full-text search
-│   ├── heartbeat.ts        # Cron scheduling and one-shot CLI runner
+│   ├── heartbeat.ts        # Background-agent scheduling and one-shot CLI runner
 │   ├── finalize/           # In-hub CI gating on isolated DinD runners
 │   ├── default-skills/     # Bundled skills (agent-hub, kanban, wiki, QA, setup guides)
 │   └── worktree.ts         # Git worktree management

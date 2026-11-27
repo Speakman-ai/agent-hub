@@ -14,7 +14,6 @@ import {
   initScheduledJobQueue,
   getScheduledJobQueue,
   enqueueHeartbeatJob,
-  enqueueCronJob,
   shutdownScheduledJobQueue,
   HEARTBEAT_JOB_TYPE,
   CRON_JOB_TYPE,
@@ -68,7 +67,7 @@ describe('scheduled job queue', () => {
     expect(getScheduledJobQueue()!.getJob(jobId!)?.status).toBe('done');
   });
 
-  it('runs the cron handler with the enqueued numeric cronId', async () => {
+  it('drains a leftover cron job through the cron handler', async () => {
     const seen: CronJobPayload[] = [];
     initScheduledJobQueue({
       db,
@@ -79,7 +78,11 @@ describe('scheduled job queue', () => {
       },
     });
 
-    const jobId = enqueueCronJob(42);
+    const jobId = getScheduledJobQueue()!.enqueue(
+      CRON_JOB_TYPE,
+      { cronId: 42 },
+      { maxAttempts: 1 },
+    );
     await drain();
 
     expect(seen).toEqual([{ cronId: 42 }]);
@@ -94,7 +97,7 @@ describe('scheduled job queue', () => {
       cronHandler: async () => {},
     });
     const hb = enqueueHeartbeatJob('a');
-    const cr = enqueueCronJob(7);
+    const cr = getScheduledJobQueue()!.enqueue(CRON_JOB_TYPE, { cronId: 7 }, { maxAttempts: 1 });
     const q = getScheduledJobQueue()!;
     expect(q.getJob(hb!)?.type).toBe(HEARTBEAT_JOB_TYPE);
     expect(q.getJob(cr!)?.type).toBe(CRON_JOB_TYPE);
@@ -149,7 +152,6 @@ describe('scheduled job queue', () => {
   it('enqueue helpers return null when the queue is not initialised', () => {
     expect(getScheduledJobQueue()).toBeNull();
     expect(enqueueHeartbeatJob('a')).toBeNull();
-    expect(enqueueCronJob(1)).toBeNull();
   });
 
   it('initScheduledJobQueue is idempotent and re-registers handlers', async () => {

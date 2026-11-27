@@ -26,7 +26,7 @@ function byId(root: any, testID: string) {
 }
 
 describe('MobileRoutineDialog', () => {
-  it('drafts, saves the edited skill and schedules it as a routine', async () => {
+  it('drafts and saves the edited skill, then finishes', async () => {
     const client = {
       draftRoutineFromRecording: vi.fn(async () => ({
         projectId: 'p1',
@@ -37,7 +37,6 @@ describe('MobileRoutineDialog', () => {
         draft: { name: 'weekly-export', description: 'Export it.', body: '## Steps\n1. Go\n' },
       })),
       createProjectSkill: vi.fn(async () => ({})),
-      createCron: vi.fn(async () => ({})),
     };
     let renderer: any;
     act(() => {
@@ -59,17 +58,9 @@ describe('MobileRoutineDialog', () => {
       body: '## Steps\n1. Go\n',
     });
 
-    act(() => byId(root, 'mobile-routine-preset-daily-9').props.onPress());
-    await act(async () => byId(root, 'mobile-routine-schedule').props.onPress());
-    expect(client.createCron).toHaveBeenCalledWith(
-      expect.objectContaining({
-        routine_skill: 'weekly-export',
-        skill_principal_agent_id: 'ops',
-        project_id: 'p1',
-        schedule: '0 9 * * *',
-      }),
-    );
     expect(byId(root, 'mobile-routine-done')).toBeTruthy();
+    expect(JSON.stringify(renderer.toJSON())).toContain('weekly-export');
+    expect(JSON.stringify(renderer.toJSON())).not.toMatch(/schedul/i);
   });
 
   it('shows the draft error and stays on the first step', async () => {
@@ -78,7 +69,6 @@ describe('MobileRoutineDialog', () => {
         throw new Error('Drafting failed: Timed out');
       }),
       createProjectSkill: vi.fn(),
-      createCron: vi.fn(),
     };
     let renderer: any;
     act(() => {

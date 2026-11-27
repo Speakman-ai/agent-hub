@@ -7,7 +7,6 @@ describe('hub-mode-prompt', () => {
       'agent-hub',
       'agent-hub-kanban',
       'agent-hub-sessions',
-      'agent-hub-heartbeats-crons',
       'agent-hub-wiki',
       'google',
     ]);

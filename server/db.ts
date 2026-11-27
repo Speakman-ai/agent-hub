@@ -2708,10 +2708,8 @@ function initDb(dataDir: string): void {
   }
 
   try {
-    // getAllCronSessions drives the cron-session list off cron_id. Most
-    // sessions are not cron sessions, so a partial index over just the
-    // cron-linked rows lets the join scan a few hundred rows instead of the
-    // whole table.
+    // Partial index over cron-linked sessions. Nothing queries it since crons
+    // were removed; it stays so fresh and existing databases keep one schema.
     db.exec(
       `CREATE INDEX IF NOT EXISTS idx_sessions_cron ON sessions(cron_id, updated_at DESC)
          WHERE cron_id IS NOT NULL`,
@@ -5927,46 +5925,6 @@ function initDb(dataDir: string): void {
       'SELECT * FROM heartbeat_logs WHERE agent_id = ? ORDER BY timestamp DESC LIMIT 1',
     ),
 
-    // Crons
-    getCrons: db.prepare('SELECT * FROM crons ORDER BY id ASC'),
-    getCron: db.prepare('SELECT * FROM crons WHERE id = ?'),
-    createCron: db.prepare(
-      'INSERT INTO crons (name, schedule, timezone, prompt, cwd, enabled, project_id, timeout_ms, notify_on_run, model, skill_principal_agent_id, engine, owner_user_id, shared) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    ),
-    updateCron: db.prepare(
-      'UPDATE crons SET name = ?, schedule = ?, timezone = ?, prompt = ?, cwd = ?, enabled = ?, project_id = ?, timeout_ms = ?, notify_on_run = ?, model = ?, skill_principal_agent_id = ?, engine = ?, shared = ? WHERE id = ?',
-    ),
-    backfillCronOwners: db.prepare(
-      'UPDATE crons SET owner_user_id = ? WHERE owner_user_id IS NULL',
-    ),
-    deleteCron: db.prepare('DELETE FROM crons WHERE id = ?'),
-    updateCronResult: db.prepare(
-      "UPDATE crons SET last_run = datetime('now'), last_result = ? WHERE id = ?",
-    ),
-    updateCronNextRun: db.prepare('UPDATE crons SET next_run_at = ? WHERE id = ?'),
-    updateCronRoutineSkill: db.prepare('UPDATE crons SET routine_skill = ? WHERE id = ?'),
-    insertRoutineRun: db.prepare(
-      'INSERT INTO routine_runs (session_id, cron_id, cron_name, log_id, skill, project_id, agent_id, owner_user_id, cron_shared, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    ),
-    getRoutineRun: db.prepare('SELECT * FROM routine_runs WHERE session_id = ?'),
-    getRoutineRunByCron: db.prepare('SELECT * FROM routine_runs WHERE cron_id = ? LIMIT 1'),
-    getAllRoutineRuns: db.prepare('SELECT * FROM routine_runs ORDER BY started_at ASC'),
-    deleteRoutineRun: db.prepare('DELETE FROM routine_runs WHERE session_id = ?'),
-
-    // Cron logs
-    addCronLog: db.prepare('INSERT INTO cron_logs (cron_id, status) VALUES (?, ?)'),
-    updateCronLog: db.prepare(
-      'UPDATE cron_logs SET result = ?, status = ?, duration_ms = ? WHERE id = ?',
-    ),
-    getCronLogs: db.prepare(
-      'SELECT * FROM cron_logs WHERE cron_id = ? ORDER BY timestamp DESC LIMIT ?',
-    ),
-    pruneCronLogs: db.prepare(
-      `DELETE FROM cron_logs WHERE cron_id = ? AND id NOT IN (
-         SELECT id FROM cron_logs WHERE cron_id = ? ORDER BY timestamp DESC LIMIT 100
-       )`,
-    ),
-
     // Session events (stream-json telemetry for chat/heartbeat/cron runs)
     addSessionEvent: db.prepare(
       `INSERT INTO session_events (parent_kind, parent_id, seq, event_type, payload)
@@ -6235,22 +6193,6 @@ function initDb(dataDir: string): void {
       'UPDATE messages SET content = ?, metadata = ? WHERE id = ?',
     ),
     getAllQueuedSessions: db.prepare('SELECT DISTINCT session_id FROM message_queue'),
-
-    // Cron sessions
-    getSessionByCronId: db.prepare('SELECT * FROM sessions WHERE cron_id = ? LIMIT 1'),
-    getAllCronSessions: db.prepare(
-      // `c.project_id as project_id` lets the client group scheduled-task rows
-      // under their owning project in the sidebar. The sessions table has no
-      // project_id column of its own (cron sessions use the `_cron` pseudo
-      // agent), so the cron row is the authoritative source of the project.
-      // `c.shared as cron_shared` lets the sidebar list route apply the same
-      // shared-cron visibility as GET /api/crons — a shared cron is listed for
-      // every org member, not just its owner.
-      `SELECT s.*, c.name as cron_name, c.schedule as cron_schedule, c.project_id as project_id, c.shared as cron_shared
-       FROM sessions s JOIN crons c ON s.cron_id = c.id
-       ORDER BY s.updated_at DESC`,
-    ),
-    updateSessionCronId: db.prepare('UPDATE sessions SET cron_id = ? WHERE id = ?'),
 
     // Device tokens (push notifications)
     registerDeviceToken: db.prepare(
@@ -7515,7 +7457,6 @@ function initDb(dataDir: string): void {
     deleteBoardsByProject: db.prepare('DELETE FROM kanban_boards WHERE project_id = ?'),
     deleteWorkflowsByProject: db.prepare('DELETE FROM workflows WHERE project_id = ?'),
     deleteSessionAgentsByAgent: db.prepare('DELETE FROM session_agents WHERE agent_id = ?'),
-    deleteCronsByProject: db.prepare('DELETE FROM crons WHERE project_id = ?'),
     deleteSessionsByAgent: db.prepare('DELETE FROM sessions WHERE agent_id = ?'),
     // Hard-delete: agent is not a DB table, so each child row store needs an
     // explicit by-agent delete. Sessions cascade messages/delegations/handoffs/

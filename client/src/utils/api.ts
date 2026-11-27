@@ -3340,18 +3340,6 @@ export const api = {
       return null;
     }),
 
-  // Cron Sessions
-  getCronSessions: () => fetchJSON('/sessions/cron'),
-
-  // Crons
-  getCrons: () => fetchJSON('/crons'),
-  getCronLogs: (id: any, limit: any = 3) => fetchJSON(`/crons/${id}/logs?limit=${limit}`),
-  createCron: (data: any) => fetchJSON('/crons', { method: 'POST', body: JSON.stringify(data) }),
-  updateCron: (id: any, data: any) =>
-    fetchJSON(`/crons/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-  deleteCron: (id: any) => fetchJSON(`/crons/${id}`, { method: 'DELETE' }),
-  runCron: (id: any) => fetchJSON(`/crons/${id}/run`, { method: 'POST', timeout: 120000 }),
-
   // Designs (Claude Design — Phase 1)
   getDesigns: () => fetchJSON('/designs'),
   getDesign: (id: any) => fetchJSON(`/designs/${id}`),

@@ -1,31 +1,14 @@
 /**
  * Scheduled-work consumer of the in-house SQLite job queue.
  *
- * Crons no longer execute inline in their node-cron timer callbacks. Instead
- * each tick ENQUEUES a job here and a single worker loop drains the queue.
- * node-cron still decides WHEN work fires (timezone, interval, missed-run
- * accounting all unchanged); the queue owns HOW it runs.
+ * Per-agent heartbeats and project crons, the two producers this queue was
+ * built for, are both gone. `scheduled.heartbeat` and `scheduled.cron` stay
+ * recognized job types so leftover rows from an older process drain as
+ * no-ops; nothing enqueues new ones.
  *
- * Parity guarantees (why the migration is invisible to users):
- *   - Jobs are enqueued with `maxAttempts = 1`, so the queue never retries a
- *     failed run — the next scheduled tick IS the retry, exactly as before.
- *     This also means the stuck-job reaper can only ever dead-letter a crashed
- *     job, never re-run it, so there is no risk of a duplicate cron execution.
- *   - `runCronJob` still writes cron threads and next-run bookkeeping itself,
- *     so user-visible history is identical whether a run executes inline
- *     (legacy) or via a queue worker.
- *   - The queue concurrency cap bounds how many scheduled runs execute at once.
- *     Under heavy contention a due run can be delayed until a slot frees.
- *     Legacy node-cron ran each on its own timer with unbounded total
- *     concurrency; the cap is the one intentional load-shaping change,
- *     tunable via `scheduledJobsConcurrency`.
- *
- * `scheduled.heartbeat` remains a recognized job type so leftover rows from
- * an older process drain as no-ops. New heartbeat jobs are not enqueued.
- *
- * A config flag (`scheduledJobsViaQueue`, default on) lets an operator fall
- * back to the legacy direct-execution path for one release; the dispatch
- * helpers that consult it live in `heartbeat.ts`.
+ * A config flag (`scheduledJobsViaQueue`, default on) controls whether the
+ * queue is started at all; the helper that consults it lives in
+ * `heartbeat.ts`.
  */
 import type BetterSqlite3 from 'better-sqlite3';
 import { JobQueue, type JobHandler } from './job-queue.js';
@@ -58,7 +41,7 @@ export interface HeartbeatJobPayload {
 }
 
 export interface CronJobPayload {
-  /** Numeric `crons.id` primary key (not the queue's own job id). */
+  /** Numeric `crons.id` of a leftover job (not the queue's own job id). */
   cronId: number;
 }
 
@@ -113,16 +96,6 @@ export function enqueueHeartbeatJob(agentId: string): string | null {
   if (!queue) return null;
   const payload: HeartbeatJobPayload = { agentId };
   return queue.enqueue(HEARTBEAT_JOB_TYPE, payload, { maxAttempts: 1 });
-}
-
-/**
- * Enqueue a cron run. `maxAttempts = 1` for the same reason as heartbeats.
- * Returns the job id, or null if the queue is not initialised.
- */
-export function enqueueCronJob(cronId: number): string | null {
-  if (!queue) return null;
-  const payload: CronJobPayload = { cronId };
-  return queue.enqueue(CRON_JOB_TYPE, payload, { maxAttempts: 1 });
 }
 
 /**

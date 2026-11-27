@@ -44,7 +44,6 @@ describe('projectNavGroups', () => {
       'project-settings',
       'runners',
       'dev-server',
-      'project-crons',
     ]);
   });
 
@@ -159,7 +158,6 @@ describe('projectNavGroups', () => {
       'background-agents',
       'project-agents',
       'project-settings',
-      'project-crons',
     ]) {
       expect(k, `expected workflow project to keep ${kept}`).toContain(kept);
     }

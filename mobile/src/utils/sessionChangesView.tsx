@@ -166,30 +166,21 @@ export function worktreeStatusLine(worktree: any) {
  *
  * Resolution order, freshest first:
  *
- *   1. The live copy from app context (`sessions` / `cronSessions`)
+ *   1. The live copy from app context (`sessions`)
  *   2. A row fetched directly for this id
  *   3. The route-param snapshot
  *
  * @param {{
  *   sessionId?: string|null,
  *   sessions?: Array<{ id?: string }>|null,
- *   cronSessions?: Array<{ id?: string }>|null,
  *   fetched?: { id?: string }|null,
  *   routeSession?: object|null,
  * }} params
  * @returns {object|null}
  */
-export function resolveLiveSession({
-  sessionId,
-  sessions,
-  cronSessions,
-  fetched,
-  routeSession,
-}: any = {}) {
+export function resolveLiveSession({ sessionId, sessions, fetched, routeSession }: any = {}) {
   if (sessionId) {
-    const fromContext =
-      (Array.isArray(sessions) && sessions.find((s: any) => s?.id === sessionId)) ||
-      (Array.isArray(cronSessions) && cronSessions.find((s: any) => s?.id === sessionId));
+    const fromContext = Array.isArray(sessions) && sessions.find((s: any) => s?.id === sessionId);
     if (fromContext) return fromContext;
     if (fetched && fetched.id === sessionId) return fetched;
   }

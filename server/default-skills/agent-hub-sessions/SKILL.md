@@ -42,7 +42,7 @@ this session" and "spin up a new session for X". Emit one fenced `agenthub:forwa
 They pick Build, Build and Review, Build and Push, or Auto Merge on the card
 and press Session forward. A workflow project has no build levels, so set
 `"mode": "consult"` for it. That button is what starts the session. `dispatch`
-stays for crons, heartbeats, and other unattended runs.
+stays for background agents and other unattended runs.
 
 ## Posting to Agent Hub chat
 

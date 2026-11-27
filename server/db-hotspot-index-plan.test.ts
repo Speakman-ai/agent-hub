@@ -64,14 +64,6 @@ describe('DB hot-spot index coverage', () => {
     expect(detail).not.toMatch(/SCAN sessions\b/);
   });
 
-  it('getAllCronSessions drives the join off the partial idx_sessions_cron', () => {
-    const detail = planForStmt(db, stmts.getAllCronSessions.source);
-    // The partial index bounds the driving scan to just the cron-linked
-    // sessions instead of the whole table.
-    expect(detail).toContain('idx_sessions_cron');
-    expect(detail).not.toMatch(/SCAN s\b(?! USING INDEX)/);
-  });
-
   it('getActiveFinalizeRuns seeks via the partial idx_finalize_runs_unsettled with no sort (WS-connect hot path)', () => {
     const detail = planForStmt(db, stmts.getActiveFinalizeRuns.source);
     // Partial index over just the active runs, pre-ordered by the full

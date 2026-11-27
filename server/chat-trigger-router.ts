@@ -19,17 +19,16 @@
  *
  * Identity comes from the producer. Each occurrence's key is built only from
  * ids the broadcast itself carries (message id, run id + status, move id,
- * review-request stamp, log id, …), never from state looked up when the event
+ * review-request stamp, …), never from state looked up when the event
  * is handled, which may already reflect a later occurrence. A broadcast missing
  * its id is not delivered. Each trigger posts a key once: the (trigger, key)
  * row is written in the same transaction as the message, so it survives
  * restarts and a failed write leaves nothing claimed.
  *
- * Privacy fails closed. Sessions belong to one user, as do private crons. An
- * event about one only posts through a trigger its owner created, into a
- * channel the owner is a member of at posting time. When the owner cannot be
- * established (session row missing, lookup error, cron without its sharing
- * flag), the event is not delivered at all. Every trigger also needs a
+ * Privacy fails closed. Sessions belong to one user. An event about one only
+ * posts through a trigger its owner created, into a channel the owner is a
+ * member of at posting time. When the owner cannot be established (session
+ * row missing, lookup error), the event is not delivered at all. Every trigger also needs a
  * creator who can still view the project when it posts. Only the creator can
  * retarget a trigger (`routes/project-chat-triggers.ts`).
  */
@@ -70,7 +69,7 @@ export interface TriggerFacts {
   column?: string | null;
   epicId?: string | null;
   labels?: string[];
-  outcome?: 'pass' | 'fail' | 'success' | 'error';
+  outcome?: 'pass' | 'fail';
   agentId?: string | null;
   severity?: string | null;
 }
@@ -90,7 +89,7 @@ export interface TriggerOccurrence {
   refs: ChatTriggerCardRef[];
   facts: TriggerFacts;
   /**
-   * Set for an owned session or a private cron. Only a trigger this user
+   * Set for an owned session. Only a trigger this user
    * created posts it, and only into a channel this user is a member of.
    */
   privateToUserId: string | null;
@@ -222,7 +221,6 @@ const SOURCE_TYPES: ReadonlySet<string> = new Set([
   'card_created',
   'card_moved',
   'support_ticket_created',
-  'cron_finished',
   'infra_alert_transition',
   'infra_health_event',
 ]);
@@ -426,31 +424,6 @@ export function mapBroadcastToTriggerOccurrence(
         refs: [{ kind: 'ticket', targetId: ticketId, label: subject }],
         facts: {},
         privateToUserId: null,
-      };
-    }
-
-    case 'cron_finished': {
-      const projectId = str(data.projectId);
-      const status =
-        data.status === 'success' ? 'success' : data.status === 'error' ? 'error' : null;
-      const cronId = data.cronId;
-      const logId = data.logId;
-      if (!projectId || !status || cronId == null || logId == null) return null;
-      const name = str(data.cronName) ?? 'Cron';
-      // Shared only when the producer says so; a private cron needs its owner.
-      const owner = str(data.ownerUserId);
-      if (data.cronShared !== true && !owner) return null;
-      return {
-        event: 'cron_finished',
-        projectId,
-        dedupeKey: `cron:${String(cronId)}:${String(logId)}`,
-        title: status === 'success' ? `Cron "${name}" finished` : `Cron "${name}" failed`,
-        status: status === 'success' ? 'success' : 'failure',
-        statusLabel: status === 'success' ? 'Success' : 'Error',
-        detail: oneLine(str(data.preview)),
-        refs: [],
-        facts: { outcome: status },
-        privateToUserId: data.cronShared === true ? null : owner,
       };
     }
 

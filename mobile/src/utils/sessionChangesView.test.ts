@@ -271,23 +271,10 @@ describe('resolveLiveSession', () => {
       resolveLiveSession({
         sessionId: 's1',
         sessions: [{ id: 's0' }, live],
-        cronSessions: [],
         fetched: null,
         routeSession,
       }),
     ).toBe(live);
-  });
-  it('checks cronSessions when not found in sessions', () => {
-    const cron = { id: 's1', finalize_automation: 'push' };
-    expect(
-      resolveLiveSession({
-        sessionId: 's1',
-        sessions: [{ id: 'other' }],
-        cronSessions: [cron],
-        fetched: null,
-        routeSession,
-      }),
-    ).toBe(cron);
   });
   it('uses a directly-fetched row when context has no match', () => {
     const fetched = { id: 's1', ask_mode: 0, finalize_automation: 'review' };
@@ -295,7 +282,6 @@ describe('resolveLiveSession', () => {
       resolveLiveSession({
         sessionId: 's1',
         sessions: [],
-        cronSessions: [],
         fetched,
         routeSession,
       }),
@@ -307,20 +293,17 @@ describe('resolveLiveSession', () => {
       resolveLiveSession({
         sessionId: 's1',
         sessions: [],
-        cronSessions: [],
         fetched,
         routeSession,
       }),
     ).toBe(routeSession);
   });
   it('falls back to the route snapshot when nothing fresher exists', () => {
-    expect(
-      resolveLiveSession({ sessionId: 's1', sessions: [], cronSessions: [], routeSession }),
-    ).toBe(routeSession);
+    expect(resolveLiveSession({ sessionId: 's1', sessions: [], routeSession })).toBe(routeSession);
     expect(resolveLiveSession({ sessionId: 's1', routeSession })).toBe(routeSession);
   });
   it('returns null when there is no session anywhere', () => {
-    expect(resolveLiveSession({ sessionId: 's1', sessions: [], cronSessions: [] })).toBeNull();
+    expect(resolveLiveSession({ sessionId: 's1', sessions: [] })).toBeNull();
     expect(resolveLiveSession({})).toBeNull();
   });
   it('tolerates non-array context inputs', () => {
@@ -328,7 +311,6 @@ describe('resolveLiveSession', () => {
       resolveLiveSession({
         sessionId: 's1',
         sessions: null,
-        cronSessions: undefined,
         routeSession,
       }),
     ).toBe(routeSession);

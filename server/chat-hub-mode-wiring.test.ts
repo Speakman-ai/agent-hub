@@ -101,13 +101,7 @@ describe('augmentChatTurnForHubMode (hub-mode spawn wiring)', () => {
   });
 
   it('loads every Agent Hub skill, including the wiki', () => {
-    for (const id of [
-      'agent-hub',
-      'agent-hub-kanban',
-      'agent-hub-sessions',
-      'agent-hub-heartbeats-crons',
-      'agent-hub-wiki',
-    ]) {
+    for (const id of ['agent-hub', 'agent-hub-kanban', 'agent-hub-sessions', 'agent-hub-wiki']) {
       expect(HUB_SKILL_IDS).toContain(id);
     }
   });

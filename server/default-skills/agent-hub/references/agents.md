@@ -100,7 +100,7 @@ Returns the contents of the agent's `memory/` directory: daily notes
 agent has written. Used by the UI's Memory tab and by daily-note
 hydration in enrichment.
 
-The reciprocal write paths live in the heartbeat/cron flows and the
+The reciprocal write paths live in the wiki→memory sync and the
 `scripts/log-tool-error.sh` wrapper — agents typically don't `PUT`
 memory files directly; they edit them through `Edit` / `Write` tools
 inside their own session and the filesystem watcher does the rest.

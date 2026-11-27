@@ -1,18 +1,17 @@
 import ProjectIcon from './ProjectIcon';
-import { Bot, Clock, FolderGit2, Sparkles } from 'lucide-react';
-import { AgentConfigSection, CronSection, ProjectsSection } from './SettingsPage';
+import { Bot, FolderGit2, Sparkles } from 'lucide-react';
+import { AgentConfigSection, ProjectsSection } from './SettingsPage';
 import BackgroundAgentsSection from './BackgroundAgentsSection';
 
 const TAB_META = {
   agents: { label: 'Agents', Icon: Bot },
   'background-agents': { label: 'Background Agents', Icon: Sparkles },
   settings: { label: 'Project settings', Icon: FolderGit2 },
-  crons: { label: 'Cron Jobs', Icon: Clock },
 } as Record<string, any>;
 
 /**
  * Per-project settings moved out of global Settings into the sidebar
- * "{project name} Menu" (Agents, Project settings, Cron Jobs).
+ * "{project name} Menu" (Agents, Background Agents, Project settings).
  */
 export default function ProjectMenuPage({
   projectId,
@@ -71,14 +70,6 @@ export default function ProjectMenuPage({
             projects={projects}
             projectId={projectId}
             onProjectsChange={onProjectsChange}
-            showToast={showToast}
-          />
-        )}
-        {activeTab === 'crons' && (
-          <CronSection
-            projects={projects}
-            projectId={projectId}
-            onNavigate={onNavigate}
             showToast={showToast}
           />
         )}

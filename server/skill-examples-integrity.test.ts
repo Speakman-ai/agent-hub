@@ -51,7 +51,6 @@ describe('agent-hub skill — examples/ directory', () => {
   it('ships the four required example recipes (plus a README)', () => {
     const required = [
       'create-ticket-from-bug-report.md',
-      'post-heartbeat-summary.md',
       'search-and-link-wiki-page.md',
       'move-card-through-workflow.md',
     ];

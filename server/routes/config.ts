@@ -30,14 +30,6 @@ import {
   resolveSelectableCodexModels,
 } from '../codex-model-capability.js';
 import { probeEngineAvailability } from '../engine-availability.js';
-import {
-  normalizeCronEngine,
-  normalizeCronModel,
-  normalizeCronSkillPrincipal,
-  normalizeCronTimezone,
-} from './crons.js';
-import { resolveCronEngine } from '../cron-engine.js';
-import { resolveOwnerUserId } from '../session-ownership.js';
 import { getEngineAuthStatus } from '../engine-auth-status.js';
 import { isPrEnvKillSwitchOn } from '../pr-env-killswitch.js';
 import { syncWikiPageFts, getPageSourceFile } from '../wiki.js';
@@ -110,56 +102,6 @@ function normalizePositiveIntId(raw: unknown): string | number | null {
   return null;
 }
 
-interface CronImportData {
-  name: string;
-  schedule: string;
-  prompt: string;
-  cwd?: string;
-  enabled?: boolean | number;
-  project_id?: string;
-  timeout_ms?: number | null;
-  notify_on_run?: boolean | number;
-  shared?: boolean | number;
-  /** Optional IANA timezone for wall-clock cron scheduling. Invalid values import as null. */
-  timezone?: string | null;
-  /**
-   * Optional CLI engine id (`claude-code`, `cursor-agent`, `gemini-cli`,
-   * `codex-cli`). Validated against `ALL_SUPPORTED_ENGINES` by
-   * `normalizeCronEngine`; unknown values import as null so the run-time
-   * resolver falls back through the principal agent / `claude-code`
-   * default rather than 500ing the whole batch.
-   */
-  engine?: string | null;
-  /**
-   * Optional model id. Validated against `engineValidModels[<resolved
-   * engine>]` by `normalizeCronModel` — the resolved engine is the
-   * imported `engine` field above, falling back to the principal agent's
-   * engine and then `claude-code`. Unknown ids fall back to null (engine
-   * default) on import rather than 500ing the batch.
-   */
-  model?: string | null;
-  /** Optional agent id for spawn skill-credential resolution; must belong to the import target project. */
-  skill_principal_agent_id?: string | null;
-}
-
-function cronImportSkillPrincipal(raw: unknown, project: Project | null): string | null {
-  if (!project) return null;
-  try {
-    const id = normalizeCronSkillPrincipal(raw);
-    if (!id) return null;
-    if (!project.agents.some((a) => a.id === id)) {
-      console.warn(
-        `[config import] Ignoring skill_principal_agent_id "${id}" — not an agent on project ${project.id}`,
-      );
-      return null;
-    }
-    return id;
-  } catch {
-    console.warn('[config import] Ignoring invalid skill_principal_agent_id field on cron row');
-    return null;
-  }
-}
-
 interface WikiImportData {
   slug: string;
   title: string;
@@ -221,7 +163,6 @@ interface ProjectExportData {
     commands?: Record<string, string>;
     [key: string]: unknown;
   };
-  crons?: CronImportData[];
   wiki?: WikiImportData[];
   kanban?: KanbanImportData;
 }
@@ -242,7 +183,6 @@ interface LegacyExportData {
   config?: Record<string, unknown>;
   projects?: Project[];
   agents?: LegacyAgent[];
-  crons?: CronImportData[];
   slack?: {
     accounts?: Array<{
       botToken?: string;
@@ -262,10 +202,6 @@ interface SlackConfigData {
     appToken?: string;
     [key: string]: unknown;
   }>;
-}
-
-function resolveRequestOwnerUserId(req: Request): string | null {
-  return resolveOwnerUserId(req as AuthenticatedRequest);
 }
 
 export const SMTP_TEST_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
@@ -1234,20 +1170,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       const project = projects.find((p) => p.id === req.params.projectId);
       if (!project) return res.status(404).json({ error: 'Project not found' });
 
-      const allCrons = stmts.getCrons.all() as Array<
-        Record<string, unknown> & { cwd: string; name: string }
-      >;
-      const projectCrons = allCrons
-        .filter((c) => c.cwd === project.cwd)
-        .map(
-          ({
-            last_run: _last_run,
-            last_result: _last_result,
-            next_run_at: _next_run_at,
-            ...rest
-          }) => rest,
-        );
-
       const wikiPages = (
         stmts.getWikiPages.all(project.id) as Array<Record<string, unknown> & { slug: string }>
       ).map((page) => {
@@ -1280,7 +1202,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
         type: 'project',
         exportedAt: new Date().toISOString(),
         project,
-        crons: projectCrons,
         wiki: wikiPages,
         kanban,
       };
@@ -1313,12 +1234,10 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
   function runProjectImport(
     targetProject: Project,
     data: ProjectExportData,
-    ownerUserId: string | null,
   ): Record<string, string | boolean> {
     const targetProjectId = targetProject.id;
     const results: Record<string, string | boolean> = {
       project: false,
-      crons: false,
       wiki: false,
       kanban: false,
     };
@@ -1361,68 +1280,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       });
     }
 
-    if (Array.isArray(data.crons)) {
-      const crons = data.crons;
-      runSection('crons', () => {
-        const existingCrons = stmts.getCrons.all() as Array<{ name: string }>;
-        const existingNames = new Set(existingCrons.map((c) => c.name));
-        let imported = 0;
-        for (const c of crons) {
-          if (existingNames.has(c.name)) continue;
-          // Validate `engine` first; an invalid value imports as null so the
-          // run-time resolver inherits from the principal agent / falls back
-          // to claude-code rather than failing the whole import.
-          let importedEngine: string | null = null;
-          try {
-            importedEngine = normalizeCronEngine(c.engine);
-          } catch {
-            importedEngine = null;
-          }
-          const importedSkillPrincipal = cronImportSkillPrincipal(
-            c.skill_principal_agent_id,
-            targetProject,
-          );
-          // Validate `model` against the engine the imported cron will run
-          // under (explicit → principal → claude-code). An invalid id falls
-          // back to null (engine default) instead of failing the import.
-          const importEngine = resolveCronEngine(
-            { engine: importedEngine, skill_principal_agent_id: importedSkillPrincipal },
-            targetProject,
-          );
-          let importedModel: string | null = null;
-          try {
-            importedModel = normalizeCronModel(c.model, importEngine);
-          } catch {
-            importedModel = null;
-          }
-          let importedTimezone: string | null = null;
-          try {
-            importedTimezone = normalizeCronTimezone(c.timezone);
-          } catch {
-            importedTimezone = null;
-          }
-          stmts.createCron.run(
-            c.name,
-            c.schedule,
-            importedTimezone,
-            c.prompt,
-            targetProject.cwd,
-            c.enabled !== undefined ? (c.enabled ? 1 : 0) : 1,
-            targetProject.id || null,
-            typeof c.timeout_ms === 'number' && c.timeout_ms > 0 ? c.timeout_ms : null,
-            c.notify_on_run ? 1 : 0,
-            importedModel,
-            importedSkillPrincipal,
-            importedEngine,
-            ownerUserId,
-            c.shared ? 1 : 0,
-          );
-          imported++;
-        }
-        results.crons = `${imported} new, ${crons.length - imported} skipped`;
-      });
-    }
-
     if (Array.isArray(data.wiki)) {
       const wiki = data.wiki;
       runSection('wiki', () => {
@@ -1436,7 +1293,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
           // no fallback, so a single malformed export row (missing or
           // undefined title/slug) blew up the whole import with
           // `RangeError: Too few parameter values were provided` — the user
-          // lost crons, rooms, kanban, and wiki too. Now: validate up
+          // lost rooms, kanban, and wiki too. Now: validate up
           // front, skip the bad row with a console.warn, keep the rest of
           // the section running. See card
           // `project-import-500-wiki-section-throws-rangeerror`.
@@ -1733,7 +1590,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       const targetProject = projects.find((p) => p.id === targetProjectId);
       if (!targetProject) return res.status(404).json({ error: 'Target project not found' });
 
-      const results = runProjectImport(targetProject, data, resolveRequestOwnerUserId(req));
+      const results = runProjectImport(targetProject, data);
       res.json({ message: 'Project import complete.', results });
     } catch (err: unknown) {
       const e = err as Error;
@@ -1828,7 +1685,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       projects.push(newProject);
       saveProjects();
 
-      const results = runProjectImport(newProject, data, resolveRequestOwnerUserId(req));
+      const results = runProjectImport(newProject, data);
       res
         .status(201)
         .json({ message: 'Project created from export.', project: newProject, results });
@@ -1855,11 +1712,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
         /* no config.json yet */
       }
 
-      const crons = (stmts.getCrons.all() as Array<Record<string, unknown>>).map(
-        ({ last_run: _last_run, last_result: _last_result, next_run_at: _next_run_at, ...rest }) =>
-          rest,
-      );
-
       let slackConfig: SlackConfigData = { accounts: [] };
       try {
         slackConfig = JSON.parse(readFileSync(path.join(serverDir, 'slack-config.json'), 'utf-8'));
@@ -1880,7 +1732,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
         exportedAt: new Date().toISOString(),
         config: fileConfig,
         projects,
-        crons,
         slack: slackConfig,
       };
 
@@ -1902,10 +1753,8 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       const results: Record<string, string | boolean> = {
         config: false,
         projects: false,
-        crons: false,
         slack: false,
       };
-      const importOwnerUserId = resolveRequestOwnerUserId(req);
 
       if (data.config && typeof data.config === 'object') {
         writeFileSync(
@@ -1941,71 +1790,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
         );
         saveProjects();
         results.projects = 'imported from v1 agents format';
-      }
-
-      if (Array.isArray(data.crons)) {
-        const existingCrons = stmts.getCrons.all() as Array<{ name: string }>;
-        const existingNames = new Set(existingCrons.map((c) => c.name));
-        let imported = 0;
-        for (const c of data.crons) {
-          if (existingNames.has(c.name)) continue;
-          // Validate `engine` first; an invalid value imports as null so the
-          // run-time resolver inherits from the principal agent / falls back
-          // to claude-code rather than failing the whole import.
-          let importedEngine: string | null = null;
-          try {
-            importedEngine = normalizeCronEngine(c.engine);
-          } catch {
-            importedEngine = null;
-          }
-          const projectIdForPrincipal =
-            typeof c.project_id === 'string' && c.project_id.trim() ? c.project_id.trim() : '';
-          const principalProject = projectIdForPrincipal
-            ? (getProjects().find((p) => p.id === projectIdForPrincipal) ?? null)
-            : null;
-          const importedSkillPrincipal = cronImportSkillPrincipal(
-            c.skill_principal_agent_id,
-            principalProject,
-          );
-          // Validate `model` against the engine the imported cron will run
-          // under (explicit → principal → claude-code). An invalid id falls
-          // back to null (engine default) so a single bad row doesn't take
-          // down the whole v1-agents import.
-          const importEngine = resolveCronEngine(
-            { engine: importedEngine, skill_principal_agent_id: importedSkillPrincipal },
-            principalProject,
-          );
-          let importedModel: string | null = null;
-          try {
-            importedModel = normalizeCronModel(c.model, importEngine);
-          } catch {
-            importedModel = null;
-          }
-          let importedTimezone: string | null = null;
-          try {
-            importedTimezone = normalizeCronTimezone(c.timezone);
-          } catch {
-            importedTimezone = null;
-          }
-          stmts.createCron.run(
-            c.name,
-            c.schedule,
-            importedTimezone,
-            c.prompt,
-            c.cwd || config.defaultCwd,
-            c.enabled !== undefined ? (c.enabled ? 1 : 0) : 1,
-            c.project_id || null,
-            typeof c.timeout_ms === 'number' && c.timeout_ms > 0 ? c.timeout_ms : null,
-            c.notify_on_run ? 1 : 0,
-            importedModel,
-            importedSkillPrincipal,
-            importedEngine,
-            importOwnerUserId,
-            c.shared ? 1 : 0,
-          );
-          imported++;
-        }
-        results.crons = `${imported} new, ${data.crons.length - imported} skipped (duplicate names)`;
       }
 
       if (data.slack && Array.isArray(data.slack.accounts)) {

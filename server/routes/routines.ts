@@ -4,8 +4,7 @@
  * `POST /api/sessions/:sessionId/routines/draft` hands a browser demo
  * recording (a session artifact) to the session's agent, which drafts a
  * project skill from it. The draft comes back for the human to edit in the
- * Make routine dialog; saving goes through the project skills API and the
- * schedule through `POST /api/crons` with `routine_skill`.
+ * Make routine dialog; saving goes through the project skills API.
  */
 import { Router, type Request, type Response } from 'express';
 import { mkdtempSync, rmSync } from 'fs';

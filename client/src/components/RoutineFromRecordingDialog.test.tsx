@@ -17,13 +17,12 @@ function makeClient(overrides: Partial<RoutineDialogApi> = {}) {
       },
     })),
     createProjectSkill: vi.fn(async () => ({ id: 'weekly-export' })),
-    createCron: vi.fn(async () => ({ id: 3 })),
     ...overrides,
   };
 }
 
 describe('RoutineFromRecordingDialog', () => {
-  it('drafts from the recording, saves the edited skill and schedules it as a routine', async () => {
+  it('drafts from the recording and saves the edited skill, then finishes', async () => {
     const client = makeClient();
     render(
       <RoutineFromRecordingDialog
@@ -52,17 +51,9 @@ describe('RoutineFromRecordingDialog', () => {
       body: '## Steps\n1. Open the reports page\n',
     });
 
-    await screen.findByTestId('routine-saved');
-    await act(async () => fireEvent.click(screen.getByTestId('routine-schedule')));
-    expect(client.createCron).toHaveBeenCalledWith(
-      expect.objectContaining({
-        project_id: 'p1',
-        skill_principal_agent_id: 'ops',
-        routine_skill: 'weekly-export',
-        schedule: '0 9 * * 1-5',
-      }),
-    );
-    expect(await screen.findByTestId('routine-done')).toHaveTextContent(/notifications/);
+    expect(await screen.findByTestId('routine-saved')).toHaveTextContent('weekly-export');
+    expect(screen.getByTestId('routine-done')).toBeInTheDocument();
+    expect(screen.queryByTestId('routine-schedule')).toBeNull();
   });
 
   it('blocks saving an invalid name and surfaces draft errors', async () => {

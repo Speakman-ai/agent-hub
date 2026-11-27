@@ -799,96 +799,6 @@ export interface HeartbeatLogRow {
   status: 'pending' | 'running' | 'success' | 'error';
 }
 
-export interface CronRow {
-  id: number;
-  name: string;
-  schedule: string;
-  /**
-   * IANA timezone used to interpret the cron expression's wall-clock fields.
-   * New UI-created rows set this from the user's local timezone so "0 9 * * *"
-   * means 9am for that user even when the server host runs in UTC. Null keeps
-   * older rows on the server/default scheduler timezone.
-   */
-  timezone: string | null;
-  prompt: string;
-  cwd: string;
-  enabled: number;
-  last_run: string | null;
-  last_result: string | null;
-  next_run_at: string | null;
-  project_id: string | null;
-  /**
-   * Per-cron execution timeout in milliseconds. When null, falls back to
-   * `config.defaultTimeoutMs`. Exposed so long-running crons can opt out of
-   * the shared default without dragging every cron along with them.
-   */
-  timeout_ms: number | null;
-  /**
-   * Per-cron opt-in for "ran successfully" push notifications. Defaults to
-   * 0 (off) so a noisy cron doesn't spam every device on every tick — users
-   * explicitly enable on the crons they actually want pinged about.
-   * 1 = send a push to every device that has the `cron` event enabled,
-   * 0 = silent (thread/heartbeat logs are still written either way).
-   */
-  notify_on_run: number;
-  /**
-   * Model identifier used when the cron fires (e.g. `claude-opus-4-8`,
-   * `claude-sonnet-5-5`). When null, falls back to
-   * `defaultModelForEngine('claude-code')` at run time. Stored as a free-form
-   * TEXT column so the allowlist can change without breaking existing rows;
-   * the API validates against `config.engineValidModels['claude-code']` on
-   * write.
-   */
-  model: string | null;
-  /**
-   * When set, identifies the project agent whose enabled skills and per-skill
-   * overrides determine spawn credential injection for this cron. Null → use
-   * `project.cronSkillPrincipalAgentId` if valid, otherwise the sole agent when
-   * the project has exactly one agent (`server/cron-skill-principal.ts`).
-   */
-  skill_principal_agent_id: string | null;
-  /**
-   * Engine identifier the cron prefers when running (`claude-code`,
-   * `cursor-agent`, `gemini-cli`, `codex-cli`). When null, `runCronJob`
-   * inherits the resolved skill-principal agent's `engine`, falling back to
-   * `claude-code` when no principal can be resolved. Stored as free-form
-   * TEXT so the supported-engine list can grow; the API validates writes
-   * against `ALL_SUPPORTED_ENGINES`. The `model` allowlist used for
-   * validation is keyed off this column (or the inherited fallback when
-   * unset), so a cron pointed at `cursor-agent` accepts Composer ids and
-   * rejects Claude ids.
-   */
-  engine: string | null;
-  /**
-   * Logical user id for the Hub user that created this cron. Scheduled runs use
-   * it to build the spawn env so per-user CLI caches, including AWS SSO tokens,
-   * resolve from the creator's HOME. Null for legacy/system-created crons.
-   */
-  owner_user_id: string | null;
-  /**
-   * Visibility toggle. 0 = private to owner plus org Owners, 1 = visible to
-   * every org member. Execution still uses owner_user_id either way.
-   */
-  shared: number;
-  /**
-   * Project skill id a routine run loads. Set: each run opens a consult chat
-   * session for the owner under `skill_principal_agent_id` with this skill
-   * preloaded, so it gets the browser tool, the owner's browser profile and the
-   * approval gates. Null: the classic headless one-shot cron.
-   */
-  routine_skill?: string | null;
-  created_at: string;
-}
-
-export interface CronLogRow {
-  id: number;
-  cron_id: number;
-  timestamp: string;
-  status: 'pending' | 'running' | 'success' | 'error';
-  result: string | null;
-  duration_ms: number | null;
-}
-
 export interface SessionAgentDetail {
   participantId: string;
   id: string;
@@ -2573,28 +2483,6 @@ export interface Stmts {
   getHeartbeatLogs: Stmt;
   getLatestHeartbeat: Stmt;
 
-  // Crons
-  getCrons: Stmt;
-  getCron: Stmt;
-  createCron: Stmt;
-  updateCron: Stmt;
-  backfillCronOwners: Stmt;
-  deleteCron: Stmt;
-  updateCronResult: Stmt;
-  updateCronNextRun: Stmt;
-  updateCronRoutineSkill: Stmt;
-  insertRoutineRun: Stmt;
-  getRoutineRun: Stmt;
-  getRoutineRunByCron: Stmt;
-  getAllRoutineRuns: Stmt;
-  deleteRoutineRun: Stmt;
-
-  // Cron logs
-  addCronLog: Stmt;
-  updateCronLog: Stmt;
-  getCronLogs: Stmt;
-  pruneCronLogs: Stmt;
-
   // Session events
   addSessionEvent: Stmt;
   getSessionEvents: Stmt;
@@ -2699,11 +2587,6 @@ export interface Stmts {
   updateMessageContent: Stmt;
   updateMessageContentAndMetadata: Stmt;
   getAllQueuedSessions: Stmt;
-
-  // Cron sessions
-  getSessionByCronId: Stmt;
-  getAllCronSessions: Stmt;
-  updateSessionCronId: Stmt;
 
   // Device tokens
   registerDeviceToken: Stmt;
@@ -2929,7 +2812,6 @@ export interface Stmts {
   deleteBoardsByProject: Stmt;
   deleteWorkflowsByProject: Stmt;
   deleteSessionAgentsByAgent: Stmt;
-  deleteCronsByProject: Stmt;
   deleteSessionsByAgent: Stmt;
   deleteHeartbeatLogsByAgent: Stmt;
   deleteSlackMessagesByAgent: Stmt;
@@ -4106,12 +3988,6 @@ export interface Project {
   browserViewportHeight?: number;
   /** Default page-load / browser-op timeout in ms for agents that do not override. */
   browserPageLoadTimeoutMs?: number;
-  /**
-   * Agent id whose skill toggles apply to scheduled cron runs when the cron row’s
-   * `skill_principal_agent_id` is unset. Unused for single-agent projects (they
-   * default to that agent automatically). Persisted in `projects.json`.
-   */
-  cronSkillPrincipalAgentId?: string;
   /**
    * AWS profiles for this project. Rendered to project-scoped
    * `AWS_CONFIG_FILE` / `AWS_SHARED_CREDENTIALS_FILE` files at spawn time.

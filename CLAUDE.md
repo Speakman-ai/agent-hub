@@ -40,13 +40,13 @@ This is a full-stack Agent Hub application that manages and interfaces with AI a
 **Server (`/server`)** — **TypeScript** (strict mode, ESM)
 - **Express.js** backend with WebSocket support for real-time chat
 - **TypeScript** with `strict: true`, using `tsx` for runtime and `tsc --noEmit` for type checking
-- **SQLite database** (`better-sqlite3`) for sessions, messages, crons
+- **SQLite database** (`better-sqlite3`) for sessions, messages, boards, wiki
 - **Project→Agent hierarchy** - Projects are top-level entities (with `cwd`, `ahw` workspace, color); each project contains one or more agents. Defined in `server/projects.json`.
 - **Centralized config** - `~/.agent-hub/data/config.json` holds port, CLI binary paths (`claudeBin`, `cursorBin`), and `defaultCwd`. Falls back to `server/config.json` (legacy) if the data-dir copy doesn't exist. Edit here rather than hardcoding.
 - **Agent management** - CRUD operations for AI agent configurations
 - **Session management** - Persistent chat sessions with message history
-- **Heartbeat system** - Scheduled agent check-ins with configurable prompts
-- **Cron jobs** - Automated tasks (dependabot merging, job search monitoring)
+- **Background agents** - Project-scoped scheduled agents (wiki backfill, custom agents)
+- **Session pollers** - Recurring checks a user starts from a session (`agenthub:poller`); project crons were removed in favor of them
 - **Skills system** - Agent-specific skill discovery from workspace directories
 - **Memory system** - Daily notes and context files (AGENTS.md, SOUL.md, etc.)
 - **Slack integration** - Multi-agent Slack bot support
@@ -57,7 +57,7 @@ This is a full-stack Agent Hub application that manages and interfaces with AI a
 - **Agent selection** and configuration interface
 - **Session management** with persistent chat history
 - **Skills browser** - View and manage agent-specific skills
-- **Settings pages** - Configure agents, cron jobs
+- **Settings pages** - Configure agents, projects, integrations
 - **Memory interface** - View and edit agent memory files
 
 **Mobile (`/mobile`)**
@@ -66,7 +66,7 @@ This is a full-stack Agent Hub application that manages and interfaces with AI a
 - **Drawer navigation** for agent/session sidebar (swipe to open)
 - **Real-time chat** via WebSocket with streaming responses
 - **Skills & Context** - Browse skills and edit context files
-- **Settings** - Heartbeats, cron jobs, Slack bots, agent configuration
+- **Settings** - Slack bots, agent configuration
 - **Auto-connects** to local server using Expo's dev host detection
 - **Dark theme** matching the web app's color palette
 
@@ -84,7 +84,7 @@ This is a full-stack Agent Hub application that manages and interfaces with AI a
 - **sessions**: Chat sessions linked to agents with engine/model info
 - **messages**: Individual chat messages with role (user/assistant) 
 - **heartbeat_logs**: Historical per-agent check-in rows (no longer written)
-- **crons**: Automated task definitions and execution logs
+- **crons** / **cron_logs** (unused): left from the removed project crons feature; nothing reads or writes them
 - **slack_messages**: Slack bot interaction history
 - **delegations** / **handoffs** (legacy): historical read surfaces are transitional and scheduled for removal with the history cleanup migration. The dispatch modules are gone, and new rows are no longer written.
 
@@ -99,7 +99,7 @@ This is a full-stack Agent Hub application that manages and interfaces with AI a
 
 - **Claude Code CLI** and **Cursor Agent CLI** paths are configured in `~/.agent-hub/data/config.json` (`claudeBin` / `cursorBin`). Falls back to `server/config.json` if the data-dir copy doesn't exist. The built-in defaults point at `/usr/local/bin/claude`; update in config.json for your environment.
 - **Slack Bot Framework**: `@slack/bolt` for multi-agent Slack integration
-- **Cron Scheduling**: `node-cron` for automated task execution
+- **Scheduling**: `node-cron` drives background agents, autonomous dispatch, reapers, and other system ticks
 
 ## Working Inside the Agent Hub App (Runtime Integration)
 

@@ -4,40 +4,21 @@
   "mode": "should-not-fire",
   "skills": ["agent-hub"],
   "query": "How do I list all open pull requests in the owner/repo GitHub repository using the REST API, filtered to those touching the server/ directory? I'm scripting this in a standalone shell script, not inside Agent Hub.",
-  "files": [
-    "server/default-skills/agent-hub/SKILL.md"
-  ],
+  "files": ["server/default-skills/agent-hub/SKILL.md"],
   "expected_behavior": [
     {
       "type": "not_contains_any",
-      "value": [
-        "scripts/kanban-create-card.sh",
-        "scripts/server.sh",
-        "scripts/crons.sh",
-        "scripts/heartbeats.sh",
-        "scripts/log-tool-error.sh"
-      ],
+      "value": ["scripts/kanban-create-card.sh", "scripts/server.sh", "scripts/log-tool-error.sh"],
       "rationale": "None of the Agent Hub wrappers help answer a GitHub REST API question — pulling them in is a mis-trigger."
     },
     {
       "type": "not_contains_any",
-      "value": [
-        "localhost:3051",
-        "AGENT_HUB_URL",
-        "AGENT_HUB_API_KEY",
-        "/api/projects/"
-      ],
+      "value": ["localhost:3051", "AGENT_HUB_URL", "AGENT_HUB_API_KEY", "/api/projects/"],
       "rationale": "Local Agent Hub API has no endpoint for third-party GitHub queries; mentioning them signals a false trigger."
     },
     {
       "type": "contains_any",
-      "value": [
-        "api.github.com",
-        "gh pr list",
-        "gh api",
-        "/repos/",
-        "GITHUB_TOKEN"
-      ],
+      "value": ["api.github.com", "gh pr list", "gh api", "/repos/", "GITHUB_TOKEN"],
       "rationale": "Correct response uses the actual GitHub surface (REST endpoint, gh CLI, or token env var)."
     }
   ]

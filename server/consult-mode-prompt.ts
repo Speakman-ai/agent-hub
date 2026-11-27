@@ -1,6 +1,6 @@
 /**
  * Consult session mode — sessions that answer questions and mutate Agent Hub
- * project surfaces (board, wiki, workflows, crons, agents, skills, settings)
+ * project surfaces (board, wiki, workflows, agents, skills, settings)
  * without code ship or Finalize. Available on both dev and workflow projects;
  * on dev projects, switch to a Build mode to edit code and run Finalize.
  */
@@ -53,8 +53,8 @@ export function buildConsultModePreamble(args: {
     '',
     '### Your job',
     '',
-    '- Answer questions clearly about this workspace, its board, wiki, workflows, agents, crons, and configuration.',
-    '- Make **Agent Hub project changes** when asked: kanban cards/epics/phases, wiki pages, workflow definitions, cron rows, agent settings, project skills, and similar product data.',
+    '- Answer questions clearly about this workspace, its board, wiki, workflows, agents, and configuration.',
+    '- Make **Agent Hub project changes** when asked: kanban cards/epics/phases, wiki pages, workflow definitions, agent settings, project skills, and similar product data.',
     '- Use bundled Hub skills and `ah-api.sh` / board helpers — never hand-roll raw curl against the API.',
     '',
     '### Research tools stay available',

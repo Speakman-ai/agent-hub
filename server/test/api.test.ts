@@ -2286,33 +2286,21 @@ describe('Wiki', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('Crons', () => {
-  describe('GET /api/crons', () => {
-    it('lists all crons', async () => {
-      const res = await request.get('/api/crons').expect(200);
-      expect(Array.isArray(res.body)).toBe(true);
-    });
+  // Project crons were removed in favor of session pollers.
+  it.each([
+    ['get', '/api/crons'],
+    ['post', '/api/crons'],
+    ['put', '/api/crons/1'],
+    ['delete', '/api/crons/1'],
+    ['post', '/api/crons/1/run'],
+    ['get', '/api/crons/1/logs'],
+  ] as const)('%s %s is gone', async (method, url) => {
+    await request[method](url).send({}).expect(404);
   });
 
-  describe('CRUD lifecycle', () => {
-    it('creates, updates, and deletes a cron', async () => {
-      const createRes = await request
-        .post('/api/crons')
-        .send({ name: 'Test Cron', schedule: '0 * * * *', prompt: 'echo hello', cwd: '/tmp' })
-        .expect(200);
-
-      expect(createRes.body).toHaveProperty('id');
-      const id = createRes.body.id as number;
-
-      const updateRes = await request
-        .put(`/api/crons/${id}`)
-        .send({ name: 'Updated Cron', schedule: '*/5 * * * *' })
-        .expect(200);
-      expect(updateRes.body.name).toBe('Updated Cron');
-
-      await request.get(`/api/crons/${id}/logs`).expect(200);
-
-      await request.delete(`/api/crons/${id}`).expect(200);
-    });
+  it('GET /api/sessions/cron no longer lists cron sessions', async () => {
+    const res = await request.get('/api/sessions/cron');
+    expect(res.status).toBe(404);
   });
 });
 

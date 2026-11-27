@@ -14,7 +14,6 @@ import {
   userOwnsSession,
   getSessionOwner,
   isReviewerSession,
-  isSharedCronSession,
   setWsAuthUserId,
   getWsAuthUserId,
   setWsAuthVisibility,
@@ -42,7 +41,7 @@ import { buildFinalizeSnapshotEvents } from './finalize/finalize-snapshot.js';
 import { subscribeToJob, isJobFinished } from './provisioning/orchestrator.js';
 
 function isSharedReadableSession(sessionId: string): boolean {
-  return isReviewerSession(sessionId) || isSharedCronSession(sessionId);
+  return isReviewerSession(sessionId);
 }
 import { parsePreviewProxySessionId } from './preview/preview-proxy.js';
 import { parseTerminalWebSocketSessionId } from './terminal/terminal-websocket.js';

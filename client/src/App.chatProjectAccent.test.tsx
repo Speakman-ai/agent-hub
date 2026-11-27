@@ -52,7 +52,6 @@ const sessionsByAgent = {
       getAgents: vi.fn(() => Promise.resolve([])),
       getSkills: vi.fn(() => Promise.resolve([])),
       getDesigns: vi.fn(() => Promise.resolve([])),
-      getCronSessions: vi.fn(() => Promise.resolve([])),
       getRooms: vi.fn(() => Promise.resolve([])),
       getModelConfig: vi.fn(() =>
         Promise.resolve({ engineDefaultModels: { 'claude-code': 'claude-opus-4-8' } }),

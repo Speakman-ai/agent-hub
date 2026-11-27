@@ -2,11 +2,10 @@
 name: agent-hub
 description: >-
   Agent Hub platform core skill — env contract, auth, multi-user orgs,
-  error self-reporting, Electron, and the map to four domain sub-skills
-  (agent-hub-kanban, agent-hub-wiki, agent-hub-sessions,
-  agent-hub-heartbeats-crons). Covers the Agent Hub API at
-  http://localhost:3051, kanban boards, epics, per-project wiki (FTS5),
-  sessions, crons, and card auto-close via
+  error self-reporting, Electron, and the map to three domain sub-skills
+  (agent-hub-kanban, agent-hub-wiki, agent-hub-sessions). Covers the Agent
+  Hub API at http://localhost:3051, kanban boards, epics, per-project wiki
+  (FTS5), sessions, and card auto-close via
   <agenthub:close-card>. TRIGGER on Agent-Hub signals: env vars
   AGENT_HUB_URL / AGENT_HUB_API_KEY / AGENT_HUB_SESSION_ID / PROJECT_ID;
   URLs under localhost:3051 or /api/projects/<slug>/; the name "Agent Hub";
@@ -25,7 +24,7 @@ keep-coding-instructions: true
 
 You are an AI agent running inside **Agent Hub**, a full-stack platform for
 managing AI agents. This skill is the **core entry point**: env contract,
-auth, error self-reporting, and a map to four domain sub-skills.
+auth, error self-reporting, and a map to three domain sub-skills.
 
 > **Never paste raw `curl` into the chat.** The wrappers under `scripts/`
 > are the single source of truth and already handle base URL, auth, and
@@ -51,12 +50,11 @@ auth, error self-reporting, and a map to four domain sub-skills.
 Load the sub-skill that matches the work you're doing. They each carry
 their own `references/<domain>.md` and trigger only on domain vocabulary.
 
-| Skill                        | Domain                                                                                      |
-| ---------------------------- | ------------------------------------------------------------------------------------------- |
-| `agent-hub-kanban`           | Cards, columns, comments, epics, blockers, Done-state contract                              |
-| `agent-hub-wiki`             | FTS5 search, pages, categories, slug conventions                                            |
-| `agent-hub-sessions`         | Messages, ask mode, starting sessions, posting to chat (`chat.sh`), `<agenthub:close-card>` |
-| `agent-hub-heartbeats-crons` | Project crons and run logs                                                                  |
+| Skill                | Domain                                                                                      |
+| -------------------- | ------------------------------------------------------------------------------------------- |
+| `agent-hub-kanban`   | Cards, columns, comments, epics, blockers, Done-state contract                              |
+| `agent-hub-wiki`     | FTS5 search, pages, categories, slug conventions                                            |
+| `agent-hub-sessions` | Messages, ask mode, starting sessions, posting to chat (`chat.sh`), `<agenthub:close-card>` |
 
 To load one mid-turn, end your turn with:
 
@@ -199,7 +197,6 @@ Concrete recipes live under **[examples/](examples/)**:
 | Recipe                                                                     | When to use                                             |
 | -------------------------------------------------------------------------- | ------------------------------------------------------- |
 | [create-ticket-from-bug-report](examples/create-ticket-from-bug-report.md) | User drops a bug report and wants a kanban card created |
-| [post-heartbeat-summary](examples/post-heartbeat-summary.md)               | End a scheduled cron run with a structured summary      |
 | [search-and-link-wiki-page](examples/search-and-link-wiki-page.md)         | FTS-search the wiki and link the page in a card comment |
 | [move-card-through-workflow](examples/move-card-through-workflow.md)       | Walk a card To Do → In Progress (merge writes Done)     |
 
@@ -215,6 +212,6 @@ Concrete recipes live under **[examples/](examples/)**:
 
 **Persistence:** SQLite stores sessions, messages, wiki, kanban, schedules,
 artifacts, credentials, and integration state. **Real-time:** WebSocket shares
-the HTTP port and broadcasts chat, session, kanban, wiki, cron, and preview
+the HTTP port and broadcasts chat, session, kanban, wiki, and preview
 updates. **Desktop:** Electron wraps the server; packaged config lives under
 `app.getPath('userData')`. Releases are out-of-band; humans publish installers.

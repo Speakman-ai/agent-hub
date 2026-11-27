@@ -5,7 +5,7 @@ at a later time ("check the deploy tomorrow morning"), set a reminder with
 `scripts/reminders.sh`. It is for the **session owner**, links back to this
 session, fires into their notification inbox (in-app, desktop, push per their
 settings), and also lands on their Google Calendar when it is connected. Do
-not use crons or background shells for this.
+not use pollers or background shells for this.
 
 ```bash
 scripts/reminders.sh add "Check the prod deploy" --in 2h --notes "PR #412"

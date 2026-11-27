@@ -83,10 +83,11 @@ describe('buildEnrichedPrompt — session poller guidance', () => {
     expect(prompt).toContain('or `0` to run until the user stops it');
   });
 
-  it('steers chat schedules away from native schedulers and project crons', () => {
+  it('steers chat schedules away from native schedulers', () => {
     const prompt = buildEnrichedPrompt(makeProject(), makeAgent(), { isFirstMessage: false });
     expect(prompt).toContain('CronCreate');
-    expect(prompt).toContain('agent-hub-heartbeats-crons');
+    expect(prompt).toContain('Agent Hub has no project crons');
+    expect(prompt).not.toContain('crons.sh');
     expect(prompt).toContain('is a poller even when each run should open forward sessions');
   });
 });

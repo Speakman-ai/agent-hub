@@ -55,8 +55,8 @@ export const WORKSPACES_ROOT: string = path.join(homedir(), '.agent-hub', 'works
  * `execSync` so git network I/O does not block the Node event loop.
  *
  * The whole `getOrCreateProcessWorktree` / `ensureSessionWorkspace` graph runs
- * at the top of every heartbeat tick and every cron tick (see
- * `runCronJob` in heartbeat.ts). Synchronous git calls there
+ * at the top of every scheduled process run (background agents, Finalize).
+ * Synchronous git calls there
  * froze the loop for up to ~60s under network slowness, which manifested as
  * the node-cron `missed execution` warning bursts on PID 19954.
  */

@@ -45,7 +45,6 @@ const testState = vi.hoisted(() => ({
     handleSwitchOrg: vi.fn(),
     refreshProjects: vi.fn(),
     refreshAgents: vi.fn(),
-    cronSessions: [],
     activeTasks: {},
     finalizeStatusBySession: {},
     unreadTicketCounts: {},
@@ -131,7 +130,6 @@ vi.mock('./BrandLogo', () => ({ default: nativeHost('BrandLogo') }));
 vi.mock('./HubIcon', () => ({ default: nativeHost('HubIcon') }));
 vi.mock('./ProjectIcon', () => ({ default: nativeHost('ProjectIcon') }));
 vi.mock('./SessionStateIcon', () => ({ default: nativeHost('SessionStateIcon') }));
-vi.mock('@shared/utils/humanCron', () => ({ default: () => '' }));
 const shell = vi.hoisted(() => ({ remember: vi.fn(async () => {}), write: vi.fn(async () => {}) }));
 vi.mock('../utils/simpleShell', async (importOriginal) => ({
   hubSidebarSessions: (await importOriginal<typeof import('../utils/simpleShell')>())

@@ -119,7 +119,6 @@ const ctl = vi.hoisted(() => ({
       getArchivedSessions: vi.fn().mockResolvedValue([]),
       getSkills: vi.fn().mockResolvedValue([]),
       getDesigns: vi.fn().mockResolvedValue([]),
-      getCronSessions: vi.fn().mockResolvedValue([]),
       getMessages: vi.fn((sid: any, opts: any) => {
         if (ctl.getMessagesImpl) return ctl.getMessagesImpl(sid, opts);
         if (sid === 's-a') {

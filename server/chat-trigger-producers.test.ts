@@ -54,17 +54,9 @@ describe('chat trigger producers carry occurrence ids', () => {
     expect(service.slice(at, service.indexOf('});', at))).toMatch(/reviewRequestedAt/);
   });
 
-  it('card_created and cron_finished carry what the router keys and filters on', () => {
+  it('card_created carries what the router keys and filters on', () => {
     const created = broadcastsOf('card_created').filter((h) => h.file === 'routes/board.ts');
     expect(created).toHaveLength(1);
     expect(created[0]!.literal).toMatch(/cardId:[\s\S]*columnName:/);
-    // One shared emitter (`emitCronFinished`) serves classic and routine crons.
-    const cron = broadcastsOf('cron_finished').filter((h) => !h.file.startsWith('chat-trigger'));
-    expect(cron.map((h) => h.file)).toEqual(['routine-runs.ts']);
-    for (const field of ['cronId:', 'logId:', 'ownerUserId:', 'cronShared:']) {
-      expect(cron[0]!.literal).toContain(field);
-    }
-    const heartbeat = readFileSync(path.join(ROOT, 'heartbeat.ts'), 'latin1');
-    expect(heartbeat).toMatch(/emitCronFinished\(broadcastFn, cronJob/);
   });
 });

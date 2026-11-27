@@ -2,15 +2,12 @@ import cron, { type ScheduledTask } from 'node-cron';
 import { spawn } from 'child_process';
 import { trackChild, killProcessGroup } from './process-groups.js';
 import { existsSync } from 'fs';
-import { v4 as uuidv4 } from 'uuid';
 import { db as _db, stmts as _stmts } from './db.js';
-import config, { buildSpawnEnv, fileConfig } from './config.js';
+import config, { buildSpawnEnv } from './config.js';
 import { resolveUserCliCredOverride } from './per-user-cli-spawn.js';
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
 import { mergeProjectSecretsSpawnEnv } from './project-secrets-spawn.js';
 import { mergeProjectAwsSpawnEnv } from './project-aws-spawn.js';
-import { resolveCronSkillPrincipalAgentId } from './cron-skill-principal.js';
-import { emitCronFinished, startRoutineRun } from './routine-runs.js';
 import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './claude-cli-args.js';
 import { wrapCronTick, defaultTickOptions, estimateIntervalSeconds } from './cron-tick.js';
 import { getOrCreateProcessWorktree } from './worktree.js';
@@ -26,49 +23,19 @@ import {
 } from './background-agent-runs.js';
 import { listPages, getPage } from './wiki.js';
 import { getProjects } from './project-model.js';
-import {
-  initScheduledJobQueue,
-  getScheduledJobQueue,
-  enqueueCronJob,
-} from './jobs/scheduled-jobs.js';
-import { setSessionOwner } from './session-ownership.js';
+import { initScheduledJobQueue } from './jobs/scheduled-jobs.js';
 import { resolveOneShotEngine, NoEnginesAvailableError } from './engine-resolver.js';
 import { hostedBarePathForProject } from './git-host/repo-store.js';
-import { resolveCronEngine } from './cron-engine.js';
-import { type OneShotDetailed } from './one-shot-spawn.js';
 import { runOneShotPromptWithFailover, formatFailoverSummary } from './one-shot-failover.js';
 import { ALL_SUPPORTED_ENGINES, type SupportedEngine } from './engine-availability.js';
-import type {
-  EnrichedAgent,
-  CronRow,
-  SessionRow,
-  Project,
-  BroadcastFn,
-  BackgroundCustomAgentConfig,
-} from './types.js';
+import type { EnrichedAgent, Project, BackgroundCustomAgentConfig } from './types.js';
 
 const db = _db!;
 const stmts = _stmts!;
 
 const CLAUDE_BIN: string = config.claudeBin;
-const SLACK_WEBHOOK_URL: string | null = config.slackWebhookUrl;
 
 const scheduledTasks = new Map<string, ScheduledTask>();
-
-let onCronSessionUpdate: ((data: Record<string, unknown>) => void) | null = null;
-export function setOnCronSessionUpdate(fn: (data: Record<string, unknown>) => void): void {
-  onCronSessionUpdate = fn;
-}
-
-let broadcastFn: BroadcastFn | null = null;
-export function setBroadcast(fn: BroadcastFn): void {
-  broadcastFn = fn;
-}
-
-function isoOrNull(date: Date | null | undefined): string | null {
-  if (!date || !(date instanceof Date) || Number.isNaN(date.getTime())) return null;
-  return date.toISOString();
-}
 
 function cronTimezone(timezone?: string | null): string {
   const candidate = timezone?.trim() || config.schedulerTimezone || 'UTC';
@@ -81,26 +48,14 @@ function cronTimezone(timezone?: string | null): string {
   }
 }
 
-function persistNextRun(id: string | number, task: ScheduledTask): void {
-  try {
-    const next = isoOrNull(task.getNextRun?.());
-    stmts.updateCronNextRun.run(next, id);
-  } catch (err) {
-    console.error(`[Scheduler] Failed to persist next run for cron:${id}:`, (err as Error).message);
-  }
-}
-
 interface RunClaudeOptions {
   timeoutMs?: number;
   detailed?: boolean;
   /**
    * Optional Claude model ID forwarded as `--model <id>`. When unset/empty
-   * the CLI default is used. Validated upstream by the heartbeat route,
-   * heartbeat config, and the cron API's `model` column (all validate
-   * against `config.engineValidModels['claude-code']`); no allowlist check
-   * happens here so cron/manual runs stay agnostic to engine catalog drift.
-   * Per-cron model selection flows through here via `runCronJob` after
-   * being resolved against the engine default.
+   * the CLI default is used. Callers validate it; no allowlist check
+   * happens here so scheduled and manual runs stay agnostic to engine
+   * catalog drift.
    */
   model?: string | null;
   /**
@@ -148,9 +103,7 @@ export function runClaude(
   return new Promise((resolve, reject) => {
     if (!existsSync(cwd)) {
       return reject(
-        new Error(
-          `Working directory does not exist: "${cwd}" — update the cwd in agent/cron settings`,
-        ),
+        new Error(`Working directory does not exist: "${cwd}" — update the cwd in agent settings`),
       );
     }
 
@@ -252,372 +205,16 @@ export function runClaude(
   });
 }
 
-async function notifySlack(agentName: string, result: string): Promise<void> {
-  if (!SLACK_WEBHOOK_URL) return;
-
-  const lowerResult = result.toLowerCase();
-  const allClearPatterns = [
-    'no open pr',
-    'no failing',
-    'all clear',
-    'nothing to report',
-    'no issues',
-    'everything looks good',
-    'no alerts',
-    'all checks pass',
-    'no action needed',
-    'no stale',
-    '0 open pull request',
-  ];
-  if (allClearPatterns.some((p) => lowerResult.includes(p)) && result.length < 200) {
-    return;
-  }
-
-  try {
-    await fetch(SLACK_WEBHOOK_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        text: `🤖 *${agentName}*\n${result.substring(0, 2000)}`,
-      }),
-    });
-  } catch (err) {
-    console.error('Failed to send Slack notification:', (err as Error).message);
-  }
-}
-function findProjectForCron(cronJob: CronRow): Project | null {
-  const projects = getProjects();
-  return (
-    (cronJob.project_id && projects.find((p) => p.id === cronJob.project_id)) ||
-    projects.find((p) => p.cwd === cronJob.cwd) ||
-    null
-  );
-}
-
-function resolveCronCwd(cronJob: CronRow): string {
-  if (existsSync(cronJob.cwd)) return cronJob.cwd;
-
-  const project = findProjectForCron(cronJob);
-  if (project && existsSync(project.cwd)) {
-    console.warn(
-      `[Cron] cwd "${cronJob.cwd}" does not exist for "${cronJob.name}" — using project cwd "${project.cwd}"`,
-    );
-    return project.cwd;
-  }
-
-  const fallback = config.defaultCwd;
-  console.warn(
-    `[Cron] cwd "${cronJob.cwd}" does not exist for "${cronJob.name}" — falling back to "${fallback}"`,
-  );
-  return fallback;
-}
-
-interface CronRunResult {
-  id: number | bigint;
-  status: 'success' | 'error';
-  result: string;
-}
-
-/**
- * Build the `last_result` value written into the `crons` row when a run
- * fails. When the failure carried partial stdout/stderr (e.g. a timeout
- * surfaced through `runClaude({ detailed: true })`), include it so the
- * cron card shows the work-in-progress output instead of just
- * `ERROR: Timed out after N minutes`. Falls back to the historical
- * `ERROR: <msg>` shape when no partial output is available.
- *
- * Exported for unit testing — the runtime call site is in `runCronJob`.
- */
-export function formatCronErrorResult(
-  errorMsg: string,
-  partialStdout: string | null | undefined,
-  partialStderr: string | null | undefined,
-): string {
-  const message = (errorMsg || 'Unknown error').trim() || 'Unknown error';
-  const stdout = (partialStdout || '').trim();
-  const stderr = (partialStderr || '').trim();
-  const partial = stdout || stderr;
-  if (!partial) {
-    return `ERROR: ${message}`;
-  }
-  return `ERROR: ${message}\n\n--- Partial output ---\n${partial}`;
-}
-
-/**
- * Build the `cron_logs.result` text for a failed run. Unlike the cron row's
- * `last_result` summary, the log keeps both streams in full so Settings →
- * View log shows what the engine printed before it failed.
- */
-export function formatCronErrorLog(
-  errorMsg: string,
-  stdout: string | null | undefined,
-  stderr: string | null | undefined,
-): string {
-  const message = (errorMsg || 'Unknown error').trim() || 'Unknown error';
-  const parts = [`ERROR: ${message}`];
-  const out = (stdout || '').trim();
-  const err = (stderr || '').trim();
-  if (out) parts.push(`--- stdout ---\n${out}`);
-  if (err) parts.push(`--- stderr ---\n${err}`);
-  return parts.join('\n\n');
-}
-
-/**
- * Announces a finished cron run on the broadcast bus for server-side
- * subscribers (chat triggers). Not sent to WebSocket clients and never pushed.
- */
-function broadcastCronFinished(
-  cronJob: CronRow,
-  projectId: string | null,
-  run: { logId: number | bigint; status: 'success' | 'error'; durationMs: number; preview: string },
-): void {
-  emitCronFinished(broadcastFn, cronJob, projectId, run);
-}
-
-export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
-  console.log(`[Cron] Running "${cronJob.name}"...`);
-  if (cronJob.routine_skill) {
-    try {
-      const started = startRoutineRun(cronJob, findProjectForCron(cronJob), {
-        stmts,
-        broadcast: broadcastFn,
-      });
-      return { id: started.logId, status: started.status, result: started.result };
-    } finally {
-      const task = scheduledTasks.get(`cron:${cronJob.id}`);
-      if (task) persistNextRun(cronJob.id, task);
-    }
-  }
-  const logEntry = stmts.addCronLog.run(cronJob.id, 'running');
-  const logId = logEntry.lastInsertRowid;
-  const startTime = Date.now();
-
-  // Honor per-cron timeout override; fall back to the shared default. Stored
-  // as NULL in the DB when unset, which coerces to the default here.
-  const timeoutMs =
-    typeof cronJob.timeout_ms === 'number' && cronJob.timeout_ms > 0
-      ? cronJob.timeout_ms
-      : config.defaultTimeoutMs;
-
-  // Per-cron model override; null means "use the engine default". Resolved
-  // once here so both the CLI invocation and the session record share the
-  // same value (otherwise the session row would always read the default
-  // even when the actual run picked something else).
-  const requestedModel = cronJob.model || null;
-
-  try {
-    const resolvedCwd = resolveCronCwd(cronJob);
-    const cronProject = findProjectForCron(cronJob);
-    const cronCwd = await getOrCreateProcessWorktree(
-      resolvedCwd,
-      `cron-${cronJob.id}`,
-      undefined,
-      undefined,
-      cronProject?.repoUrl ?? null,
-      cronProject?.id,
-      cronProject?.githubRepo ?? null,
-      cronProject ? hostedBarePathForProject(cronProject) : null,
-    );
-    const cronSkillAgentId = cronProject
-      ? resolveCronSkillPrincipalAgentId(cronJob, cronProject)
-      : undefined;
-
-    let detailed: OneShotDetailed;
-    let resolved: Awaited<ReturnType<typeof resolveOneShotEngine>>;
-
-    // Resolve the engine the cron actually wants to run under: the row's
-    // explicit `engine` first, then the skill principal agent's `engine`,
-    // then the historical `claude-code` fallback. The resolver will still
-    // walk its own fallback chain if that engine isn't authed locally —
-    // NoEnginesAvailableError bubbles into the outer catch block where
-    // it's surfaced verbatim.
-    const preferredCronEngine = resolveCronEngine(cronJob, cronProject);
-    // Crons run outside an interactive chat turn, but creator-owned resources
-    // such as AWS SSO caches and per-account engine auth still live under that
-    // user's spawn HOME. Legacy rows without an owner keep the historical host
-    // fallback by passing null.
-    const cronOwnerId: string | null = cronJob.owner_user_id ?? null;
-    resolved = await resolveOneShotEngine(config, {
-      preferred: preferredCronEngine,
-      preferredModel: requestedModel,
-      userId: cronOwnerId,
-      agentId: cronSkillAgentId ?? null,
-    });
-    // Rebuilt per attempt: a failover engine needs its own per-account
-    // credentials and engine-specific env.
-    const buildCronEnv = (engine: SupportedEngine): NodeJS.ProcessEnv => {
-      const cronEnv = buildSpawnEnv(config, {
-        userId: cronOwnerId,
-        // Inject the owner's stored per-account AI credentials. Without this the
-        // spawned CLI runs logged-out for DB-stored-credential users (no host
-        // fallback for claude/cursor/codex/grok). Null owner => host behavior.
-        userOverride: resolveUserCliCredOverride(cronOwnerId),
-        engine,
-      });
-      if (cronProject) {
-        if (cronSkillAgentId) {
-          mergeSkillCredentialSpawnEnv(cronEnv, {
-            ownerId: cronOwnerId,
-            agentId: cronSkillAgentId,
-            project: cronProject,
-          });
-          // sessionId: null — crons are scheduled, not driven by an interactive
-          // chat session; decrypt-failure audit entries attribute to
-          // system-initiated, not a missing value. See mergeProjectSecretsSpawnEnv.
-          mergeProjectSecretsSpawnEnv(cronEnv, { projectId: cronProject.id, sessionId: null });
-        }
-        mergeProjectAwsSpawnEnv(cronEnv, cronProject, { ownerUserId: cronOwnerId ?? null });
-      }
-      return cronEnv;
-    };
-    if (resolved.fallbackUsed) {
-      console.warn(
-        `[Cron] "${cronJob.name}": preferred engine "${preferredCronEngine}" unavailable (${resolved.fallbackFromReason}); using "${resolved.engine}".`,
-      );
-    }
-    // Pre-flight resolution only proves the engine was authenticated at
-    // START. Quota can run out mid-run, and nobody is watching a cron — so
-    // hand off to the next engine in its chain rather than logging a failure.
-    const cronOutcome = await runOneShotPromptWithFailover(
-      {
-        scope: `cron "${cronJob.name}"`,
-        engine: resolved.engine,
-        model: resolved.model,
-        userId: cronOwnerId,
-        agentId: cronSkillAgentId ?? null,
-        prompt: cronJob.prompt,
-        cwd: cronCwd,
-        timeoutMs,
-        buildEnv: buildCronEnv,
-        detailed: true,
-      },
-      config,
-    );
-    detailed = cronOutcome.detailed;
-    // Record the engine/model that actually produced the result, not the one
-    // the row asked for.
-    const cronEngine = cronOutcome.engine;
-    const cronModel = cronOutcome.model;
-    const durationMs = Date.now() - startTime;
-    const result = cronOutcome.output + formatFailoverSummary(cronOutcome.failovers);
-    stmts.updateCronResult.run(result, cronJob.id);
-    stmts.updateCronLog.run(result, 'success', durationMs, logId);
-    console.log(`[Cron] "${cronJob.name}" completed successfully (${durationMs}ms)`);
-
-    try {
-      let session = stmts.getSessionByCronId.get(cronJob.id) as SessionRow | undefined;
-      if (!session) {
-        const sessionId = uuidv4();
-        const sessionName = `Cron: ${cronJob.name}`;
-        // Persist the engine actually used so the session row matches reality
-        // when fallback kicked in — whether that was pre-flight resolution
-        // (engine not authenticated) or a runtime failover mid-run.
-        stmts.createSession.run(sessionId, '_cron', sessionName, cronEngine, cronModel, 0, 0, 1);
-        // Cron sessions belong to the cron creator. Shared visibility on the
-        // cron does not change whose CLI credentials pay for the run.
-        setSessionOwner(sessionId, cronOwnerId);
-        stmts.updateSessionCronId.run(cronJob.id, sessionId);
-        // Scheduled tasks are consult-only: the cron session is a read-only
-        // log/Q&A session, never a build/ship surface. Tagging it `consult`
-        // keeps any follow-up interaction in consult behavior (no code edits,
-        // no Finalize) and surfaces the consult badge in the sidebar.
-        stmts.updateSessionMode.run('consult', sessionId);
-        session = stmts.getSession.get(sessionId) as SessionRow | undefined;
-      }
-      const msgId = uuidv4();
-      stmts.addMessage.run(
-        msgId,
-        session!.id,
-        'assistant',
-        result,
-        cronEngine,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-      );
-      stmts.touchSession.run(session!.id);
-
-      if (onCronSessionUpdate) {
-        onCronSessionUpdate({
-          type: 'cron_session_update',
-          sessionId: session!.id,
-          cronId: cronJob.id,
-          cronName: cronJob.name,
-        });
-      }
-    } catch (err) {
-      console.error(
-        `[Cron] Failed to save session/push for "${cronJob.name}":`,
-        (err as Error).message,
-      );
-    }
-
-    broadcastCronFinished(cronJob, cronProject?.id ?? null, {
-      logId,
-      status: 'success',
-      durationMs,
-      preview: detailed.stdout || result,
-    });
-
-    if (SLACK_WEBHOOK_URL) {
-      const lowerResult = result.toLowerCase();
-      const allClear = ['no open', 'nothing to', 'all clear', 'no dependabot'].some((p) =>
-        lowerResult.includes(p),
-      );
-      if (!allClear || result.length > 200) {
-        await notifySlack(`Cron: ${cronJob.name}`, result);
-      }
-    }
-
-    return { id: logId, status: 'success', result };
-  } catch (err) {
-    const typedErr = err as Error & { stdout?: string; stderr?: string };
-    const isNoEngines = err instanceof NoEnginesAvailableError;
-    const baseMsg = typedErr.message || 'Unknown error';
-    const errorMsg = isNoEngines
-      ? `No AI engine credentials available — cron cannot run.\n${baseMsg}`
-      : baseMsg;
-    const durationMs = Date.now() - startTime;
-    const cronResult = formatCronErrorResult(errorMsg, typedErr.stdout, typedErr.stderr);
-    stmts.updateCronResult.run(cronResult, cronJob.id);
-    stmts.updateCronLog.run(
-      formatCronErrorLog(errorMsg, typedErr.stdout, typedErr.stderr),
-      'error',
-      durationMs,
-      logId,
-    );
-    console.error(`[Cron] "${cronJob.name}" failed:`, errorMsg);
-
-    broadcastCronFinished(cronJob, findProjectForCron(cronJob)?.id ?? null, {
-      logId,
-      status: 'error',
-      durationMs,
-      preview: errorMsg,
-    });
-
-    return { id: logId, status: 'error', result: errorMsg };
-  } finally {
-    const task = scheduledTasks.get(`cron:${cronJob.id}`);
-    if (task) persistNextRun(cronJob.id, task);
-    try {
-      stmts.pruneCronLogs.run(cronJob.id, cronJob.id);
-    } catch {}
-  }
-}
-
 /** True when scheduled work should run through the job queue (default). */
 function scheduledJobsEnabled(): boolean {
   return config.scheduledJobsViaQueue !== false;
 }
 
 /**
- * Lazily construct + start the scheduled-work job queue and register the
- * cron handler. Idempotent. No-op when the config flag is off (legacy
- * direct-execution path). Leftover `scheduled.heartbeat` jobs from an older
- * process are drained as no-ops so they cannot spawn an agent.
+ * Lazily construct + start the scheduled-work job queue. Idempotent. No-op
+ * when the config flag is off. Per-agent heartbeats and project crons are
+ * gone, so leftover `scheduled.heartbeat` / `scheduled.cron` jobs from an
+ * older process are drained as no-ops and cannot spawn an agent.
  */
 export function ensureScheduledJobQueue(): void {
   if (!scheduledJobsEnabled()) return;
@@ -628,27 +225,9 @@ export function ensureScheduledJobQueue(): void {
       console.warn(`[Scheduler] Skipping leftover heartbeat job for agent ${job.payload.agentId}`);
     },
     cronHandler: async (job) => {
-      const { cronId } = job.payload;
-      const fresh = stmts.getCron.get(cronId) as CronRow | undefined;
-      if (fresh && fresh.enabled) {
-        await runCronJob(fresh);
-      }
+      console.warn(`[Scheduler] Skipping leftover cron job ${job.payload.cronId}`);
     },
   });
-}
-
-/**
- * Run a cron from a scheduler tick. Queue mode enqueues by id (the worker
- * re-reads the row + enabled flag); legacy mode re-reads inline and runs,
- * matching the historical timer-callback behaviour.
- */
-export function dispatchCron(cronId: number): void | Promise<unknown> {
-  if (scheduledJobsEnabled() && getScheduledJobQueue()) {
-    enqueueCronJob(cronId);
-    return;
-  }
-  const fresh = stmts.getCron.get(cronId) as CronRow | undefined;
-  if (fresh && fresh.enabled) return runCronJob(fresh);
 }
 
 export function scheduleAll(_agents?: EnrichedAgent[]): void {
@@ -679,45 +258,6 @@ export function scheduleAll(_agents?: EnrichedAgent[]): void {
     }
   } catch (err) {
     console.error('[Scheduler] Failed to drop leftover heartbeat_state:', (err as Error).message);
-  }
-
-  const now = Date.now();
-  const missed: Array<() => void | Promise<unknown>> = [];
-
-  const crons = stmts.getCrons.all() as CronRow[];
-  for (const cronJob of crons) {
-    if (cronJob.enabled) {
-      if (!cron.validate(cronJob.schedule)) {
-        console.error(`[Cron] Invalid expression for "${cronJob.name}": ${cronJob.schedule}`);
-        continue;
-      }
-      const task = cron.schedule(
-        cronJob.schedule,
-        wrapCronTick(() => dispatchCron(cronJob.id), `cron:${cronJob.id}`),
-        defaultTickOptions({
-          intervalSeconds: estimateIntervalSeconds(cronJob.schedule),
-          name: `cron:${cronJob.id}`,
-          timezone: cronTimezone(cronJob.timezone),
-        }),
-      );
-      scheduledTasks.set(`cron:${cronJob.id}`, task);
-      console.log(`[Cron] Scheduled "${cronJob.name}": ${cronJob.schedule}`);
-
-      const prevNext = cronJob.next_run_at ? Date.parse(cronJob.next_run_at) : NaN;
-      if (Number.isFinite(prevNext) && prevNext < now) {
-        const lateBySec = Math.round((now - prevNext) / 1000);
-        console.log(
-          `[Cron] "${cronJob.name}" missed a run (was due ${lateBySec}s ago) — catching up`,
-        );
-        missed.push(() => dispatchCron(cronJob.id));
-      }
-
-      persistNextRun(cronJob.id, task);
-    } else {
-      try {
-        stmts.updateCronNextRun.run(null, cronJob.id);
-      } catch {}
-    }
   }
 
   // Workspace purge — hourly hard-delete of session rows past the 24-hour
@@ -787,19 +327,6 @@ export function scheduleAll(_agents?: EnrichedAgent[]): void {
   scheduleCustomBackgroundAgents();
 
   console.log(`[Scheduler] ${scheduledTasks.size} tasks scheduled`);
-
-  if (missed.length > 0) {
-    console.log(`[Scheduler] Replaying ${missed.length} missed run(s) in 5s...`);
-    setTimeout(() => {
-      for (const fn of missed) {
-        try {
-          fn();
-        } catch (err) {
-          console.error('[Scheduler] Catch-up run failed:', (err as Error).message);
-        }
-      }
-    }, 5000);
-  }
 }
 
 export async function runWikiMemorySync(): Promise<void> {
@@ -854,9 +381,9 @@ export async function runWikiMemorySync(): Promise<void> {
 
 // Background agents (scheduled, project-scoped)
 //
-// Distinct from crons (which are user-authored prompts) and from the
-// retired per-agent heartbeats: background agents are built-in unattended
-// jobs configured per project under `project.backgroundAgents`. The first
+// Distinct from the removed project crons and per-agent heartbeats:
+// background agents are built-in unattended jobs configured per project
+// under `project.backgroundAgents`. The first
 // kind is `wiki`, which dispatches the wiki documentation backfill on a
 // cadence — otherwise the wiki is only refreshed on PR merge or via the
 // operator-triggered backfill route.
@@ -905,7 +432,7 @@ export async function dispatchBackgroundWikiAgent(projectId: string): Promise<vo
 /**
  * Register a scheduler task per project whose wiki background agent is
  * enabled. Called from `scheduleAll` (which has already cleared the task
- * map) so tasks are keyed like the cron/system tasks and torn down on the
+ * map) so tasks are keyed like the system tasks and torn down on the
  * next full reschedule.
  */
 export function scheduleBackgroundAgents(): void {
@@ -1006,7 +533,7 @@ export type CustomAgentDispatchResult =
  * Fire one custom background agent. Scheduled ticks only run enabled agents;
  * a manual test run (`force`) runs the saved config regardless of the toggle.
  * With `runAsSession` the prompt opens a real chat session; otherwise it runs
- * as the configured owner through the same one-shot failover runner crons use.
+ * as the configured owner through the shared one-shot failover runner.
  * Never throws so a bad run can't kill the scheduler tick.
  */
 export async function dispatchBackgroundCustomAgent(
@@ -1207,37 +734,6 @@ export function rescheduleBackgroundCustomAgents(project: Project): void {
 export function rescheduleProjectBackgroundAgents(project: Project): void {
   rescheduleBackgroundWikiAgent(project);
   rescheduleBackgroundCustomAgents(project);
-}
-
-export function rescheduleCron(cronJob: CronRow): void {
-  // The queue is initialised once by scheduleAll() at boot, well before any
-  // API-driven reschedule; dispatchCron falls back to inline execution if it
-  // is somehow not up yet, so no ensure call is needed here.
-  const key = `cron:${cronJob.id}`;
-  const existing = scheduledTasks.get(key);
-  if (existing) {
-    existing.stop();
-    scheduledTasks.delete(key);
-  }
-
-  if (cronJob.enabled && cron.validate(cronJob.schedule)) {
-    const task = cron.schedule(
-      cronJob.schedule,
-      wrapCronTick(() => dispatchCron(cronJob.id), `cron:${cronJob.id}`),
-      defaultTickOptions({
-        intervalSeconds: estimateIntervalSeconds(cronJob.schedule),
-        name: `cron:${cronJob.id}`,
-        timezone: cronTimezone(cronJob.timezone),
-      }),
-    );
-    scheduledTasks.set(key, task);
-    persistNextRun(cronJob.id, task);
-    console.log(`[Cron] Rescheduled "${cronJob.name}": ${cronJob.schedule}`);
-  } else {
-    try {
-      stmts.updateCronNextRun.run(null, cronJob.id);
-    } catch {}
-  }
 }
 
 /**

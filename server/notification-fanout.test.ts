@@ -934,67 +934,17 @@ describe('claimDesktopOnlyNotice', () => {
   });
 });
 
-describe('mapBroadcastToNotification: routine runs', () => {
-  it('puts the run result in the cron owner inbox, linked to the run session', () => {
-    const n = mapBroadcastToNotification({
-      type: 'routine_run_finished',
-      sessionId: 's9',
-      agentId: 'ops',
-      projectId: 'p1',
-      cronId: 7,
-      cronName: 'Weekly export',
-      logId: 42,
-      status: 'success',
-      preview: 'Exported 12 rows.',
-      ownerUserId: 'u1',
-    });
-    expect(n).toMatchObject({
-      category: 'routine_run',
-      title: 'Routine finished: Weekly export',
-      body: 'Exported 12 rows.',
-      sourceKey: 'routine_run:7:42',
-      recipients: { kind: 'users', userIds: ['u1'] },
-      data: { sessionId: 's9', cronId: 7, status: 'success', type: 'routine_run' },
-    });
-  });
-
-  it('notifies the owner of a run that never got a session, without a session link', () => {
-    const n = mapBroadcastToNotification({
-      type: 'routine_run_finished',
-      sessionId: null,
-      projectId: 'p1',
-      cronId: 7,
-      cronName: 'Weekly export',
-      logId: 44,
-      status: 'error',
-      preview: 'Routine failed: Routine session failed to start: boom',
-      ownerUserId: 'u1',
-    });
-    expect(n).toMatchObject({
-      category: 'routine_run',
-      title: 'Routine failed: Weekly export',
-      projectId: 'p1',
-      recipients: { kind: 'users', userIds: ['u1'] },
-      data: { projectId: 'p1', cronId: 7, logId: 44, type: 'routine_run' },
-    });
-    expect(n?.data).not.toHaveProperty('sessionId');
-  });
-
-  it('titles failures and drops events without a run id', () => {
+describe('mapBroadcastToNotification: removed routine runs', () => {
+  it('no longer maps routine_run_finished broadcasts', () => {
     expect(
       mapBroadcastToNotification({
         type: 'routine_run_finished',
         sessionId: 's9',
         cronId: 7,
-        logId: 43,
-        cronName: 'X',
-        status: 'error',
-      })?.title,
-    ).toBe('Routine failed: X');
-    expect(
-      mapBroadcastToNotification({ type: 'routine_run_finished', sessionId: 's9', cronId: 7 }),
+        logId: 1,
+        status: 'success',
+      }),
     ).toBeNull();
-    expect(mapBroadcastToNotification({ type: 'routine_run_finished', logId: 1 })).toBeNull();
   });
 });
 

@@ -66,12 +66,6 @@ const SUB_SKILLS = [
     // session-flavoured surface should live first.
     domainMarkers: [/<agenthub:close-card>/, /ask[_ ]?mode/i, /owner_user_id/],
   },
-  {
-    id: 'agent-hub-heartbeats-crons',
-    dir: path.join(DEFAULT_SKILLS_DIR, 'agent-hub-heartbeats-crons'),
-    reference: 'heartbeats-crons.md',
-    domainMarkers: [/heartbeat/i, /cron/i, /cron_logs/, /Cron finished/, /node-cron/i],
-  },
 ] as const;
 
 // Shared fs helpers
@@ -411,8 +405,6 @@ const REQUIRED_TRIGGER_TERMS = [
   'kanban',
   'wiki',
   'sessions',
-  'heartbeats',
-  'crons',
   'epics',
   'delegation',
   'Agent Hub API',
@@ -471,7 +463,7 @@ function assertSkillShape(skillDir: string, label: string): void {
   expect(
     hit.length,
     `${label}: description mentions only ${hit.length}/${REQUIRED_TRIGGER_TERMS.length} trigger terms — hits: ${JSON.stringify(hit)}`,
-  ).toBeGreaterThanOrEqual(8);
+  ).toBeGreaterThanOrEqual(REQUIRED_TRIGGER_TERMS.length - 1);
 
   expect(
     bodyLines,

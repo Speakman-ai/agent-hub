@@ -8,7 +8,7 @@ Back to [SKILL.md](../SKILL.md).
 
 **Endpoint contracts:** <https://speakman-ai.github.io/agent-hub/#tag/Sessions>
 (request/response shapes for session CRUD, messages, ask-mode). This page is
-the *how*.
+the _how_.
 
 ## Contents
 
@@ -64,10 +64,10 @@ Ownership rules:
   `req.authUserId` from the verified JWT. Local-bundled mode (Electron
   / dev box) and apiKey callers, which lack a per-user identity,
   resolve to the org owner — single-tenant installs keep working.
-- **System spawns** (cron, heartbeat, webhook reviewer, autonomous
+- **System spawns** (background agent, webhook reviewer, autonomous
   dispatch, bug-report intake): owner = the org owner (oldest user in
   `users.created_at ASC`). Net effect in strict mode: only the owner
-  sees these sessions in `GET /api/sessions/cron` and friends.
+  sees these sessions.
 - **Child sessions** (`/forward` clone): inherit the parent's owner via
   `inheritOwnerFromSession` in `routes/sessions.ts`. A specialist picking
   up a forwarded transcript stays scoped to whoever started the
@@ -174,8 +174,8 @@ enforced independently of this flag.
 Every Claude Code spawn that runs an Agent-Hub-enriched system prompt is
 launched with `--disallowed-tools Skill` (helper:
 `server/claude-cli-args.ts → disableNativeSkillToolArgs()`). This covers
-the chat session, conference rooms, `runClaude` (heartbeats / crons /
-workflow steps), Slack one-shots, the memory reconciliation pass, and
+the chat session, conference rooms, `runClaude` (workflow steps
+and background agents), Slack one-shots, the memory reconciliation pass, and
 Design Studio.
 
 The reason is that Agent Hub's per-agent skill registry includes skills
@@ -226,7 +226,7 @@ raw tag body through
 `server/action-block-parsing.ts#extractJsonFromTagBody` before
 `JSON.parse`. The helper:
 
-1. Strips an outer markdown fence (`` ```json … ``` ``) if the body is
+1. Strips an outer markdown fence (` ```json … ``` `) if the body is
    wrapped in one.
 2. Slices the first balanced JSON object/array, skipping any lead-in
    prose between the opening tag and the JSON.

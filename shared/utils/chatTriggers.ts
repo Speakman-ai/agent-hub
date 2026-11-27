@@ -15,7 +15,6 @@ export const CHAT_TRIGGER_EVENTS = [
   'card_created',
   'card_moved',
   'support_ticket_created',
-  'cron_finished',
   'infra_alert',
 ] as const;
 
@@ -29,8 +28,8 @@ export interface ChatTriggerFilter {
   epicId?: string;
   /** Card events: cards carrying any of these labels (case-insensitive). */
   labels?: string[];
-  /** Finalize runs: pass or fail. Cron runs: success or error. */
-  outcome?: 'pass' | 'fail' | 'success' | 'error';
+  /** Finalize runs: pass or fail. */
+  outcome?: 'pass' | 'fail';
   /** Session events: only sessions of these agents. */
   agentIds?: string[];
   /** Infra alerts: severities (case-insensitive), e.g. critical, warning. */
@@ -45,7 +44,7 @@ export interface ChatTriggerEventInfo {
   description: string;
   filters: ChatTriggerFilterField[];
   /** Allowed `outcome` values when `filters` includes it. */
-  outcomes?: ('pass' | 'fail' | 'success' | 'error')[];
+  outcomes?: ('pass' | 'fail')[];
 }
 
 export const CHAT_TRIGGER_EVENT_INFO: Record<ChatTriggerEvent, ChatTriggerEventInfo> = {
@@ -103,13 +102,6 @@ export const CHAT_TRIGGER_EVENT_INFO: Record<ChatTriggerEvent, ChatTriggerEventI
     label: 'Support ticket created',
     description: 'A support ticket was filed.',
     filters: [],
-  },
-  cron_finished: {
-    id: 'cron_finished',
-    label: 'Cron finished',
-    description: 'A scheduled job finished, successfully or with an error.',
-    filters: ['outcome'],
-    outcomes: ['success', 'error'],
   },
   infra_alert: {
     id: 'infra_alert',

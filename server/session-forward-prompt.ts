@@ -38,6 +38,6 @@ export function buildSessionForwardGuidance(args: {
     `- ${modeLine}`,
     '- Use the `<agenthub:forward>…</agenthub:forward>` XML form instead of a fence when the prompt itself contains a code fence.',
     '- Several sessions at once: confirm the split with `agenthub:ask` first, then emit one card per session.',
-    '- `sessions.sh dispatch` is only for unattended runs (crons, background agents) where nobody is there to press the button.',
+    '- `sessions.sh dispatch` is only for unattended runs (background agents, autonomous dispatch) where nobody is there to press the button.',
   ].join('\n');
 }

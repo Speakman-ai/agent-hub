@@ -10,13 +10,7 @@ import {
   View,
 } from 'react-native';
 import { X } from 'lucide-react-native';
-import humanCron from '@shared/utils/humanCron';
 import {
-  ROUTINE_DEFAULT_SCHEDULE,
-  ROUTINE_SCHEDULE_PRESETS,
-  localTimezone,
-  looksLikeCronExpression,
-  routineCronCreateBody,
   routineSkillCreateBody,
   routineSkillProblems,
   type RoutineDraftWire,
@@ -30,15 +24,14 @@ export interface MobileRoutineDialogApi {
     body: { artifactId: string; goal?: string },
   ) => Promise<RoutineDraftWire>;
   createProjectSkill: (projectId: string, body: unknown) => Promise<unknown>;
-  createCron: (body: unknown) => Promise<unknown>;
 }
 
-type Step = 'goal' | 'drafting' | 'edit' | 'saving' | 'schedule' | 'scheduling' | 'done';
+type Step = 'goal' | 'drafting' | 'edit' | 'saving' | 'done';
 
 /**
  * Mobile twin of the web `RoutineFromRecordingDialog`: the agent drafts a
  * project skill from the last browser demo recording, the human edits and
- * saves it, then can schedule it as a routine.
+ * saves it.
  */
 export default function MobileRoutineDialog({
   sessionId,
@@ -59,10 +52,8 @@ export default function MobileRoutineDialog({
   const [description, setDescription] = useState('');
   const [body, setBody] = useState('');
   const [savedName, setSavedName] = useState('');
-  const [schedule, setSchedule] = useState(ROUTINE_DEFAULT_SCHEDULE);
-  const [notes, setNotes] = useState('');
 
-  const busy = step === 'drafting' || step === 'saving' || step === 'scheduling';
+  const busy = step === 'drafting' || step === 'saving';
   const problems = routineSkillProblems({ name, description, body });
 
   const requestDraft = async () => {
@@ -94,32 +85,10 @@ export default function MobileRoutineDialog({
         routineSkillCreateBody({ name, description, body }),
       );
       setSavedName(name.trim());
-      setStep('schedule');
+      setStep('done');
     } catch (err) {
       setError((err as Error).message || 'Saving the skill failed');
       setStep('edit');
-    }
-  };
-
-  const attachSchedule = async () => {
-    if (!meta || !looksLikeCronExpression(schedule)) return;
-    setError('');
-    setStep('scheduling');
-    try {
-      await client.createCron(
-        routineCronCreateBody({
-          projectId: meta.projectId,
-          agentId: meta.agentId,
-          skillName: savedName,
-          schedule,
-          timezone: localTimezone(),
-          notes,
-        }),
-      );
-      setStep('done');
-    } catch (err) {
-      setError((err as Error).message || 'Scheduling failed');
-      setStep('schedule');
     }
   };
 
@@ -217,62 +186,10 @@ export default function MobileRoutineDialog({
               </>
             ) : null}
 
-            {step === 'schedule' || step === 'scheduling' ? (
-              <>
-                <Text style={styles.ok} testID="mobile-routine-saved">
-                  Saved skill {savedName}.
-                </Text>
-                <Text style={styles.hint}>
-                  Attach it to a schedule. Each run uses your browser logins and asks you before
-                  anything irreversible. Results arrive in your notifications.
-                </Text>
-                <View style={styles.presets}>
-                  {ROUTINE_SCHEDULE_PRESETS.map((p) => (
-                    <TouchableOpacity
-                      key={p.id}
-                      onPress={() => setSchedule(p.cron)}
-                      style={[styles.preset, schedule === p.cron && styles.presetOn]}
-                      testID={`mobile-routine-preset-${p.id}`}
-                    >
-                      <Text style={styles.presetText}>{p.label}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-                <Text style={styles.label}>Cron expression</Text>
-                <TextInput
-                  style={[styles.input, styles.mono]}
-                  value={schedule}
-                  onChangeText={setSchedule}
-                  autoCapitalize="none"
-                  editable={!busy}
-                  testID="mobile-routine-cron"
-                />
-                <Text style={styles.hint}>{humanCron(schedule)}</Text>
-                <Text style={styles.label}>Notes for each run (optional)</Text>
-                <TextInput
-                  style={styles.input}
-                  value={notes}
-                  onChangeText={setNotes}
-                  editable={!busy}
-                  testID="mobile-routine-notes"
-                />
-                {primary(
-                  'Schedule routine',
-                  attachSchedule,
-                  'mobile-routine-schedule',
-                  !looksLikeCronExpression(schedule),
-                )}
-                <TouchableOpacity onPress={onClose} disabled={busy} style={styles.secondary}>
-                  <Text style={styles.secondaryText}>Not now</Text>
-                </TouchableOpacity>
-              </>
-            ) : null}
-
             {step === 'done' ? (
               <>
                 <Text style={styles.ok} testID="mobile-routine-done">
-                  Scheduled {savedName}: {humanCron(schedule)}. Results arrive in your
-                  notifications.
+                  Saved skill {savedName}.
                 </Text>
                 <TouchableOpacity onPress={onClose} style={styles.secondary}>
                   <Text style={styles.secondaryText}>Done</Text>
@@ -338,14 +255,4 @@ const styles = StyleSheet.create({
   disabled: { opacity: 0.5 },
   secondary: { alignItems: 'center', paddingVertical: 10 },
   secondaryText: { color: colors.gray300, fontSize: 14 },
-  presets: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
-  preset: {
-    borderWidth: 1,
-    borderColor: colors.gray700,
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-  },
-  presetOn: { borderColor: colors.sky400, backgroundColor: colors.sky500_15 },
-  presetText: { color: colors.gray200, fontSize: 12 },
 });

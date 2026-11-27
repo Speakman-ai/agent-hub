@@ -90,19 +90,6 @@ const SAMPLES: [ChatTriggerEvent, Record<string, unknown>][] = [
     },
   ],
   [
-    'cron_finished',
-    {
-      type: 'cron_finished',
-      projectId: PROJECT,
-      cronId: 3,
-      cronName: 'Nightly',
-      logId: 44,
-      status: 'error',
-      preview: 'boom',
-      cronShared: true,
-    },
-  ],
-  [
     'infra_alert',
     {
       type: 'infra_alert_transition',
@@ -425,36 +412,6 @@ describe('routeBroadcastToChatTriggers', () => {
     });
   });
 
-  it('treats a cron without an explicit shared flag as private', () => {
-    trigger('cron_finished');
-    const base = { type: 'cron_finished', projectId: PROJECT, cronId: 9, status: 'success' };
-    // No flag and no owner: privacy cannot be established.
-    expect(route({ ...base, logId: 1 })).toHaveLength(0);
-    // No flag, owned by Bob: Alice's trigger does not get it.
-    expect(route({ ...base, logId: 2, ownerUserId: BOB })).toHaveLength(0);
-    // Owned by Alice, her trigger, her channel.
-    expect(route({ ...base, logId: 3, ownerUserId: ALICE })).toHaveLength(1);
-  });
-
-  it('posts a private cron only through its owner’s triggers', () => {
-    createTrigger({
-      projectId: PROJECT,
-      event: 'cron_finished',
-      channelId: channel.id,
-      createdBy: BOB,
-    });
-    const data = {
-      type: 'cron_finished',
-      projectId: PROJECT,
-      cronId: 1,
-      logId: 2,
-      status: 'success',
-      cronShared: false,
-      ownerUserId: ALICE,
-    };
-    expect(route(data)).toHaveLength(0);
-  });
-
   it('applies card filters', () => {
     trigger('card_moved', { columns: ['done'] });
     trigger('card_moved', { columns: ['review'], labels: ['CHAT'] });
@@ -543,7 +500,7 @@ describe('triggerFilterMatches', () => {
 
   it('matches outcome, agents and severities', () => {
     expect(
-      triggerFilterMatches('cron_finished', { outcome: 'error' }, { outcome: 'success' }),
+      triggerFilterMatches('finalize_run_completed', { outcome: 'fail' }, { outcome: 'pass' }),
     ).toBe(false);
     expect(
       triggerFilterMatches('session_completed', { agentIds: ['qa'] }, { agentId: 'dev' }),

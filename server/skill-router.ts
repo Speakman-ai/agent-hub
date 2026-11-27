@@ -176,7 +176,7 @@ function builtInScore(
         message,
       ) ||
       /<agenthub:close-card>/i.test(message) ||
-      /scripts\/(board|wiki|kanban-[a-z-]+|heartbeats|crons|log-tool-error|epics|sessions|resolve-column-id|get-board-state|ah-api|server)\.sh\b/i.test(
+      /scripts\/(board|wiki|kanban-[a-z-]+|log-tool-error|epics|sessions|resolve-column-id|get-board-state|ah-api|server)\.sh\b/i.test(
         message,
       )
     ) {

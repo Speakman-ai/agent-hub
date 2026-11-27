@@ -99,7 +99,6 @@ import { resolveSessionPrUrl } from './session-title-pr.js';
 import { maybeFinalizeAutoReviewSession } from './native-pr/auto-review-lifecycle.js';
 import { maybeArchiveWikiDocSession } from './wiki-doc-session.js';
 import { maybeArchiveQaRunSession } from './qa-run-session-archive.js';
-import { finishRoutineRun } from './routine-runs.js';
 import { getActiveAccessToken } from './github-connections-store.js';
 import {
   isGoogleReactSurface,
@@ -4255,7 +4254,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             { sessionId, agentId, error: err.message },
           );
           archiveEphemeralSession({ stmts, broadcast }, { sessionId, agentId, error: err.message });
-          finishRoutineRun({ stmts, broadcast }, { sessionId, error: err.message });
           drainQueue(sessionId);
           return;
         }
@@ -4298,7 +4296,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             { sessionId, agentId, error: errText },
           );
           archiveEphemeralSession({ stmts, broadcast }, { sessionId, agentId, error: errText });
-          finishRoutineRun({ stmts, broadcast }, { sessionId, error: errText });
           drainQueue(sessionId);
           return;
         }
@@ -4465,7 +4462,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             { sessionId, agentId, error: errText },
           );
           archiveEphemeralSession({ stmts, broadcast }, { sessionId, agentId, error: errText });
-          finishRoutineRun({ stmts, broadcast }, { sessionId, error: errText });
           drainQueue(sessionId);
           return;
         }
@@ -6210,7 +6206,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             { sessionId, agentId, error: errorMsg },
           );
           archiveEphemeralSession({ stmts: S, broadcast }, { sessionId, agentId, error: errorMsg });
-          finishRoutineRun({ stmts: S, broadcast }, { sessionId, error: errorMsg });
           // Terminal errored close (non-transient exit, no output, no failover
           // left). A Finalize fix-dispatch / rebase-conflict wait for this
           // session blocks on a turn-end signal and this branch never reaches
@@ -7486,10 +7481,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // user input". A ReAct continuation is not terminal yet.
         if (!shouldAutoContinue) {
           archiveEphemeralSession({ stmts: S, broadcast }, { sessionId, agentId });
-          finishRoutineRun(
-            { stmts: S, broadcast },
-            { sessionId, finalContent, error: turnEndError?.errorText ?? null },
-          );
         }
 
         if (project.ahw && !isAutoContinuation && !isOrganizationWorkspace(project)) {

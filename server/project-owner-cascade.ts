@@ -82,7 +82,6 @@ export function deleteProjectScopedRows(stmts: Stmts, project: Project): void {
   stmts.deleteQaSessionRequestsByProject.run(project.id);
   stmts.deleteBoardsByProject.run(project.id);
   stmts.deleteWorkflowsByProject.run(project.id);
-  stmts.deleteCronsByProject.run(project.id);
   for (const agent of project.agents ?? []) {
     stmts.deleteSessionsByAgent.run(agent.id);
   }

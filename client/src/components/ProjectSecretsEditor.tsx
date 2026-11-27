@@ -142,7 +142,7 @@ export default function ProjectSecretsEditor({ projectId, hint, environmentName 
           {scopedToEnvironment
             ? `Injected only into ${environmentName} deployments, overriding project secrets with the same key. Never available to chat sessions, CI, or previews. Secret values are masked in deploy logs.`
             : (hint ??
-              'Encrypted key/value pairs merged into every session spawn for this project (chat, cron, preview). Values marked secret are never returned in clear — leave blank when editing to keep the stored value. Keys in the ')}
+              'Encrypted key/value pairs merged into every session spawn for this project (chat, preview). Values marked secret are never returned in clear — leave blank when editing to keep the stored value. Keys in the ')}
           {!hint && !scopedToEnvironment && (
             <>
               <code className="font-mono">AGENT_HUB_*</code> namespace are rejected.

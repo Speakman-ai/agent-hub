@@ -134,7 +134,6 @@ const { PERSISTED_ATTACHMENT, QUEUED_MESSAGE_ROW } = vi.hoisted(() => {
       getSkills: vi.fn().mockResolvedValue([]),
       getRooms: vi.fn().mockResolvedValue([]),
       getDesigns: vi.fn().mockResolvedValue([]),
-      getCronSessions: vi.fn().mockResolvedValue([]),
       getMessages: vi.fn().mockResolvedValue([QUEUED_MESSAGE_ROW]),
       getSessionHandoffs: vi.fn().mockResolvedValue([]),
       getSessionProgress: vi.fn().mockResolvedValue({ steps: [] }),

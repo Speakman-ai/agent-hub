@@ -116,7 +116,6 @@ import { render, waitFor, cleanup, screen, fireEvent } from '@testing-library/re
       getArchivedSessions: vi.fn().mockResolvedValue([]),
       getSkills: vi.fn().mockResolvedValue([]),
       getDesigns: vi.fn().mockResolvedValue([]),
-      getCronSessions: vi.fn().mockResolvedValue([]),
       getMessages: vi.fn().mockResolvedValue([]),
       getSessionHandoffs: vi.fn().mockResolvedValue([]),
       getSessionProgress: vi.fn().mockResolvedValue({ steps: [] }),

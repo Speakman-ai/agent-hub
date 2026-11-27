@@ -565,8 +565,8 @@ export interface BroadcastData {
  * call on every broadcast.
  *
  * Broadcasts may opt out of push entirely by setting `suppressPush: true`
- * on the payload. Used by e.g. the server-only `cron_finished` event, whose
- * notifications go through project chat triggers instead.
+ * on the payload, for events whose notifications go through another
+ * channel (project chat triggers, the in-app inbox).
  */
 export async function handleBroadcastForPush(
   data: BroadcastData,

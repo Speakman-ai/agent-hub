@@ -66,7 +66,6 @@ function makeStmts(
     deleteQaSessionRequestsByProject: noop,
     deleteWorkflowsByProject: noop,
     deleteRoomsByProject: noop,
-    deleteCronsByProject: noop,
     deleteSessionsByAgent: noop,
     ...overrides,
   };

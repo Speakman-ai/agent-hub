@@ -253,8 +253,6 @@ export function AppProvider({ children }: any) {
   // One-shot user-requested deliverable events. ChatScreen acknowledges an
   // entry after handing it to the full-screen artifact viewer.
   const [presentedArtifactBySession, setPresentedArtifactBySession] = useState<any>({});
-  // Cron-linked sessions
-  const [cronSessions, setCronSessions] = useState<any[]>([]);
   const [lastDesignEvent, setLastDesignEvent] = useState<any>(null);
   // Last `support_ticket_*` WS event for the Customer Support screen.
   //   { type, projectId, ticket?, ticketId?, bump }
@@ -424,10 +422,7 @@ export function AppProvider({ children }: any) {
   const activeAgent =
     agents.find((a: any) => a.id === activeAgentId) ??
     (organizationChatAgent?.id === activeAgentId ? organizationChatAgent : undefined);
-  const activeSession =
-    sessions.find((s: any) => s.id === activeSessionId) ||
-    cronSessions.find((s: any) => s.id === activeSessionId) ||
-    null;
+  const activeSession = sessions.find((s: any) => s.id === activeSessionId) || null;
   // Forward cards auto start only while their chat is in Orchestrate.
   const activeSessionModeForLaunch = activeSession?.id ? activeSession.session_mode : undefined;
   useEffect(() => {
@@ -798,9 +793,6 @@ export function AppProvider({ children }: any) {
           setSessions((prev: any) =>
             prev.map((s: any) => (s.id === sid ? { ...s, state: data.state } : s)),
           );
-          setCronSessions((prev: any) =>
-            prev.map((s: any) => (s.id === sid ? { ...s, state: data.state } : s)),
-          );
           break;
         }
         case 'session-worktree-detected':
@@ -1009,13 +1001,6 @@ export function AppProvider({ children }: any) {
           }
           break;
         }
-        // Cron session updates
-        case 'cron_session_update':
-          api
-            .getCronSessions()
-            .then(setCronSessions)
-            .catch(() => {});
-          break;
         // Queue events
         case 'queue_updated':
           setMessageQueues((prev: any) => ({
@@ -1129,7 +1114,6 @@ export function AppProvider({ children }: any) {
           break;
         case 'session_deleted':
           setSessions((prev: any) => prev.filter((s: any) => s.id !== data.sessionId));
-          setCronSessions((prev: any) => prev.filter((s: any) => s.id !== data.sessionId));
           setFinalizeStatusBySession((prev: any) => {
             if (!prev[data.sessionId]) return prev;
             const next = { ...prev };
@@ -1563,7 +1547,6 @@ export function AppProvider({ children }: any) {
         case 'infra':
         case 'hubChat':
         case 'deployments':
-        case 'crons':
         case 'reminders': {
           // Navigator-driven kinds share one param mapper (screen + params,
           // including the `pulls` PR number and the `infra` alert id).
@@ -1780,15 +1763,13 @@ export function AppProvider({ children }: any) {
   // unauthenticated fetch (login-screen org change clears the token first).
   const orgDataGenerationRef = useRef(createOrgDataGeneration());
   const applyOrgData = useCallback(async (isCurrent: () => boolean) => {
-    const [agentData, projectData, cronSessionData] = await Promise.all([
+    const [agentData, projectData] = await Promise.all([
       api.getAgents(),
       api.getProjects().catch(() => []),
-      api.getCronSessions().catch(() => []),
     ]);
     if (!isCurrent()) return;
     setAgents(agentData);
     setProjects(projectData);
-    setCronSessions(cronSessionData);
     if (agentData.length > 0) setActiveAgentId(agentData[0].id);
   }, []);
   // Load agents and projects once we can actually authenticate the request.
@@ -2154,7 +2135,6 @@ export function AppProvider({ children }: any) {
           setDelegations({});
           setMessageQueues({});
           setEventsByMessage({});
-          setCronSessions([]);
           setChangesReady({});
           setFinalizeStatusBySession({});
           setNeedsInputBySession({});
@@ -2377,9 +2357,7 @@ export function AppProvider({ children }: any) {
         const session =
           activeSession?.id === sid
             ? activeSession
-            : sessions.find((s: any) => s.id === sid) ||
-              cronSessions.find((s: any) => s.id === sid) ||
-              null;
+            : sessions.find((s: any) => s.id === sid) || null;
         const agent = agents.find((a: any) => a.id === (session?.agent_id || activeAgentId));
         const project = projects.find((p: any) => p.id === agent?.projectId);
         const workflowProject = isWorkflowProject(project);
@@ -2397,7 +2375,7 @@ export function AppProvider({ children }: any) {
         setSessionConsultMode(prevEnabled);
       }
     },
-    [activeAgentId, activeSession, agents, cronSessions, projects, sessionConsultMode, sessions],
+    [activeAgentId, activeSession, agents, projects, sessionConsultMode, sessions],
   );
   const handleSimpleOrchestrateChange = useCallback(async (enabled: boolean) => {
     const sid = activeSessionIdRef.current;
@@ -3148,7 +3126,6 @@ export function AppProvider({ children }: any) {
     handleEditQueuedMessage,
     handleDelegationCancel,
     handleEventsLoaded,
-    cronSessions,
     kanbanRefreshKey,
     kanbanRefreshProjectIds,
     acknowledgeKanbanRefresh,

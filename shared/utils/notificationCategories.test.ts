@@ -29,7 +29,6 @@ describe('notification category catalog', () => {
         'browser_sign_in',
         'approval_requested',
         'session_completed',
-        'routine_run',
         'session_poller',
       ],
       reminders: ['reminder'],

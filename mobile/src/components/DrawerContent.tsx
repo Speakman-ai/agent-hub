@@ -26,16 +26,11 @@ import ServerPicker from './ServerPicker';
 import { getApiBaseUrl, getWsUrl } from '../utils/config';
 import { colors } from '../theme/colors';
 import { daysUntilPurge, parseDate } from '../utils/time';
-import humanCron from '@shared/utils/humanCron';
 import { isSidebarHiddenAgent } from '@shared/utils/sidebarAgents';
 import { hubSidebarSessions, rememberPreSimpleTarget, writeShellMode } from '../utils/simpleShell';
 import { isWorkflowProject } from '../utils/project-mode';
 import { projectNavGroups } from '../utils/projectMenu';
-import {
-  isSidebarSessionActionable,
-  projectCanFullyCollapse,
-  projectHostsScheduledTasks,
-} from '../utils/sidebarSchedule';
+import { isSidebarSessionActionable, projectCanFullyCollapse } from '../utils/sidebarSchedule';
 import {
   loadNavGroupCollapsed,
   saveNavGroupCollapsed,
@@ -93,7 +88,6 @@ export default function DrawerContent({ navigation }: any) {
     archivedSessions,
     handleRestoreSession,
     restoringSessionIds,
-    cronSessions,
     activeTasks,
     finalizeStatusBySession,
     needsInputBySession,
@@ -517,44 +511,6 @@ export default function DrawerContent({ navigation }: any) {
       'Delete Session',
       'Archive this session? You can restore it within 7 days from the Archived section.',
       buttons,
-    );
-  };
-  const renderCronSection = (rows: any[], testID?: string) => {
-    if (!rows.length) return null;
-    return (
-      <View style={styles.cronSection} testID={testID}>
-        <View style={styles.sectionLabelRow}>
-          <HubIcon name="Clock" size={12} color={colors.gray500} />
-          <Text style={[styles.sectionLabel, styles.sectionLabelInline]}>SCHEDULED TASKS</Text>
-        </View>
-        {rows.map((cs: any) => (
-          <TouchableOpacity
-            key={cs.id}
-            style={[styles.cronRow, activeSessionId === cs.id && styles.agentItemActive]}
-            onPress={() => focusSession(cs.agent_id || activeAgentId, cs.id)}
-          >
-            <SessionStateIcon
-              state={deriveSessionState(cs, {
-                activeTaskSessionIds: activeTasks,
-                finalizeStatusBySession,
-                needsInputBySession,
-              })}
-              testID={`session-state-icon-${cs.id}`}
-            />
-            <Text
-              style={[
-                styles.agentName,
-                styles.cronName,
-                activeSessionId === cs.id && styles.agentNameActive,
-              ]}
-              numberOfLines={1}
-            >
-              {cs.cron_name || cs.name}
-            </Text>
-            <Text style={styles.cronScheduleInline}>{humanCron(cs.cron_schedule)}</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
     );
   };
   const renderSessionRow = (session: any, agent: any) => {
@@ -995,23 +951,6 @@ export default function DrawerContent({ navigation }: any) {
       </View>
     );
   };
-  const scheduledTaskHomeIds = new Set(
-    projects
-      .filter((project: any) => {
-        const activeAgentCount = agents.filter(
-          (agent: any) => agent.projectId === project.id && agent.active !== false,
-        ).length;
-        return projectHostsScheduledTasks({
-          activeAgentCount,
-          workflow: isWorkflowProject(project),
-          collapsed: !!collapsedProjects[project.id],
-        });
-      })
-      .map((project: any) => project.id),
-  );
-  const ungroupedCronSessions = (cronSessions || []).filter(
-    (cs: any) => !cs.project_id || !scheduledTaskHomeIds.has(cs.project_id),
-  );
   const currentRoute = navigation.getCurrentRoute?.();
   const routeName = currentRoute?.name;
   const requestedPane = currentRoute?.params?.pane || currentRoute?.params?.tab;
@@ -1180,8 +1119,6 @@ export default function DrawerContent({ navigation }: any) {
           </TouchableOpacity>
         ))}
 
-        {renderCronSection(ungroupedCronSessions, 'drawer-ungrouped-scheduled-tasks')}
-
         {!projectCollapseCacheHydrated && (
           <View style={styles.projectCollapseLoading} testID="drawer-projects-loading">
             <ActivityIndicator color={colors.gray500} />
@@ -1289,10 +1226,6 @@ export default function DrawerContent({ navigation }: any) {
                     <>
                       {projectAgents.map((agent: any) => renderAgentRow(agent, project))}
                       {renderProjectMenu(project)}
-                      {renderCronSection(
-                        (cronSessions || []).filter((cs: any) => cs.project_id === project.id),
-                        `drawer-project-scheduled-tasks-${project.id}`,
-                      )}
                     </>
                   )}
                   {actionableWhileCollapsed.length > 0 && (
@@ -1416,17 +1349,6 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
     marginBottom: 8,
     paddingHorizontal: 8,
-  },
-  sectionLabelRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginBottom: 8,
-    paddingHorizontal: 8,
-  },
-  sectionLabelInline: {
-    marginBottom: 0,
-    paddingHorizontal: 0,
   },
   chatItem: {
     flexDirection: 'row',
@@ -1619,11 +1541,6 @@ const styles = StyleSheet.create({
     color: colors.gray600,
     marginTop: 2,
   },
-  cronScheduleText: {
-    fontSize: 11,
-    color: colors.gray600,
-    marginTop: 2,
-  },
   collapseIcon: {
     color: colors.gray500,
     fontSize: 12,
@@ -1740,24 +1657,6 @@ const styles = StyleSheet.create({
     paddingLeft: 8,
     borderLeftWidth: 1,
     borderLeftColor: colors.gray800,
-  },
-  cronSection: {
-    marginBottom: 12,
-  },
-  cronRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 8,
-  },
-  cronName: {
-    flex: 1,
-  },
-  cronScheduleInline: {
-    fontSize: 12,
-    color: colors.gray600,
   },
   newSessionButton: {
     paddingHorizontal: 8,

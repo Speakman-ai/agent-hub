@@ -85,7 +85,7 @@ const INPUT =
 
 /**
  * Project Settings > Chat triggers: route project events (sessions, Finalize,
- * PRs, cards, tickets, crons, infra alerts) into Agent Hub chat channels.
+ * PRs, cards, tickets, infra alerts) into Agent Hub chat channels.
  */
 export default function ChatTriggersSection({
   projectId,
