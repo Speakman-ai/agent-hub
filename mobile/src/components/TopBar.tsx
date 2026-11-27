@@ -39,6 +39,7 @@ export default function TopBar({ onOpenChatChannel }: TopBarProps = {}) {
     handleModelChange,
     activeSessionId,
     activeSessionState,
+    activeSessionPollerNextRunAt,
     agents,
     handleOpenHandoffSession,
   } = useApp();
@@ -128,6 +129,7 @@ export default function TopBar({ onOpenChatChannel }: TopBarProps = {}) {
                 state={activeSessionState}
                 size={14}
                 testID="topbar-session-state-icon"
+                pollerNextRunAt={activeSessionPollerNextRunAt}
               />
             ) : null}
             <View style={styles.agentText}>

@@ -21,6 +21,8 @@ const SpawnedSessionSchema = registerComponent(
       finalize_status: z.string().nullable(),
       needs_input: z.string().nullable(),
       needs_input_at: z.number().nullable(),
+      has_active_poller: z.boolean(),
+      poller_next_run_at: z.string().nullable(),
       last_turn_error: z.string().nullable(),
     })
     .openapi({ description: 'A Hub session started from an Orchestrate parent.' }),
@@ -125,6 +127,8 @@ export default function createSessionSpawnedRoutes(
           finalize_status: enriched.finalize_status ?? null,
           needs_input: enriched.needs_input ?? null,
           needs_input_at: enriched.needs_input_at ?? null,
+          has_active_poller: enriched.has_active_poller,
+          poller_next_run_at: enriched.poller_next_run_at,
           last_turn_error: enriched.last_turn_error ?? null,
         };
       }),

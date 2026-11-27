@@ -4,6 +4,7 @@ export type SessionState =
   | 'needs_input'
   | 'working'
   | 'waiting_on_background'
+  | 'polling'
   | 'running_tests'
   | 'reviewing'
   | 'pending_checks'
@@ -29,6 +30,8 @@ export interface SessionStateSignals {
   hasActiveTask?: boolean;
   /** A Hub-owned background shell is still running for the session. */
   hasRunningBackgroundShell?: boolean;
+  /** The session has a running (not stopped, not past its end) session poller. */
+  hasActivePoller?: boolean;
   merged?: boolean;
 }
 

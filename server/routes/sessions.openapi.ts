@@ -181,6 +181,7 @@ export const SessionComponent = registerComponent(
           'needs_input',
           'working',
           'waiting_on_background',
+          'polling',
           'running_tests',
           'reviewing',
           'pending_checks',
@@ -193,6 +194,14 @@ export const SessionComponent = registerComponent(
           description:
             'Always-on lifecycle state of the session — exactly one value, surfaced as a single status icon in the clients. Resolved server-side at read time from active-task / Finalize-run / Done-column signals (see `server/session-state.ts`) and present on enriched session payloads (list, detail, `session_created`). The server also backfills the persisted `sessions.state` cache and emits a dedicated `session_state` WebSocket push at production signal boundaries (chat turn start/end, linked-card auto-close, kanban move to Done). Clients keep Finalize phases live from `finalize_run_phase_changed` and use `session_state` for persisted seed / terminal updates such as `merged`.',
         }),
+      has_active_poller: z.boolean().optional().openapi({
+        description:
+          'Whether a session poller is running for this session (active and not past its end time). Drives the `polling` state; also carried on the `session_state` WebSocket push.',
+      }),
+      poller_next_run_at: z.string().nullable().optional().openapi({
+        description:
+          "ISO time of the soonest next poller check, or null. Clients append it to the 'Poller running' label.",
+      }),
       agents: z
         .array(
           z.object({

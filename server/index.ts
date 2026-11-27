@@ -273,8 +273,10 @@ import createSessionPollerRoutes from './routes/session-pollers.js';
 import { SessionPollerStore } from './session-pollers/session-poller-store.js';
 import {
   isPollerBlockedByUserInput,
+  SESSION_POLLER_UPDATED_EVENT,
   SessionPollerScheduler,
 } from './session-pollers/session-poller-scheduler.js';
+import { summarizeActivePollers } from '../shared/utils/sessionPoller.js';
 import createSessionDiscardRoutes from './routes/session-discard.js';
 import createSessionSidebarRoutes from './routes/session-sidebar.js';
 import createSessionSpawnedRoutes from './routes/session-spawned.js';
@@ -428,7 +430,11 @@ import {
 import { parseDevServerConfig } from './dev-server-config.js';
 import { buildBackgroundShellEnv } from './background-shells/background-shell-env.js';
 import { createBackgroundShellRuntime } from './background-shells/background-shell-runtime-setup.js';
-import { recomputeSessionState, setRunningBackgroundShellLookup } from './session-state.js';
+import {
+  recomputeSessionState,
+  setActivePollerLookup,
+  setRunningBackgroundShellLookup,
+} from './session-state.js';
 import {
   BackgroundShellWatcher,
   WATCH_SWEEP_INTERVAL_MS,
@@ -1938,6 +1944,20 @@ const backgroundShellWatcher = new BackgroundShellWatcher({
 // Session pollers: user-confirmed recurring checks ("every 30 min check dev
 // for new tickets until 9am") that wake one session until their window ends.
 const sessionPollerStore = new SessionPollerStore(getDb());
+setActivePollerLookup((sessionId) =>
+  summarizeActivePollers(sessionPollerStore.listActiveForSession(sessionId)),
+);
+/**
+ * Every poller change can flip the session between `polling` and whatever it
+ * shows otherwise, so re-resolve and push `session_state` after the update.
+ */
+function broadcastPollerEvent(event: Record<string, unknown>): void {
+  broadcast(event);
+  const sessionId = typeof event.sessionId === 'string' ? event.sessionId : null;
+  if (event.type !== SESSION_POLLER_UPDATED_EVENT || !sessionId) return;
+  const agentId = (stmts!.getSession.get(sessionId) as SessionRow | undefined)?.agent_id ?? null;
+  recomputeSessionState(stmts!, sessionId, { agentId, broadcast });
+}
 const sessionPollerScheduler = new SessionPollerScheduler({
   store: sessionPollerStore,
   getSession: (sessionId) => stmts!.getSession.get(sessionId) as SessionRow | undefined,
@@ -1959,7 +1979,7 @@ const sessionPollerScheduler = new SessionPollerScheduler({
     }
     return null;
   },
-  broadcast: (event) => broadcast(event),
+  broadcast: (event) => broadcastPollerEvent(event),
   persistSystemMessage: (sessionId, content, meta) =>
     persistWatchSystemMessage(sessionId, content, meta),
 });
@@ -2696,6 +2716,7 @@ app.use(
 app.use(
   createSessionPollerRoutes({
     ...routeDeps,
+    broadcast: broadcastPollerEvent,
     getSessionPollerStore: () => sessionPollerStore,
     kickSessionPollers: () => sessionPollerScheduler.tick(),
   }),

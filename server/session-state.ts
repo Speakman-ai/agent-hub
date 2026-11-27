@@ -10,6 +10,7 @@ import {
   type SessionState,
   type SessionStateSignals,
 } from '../shared/utils/sessionState.js';
+import type { ActivePollerSummary } from '../shared/utils/sessionPoller.js';
 
 // Re-export the shared pure model so server callers have a single import site.
 export {
@@ -76,6 +77,25 @@ function lookupHasRunningBackgroundShell(sessionId: string): boolean {
   }
 }
 
+type ActivePollerLookup = (sessionId: string) => ActivePollerSummary;
+let activePollerLookup: ActivePollerLookup | null = null;
+
+/** Wire the session-poller store in; same setter pattern as the shell runtime. */
+export function setActivePollerLookup(fn: ActivePollerLookup | null): void {
+  activePollerLookup = fn;
+}
+
+const NO_POLLER: ActivePollerSummary = { hasActivePoller: false, nextRunAt: null };
+
+/** Best-effort: the session's live pollers and their soonest next check. */
+export function lookupActivePoller(sessionId: string): ActivePollerSummary {
+  try {
+    return activePollerLookup?.(sessionId) ?? NO_POLLER;
+  } catch {
+    return NO_POLLER;
+  }
+}
+
 /** Gather the live signals for a session from the DB. */
 export function gatherSessionStateSignals(stmts: Stmts, sessionId: string): SessionStateSignals {
   return {
@@ -83,6 +103,7 @@ export function gatherSessionStateSignals(stmts: Stmts, sessionId: string): Sess
     finalizeStatus: lookupFinalizeStatusForSession(stmts, sessionId),
     hasActiveTask: lookupHasActiveTask(stmts, sessionId),
     hasRunningBackgroundShell: lookupHasRunningBackgroundShell(sessionId),
+    hasActivePoller: lookupActivePoller(sessionId).hasActivePoller,
     merged: lookupMergedForSession(stmts, sessionId),
   };
 }
@@ -126,11 +147,14 @@ export function recomputeSessionState(
   }
   if (opts.broadcast) {
     try {
+      const poller = lookupActivePoller(sessionId);
       opts.broadcast({
         type: 'session_state',
         sessionId,
         agentId: opts.agentId ?? null,
         state,
+        has_active_poller: poller.hasActivePoller,
+        poller_next_run_at: poller.nextRunAt,
       });
     } catch {
       // best-effort live update.

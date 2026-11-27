@@ -9,8 +9,10 @@ import {
   GitMerge,
   CircleAlert,
   Radio,
+  Timer,
 } from 'lucide-react';
 import { sessionStateMeta } from '@shared/utils/sessionState';
+import { pollingStateLabel } from '@shared/utils/sessionPoller';
 
 // Map the shared metadata's icon name → the actual lucide component. Keeping
 // this table here (rather than in shared) keeps `shared/` framework-free.
@@ -25,6 +27,7 @@ const ICONS = {
   GitMerge,
   CircleAlert,
   Radio,
+  Timer,
 } as Record<string, any>;
 
 // Semantic color token → Tailwind text class. Centralized so web stays in sync
@@ -51,7 +54,9 @@ const ANIM_CLASS = {
  * Renders one lucide icon (color + animation per the shared metadata) and never
  * returns null, so every session row carries a state icon.
  *
- * @param {{ state: string, size?: number, className?: string, testId?: string, label?: string }} props
+ * `pollerNextRunAt` adds the next check time to the `polling` label.
+ *
+ * @param {{ state: string, size?: number, className?: string, testId?: string, label?: string, pollerNextRunAt?: string|null }} props
  */
 export default function SessionStateIcon({
   state,
@@ -59,9 +64,15 @@ export default function SessionStateIcon({
   className = '',
   testId = 'session-state-icon',
   label,
+  pollerNextRunAt,
 }: any) {
   const meta = sessionStateMeta(state);
-  const title = typeof label === 'string' && label ? label : meta.label;
+  const title =
+    typeof label === 'string' && label
+      ? label
+      : state === 'polling'
+        ? pollingStateLabel(pollerNextRunAt)
+        : meta.label;
   const Icon = ICONS[meta.icon] || MessageCircleQuestion;
   const color = COLOR_CLASS[meta.color] || 'text-gray-400';
   const anim = ANIM_CLASS[meta.anim] || '';

@@ -163,6 +163,14 @@ export class SessionPollerStore {
     ).map(toPoller);
   }
 
+  listActiveForSession(sessionId: string): SessionPoller[] {
+    return (
+      this.db
+        .prepare(`SELECT * FROM session_pollers WHERE session_id = ? AND status = 'active'`)
+        .all(sessionId) as SessionPollerRow[]
+    ).map(toPoller);
+  }
+
   listActive(): SessionPoller[] {
     return (
       this.db

@@ -3,6 +3,7 @@ import {
   resolveSessionState,
   recomputeSessionState,
   setRunningBackgroundShellLookup,
+  setActivePollerLookup,
   isSessionState,
   SESSION_STATES,
   DEFAULT_SESSION_STATE,
@@ -143,7 +144,14 @@ describe('recomputeSessionState', () => {
     expect(state).toBe('merged');
     expect(updates).toEqual([['merged', 'sess-1']]);
     expect(broadcasts).toEqual([
-      { type: 'session_state', sessionId: 'sess-1', agentId: 'agent-1', state: 'merged' },
+      {
+        type: 'session_state',
+        sessionId: 'sess-1',
+        agentId: 'agent-1',
+        state: 'merged',
+        has_active_poller: false,
+        poller_next_run_at: null,
+      },
     ]);
   });
 });
@@ -184,5 +192,48 @@ describe('recomputeSessionState with background shells', () => {
       getMessagesPageLatest: { all: () => [] },
     };
     expect(recomputeSessionState(stmts as never, 'sess-1')).toBe('waiting_for_user_input');
+  });
+});
+
+describe('recomputeSessionState with a session poller', () => {
+  afterEach(() => setActivePollerLookup(null));
+
+  it('resolves polling over merged and carries the next check on the push', () => {
+    setActivePollerLookup(() => ({ hasActivePoller: true, nextRunAt: '2026-11-27T14:30:00.000Z' }));
+    const broadcasts: unknown[] = [];
+    const stmts = {
+      getLatestFinalizeRunForSession: { get: () => undefined },
+      getActiveTask: { get: () => undefined },
+      getKanbanCardBySession: { get: () => ({ column_id: 'done-col' }) },
+      getKanbanColumn: { get: () => ({ name: 'Done' }) },
+      updateSessionState: { run: () => undefined },
+    };
+    const state = recomputeSessionState(stmts as never, 'sess-1', {
+      agentId: 'agent-1',
+      broadcast: (msg) => broadcasts.push(msg),
+    });
+    expect(state).toBe('polling');
+    expect(broadcasts).toEqual([
+      {
+        type: 'session_state',
+        sessionId: 'sess-1',
+        agentId: 'agent-1',
+        state: 'polling',
+        has_active_poller: true,
+        poller_next_run_at: '2026-11-27T14:30:00.000Z',
+      },
+    ]);
+  });
+
+  it('falls back to merged once the poller stops', () => {
+    setActivePollerLookup(() => ({ hasActivePoller: false, nextRunAt: null }));
+    const stmts = {
+      getLatestFinalizeRunForSession: { get: () => undefined },
+      getActiveTask: { get: () => undefined },
+      getKanbanCardBySession: { get: () => ({ column_id: 'done-col' }) },
+      getKanbanColumn: { get: () => ({ name: 'Done' }) },
+      updateSessionState: { run: () => undefined },
+    };
+    expect(recomputeSessionState(stmts as never, 'sess-1')).toBe('merged');
   });
 });

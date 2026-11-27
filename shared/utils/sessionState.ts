@@ -12,6 +12,7 @@ export const SESSION_STATES: readonly SessionState[] = [
   'waiting_for_user_input',
   'working',
   'waiting_on_background',
+  'polling',
   'running_tests',
   'reviewing',
   'pending_checks',
@@ -82,6 +83,9 @@ export function resolveSessionState(signals: SessionStateSignals): SessionState 
   // The turn ended but a background shell it started is still going; the
   // session wakes itself when it finishes, so the human is not the blocker.
   if (signals?.hasRunningBackgroundShell) return 'waiting_on_background';
+  // A poller will wake the session on its own, so it outranks the settled
+  // states too: a merged session that is still polling shows that it is.
+  if (signals?.hasActivePoller) return 'polling';
   if (signals?.merged) return 'merged';
   if (fromFinalize) return fromFinalize;
   return DEFAULT_SESSION_STATE;
@@ -114,6 +118,13 @@ export const SESSION_STATE_META: Record<SessionState, SessionStateMeta> = {
     short: 'Background',
     icon: 'Radio',
     color: 'amber',
+    anim: 'pulse',
+  },
+  polling: {
+    label: 'Poller running',
+    short: 'Polling',
+    icon: 'Timer',
+    color: 'sky',
     anim: 'pulse',
   },
   running_tests: {
@@ -212,13 +223,14 @@ export function isSessionsViewMode(v: unknown): v is SessionsViewMode {
  * Kanban columns for the dashboard's board view. Unlike
  * {@link groupSessionsByState}, every in-flight state gets a column even when
  * empty, so the board layout stays stable as sessions move between states.
- * `needs_input`, `waiting_on_background`, `pushed` and `merged` only appear when a session is actually
+ * `needs_input`, `waiting_on_background`, `polling`, `pushed` and `merged` only appear when a session is actually
  * in them: blocked sessions are rare, and a pushed session normally resolves to `merged` or
  * back to an active state, so always-empty columns are noise. Renderers collapse empty columns.
  */
 const BOARD_COLUMNS_SHOWN_ONLY_WHEN_POPULATED: readonly SessionState[] = [
   'needs_input',
   'waiting_on_background',
+  'polling',
   'pushed',
   'merged',
 ];
@@ -368,4 +380,27 @@ export function reseedFinalizeStatusFromSessions(
     }
   }
   return next ?? prev;
+}
+
+/** Session fields a `session_state` push updates on the client's session row. */
+export interface SessionStatePatch {
+  state: string;
+  has_active_poller?: boolean;
+  poller_next_run_at?: string | null;
+}
+
+/**
+ * Fields to merge into a session row from a `session_state` push, or null
+ * when the event carries no state. Poller fields are copied only when present.
+ */
+export function sessionStatePatch(
+  data: { state?: unknown; has_active_poller?: unknown; poller_next_run_at?: unknown } | null,
+): SessionStatePatch | null {
+  if (!data || typeof data.state !== 'string') return null;
+  const patch: SessionStatePatch = { state: data.state };
+  if (typeof data.has_active_poller === 'boolean') patch.has_active_poller = data.has_active_poller;
+  if (typeof data.poller_next_run_at === 'string' || data.poller_next_run_at === null) {
+    patch.poller_next_run_at = data.poller_next_run_at;
+  }
+  return patch;
 }

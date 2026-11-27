@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Archive, ArrowLeft, Layers, RotateCcw, X } from 'lucide-react';
 import { needsInputLabel, sessionStateMeta } from '@shared/utils/sessionState';
+import { pollingStateLabel } from '@shared/utils/sessionPoller';
 import {
   SESSION_FORWARD_BUILD_MODES,
   SESSION_FORWARD_MODE_OPTIONS,
@@ -28,6 +29,8 @@ export interface SpawnedSessionRow {
   finalize_status?: string | null;
   needs_input?: string | null;
   needs_input_at?: number | null;
+  has_active_poller?: boolean;
+  poller_next_run_at?: string | null;
   last_turn_error?: string | null;
   spawned_from_session_id?: string | null;
 }
@@ -417,7 +420,9 @@ export default function SpawnedSessionsRail({
                 const statusLabel =
                   sessionState === 'needs_input'
                     ? needsInputLabel(sessionNeedsInputKind(session, signals))
-                    : sessionStateMeta(sessionState).label;
+                    : sessionState === 'polling'
+                      ? pollingStateLabel(session.poller_next_run_at)
+                      : sessionStateMeta(sessionState).label;
                 return (
                   <li
                     key={session.id}

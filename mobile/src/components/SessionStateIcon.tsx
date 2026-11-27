@@ -2,6 +2,7 @@ import React from 'react';
 import { ActivityIndicator } from 'react-native';
 import AppIcon from './AppIcon';
 import { sessionStateMeta } from '@shared/utils/sessionState';
+import { pollingStateLabel } from '@shared/utils/sessionPoller';
 import { colors } from '../theme/colors';
 const ICONS: Record<string, any> = {
   MessageCircleQuestion: 'chatbubble-ellipses-outline',
@@ -14,6 +15,7 @@ const ICONS: Record<string, any> = {
   GitMerge: 'git-merge-outline',
   CircleAlert: 'alert-circle',
   Radio: 'radio-outline',
+  Timer: 'timer-outline',
 };
 const COLOR: Record<string, any> = {
   amber: colors.amber400,
@@ -30,8 +32,10 @@ export default function SessionStateIcon({
   size = 14,
   style,
   testID = 'session-state-icon',
+  pollerNextRunAt,
 }: any) {
   const meta = sessionStateMeta(state);
+  const label = state === 'polling' ? pollingStateLabel(pollerNextRunAt) : meta.label;
   const color = COLOR[meta.color] || colors.gray400;
   if (meta.anim === 'spin') {
     return <ActivityIndicator size="small" color={color} style={style} testID={testID} />;
@@ -43,7 +47,7 @@ export default function SessionStateIcon({
       color={color}
       style={style}
       testID={testID}
-      accessibilityLabel={meta.label}
+      accessibilityLabel={label}
     />
   );
 }

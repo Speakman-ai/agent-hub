@@ -49,6 +49,7 @@ export function deriveSessionState(session: any, signals: any = {}) {
     finalizeStatus,
     hasActiveTask,
     hasRunningBackgroundShell,
+    hasActivePoller: sessionHasActivePoller(session),
     merged,
     needsInput,
   });
@@ -63,7 +64,8 @@ export function deriveSessionState(session: any, signals: any = {}) {
     session.state !== DEFAULT_SESSION_STATE &&
     // needs_input has its own live signal above; a stale seed must not revive it.
     session.state !== 'needs_input' &&
-    session.state !== 'waiting_on_background'
+    session.state !== 'waiting_on_background' &&
+    session.state !== 'polling'
   ) {
     return session.state;
   }
@@ -77,4 +79,16 @@ export function deriveSessionState(session: any, signals: any = {}) {
  */
 export function sessionNeedsInputKind(session: any, signals: any = {}): string | null {
   return liveNeedsInputKind(session, signals?.needsInputBySession);
+}
+
+/**
+ * Whether a session poller is running. The server keeps `has_active_poller` on
+ * the session current: it is on every payload and on each `session_state` push,
+ * which the server sends after every `session_poller_updated` change. Older
+ * payloads without the field fall back to the resolved seed.
+ */
+export function sessionHasActivePoller(session: any): boolean {
+  if (!session) return false;
+  if (typeof session.has_active_poller === 'boolean') return session.has_active_poller;
+  return session.state === 'polling';
 }

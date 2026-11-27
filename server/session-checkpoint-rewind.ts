@@ -3,6 +3,7 @@ import { autopilotMainlineStartEnabled } from './autopilot-mainline-availability
 import {
   DEFAULT_SESSION_STATE,
   gatherSessionStateSignals,
+  lookupActivePoller,
   resolveSessionState,
   type SessionState,
 } from './session-state.js';
@@ -65,6 +66,10 @@ export type SessionWireRow = SessionRow & {
   needs_input: NeedsInputKind | null;
   /** Server ms when `needs_input` was computed; null when `stmts` is omitted. */
   needs_input_at: number | null;
+  /** Whether a session poller is running for the session. */
+  has_active_poller: boolean;
+  /** Soonest next poller check (ISO), or null when none is scheduled. */
+  poller_next_run_at: string | null;
   /**
    * Whether this session can enter Design mode (`PUT /api/sessions/:id/mode`
    * with `design`). Computed from the SAME `sessionCanUseDesignMode` helper the
@@ -250,6 +255,7 @@ export function enrichSessionForClient(
   // live `session_needs_input` events to keep whichever is newer.
   const needsInputAt = Date.now();
   const signals = stmts ? gatherSessionStateSignals(stmts, row.id) : null;
+  const poller = stmts ? lookupActivePoller(row.id) : null;
   return {
     ...row,
     checkpoint_rewind_supported: engineSupportsCheckpointRewind(row.engine),
@@ -261,6 +267,8 @@ export function enrichSessionForClient(
       : ((row.state as SessionState | null | undefined) ?? DEFAULT_SESSION_STATE),
     needs_input: signals?.needsInput ?? null,
     needs_input_at: signals ? needsInputAt : null,
+    has_active_poller: poller?.hasActivePoller ?? false,
+    poller_next_run_at: poller?.nextRunAt ?? null,
     can_design_mode: sessionCanUseDesignMode(row, resolvedProject),
     // Fail closed on an unknown project: VM mode is offered only when we can
     // positively confirm a non-workflow project. Workflow sessions (server-side

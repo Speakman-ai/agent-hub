@@ -16,6 +16,7 @@ vi.mock('lucide-react-native', () => {
     Clock: stub,
     CloudUpload: stub,
     Radio: stub,
+    Timer: stub,
     Eye: stub,
     FileText: stub,
     FlaskConical: stub,

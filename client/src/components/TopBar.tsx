@@ -135,6 +135,7 @@ export default function TopBar({
   messages,
   activeSessionId,
   activeSessionState,
+  activeSessionPollerNextRunAt,
   /**
    * Watch-loop indicator for the active session, or null when nothing is
    * running. Signals that an idle session is waiting on background work and
@@ -248,6 +249,7 @@ export default function TopBar({
                 state={activeSessionState}
                 size={14}
                 testId="topbar-session-state-icon"
+                pollerNextRunAt={activeSessionPollerNextRunAt}
               />
             )}
             {backgroundShellWatch && (

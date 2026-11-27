@@ -1815,6 +1815,7 @@ export default function Sidebar({
                                               state={sessionState}
                                               size={12}
                                               testId={`session-state-icon-${session.id}`}
+                                              pollerNextRunAt={session.poller_next_run_at}
                                               label={
                                                 sessionState === 'needs_input'
                                                   ? needsInputLabel(
@@ -2280,6 +2281,7 @@ export default function Sidebar({
                                 state={sessionState}
                                 size={12}
                                 testId={`session-state-icon-${session.id}`}
+                                pollerNextRunAt={session.poller_next_run_at}
                                 label={
                                   sessionState === 'needs_input'
                                     ? needsInputLabel(

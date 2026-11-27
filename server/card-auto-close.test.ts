@@ -273,6 +273,8 @@ describe('handleCardAutoClose', () => {
       sessionId: 'sess-1',
       agentId: 'hub-backend',
       state: 'merged',
+      has_active_poller: false,
+      poller_next_run_at: null,
     });
   });
 

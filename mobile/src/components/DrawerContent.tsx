@@ -543,6 +543,7 @@ export default function DrawerContent({ navigation }: any) {
                   needsInputBySession,
                 })}
                 testID={`session-state-icon-${session.id}`}
+                pollerNextRunAt={session.poller_next_run_at}
               />
               {isSessionPinned(session) && (
                 <Pin
@@ -1247,6 +1248,7 @@ export default function DrawerContent({ navigation }: any) {
                               needsInputBySession,
                             })}
                             testID={`session-state-icon-${session.id}`}
+                            pollerNextRunAt={session.poller_next_run_at}
                           />
                           <Text style={styles.sessionName} numberOfLines={1}>
                             {session.name}

@@ -47,6 +47,23 @@ describe('SessionStateIcon', () => {
     );
   });
 
+  it('renders polling as a calm timer with the next check time in its label', () => {
+    const generic = render(<SessionStateIcon state="polling" />);
+    const el = generic.getByTestId('session-state-icon');
+    expect(el.getAttribute('class')).toContain('lucide-timer');
+    expect(el.getAttribute('class')).toContain('text-sky-400');
+    expect(el.classList.contains('animate-spin')).toBe(false);
+    expect(el.getAttribute('aria-label')).toBe('Poller running');
+    generic.unmount();
+
+    const withNext = render(
+      <SessionStateIcon state="polling" pollerNextRunAt="2026-11-27T14:30:00.000Z" />,
+    );
+    expect(withNext.getByTestId('session-state-icon').getAttribute('aria-label')).toMatch(
+      /^Poller running, next check /,
+    );
+  });
+
   it('does not animate settled states (merged)', () => {
     const { getByTestId } = render(<SessionStateIcon state="merged" />);
     const el = getByTestId('session-state-icon');

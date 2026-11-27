@@ -429,3 +429,42 @@ export function pollerBannerSummary(poller: SessionPoller, now: Date = new Date(
   );
   return parts.join(' · ');
 }
+
+/** Whether a poller still runs: active and not past its end time. */
+export function isPollerLive(poller: SessionPoller, now: Date = new Date()): boolean {
+  if (poller.status !== 'active') return false;
+  if (!poller.endsAt) return true;
+  const endsAt = Date.parse(poller.endsAt);
+  return !Number.isFinite(endsAt) || endsAt > now.getTime();
+}
+
+export interface ActivePollerSummary {
+  hasActivePoller: boolean;
+  /** Soonest next check across the session's live pollers, or null. */
+  nextRunAt: string | null;
+}
+
+/** Collapse a session's pollers into the session-state signal and its next check time. */
+export function summarizeActivePollers(
+  pollers: readonly SessionPoller[],
+  now: Date = new Date(),
+): ActivePollerSummary {
+  let hasActivePoller = false;
+  let nextRunAt: string | null = null;
+  for (const p of pollers) {
+    if (!isPollerLive(p, now)) continue;
+    hasActivePoller = true;
+    if (p.nextRunAt && (nextRunAt === null || p.nextRunAt < nextRunAt)) nextRunAt = p.nextRunAt;
+  }
+  return { hasActivePoller, nextRunAt };
+}
+
+/** State-icon label for a polling session: "Poller running, next check 2:30 PM". */
+export function pollingStateLabel(
+  nextRunAt: string | null | undefined,
+  now: Date = new Date(),
+): string {
+  const at = typeof nextRunAt === 'string' ? Date.parse(nextRunAt) : Number.NaN;
+  if (!Number.isFinite(at)) return 'Poller running';
+  return `Poller running, next check ${formatPollerClock(new Date(at), now)}`;
+}

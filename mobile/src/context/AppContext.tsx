@@ -1,5 +1,6 @@
 import {
   applyNeedsInputEvent,
+  sessionStatePatch,
   applyNeedsInputSnapshot,
   reseedNeedsInputFromSessions,
   type NeedsInputMap,
@@ -789,10 +790,9 @@ export function AppProvider({ children }: any) {
         }
         case 'session_state': {
           const sid = data.sessionId;
-          if (!sid || typeof data.state !== 'string') break;
-          setSessions((prev: any) =>
-            prev.map((s: any) => (s.id === sid ? { ...s, state: data.state } : s)),
-          );
+          const patch = sessionStatePatch(data);
+          if (!sid || !patch) break;
+          setSessions((prev: any) => prev.map((s: any) => (s.id === sid ? { ...s, ...patch } : s)));
           break;
         }
         case 'session-worktree-detected':
@@ -3053,6 +3053,7 @@ export function AppProvider({ children }: any) {
     sessions,
     activeSessionId,
     activeSessionState,
+    activeSessionPollerNextRunAt: activeSession?.poller_next_run_at ?? null,
     setActiveSessionId,
     hubSessionId,
     setHubSessionId,

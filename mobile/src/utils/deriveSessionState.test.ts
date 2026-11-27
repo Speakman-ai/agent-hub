@@ -95,3 +95,37 @@ describe('deriveSessionState', () => {
     ).toBe('waiting_for_user_input');
   });
 });
+
+describe('deriveSessionState with a session poller', () => {
+  it('shows polling when the session carries an active poller and nothing else runs', () => {
+    expect(deriveSessionState({ id: 's1', has_active_poller: true })).toBe('polling');
+  });
+
+  it('a running check-in turn shows working', () => {
+    expect(
+      deriveSessionState(
+        { id: 's1', has_active_poller: true, state: 'polling' },
+        { activeTaskSessionIds: { s1: true } },
+      ),
+    ).toBe('working');
+  });
+
+  it('needs_input still wins over a poller', () => {
+    expect(
+      deriveSessionState(
+        { id: 's1', has_active_poller: true },
+        { needsInputBySession: { s1: { kind: 'question', at: 1 } } },
+      ),
+    ).toBe('needs_input');
+  });
+
+  it('falls back to the polling seed when the payload has no poller field', () => {
+    expect(deriveSessionState({ id: 's1', state: 'polling' })).toBe('polling');
+  });
+
+  it('a stopped poller does not revive a stale polling seed', () => {
+    expect(deriveSessionState({ id: 's1', has_active_poller: false, state: 'polling' })).toBe(
+      'waiting_for_user_input',
+    );
+  });
+});

@@ -1,5 +1,6 @@
 import {
   applyNeedsInputEvent,
+  sessionStatePatch,
   applyNeedsInputSnapshot,
   reseedNeedsInputFromSessions,
   reseedFinalizeStatusFromSessions,
@@ -2769,19 +2770,18 @@ export default function App({ initialView }: any = {}) {
           // so late terminal states (pushed / merged) update immediately even
           // when no independent client-side signal map changes.
           const sid = data.sessionId;
-          if (!sid || typeof data.state !== 'string') break;
+          const patch = sessionStatePatch(data);
+          if (!sid || !patch) break;
           const current = sessionsByIdRef.current.get(sid);
           if (current) {
-            sessionsByIdRef.current.set(sid, { ...current, state: data.state });
+            sessionsByIdRef.current.set(sid, { ...current, ...patch });
             setSessionsIndexTick((t: any) => t + 1);
           }
-          setSessions((prev: any) =>
-            prev.map((s: any) => (s.id === sid ? { ...s, state: data.state } : s)),
-          );
+          setSessions((prev: any) => prev.map((s: any) => (s.id === sid ? { ...s, ...patch } : s)));
           // Other agents' / projects' sidebar rows render from the per-agent
           // cache, which `sessions` only syncs for the loaded agent.
           setSessionsByAgentId((prev: any) =>
-            patchSessionInAgentCaches(prev, sid, (s: any) => ({ ...s, state: data.state })),
+            patchSessionInAgentCaches(prev, sid, (s: any) => ({ ...s, ...patch })),
           );
           break;
         }
@@ -7639,6 +7639,7 @@ export default function App({ initialView }: any = {}) {
                       messages={messages}
                       activeSessionId={activeSessionId}
                       activeSessionState={activeSessionState}
+                      activeSessionPollerNextRunAt={activeSession?.poller_next_run_at ?? null}
                       backgroundShellWatch={
                         activeSessionId
                           ? deriveWatchIndicator(backgroundShellsBySession[activeSessionId])

@@ -17,7 +17,9 @@ import {
   reseedNeedsInputFromSessions,
   isNeedsInputKind,
   isSessionsViewMode,
+  sessionStatePatch,
 } from './sessionState.js';
+import { pollingStateLabel, summarizeActivePollers, type SessionPoller } from './sessionPoller.js';
 
 describe('finalizeStatusToState', () => {
   it.each([
@@ -115,6 +117,7 @@ describe('SESSION_STATE_META', () => {
     expect(SESSION_STATE_META.merged.icon).toBe('GitMerge');
     expect(SESSION_STATE_META.needs_input.icon).toBe('CircleAlert');
     expect(SESSION_STATE_META.waiting_on_background.icon).toBe('Radio');
+    expect(SESSION_STATE_META.polling.icon).toBe('Timer');
   });
 });
 
@@ -144,6 +147,98 @@ describe('waiting_on_background state', () => {
     expect(buildSessionBoardColumns([]).some((c) => c.state === 'waiting_on_background')).toBe(
       false,
     );
+  });
+});
+
+describe('polling state', () => {
+  const poller = { hasActivePoller: true };
+
+  it('replaces the idle state while a poller runs', () => {
+    expect(resolveSessionState(poller)).toBe('polling');
+    expect(SESSION_STATE_META.polling).toMatchObject({
+      label: 'Poller running',
+      short: 'Polling',
+      color: 'sky',
+    });
+    expect(SESSION_STATE_META.polling.anim).not.toBe('spin');
+  });
+
+  it('yields to a live turn, needs_input, Finalize phases and a background shell', () => {
+    expect(resolveSessionState({ ...poller, hasActiveTask: true })).toBe('working');
+    expect(resolveSessionState({ ...poller, needsInput: 'question' })).toBe('needs_input');
+    expect(resolveSessionState({ ...poller, finalizeStatus: 'running' })).toBe('running_tests');
+    expect(resolveSessionState({ ...poller, finalizeStatus: 'disputed' })).toBe('needs_input');
+    expect(resolveSessionState({ ...poller, hasRunningBackgroundShell: true })).toBe(
+      'waiting_on_background',
+    );
+  });
+
+  it('outranks the settled merged and pushed states', () => {
+    expect(resolveSessionState({ ...poller, merged: true })).toBe('polling');
+    expect(resolveSessionState({ ...poller, finalizeStatus: 'pushed' })).toBe('polling');
+    expect(resolveSessionState({ ...poller, finalizeStatus: 'ready_to_push' })).toBe('polling');
+  });
+
+  it('falls back to what the session would show once the poller stops', () => {
+    expect(resolveSessionState({ hasActivePoller: false })).toBe('waiting_for_user_input');
+    expect(resolveSessionState({ hasActivePoller: false, merged: true })).toBe('merged');
+  });
+
+  it('only gets a board column while a session is in it', () => {
+    expect(buildSessionBoardColumns([]).some((c) => c.state === 'polling')).toBe(false);
+    expect(
+      buildSessionBoardColumns([{ state: 'polling' }]).some((c) => c.state === 'polling'),
+    ).toBe(true);
+  });
+
+  it('labels the next check time when one is known', () => {
+    expect(pollingStateLabel(null)).toBe('Poller running');
+    expect(pollingStateLabel('not a date')).toBe('Poller running');
+    expect(pollingStateLabel('2026-11-27T14:30:00.000Z', new Date('2026-11-27T12:00:00Z'))).toMatch(
+      /^Poller running, next check /,
+    );
+  });
+
+  it('counts only active pollers that are not past their end', () => {
+    const now = new Date('2026-11-27T12:00:00Z');
+    const base: SessionPoller = {
+      id: 'p1',
+      sessionId: 's1',
+      pollerId: 'p1',
+      task: 't',
+      intervalMinutes: 30,
+      durationMinutes: 60,
+      notifyEachRun: false,
+      notifyOnComplete: true,
+      status: 'active',
+      runCount: 1,
+      startedAt: '2026-11-27T11:30:00Z',
+      endsAt: '2026-11-27T12:30:00Z',
+      nextRunAt: '2026-11-27T12:15:00Z',
+      lastRunAt: null,
+      finishedAt: null,
+    };
+    expect(summarizeActivePollers([], now)).toEqual({ hasActivePoller: false, nextRunAt: null });
+    expect(summarizeActivePollers([{ ...base, status: 'cancelled' }], now).hasActivePoller).toBe(
+      false,
+    );
+    expect(
+      summarizeActivePollers([{ ...base, endsAt: '2026-11-27T11:59:00Z' }], now).hasActivePoller,
+    ).toBe(false);
+    expect(
+      summarizeActivePollers(
+        [base, { ...base, id: 'p2', endsAt: null, nextRunAt: '2026-11-27T12:05:00Z' }],
+        now,
+      ),
+    ).toEqual({ hasActivePoller: true, nextRunAt: '2026-11-27T12:05:00Z' });
+  });
+
+  it('session_state pushes carry the poller fields onto the session row', () => {
+    expect(
+      sessionStatePatch({ state: 'polling', has_active_poller: true, poller_next_run_at: 'x' }),
+    ).toEqual({ state: 'polling', has_active_poller: true, poller_next_run_at: 'x' });
+    expect(sessionStatePatch({ state: 'merged' })).toEqual({ state: 'merged' });
+    expect(sessionStatePatch({})).toBeNull();
   });
 });
 
