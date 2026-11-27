@@ -9,6 +9,14 @@ import { createOrganizationPortfolioApi } from '@shared/utils/organization-portf
 import type { UploadedAttachment } from '@shared/types/uploads';
 import type { ServerAgentSkillRef } from '@shared/utils/hub';
 import type { ServerAgentSkillOptions } from '@shared/utils/serverAgentSkills';
+import type { ProactivePrefsPatch } from '@shared/utils/proactivePrefsQueue';
+import type {
+  ProactiveOffer,
+  ProactiveOfferAction,
+  ProactiveOfferKind,
+  ProactiveOfferStatus,
+  ServerAgentProactivePrefs,
+} from '@shared/utils/serverAgentProactive';
 import {
   ROUTINE_DRAFT_TIMEOUT_MS,
   type RoutineDraftWire,
@@ -1449,6 +1457,61 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(body),
     }),
+  // Server Agent proactive mode. Writes broadcast `server_agent_offer_update`.
+  listServerAgentOffers: (status: ProactiveOfferStatus | 'all' = 'open') =>
+    fetchJSON<{ offers: ProactiveOffer[] }>(
+      `/me/server-agent/offers?status=${encodeURIComponent(status)}`,
+    ),
+  actOnServerAgentOffer: (id: string, action: ProactiveOfferAction) =>
+    fetchJSON<{
+      offer: ProactiveOffer;
+      sessionId: string | null;
+      suppression: {
+        id: string;
+        kind: ProactiveOfferKind;
+        label: string;
+        createdAt: string;
+      } | null;
+    }>(`/me/server-agent/offers/${encodeURIComponent(id)}/act`, {
+      method: 'POST',
+      body: JSON.stringify({ action }),
+    }),
+  listServerAgentSuppressions: () =>
+    fetchJSON<{
+      suppressions: Array<{
+        id: string;
+        kind: ProactiveOfferKind;
+        label: string;
+        createdAt: string;
+      }>;
+    }>('/me/server-agent/suppressions'),
+  deleteServerAgentSuppression: (id: string) =>
+    fetchJSON<{ ok: true }>(`/me/server-agent/suppressions/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  getServerAgentProactive: () =>
+    fetchJSON<{
+      prefs: ServerAgentProactivePrefs;
+      state: {
+        lastCheckAt: string | null;
+        lastStatus: string | null;
+        lastError: string | null;
+        lastModelAt: string | null;
+      };
+    }>('/me/server-agent/proactive'),
+  putServerAgentProactive: (body: ProactivePrefsPatch) =>
+    fetchJSON<{ prefs: ServerAgentProactivePrefs }>('/me/server-agent/proactive', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  runServerAgentProactiveCheck: () =>
+    fetchJSON<{
+      status: string;
+      ranModel: boolean;
+      eligible: number;
+      offers: ProactiveOffer[];
+      error?: string;
+    }>('/me/server-agent/proactive/check', { method: 'POST', timeout: 240_000 }),
   getHubModel: () => fetchJSON<{ engine: string; model: string }>('/me/hub-model'),
   putHubModel: (body: { engine: string; model: string }) =>
     fetchJSON<{ engine: string; model: string }>('/me/hub-model', {

@@ -9,7 +9,8 @@
  * @typedef {{ kind: 'hubChat', channelId: string }} HubChatRoute
  * @typedef {{ kind: 'deployments', projectId: string }} DeploymentsRoute
  * @typedef {{ kind: 'reminders' }} RemindersRoute
- * @typedef {ChatRoute | KanbanRoute | SupportRoute | PullsRoute | InfraRoute | HubChatRoute | DeploymentsRoute | RemindersRoute} Route
+ * @typedef {{ kind: 'serverAgent' }} ServerAgentRoute
+ * @typedef {ChatRoute | KanbanRoute | SupportRoute | PullsRoute | InfraRoute | HubChatRoute | DeploymentsRoute | RemindersRoute | ServerAgentRoute} Route
  */
 import type { InboxNotification } from '@shared/utils/notificationInbox';
 /**
@@ -136,6 +137,8 @@ export function routeNotificationTap(data: any, ctx: any = {}) {
     }
     case 'reminder':
       return { kind: 'reminders' as const };
+    case 'server_agent_offer':
+      return { kind: 'serverAgent' as const };
     case 'deploy_outcome': {
       const projectId = typeof data.projectId === 'string' ? data.projectId : null;
       if (!projectId) return null;
@@ -332,6 +335,8 @@ export function notificationRouteToNavigation(route: any) {
       return { screen: 'Deployments', params: { projectId: route.projectId } };
     case 'reminders':
       return { screen: 'Hub', params: { tab: 'reminders' } };
+    case 'serverAgent':
+      return { screen: 'Hub', params: { tab: 'agent' } };
     default:
       return null;
   }

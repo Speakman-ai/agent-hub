@@ -507,6 +507,17 @@ describe('routeNotificationTap — approval requested', () => {
   });
 });
 
+describe('server agent offers', () => {
+  it('opens the Server Agent tab from a push', () => {
+    const route = routeNotificationTap({ event: 'server_agent_offer', offerId: 'o1' });
+    expect(route).toEqual({ kind: 'serverAgent' });
+    expect(notificationRouteToNavigation(route)).toEqual({
+      screen: 'Hub',
+      params: { tab: 'agent' },
+    });
+  });
+});
+
 describe('reminders', () => {
   it('opens the Hub Reminders tab from a push, a bell row, and a web link', () => {
     const route = routeNotificationTap({ event: 'reminder', reminderId: 'r1', sessionId: 's1' });

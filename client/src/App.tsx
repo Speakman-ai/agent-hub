@@ -3556,6 +3556,10 @@ export default function App({ initialView }: any = {}) {
         case 'reminder_update':
           window.dispatchEvent(new CustomEvent('reminder_update', { detail: data }));
           break;
+        // Server Agent proactive offers changed (owner-only on the server).
+        case 'server_agent_offer_update':
+          window.dispatchEvent(new CustomEvent('server_agent_offer_update', { detail: data }));
+          break;
         // Agent-written Google Chat reply draft changed. Owner-only on the
         // server; bridged so the session panel and the Chat pane both update.
         case 'google_chat_draft_update':
@@ -8223,6 +8227,11 @@ export default function App({ initialView }: any = {}) {
                   }
                   today={
                     <PersonalDashboard
+                      onOpenServerAgent={() => {
+                        setCurrentView('hub');
+                        setHubPane('agent');
+                        setHubMobileTab('agent');
+                      }}
                       onNavigate={(view: any) => {
                         const pane = hubPaneFromLegacyView(view);
                         if (pane) {

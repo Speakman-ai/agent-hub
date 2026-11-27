@@ -10,6 +10,8 @@ import { useApp } from '../context/AppContext';
 import { colors } from '../theme/colors';
 import HubIcon from '../components/HubIcon';
 import { ServerAgentSkillsSection } from '../components/ServerAgentSkillsSection';
+import { ServerAgentOffers } from '../components/ServerAgentOffers';
+import { ServerAgentProactiveSection } from '../components/ServerAgentProactiveSection';
 import ChatScreen from './ChatScreen';
 import {
   DEFAULT_SERVER_AGENT_NAME,
@@ -49,6 +51,7 @@ export function ServerAgentScreen({ onOpenSettings }: { onOpenSettings: () => vo
           <HubIcon name="Settings" size={18} color={colors.gray300} />
         </TouchableOpacity>
       </View>
+      <ServerAgentOffers />
       <ChatScreen
         embedded
         onClearChat={() => {
@@ -181,6 +184,7 @@ export function ServerAgentSettingsScreen({ onBack }: { onBack: () => void }) {
           settings={loaded ? settings : null}
           enabled={loaded}
         />
+        <ServerAgentProactiveSection enabled={loaded} />
       </ScrollView>
     </View>
   );

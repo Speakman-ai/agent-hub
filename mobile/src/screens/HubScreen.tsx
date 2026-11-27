@@ -74,6 +74,10 @@ function HubBody({
                 setTab('mail');
                 return;
               }
+              if (name === 'ServerAgent') {
+                setTab('agent');
+                return;
+              }
               navigation.navigate(name, params);
             },
           }}

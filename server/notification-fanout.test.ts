@@ -1059,3 +1059,33 @@ describe('mapBroadcastToNotification: session pollers', () => {
     ).toBeNull();
   });
 });
+
+describe('mapBroadcastToNotification: Server Agent offers', () => {
+  const created = {
+    type: 'server_agent_offer_update',
+    ownerUserId: 'u1',
+    action: 'created',
+    push: true,
+    offerId: 'o1',
+    offer: { id: 'o1', title: 'Fix Finalize', reason: 'lint failed', target: { projectId: 'p1' } },
+  };
+
+  it('notifies the owner alone for a newly raised offer', () => {
+    const n = mapBroadcastToNotification(created);
+    expect(n).toMatchObject({
+      category: 'server_agent_offer',
+      title: 'Fix Finalize',
+      body: 'lint failed',
+      sourceKey: 'server_agent_offer:o1',
+      recipients: { kind: 'self', userId: 'u1' },
+      deviceScope: 'recipients',
+      data: { offerId: 'o1', type: 'server_agent_offer' },
+    });
+  });
+
+  it('stays silent when push is off or the offer was only updated', () => {
+    expect(mapBroadcastToNotification({ ...created, push: false })).toBeNull();
+    expect(mapBroadcastToNotification({ ...created, action: 'updated' })).toBeNull();
+    expect(mapBroadcastToNotification({ ...created, ownerUserId: undefined })).toBeNull();
+  });
+});

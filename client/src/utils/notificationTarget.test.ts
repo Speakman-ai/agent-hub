@@ -39,6 +39,12 @@ describe('notificationTarget', () => {
     ).toEqual({ kind: 'route', route: { view: 'hub', hubPane: 'reminders' } });
   });
 
+  it('opens the Server Agent page for proactive offers', () => {
+    expect(
+      notificationTarget(row({ category: 'server_agent_offer', data: { offerId: 'o1' } })),
+    ).toEqual({ kind: 'route', route: { view: 'hub', hubPane: 'agent' } });
+  });
+
   it('opens the card on the board for card assignments', () => {
     expect(
       notificationTarget(

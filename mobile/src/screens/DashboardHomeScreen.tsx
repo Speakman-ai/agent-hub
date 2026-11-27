@@ -27,6 +27,7 @@ import {
 } from '../utils/dashboardPanes';
 import { googleAccountColor } from '@shared/utils/googleAccounts';
 import { mailSenderName, formatMailDate, type DashboardMailMessage } from '../utils/mail';
+import { SuggestedForYouStrip } from '../components/ServerAgentOffers';
 
 /**
  * Hub Dashboard — the mobile peer of the web Hub Dashboard pane. One aggregation
@@ -416,6 +417,13 @@ export default function DashboardHomeScreen({ navigation, embedded = false }: an
             />
           }
         >
+          <SuggestedForYouStrip
+            onOpenServerAgent={() =>
+              embedded
+                ? navigation.navigate('ServerAgent')
+                : navigation.navigate('Hub', { tab: 'agent' })
+            }
+          />
           {/* My Work — assigned cards across every visible project */}
           <Pane title="My Work" icon="LayoutGrid" count={work?.counts?.open}>
             {openCards.length === 0 ? (

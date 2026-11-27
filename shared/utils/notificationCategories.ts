@@ -76,6 +76,13 @@ export const NOTIFICATION_SECTIONS = [
         description: 'A reminder you or an agent set is due',
         defaults: LOUD,
       },
+      {
+        id: 'server_agent_offer',
+        label: 'Server Agent offers',
+        description: 'Your Server Agent noticed something and offered to handle it',
+        // Proactive mode has its own push switch and daily cap; honor it loudly.
+        defaults: LOUD,
+      },
     ],
   },
   {

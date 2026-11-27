@@ -88,6 +88,8 @@ export function notificationTarget(n: InboxNotification): NotificationTarget | n
     }
     case 'reminder':
       return { kind: 'route', route: { view: 'hub', hubPane: 'reminders' } };
+    case 'server_agent_offer':
+      return { kind: 'route', route: { view: 'hub', hubPane: 'agent' } };
     case 'infra_alert':
       return projectId ? { kind: 'route', route: { view: `infra:${projectId}` } } : null;
     case 'deploy_outcome':

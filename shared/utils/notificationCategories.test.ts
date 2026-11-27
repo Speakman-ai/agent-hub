@@ -31,7 +31,7 @@ describe('notification category catalog', () => {
         'session_completed',
         'session_poller',
       ],
-      reminders: ['reminder'],
+      reminders: ['reminder', 'server_agent_offer'],
       code: [
         'ready_to_push',
         'pushed',
@@ -62,6 +62,7 @@ describe('notification category catalog', () => {
       'browser_sign_in',
       'approval_requested',
       'reminder',
+      'server_agent_offer',
       'session_poller',
       'review_assigned_to_you',
       'pr_environment_ready',

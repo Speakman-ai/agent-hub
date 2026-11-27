@@ -4,7 +4,10 @@ import PersonalDashboard from './PersonalDashboard';
 import { api, type MeDashboardWire } from '../utils/api';
 
 vi.mock('../utils/api', () => ({
-  api: { getMeDashboard: vi.fn() },
+  api: {
+    getMeDashboard: vi.fn(),
+    listServerAgentOffers: vi.fn().mockResolvedValue({ offers: [] }),
+  },
 }));
 
 function payload(overrides: Partial<MeDashboardWire> = {}): MeDashboardWire {

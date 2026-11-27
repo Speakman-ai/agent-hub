@@ -327,6 +327,15 @@ export function AppProvider({ children }: any) {
       reminderListenersRef.current.delete(listener);
     };
   }, []);
+  // `server_agent_offer_update` WS events (owner-only on the server), fanned
+  // out one by one for the same reason as reminders.
+  const offerListenersRef = useRef(new Set<(event: any) => void>());
+  const subscribeServerAgentOffers = useCallback((listener: (event: any) => void) => {
+    offerListenersRef.current.add(listener);
+    return () => {
+      offerListenersRef.current.delete(listener);
+    };
+  }, []);
   // Last `google_chat_draft_update` WS event (owner-only on the server):
   // { draft, bump }. Drives the session's agent-reply approval panel.
   const [lastGoogleChatDraftEvent, setLastGoogleChatDraftEvent] = useState<any>(null);
@@ -1084,6 +1093,11 @@ export function AppProvider({ children }: any) {
         case 'qa_update':
           qaUpdateHub.emit(data);
           break;
+        case 'server_agent_offer_update':
+          for (const listener of offerListenersRef.current) {
+            listener({ offerId: data.offerId ?? null, offer: data.offer ?? null });
+          }
+          break;
         case 'reminder_update':
           for (const listener of reminderListenersRef.current) {
             listener({
@@ -1547,7 +1561,8 @@ export function AppProvider({ children }: any) {
         case 'infra':
         case 'hubChat':
         case 'deployments':
-        case 'reminders': {
+        case 'reminders':
+        case 'serverAgent': {
           // Navigator-driven kinds share one param mapper (screen + params,
           // including the `pulls` PR number and the `infra` alert id).
           const nav = notificationRouteToNavigation(route);
@@ -3163,6 +3178,7 @@ export function AppProvider({ children }: any) {
     lastUserTodoEvent,
     subscribeQaUpdates,
     subscribeReminderUpdates,
+    subscribeServerAgentOffers,
     lastGoogleChatDraftEvent,
     lastOrganizationEvent,
     // Shared org todos (live refetch signal)

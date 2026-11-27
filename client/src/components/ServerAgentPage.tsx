@@ -16,6 +16,8 @@ import {
   useServerAgentSettings,
 } from '../utils/serverAgentSettings';
 import { ServerAgentSkillsSection } from './ServerAgentSkillsSection';
+import { ServerAgentOffers } from './ServerAgentOffers';
+import { ServerAgentProactiveSection } from './ServerAgentProactiveSection';
 
 /**
  * The Server Agent: the user's assistant for everything Agent Hub. It acts
@@ -54,6 +56,7 @@ export function ServerAgentPage({
           <Settings size={16} />
         </button>
       </div>
+      <ServerAgentOffers />
       {children}
     </div>
   );
@@ -198,6 +201,7 @@ export function ServerAgentSettingsPage({ onBack }: { onBack: () => void }) {
             settings={loaded ? settings : null}
             enabled={loaded}
           />
+          <ServerAgentProactiveSection enabled={loaded} />
         </div>
       </div>
     </div>

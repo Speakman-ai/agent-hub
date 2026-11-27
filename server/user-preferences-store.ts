@@ -39,6 +39,10 @@
 import { getOrgsDb } from './orgs.js';
 import { SERVER_AGENT_LIMITS, type ServerAgentSkillRef } from '../shared/utils/hub.js';
 import {
+  normalizeProactivePrefs,
+  type ServerAgentProactivePrefs,
+} from '../shared/utils/serverAgentProactive.js';
+import {
   normalizeDailySummarySchedule,
   type HubDailySummarySchedule,
 } from './daily-summary-schedule.js';
@@ -69,9 +73,11 @@ export interface ServerAgentPrefs {
   instructions?: string;
   /** Skills added on top of the built-in Hub set. */
   skills?: ServerAgentSkillRef[];
+  /** Proactive mode settings. Absent means never configured (off). */
+  proactive?: ServerAgentProactivePrefs;
 }
 
-export type { ServerAgentSkillRef };
+export type { ServerAgentSkillRef, ServerAgentProactivePrefs };
 
 export const SERVER_AGENT_SKILLS_MAX = SERVER_AGENT_LIMITS.skills;
 const SKILL_REF_ID_MAX = 200;
@@ -115,6 +121,9 @@ export function normalizeServerAgentPrefs(raw: unknown): ServerAgentPrefs | unde
   if (instructions) out.instructions = instructions.slice(0, SERVER_AGENT_INSTRUCTIONS_MAX);
   const skills = normalizeServerAgentSkillRefs(obj.skills);
   if (skills) out.skills = skills;
+  if (obj.proactive && typeof obj.proactive === 'object' && !Array.isArray(obj.proactive)) {
+    out.proactive = normalizeProactivePrefs(obj.proactive);
+  }
   return Object.keys(out).length ? out : undefined;
 }
 
@@ -357,6 +366,25 @@ export function listUsersWithDailySummarySchedule(): Array<{
     if (prefs.hubDailySummarySchedule) {
       out.push({ userId: row.id, schedule: prefs.hubDailySummarySchedule });
     }
+  }
+  return out;
+}
+
+/**
+ * Users whose stored Server Agent prefs have proactive mode switched on. Scans
+ * only rows mentioning the key so the minute ticker stays cheap.
+ */
+export function listUsersWithProactiveEnabled(): Array<{
+  userId: string;
+  prefs: ServerAgentProactivePrefs;
+}> {
+  const rows = getOrgsDb()
+    .prepare("SELECT id, preferences_json FROM users WHERE preferences_json LIKE '%proactive%'")
+    .all() as Array<{ id: string; preferences_json: string | null }>;
+  const out: Array<{ userId: string; prefs: ServerAgentProactivePrefs }> = [];
+  for (const row of rows) {
+    const proactive = parsePrefsJson(row.preferences_json ?? null).serverAgent?.proactive;
+    if (proactive?.enabled) out.push({ userId: row.id, prefs: proactive });
   }
   return out;
 }

@@ -353,6 +353,9 @@ import createHubChatRoutes from './routes/hub-chat.js';
 import createProjectChatTriggerRoutes from './routes/project-chat-triggers.js';
 import createMeDashboardRoutes from './routes/me-dashboard.js';
 import createMeHubRoutes from './routes/me-hub.js';
+import createMeServerAgentOfferRoutes from './routes/me-server-agent-offers.js';
+import { runProactiveTick, type ProactiveDeps } from './proactive/check.js';
+import { noteBroadcastForProactive } from './proactive/events.js';
 import createMeNotificationPreferencesRoutes from './routes/me-notification-preferences.js';
 import createSessionFolderRoutes from './routes/session-folders.js';
 import createMeBrowserProfilesRoutes from './routes/me-browser-profiles.js';
@@ -966,6 +969,24 @@ function broadcast(data: Record<string, unknown>): void {
   } catch (err) {
     console.error('[qa] session request observer failed:', (err as Error).message);
   }
+  // Server Agent proactive mode: urgent events trigger a single-item check.
+  if (process.env.NODE_ENV !== 'test') {
+    try {
+      noteBroadcastForProactive(data, proactiveDeps());
+    } catch (err) {
+      console.error('[proactive] event observer failed:', (err as Error).message);
+    }
+  }
+}
+
+function proactiveDeps(): ProactiveDeps {
+  return {
+    config,
+    stmts: stmts!,
+    broadcast,
+    getProjects,
+    projectIdForAgent: (agentId) => findAgent(agentId)?.project?.id ?? null,
+  };
 }
 
 // Git smart-HTTP transport for Agent Hub-hosted repos (/git/<id>.git).
@@ -2893,6 +2914,7 @@ app.use(createHubChatRoutes(routeDeps));
 app.use(createProjectChatTriggerRoutes(routeDeps));
 app.use(createMeDashboardRoutes(routeDeps));
 app.use(createMeHubRoutes(routeDeps));
+app.use(createMeServerAgentOfferRoutes(routeDeps));
 app.use(createMeNotificationPreferencesRoutes(routeDeps));
 app.use(createSessionFolderRoutes(routeDeps));
 app.use(createMeBrowserProfilesRoutes(routeDeps));
@@ -3680,13 +3702,19 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
         migrateSchedules: () => {
           migrateDailySummarySchedules({ broadcast });
         },
-        onTick: (now) =>
-          runChannelDigestTick(now, {
+        onTick: async (now) => {
+          await runChannelDigestTick(now, {
             config,
             broadcast,
             findProject,
             getProjects,
-          }),
+          });
+          // Server Agent proactive check-ins ride the same minute ticker. Not
+          // awaited: model calls can outlast a minute and must not hold digests.
+          runProactiveTick(now, proactiveDeps()).catch((err: Error) =>
+            console.error('[proactive] tick failed:', err.message),
+          );
+        },
       });
     } catch (e) {
       console.error('[daily-summary-schedule] init on boot', (e as Error).message);

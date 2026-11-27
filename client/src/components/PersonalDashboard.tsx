@@ -29,6 +29,7 @@ import {
 import { googleAccountColor } from '@shared/utils/googleAccounts';
 import { dueLabel, dueState, todoDoDate } from '../utils/todos';
 import { mailSenderName, formatMailDate } from '../utils/mail';
+import { SuggestedForYouStrip } from './ServerAgentOffers';
 
 /**
  * Hub Dashboard — personal work across every project. Lives on Hub with Daily
@@ -40,6 +41,8 @@ import { mailSenderName, formatMailDate } from '../utils/mail';
 
 interface PersonalDashboardProps {
   onNavigate: (view: string) => void;
+  /** Opens the Server Agent page (the "Suggested for you" strip links there). */
+  onOpenServerAgent?: () => void;
   onOpenAccountSettings: () => void;
   onOpenKanban: (projectId: string) => void;
 }
@@ -194,6 +197,7 @@ function GoogleGate({
 
 export default function PersonalDashboard({
   onNavigate,
+  onOpenServerAgent,
   onOpenAccountSettings,
   onOpenKanban,
 }: PersonalDashboardProps) {
@@ -281,6 +285,8 @@ export default function PersonalDashboard({
             <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} /> Refresh
           </button>
         </div>
+
+        <SuggestedForYouStrip onOpenServerAgent={onOpenServerAgent} />
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 auto-rows-[minmax(0,20rem)]">
           {/* My Work — assigned cards across every visible project */}

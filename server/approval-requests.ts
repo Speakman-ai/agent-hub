@@ -123,6 +123,12 @@ export function hasPendingApprovalForSession(sessionId: string): boolean {
   return false;
 }
 
+/** Id of the approval request a turn in `sessionId` is parked on, if any. */
+export function pendingApprovalIdForSession(sessionId: string): string | null {
+  for (const [id, w] of waiters) if (w.sessionId === sessionId) return id;
+  return null;
+}
+
 /** Summary for broadcasts, notifications and REST. */
 export function serializeApproval(a: ApprovalRequest) {
   return {

@@ -35,6 +35,8 @@ export interface DashboardCalendarEvent extends DashboardAccountTag {
   end: string | null;
   htmlLink: string | null;
   hangoutLink: string | null;
+  /** Google's last-modified time for the event (RFC3339); bumps on every edit. */
+  updated?: string | null;
 }
 
 export interface DashboardCalendar {
@@ -282,6 +284,7 @@ async function readCalendar(
       end: e.end?.dateTime ?? e.end?.date ?? null,
       htmlLink: e.htmlLink ?? null,
       hangoutLink: e.hangoutLink ?? null,
+      updated: e.updated ?? null,
     }));
     return {
       scopeGranted: true,

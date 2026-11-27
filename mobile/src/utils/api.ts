@@ -1813,6 +1813,22 @@ export const api = {
     skills?: Array<{ id: string; projectId?: string }>;
   }) => fetchJSON('/me/server-agent', { method: 'PUT', body: JSON.stringify(body) }),
   getServerAgentSkillOptions: () => fetchJSON('/me/server-agent/skill-options'),
+  // Server Agent proactive mode. Writes broadcast `server_agent_offer_update`.
+  listServerAgentOffers: (status = 'open') =>
+    fetchJSON(`/me/server-agent/offers?status=${encodeURIComponent(status)}`),
+  actOnServerAgentOffer: (id: string, action: 'accept' | 'snooze' | 'never') =>
+    fetchJSON(`/me/server-agent/offers/${encodeURIComponent(id)}/act`, {
+      method: 'POST',
+      body: JSON.stringify({ action }),
+    }),
+  listServerAgentSuppressions: () => fetchJSON('/me/server-agent/suppressions'),
+  deleteServerAgentSuppression: (id: string) =>
+    fetchJSON(`/me/server-agent/suppressions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  getServerAgentProactive: () => fetchJSON('/me/server-agent/proactive'),
+  putServerAgentProactive: (body: Record<string, unknown>) =>
+    fetchJSON('/me/server-agent/proactive', { method: 'PUT', body: JSON.stringify(body) }),
+  runServerAgentProactiveCheck: () =>
+    fetchJSON('/me/server-agent/proactive/check', { method: 'POST' }),
   getHubModel: () => fetchJSON('/me/hub-model'),
   putHubModel: (body: { engine: string; model: string }) =>
     fetchJSON('/me/hub-model', { method: 'PUT', body: JSON.stringify(body) }),

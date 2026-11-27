@@ -29,7 +29,7 @@ import {
   sessionForwardDispatchKeyPrefix,
 } from '../shared/utils/sessionForwardDispatchKey.js';
 import { extractForwardBlocks } from '../shared/utils/extractForwardBlocks.js';
-import { hasPendingApprovalForSession } from './approval-requests.js';
+import { hasPendingApprovalForSession, pendingApprovalIdForSession } from './approval-requests.js';
 import { getPendingBrowserLogin } from './browser-login-handoff.js';
 import type { NeedsInputKind } from '../shared/utils/sessionState.js';
 
@@ -136,6 +136,40 @@ export function computeSessionNeedsInput(stmts: Stmts, sessionId: string): Needs
       | undefined;
     if (run?.status === 'disputed') return 'review_disputed';
     return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Identity of the *specific* request a session is waiting on, so a later
+ * request of the same kind is a different thing: the approval or sign-in
+ * request id, the assistant message that asked the question or credential,
+ * or the disputed Finalize run. Null when the source can't be read.
+ */
+export function needsInputGeneration(
+  stmts: Stmts,
+  sessionId: string,
+  kind: NeedsInputKind,
+): string | null {
+  try {
+    switch (kind) {
+      case 'sign_in':
+        return getPendingBrowserLogin(sessionId)?.requestId ?? null;
+      case 'approval':
+        return pendingApprovalIdForSession(sessionId);
+      case 'question':
+      case 'credential':
+        return latestAssistant(recentMessages(stmts, sessionId))?.id ?? null;
+      case 'review_disputed': {
+        const run = stmts.getLatestFinalizeRunForSession.get(sessionId) as
+          | { id?: string }
+          | undefined;
+        return run?.id ?? null;
+      }
+      default:
+        return null;
+    }
   } catch {
     return null;
   }

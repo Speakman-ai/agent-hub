@@ -131,8 +131,17 @@ describe('session-state DB integration', () => {
   it('recompute broadcasts a session_state event with the resolved state', () => {
     const events: unknown[] = [];
     recomputeSessionState(stmts, 's1', { agentId: 'a1', broadcast: (m) => events.push(m) });
+    // No poller in this session: the poller fields added to the event are
+    // present and empty.
     expect(events).toEqual([
-      { type: 'session_state', sessionId: 's1', agentId: 'a1', state: 'waiting_for_user_input' },
+      {
+        type: 'session_state',
+        sessionId: 's1',
+        agentId: 'a1',
+        state: 'waiting_for_user_input',
+        has_active_poller: false,
+        poller_next_run_at: null,
+      },
     ]);
   });
 

@@ -13032,6 +13032,7 @@ components:
             session_completed: *a3
             session_poller: *a3
             reminder: *a3
+            server_agent_offer: *a3
             ready_to_push: *a3
             pushed: *a3
             finalize_failed: *a3
@@ -13091,6 +13092,7 @@ components:
                     - session_completed
                     - session_poller
                     - reminder
+                    - server_agent_offer
                     - ready_to_push
                     - pushed
                     - finalize_failed
@@ -13124,6 +13126,7 @@ components:
                   - session_completed
                   - session_poller
                   - reminder
+                  - server_agent_offer
                   - ready_to_push
                   - pushed
                   - finalize_failed
@@ -13299,6 +13302,226 @@ components:
         - updatedAt
         - revision
       description: A personal reminder that fires into the notification inbox.
+    ServerAgentProactiveError:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope.
+    ServerAgentOffer:
+      type: object
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum:
+            - finalize_failed
+            - session_needs_input
+            - session_stuck
+            - pr_review
+            - stale_card
+            - idle_epic
+            - email_reply
+            - meeting_prep
+            - calendar_conflict
+            - infra_alert
+            - deploy_failed
+            - aws_sso_expiring
+            - todo_overdue
+            - follow_up
+        area:
+          type: string
+          enum:
+            - dev
+            - google
+            - infra
+            - todos
+        title:
+          type: string
+        reason:
+          type: string
+        action:
+          type: string
+        urgency:
+          type: string
+          enum:
+            - low
+            - normal
+            - high
+            - urgent
+        status:
+          type: string
+          enum:
+            - open
+            - accepted
+            - dismissed
+            - expired
+            - suppressed
+        source:
+          type: string
+          enum:
+            - scheduled
+            - event
+            - manual
+        target:
+          type: object
+          properties:
+            projectId:
+              type: string
+            sessionId:
+              type: string
+            cardId:
+              type: string
+            epicId:
+              type: string
+            todoId:
+              type: string
+            reminderId:
+              type: string
+            threadId:
+              type: string
+            eventId:
+              type: string
+            secondEventId:
+              type: string
+            accountId:
+              type: string
+            secondAccountId:
+              type: string
+            alertId:
+              type: string
+            deploymentId:
+              type: string
+            finalizeRunId:
+              type: string
+            url:
+              type: string
+          description: Typed ids of the subject, taken from the fact.
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+        expiresAt:
+          type: string
+          nullable: true
+        snoozedUntil:
+          type: string
+          nullable: true
+        actedAt:
+          type: string
+          nullable: true
+        actionSessionId:
+          type: string
+          nullable: true
+        revision:
+          type: integer
+          description: Bumped on every write; newer wins for one offer.
+      required:
+        - id
+        - kind
+        - area
+        - title
+        - reason
+        - action
+        - urgency
+        - status
+        - source
+        - target
+        - createdAt
+        - updatedAt
+        - expiresAt
+        - snoozedUntil
+        - actedAt
+        - actionSessionId
+        - revision
+      description: Something the Server Agent offered to do for the caller.
+    ServerAgentProactivePrefs:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        intervalHours:
+          type: integer
+        timeZone:
+          type: string
+        quietHours:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+            start:
+              type: string
+              pattern: ^([01]\d|2[0-3]):([0-5]\d)$
+            end:
+              type: string
+              pattern: ^([01]\d|2[0-3]):([0-5]\d)$
+          required:
+            - enabled
+            - start
+            - end
+        areas:
+          type: object
+          properties:
+            dev:
+              type: boolean
+            google:
+              type: boolean
+            infra:
+              type: boolean
+            todos:
+              type: boolean
+          required:
+            - dev
+            - google
+            - infra
+            - todos
+        maxOffersPerDay:
+          type: integer
+        push:
+          type: boolean
+      required:
+        - enabled
+        - intervalHours
+        - timeZone
+        - quietHours
+        - areas
+        - maxOffersPerDay
+        - push
+      description: Proactive mode settings for the caller’s Server Agent.
+    ServerAgentOfferSuppression:
+      type: object
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum:
+            - finalize_failed
+            - session_needs_input
+            - session_stuck
+            - pr_review
+            - stale_card
+            - idle_epic
+            - email_reply
+            - meeting_prep
+            - calendar_conflict
+            - infra_alert
+            - deploy_failed
+            - aws_sso_expiring
+            - todo_overdue
+            - follow_up
+        label:
+          type: string
+        createdAt:
+          type: string
+      required:
+        - id
+        - kind
+        - label
+        - createdAt
     MemoryErrorResponse:
       type: object
       properties:
@@ -47802,6 +48025,372 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MeRemindersErrorResponse"
+  /api/me/server-agent/offers:
+    get:
+      tags:
+        - Hub
+      summary: List the caller's Server Agent offers
+      description: Open offers by default, newest first. `status=all` includes acted-on ones.
+      parameters:
+        - schema:
+            type: string
+            enum:
+              - open
+              - accepted
+              - dismissed
+              - expired
+              - suppressed
+              - all
+          required: false
+          name: status
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+          required: false
+          name: limit
+          in: query
+      responses:
+        "200":
+          description: Offers.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  offers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ServerAgentOffer"
+                required:
+                  - offers
+        "400":
+          description: Invalid query.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerAgentProactiveError"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerAgentProactiveError"
+  /api/me/server-agent/offers/{id}/act:
+    post:
+      tags:
+        - Hub
+      summary: Accept, snooze or suppress an offer
+      description: "`accept` (Do it) posts the offer to the caller’s Server Agent session, which starts the work (if that dispatch fails the offer reopens and the route returns 502); irreversible steps still ask through the approval gate. `snooze` (Not now) hides the offer’s subject for `snoozeHours` (default 24). `never` (Never for this kind) adds a suppression rule and retires every open offer of that kind."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                action:
+                  type: string
+                  enum:
+                    - accept
+                    - snooze
+                    - never
+                snoozeHours:
+                  type: number
+                  minimum: 1
+                  maximum: 336
+              required:
+                - action
+              additionalProperties: false
+      responses:
+        "200":
+          description: Updated offer.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  offer:
+                    $ref: "#/components/schemas/ServerAgentOffer"
+                  sessionId:
+                    type: string
+                    nullable: true
+                  suppression:
+                    allOf:
+                      - $ref: "#/components/schemas/ServerAgentOfferSuppression"
+                      - nullable: true
+                required:
+                  - offer
+                  - sessionId
+                  - suppression
+        "400":
+          description: Invalid body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerAgentProactiveError"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerAgentProactiveError"
+        "404":
+          description: Offer not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerAgentProactiveError"
+        "409":
+          description: Offer is no longer open.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerAgentProactiveError"
+        "502":
+          description: Do it could not start the work. The offer is open again so the user can retry.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  offer:
+                    allOf:
+                      - $ref: "#/components/schemas/ServerAgentOffer"
+                      - nullable: true
+                required:
+                  - error
+                  - offer
+  /api/me/server-agent/suppressions:
+    get:
+      tags:
+        - Hub
+      summary: '"Never for this kind" rules'
+      responses:
+        "200":
+          description: Suppression rules.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suppressions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ServerAgentOfferSuppression"
+                required:
+                  - suppressions
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerAgentProactiveError"
+  /api/me/server-agent/suppressions/{id}:
+    delete:
+      tags:
+        - Hub
+      summary: Remove a suppression rule
+      description: Accepts the rule id or the offer kind.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerAgentProactiveError"
+        "404":
+          description: Rule not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerAgentProactiveError"
+  /api/me/server-agent/proactive:
+    get:
+      tags:
+        - Hub
+      summary: Proactive mode settings and last check
+      responses:
+        "200":
+          description: Settings (defaults when never saved) and last check status.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  prefs:
+                    $ref: "#/components/schemas/ServerAgentProactivePrefs"
+                  state:
+                    type: object
+                    properties:
+                      lastCheckAt:
+                        type: string
+                        nullable: true
+                      lastStatus:
+                        type: string
+                        nullable: true
+                      lastError:
+                        type: string
+                        nullable: true
+                      lastModelAt:
+                        type: string
+                        nullable: true
+                    required:
+                      - lastCheckAt
+                      - lastStatus
+                      - lastError
+                      - lastModelAt
+                required:
+                  - prefs
+                  - state
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerAgentProactiveError"
+    put:
+      tags:
+        - Hub
+      summary: Update proactive mode settings
+      description: Partial update; omitted fields keep their value. Off by default until enabled.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+                intervalHours:
+                  type: integer
+                timeZone:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+                quietHours:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                    start:
+                      type: string
+                      pattern: ^([01]\d|2[0-3]):([0-5]\d)$
+                    end:
+                      type: string
+                      pattern: ^([01]\d|2[0-3]):([0-5]\d)$
+                areas:
+                  type: object
+                  properties:
+                    dev:
+                      type: boolean
+                    google:
+                      type: boolean
+                    infra:
+                      type: boolean
+                    todos:
+                      type: boolean
+                maxOffersPerDay:
+                  type: integer
+                  minimum: 1
+                  maximum: 20
+                push:
+                  type: boolean
+              additionalProperties: false
+      responses:
+        "200":
+          description: Saved settings.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  prefs:
+                    $ref: "#/components/schemas/ServerAgentProactivePrefs"
+                required:
+                  - prefs
+        "400":
+          description: Invalid body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerAgentProactiveError"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerAgentProactiveError"
+  /api/me/server-agent/proactive/check:
+    post:
+      tags:
+        - Hub
+      summary: Run a proactive check now
+      description: Runs a full snapshot check immediately, ignoring quiet hours and the unchanged-snapshot skip. Suppressions, snoozes and the daily cap still apply.
+      responses:
+        "200":
+          description: Check result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  ranModel:
+                    type: boolean
+                  eligible:
+                    type: integer
+                  offers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ServerAgentOffer"
+                  error:
+                    type: string
+                required:
+                  - status
+                  - ranModel
+                  - eligible
+                  - offers
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerAgentProactiveError"
+        "409":
+          description: A check is already running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerAgentProactiveError"
   /api/memory/reconcile:
     post:
       tags:

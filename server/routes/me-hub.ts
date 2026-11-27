@@ -213,6 +213,7 @@ export default function createMeHubRoutes(deps: RouteDeps): Router {
         name: name ?? current.serverAgent?.name,
         instructions: instructions ?? current.serverAgent?.instructions,
         skills: skills === null ? current.serverAgent?.skills : skills,
+        proactive: current.serverAgent?.proactive,
       }),
     }));
     res.json(serverAgentBody(next.serverAgent));

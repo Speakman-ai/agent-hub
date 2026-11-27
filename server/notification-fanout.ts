@@ -50,6 +50,7 @@ import {
 } from './push.js';
 import { HUB_CHAT_MESSAGE_EVENT, mentionedUserIds } from './hub-chat-events.js';
 import { REMINDER_DUE_EVENT } from './reminders-events.js';
+import { PROACTIVE_OFFER_EVENT } from '../shared/utils/serverAgentProactive.js';
 import { SESSION_POLLER_NOTIFY_EVENT } from './session-pollers/session-poller-scheduler.js';
 import { DEFAULT_BRANCH_CI_FAILED_EVENT } from './finalize/default-branch-events.js';
 import { pushCategoryIdFor } from '../shared/utils/approvals.js';
@@ -483,6 +484,39 @@ export function mapBroadcastToNotification(data: BroadcastData): NotificationInt
         projectId: str(reminder.projectId) ?? null,
         // remindAt is part of the key so a snoozed reminder notifies again.
         sourceKey: `reminder:${id}:${remindAt ?? ''}`,
+        recipients: { kind: 'self', userId: owner },
+      };
+    }
+
+    case PROACTIVE_OFFER_EVENT: {
+      // Only a newly raised offer notifies, and only when the user left
+      // proactive push on; accept / snooze / expiry updates are silent.
+      if (data.action !== 'created' || data.push !== true) return null;
+      const offer = (data.offer ?? {}) as Record<string, unknown>;
+      const id = str(offer.id);
+      const owner = str(data.ownerUserId);
+      if (!id || !owner) return null;
+      const title = str(offer.title) ?? 'Your Server Agent has an offer';
+      const reason = str(offer.reason);
+      const target = (offer.target ?? {}) as Record<string, unknown>;
+      return {
+        category: 'server_agent_offer',
+        pushEvent: null,
+        deviceScope: 'recipients',
+        title: title.length > 120 ? `${title.slice(0, 117)}...` : title,
+        body: reason
+          ? reason.length > 200
+            ? `${reason.slice(0, 197)}...`
+            : reason
+          : 'Tap to review',
+        data: {
+          offerId: id,
+          projectId: str(target.projectId),
+          type: 'server_agent_offer',
+        },
+        // Offers are the user's own: authorized by ownership, like reminders.
+        projectId: null,
+        sourceKey: `server_agent_offer:${id}`,
         recipients: { kind: 'self', userId: owner },
       };
     }

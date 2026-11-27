@@ -104,6 +104,8 @@ const GOOGLE_CHAT_USER_EVENT_TYPES = new Set([
 ]);
 /** Bell inbox events: owner-only, and a missing owner denies. */
 const INBOX_EVENT_TYPES = new Set([
+  // Server Agent proactive offers: the owner's own, same as the inbox.
+  'server_agent_offer_update',
   'notification_created',
   'notification_read',
   // Personal reminders: owner-only, same as the inbox they feed.
