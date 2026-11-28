@@ -200,6 +200,8 @@ DATA_ROOT="${data_root_for_docker}"
 # No git clone, no docker build. Just pull the tagged image and run it.
 IMAGE_URI="${image_uri}"
 RUNNER_IMAGE_URI="${finalize_runner_image_uri}"
+# Agent desktop (computer tool) image, same tag; the Hub gets it as AGENT_HUB_DESKTOP_IMAGE.
+DESKTOP_IMAGE_URI="${desktop_image_uri}"
 
 # The container image runs as the `node` user (uid/gid 1000) from node:22-slim.
 # Bind mounts preserve *host* ownership, so if we create these dirs as root the
@@ -297,6 +299,16 @@ if [ -n "$RUNNER_IMAGE_URI" ]; then
   done
 fi
 
+# Agent desktop image: optional, so a failed pull only warns (the restart unit
+# below drops it and the Hub reports the desktop image as unavailable).
+if [ -n "$DESKTOP_IMAGE_URI" ]; then
+  for i in 1 2 3; do
+    docker pull "$DESKTOP_IMAGE_URI" && break
+    echo "desktop image pull failed (attempt $i); retrying in 10s..." >&2
+    sleep 10
+  done
+fi
+
 # Install a systemd-managed container instead of `docker run --restart=unless-stopped`.
 # Rationale: the daemon's auto-restart simply re-launches the *cached* image, which
 # means after CI pushes a new `:main` the box keeps running the stale digest until
@@ -308,6 +320,7 @@ cat >/usr/local/bin/agenthub-server-run.sh <<RUNSCRIPT
 set -e
 IMAGE_URI="$IMAGE_URI"
 RUNNER_IMAGE_URI="$RUNNER_IMAGE_URI"
+DESKTOP_IMAGE_URI="$DESKTOP_IMAGE_URI"
 REPO_DIR="$REPO_DIR"
 DATA_ROOT="$DATA_ROOT"
 APP_PORT="${app_port}"
@@ -323,6 +336,10 @@ if [ -f /etc/agent-hub/image-tag ]; then
     if [ -n "\$RUNNER_IMAGE_URI" ]; then
       RUNNER_BASE="$${RUNNER_IMAGE_URI%:*}"
       RUNNER_IMAGE_URI="\$RUNNER_BASE:\$DEPLOY_TAG"
+    fi
+    if [ -n "\$DESKTOP_IMAGE_URI" ]; then
+      DESKTOP_BASE="$${DESKTOP_IMAGE_URI%:*}"
+      DESKTOP_IMAGE_URI="\$DESKTOP_BASE:\$DEPLOY_TAG"
     fi
   fi
 fi
@@ -368,6 +385,24 @@ if [ -n "\$RUNNER_IMAGE_URI" ]; then
     # remote-fleet CI is unaffected.
     echo "WARN: docker pull \$RUNNER_IMAGE_URI failed after 3 attempts — starting WITHOUT the in-box finalize runner image." >&2
     RUNNER_IMAGE_URI=""
+  fi
+fi
+
+if [ -n "\$DESKTOP_IMAGE_URI" ]; then
+  DESKTOP_PULL_OK=0
+  for i in 1 2 3; do
+    if docker pull --quiet "\$DESKTOP_IMAGE_URI"; then
+      DESKTOP_PULL_OK=1
+      break
+    fi
+    echo "desktop image pull failed (attempt \$i); retrying in 10s..." >&2
+    sleep 10
+  done
+  if [ "\$DESKTOP_PULL_OK" != "1" ]; then
+    # Optional like the runner image: the computer tool reports the desktop
+    # image as unavailable and everything else keeps working.
+    echo "WARN: docker pull \$DESKTOP_IMAGE_URI failed after 3 attempts — starting WITHOUT the agent desktop image." >&2
+    DESKTOP_IMAGE_URI=""
   fi
 fi
 
@@ -433,6 +468,7 @@ exec docker run --rm --name agenthub-server \
   -e "AGENT_HUB_FIRECRACKER_DIR=\$DATA_ROOT/firecracker" \
   \$${RUNNER_IMAGE_URI:+-e "FINALIZE_RUNNER_IMAGE_UBUNTU_24_04=\$RUNNER_IMAGE_URI"} \
   \$${RUNNER_IMAGE_URI:+-e "AGENT_HUB_FIRECRACKER_PRIVILEGED_IMAGE=\$RUNNER_IMAGE_URI"} \
+  \$${DESKTOP_IMAGE_URI:+-e "AGENT_HUB_DESKTOP_IMAGE=\$DESKTOP_IMAGE_URI"} \
   --env-file "\$REPO_DIR/.env" \
   "\$IMAGE_URI"
 RUNSCRIPT

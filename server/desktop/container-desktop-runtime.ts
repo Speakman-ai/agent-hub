@@ -43,6 +43,10 @@ import {
   type DesktopControlClient,
 } from './desktop-control-client.js';
 import { desktopInputArgv } from './desktop-input-commands.js';
+import {
+  desktopImageUnavailableMessage,
+  resolveDesktopContainerLimits,
+} from './desktop-container-args.js';
 import type { DesktopContainerHost, DesktopHostStatus } from './container-desktop-host.js';
 import type { DesktopContainerPlacement } from './desktop-runtime-selection.js';
 import {
@@ -409,8 +413,12 @@ export function createContainerDesktopRuntime(
       last = await host.status(runnerRef);
       if (last.state === 'running' && last.endpoint) break;
       if (last.state === 'lost' || last.state === 'stopped') {
+        const missing = last.detail
+          ? desktopImageUnavailableMessage(last.detail, resolveDesktopContainerLimits().image)
+          : null;
         throw new DesktopStartError(
-          `The desktop container stopped while starting${last.detail ? `: ${last.detail}` : ''}.`,
+          missing ??
+            `The desktop container stopped while starting${last.detail ? `: ${last.detail}` : ''}.`,
         );
       }
       if (now() >= deadline) {

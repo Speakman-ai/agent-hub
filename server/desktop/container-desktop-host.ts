@@ -17,6 +17,7 @@ import {
   buildDesktopRunArgv,
   desktopContainerName,
   desktopHomeVolumeName,
+  desktopImageUnavailableMessage,
   resolveDesktopContainerLimits,
   type DesktopContainerLimits,
 } from './desktop-container-args.js';
@@ -143,7 +144,13 @@ export function createHubDockerDesktopHost(
       });
       // A failure here may still have created the container; the runtime
       // recorded `name` beforehand and removes it through `stop`.
-      await docker.run(argv.slice(1), { DESKTOP_CONTROL_TOKEN: req.controlToken });
+      try {
+        await docker.run(argv.slice(1), { DESKTOP_CONTROL_TOKEN: req.controlToken });
+      } catch (err) {
+        const stderr = String((err as { stderr?: unknown })?.stderr ?? '');
+        const missing = desktopImageUnavailableMessage(stderr, limits.image);
+        throw missing ? new Error(missing) : err;
+      }
       return { homeRef: volume };
     },
     async status(runnerRef) {

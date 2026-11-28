@@ -29,6 +29,34 @@ export function resolveDesktopContainerLimits(
   };
 }
 
+/** Docker output that proves the pull itself failed. */
+const PULL_FAILED_PATTERNS: RegExp[] = [
+  /pull access denied for ([^\s,]+)/i,
+  /manifest unknown/i,
+  /manifest for (\S+) not found/i,
+];
+
+/**
+ * A one-line explanation when `text` (docker stderr, or a runner's failure
+ * detail) shows the desktop image could not be pulled; null for any other
+ * failure. "Unable to find image ... locally" alone is only a cache miss that
+ * docker follows with a pull, so it never matches by itself; it just supplies
+ * the full image name when the pull did fail.
+ */
+export function desktopImageUnavailableMessage(text: string, image: string): string | null {
+  for (const re of PULL_FAILED_PATTERNS) {
+    const m = re.exec(text);
+    if (!m) continue;
+    const cacheMiss = /Unable to find image '([^']+)' locally/i.exec(text);
+    const name = cacheMiss?.[1] || m[1] || image;
+    return (
+      `The desktop image ${name} is not available on this host. ` +
+      'Set AGENT_HUB_DESKTOP_IMAGE to a desktop image this host can pull.'
+    );
+  }
+  return null;
+}
+
 export function desktopContainerName(computerId: string): string {
   return `agent-hub-desktop-${computerId}`;
 }

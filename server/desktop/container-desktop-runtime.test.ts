@@ -267,6 +267,25 @@ describe('container desktop runtime', () => {
     expect(rt.runningCount()).toBe(0);
   });
 
+  it('explains a desktop image the runner could not pull instead of dumping docker output', async () => {
+    const host = fakeHost('runner-fleet', {
+      initial: {
+        state: 'lost',
+        endpoint: null,
+        detail:
+          "docker run exited 125: Unable to find image 'agent-hub/desktop:dev' locally\n" +
+          'docker: Error response from daemon: pull access denied for agent-hub/desktop',
+      },
+    });
+    const rt = makeRuntime(host, fakeClient());
+    const err = await rt.ensureStarted(KEY).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(DesktopStartError);
+    expect((err as Error).message).toBe(
+      'The desktop image agent-hub/desktop:dev is not available on this host. ' +
+        'Set AGENT_HUB_DESKTOP_IMAGE to a desktop image this host can pull.',
+    );
+  });
+
   it('restarts and retries once when the container died under an op', async () => {
     const host = fakeHost();
     const client = fakeClient();

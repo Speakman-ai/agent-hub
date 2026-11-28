@@ -368,6 +368,42 @@ describe('agent-hub-user-data.tftpl', () => {
       );
     });
 
+    // The computer tool starts desktops from AGENT_HUB_DESKTOP_IMAGE; without
+    // it the Hub falls back to a local-only dev tag no deployed host has.
+    describe('desktop image', () => {
+      const withDesktop = renderTemplate(tpl, {
+        ...RENDER_VARS_BASE,
+        desktop_image_uri: 'public.ecr.aws/example/agent-hub-desktop:main',
+      });
+
+      it('pulls the desktop image at boot and passes it to the Hub container', () => {
+        expect(withDesktop).toContain(
+          'DESKTOP_IMAGE_URI="public.ecr.aws/example/agent-hub-desktop:main"',
+        );
+        expect(withDesktop).toMatch(/docker pull "\$DESKTOP_IMAGE_URI" && break/);
+        expect(withDesktop).toMatch(
+          /\$\{DESKTOP_IMAGE_URI:\+-e "AGENT_HUB_DESKTOP_IMAGE=\\\$DESKTOP_IMAGE_URI"\}/,
+        );
+      });
+
+      it('retags the desktop image with the deploy tag on restart', () => {
+        expect(withDesktop).toMatch(/DESKTOP_BASE="\$\{DESKTOP_IMAGE_URI%:\*\}"/);
+        expect(withDesktop).toMatch(/DESKTOP_IMAGE_URI="\\\$DESKTOP_BASE:\\\$DEPLOY_TAG"/);
+      });
+
+      it('never blocks the Hub on a failed desktop pull', () => {
+        expect(withDesktop).toMatch(/docker pull --quiet "\\\$DESKTOP_IMAGE_URI"/);
+        expect(withDesktop).toMatch(
+          /if \[ "\\\$DESKTOP_PULL_OK" != "1" \][\s\S]*?DESKTOP_IMAGE_URI=""\n\s*fi/,
+        );
+        const desktopBlock = withDesktop.slice(
+          withDesktop.indexOf('DESKTOP_PULL_OK=0'),
+          withDesktop.indexOf('docker rm -f agenthub-server'),
+        );
+        expect(desktopBlock).not.toMatch(/exit 1/);
+      });
+    });
+
     it('still picks up image updates on systemd-managed restart', () => {
       expect(rendered).toMatch(/agenthub-server\.service/);
       expect(rendered).toMatch(/docker pull --quiet "\\\$IMAGE_URI"/);

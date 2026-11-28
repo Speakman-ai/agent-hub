@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { createHubDockerDesktopHost, type DockerCli } from './container-desktop-host.js';
-import { buildDesktopHomeTarArgv, buildDesktopRunArgv } from './desktop-container-args.js';
+import {
+  buildDesktopHomeTarArgv,
+  buildDesktopRunArgv,
+  desktopImageUnavailableMessage,
+} from './desktop-container-args.js';
 
 const KEY = { userId: 'u1', agentId: 'a1', projectId: 'p1' };
 const LIMITS = { image: 'agent-hub/desktop:test', memory: '2g', cpus: '1' };
@@ -122,5 +126,73 @@ describe('hub-docker desktop host', () => {
     ).rejects.toThrow(/docker failed/);
     expect(await host.stop('agent-hub-desktop-c1', 'c1')).toEqual({ confirmed: true });
     expect(calls.at(-1)!.args).toEqual(['rm', '-f', 'agent-hub-desktop-c1']);
+  });
+
+  it('reports a missing desktop image in one line instead of the raw docker command', async () => {
+    const { docker } = fakeDocker({
+      run: () =>
+        Object.assign(
+          new Error(
+            'Command failed: docker run -d --name agent-hub-desktop-c1 --cap-drop ALL agent-hub/desktop:test',
+          ),
+          {
+            stderr:
+              "Unable to find image 'agent-hub/desktop:test' locally\n" +
+              'docker: Error response from daemon: pull access denied for agent-hub/desktop, ' +
+              "repository does not exist or may require 'docker login'.",
+          },
+        ),
+    });
+    const host = createHubDockerDesktopHost({ docker, limits: LIMITS });
+    const err = (await host
+      .start({
+        computerId: 'c1',
+        key: KEY,
+        controlToken: 't',
+        homeRef: null,
+        runnerRef: 'agent-hub-desktop-c1',
+      })
+      .catch((e: unknown) => e)) as Error;
+    expect(err.message).toBe(
+      'The desktop image agent-hub/desktop:test is not available on this host. ' +
+        'Set AGENT_HUB_DESKTOP_IMAGE to a desktop image this host can pull.',
+    );
+    expect(err.message).not.toMatch(/docker run|--cap-drop/);
+  });
+});
+
+describe('desktopImageUnavailableMessage', () => {
+  it.each([
+    [
+      "Unable to find image 'agent-hub/desktop:dev' locally\n" +
+        'docker: Error response from daemon: pull access denied for agent-hub/desktop',
+      'agent-hub/desktop:dev',
+    ],
+    ['pull access denied for agent-hub/desktop, repository does not exist', 'agent-hub/desktop'],
+    [
+      'Error response from daemon: manifest unknown: public.ecr.aws/x/agent-hub-desktop:abc',
+      'fallback:tag',
+    ],
+  ])('recognizes %s', (text, image) => {
+    expect(desktopImageUnavailableMessage(text, 'fallback:tag')).toContain(
+      `The desktop image ${image} is not available on this host`,
+    );
+  });
+
+  it('leaves unrelated docker failures alone', () => {
+    expect(desktopImageUnavailableMessage('port is already allocated', 'img')).toBeNull();
+  });
+
+  it('keeps the real error when the image was missing locally but pulled fine', () => {
+    const text =
+      "Unable to find image 'agent-hub/desktop:dev' locally\n" +
+      'dev: Pulling from agent-hub/desktop\n' +
+      'Status: Downloaded newer image for agent-hub/desktop:dev\n' +
+      'docker: Error response from daemon: driver failed programming external connectivity: ' +
+      'Bind for 127.0.0.1:7300 failed: port is already allocated.';
+    expect(desktopImageUnavailableMessage(text, 'img')).toBeNull();
+    expect(
+      desktopImageUnavailableMessage("Unable to find image 'agent-hub/desktop:dev' locally", 'img'),
+    ).toBeNull();
   });
 });

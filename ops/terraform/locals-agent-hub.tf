@@ -330,6 +330,16 @@ locals {
     )
     : ""
   )
+  # Agent desktop image for the computer tool (ecr_public_desktop_repository_uri), same tag.
+  agent_hub_desktop_image_uri = (
+    length(local.agent_hub_image_uri_trim) > 0
+    ? replace(
+      local.agent_hub_image_uri_trim,
+      "/${var.ecr_public_repo_name}:",
+      "/${var.ecr_public_desktop_repo_name}:",
+    )
+    : ""
+  )
   use_ecr_pull = var.bootstrap_agent_hub && length(local.agent_hub_image_uri_trim) > 0
   # When ECR pull is active it takes precedence over docker-build-from-clone.
   use_docker_bootstrap = var.bootstrap_agent_hub && var.agent_hub_bootstrap_docker && !local.use_ecr_pull
@@ -369,6 +379,7 @@ locals {
       docker_env_b64            = local.docker_bootstrap_env_b64
       image_uri                 = local.agent_hub_image_uri_trim
       finalize_runner_image_uri = local.agent_hub_finalize_runner_image_uri
+      desktop_image_uri         = local.agent_hub_desktop_image_uri
       ssm_deb_url               = "https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/debian_amd64/amazon-ssm-agent.deb"
       libprofiler_stub_c_b64    = local.libprofiler_stub_c_b64
       # Finalize fleet base-image pull-through cache (registry:2 proxy on this Hub).
