@@ -65,6 +65,7 @@ import { pauseEpicDispatch } from '../epic-session-close.js';
 import { presentEpicManagerFields } from '../project-orchestrated-epics.js';
 import { readAll } from '../db-async/read-facade.js';
 import {
+  ensureOrchestratedEpicManager,
   handOverEpicManager,
   scheduleAutonomousPhase,
   startAutonomousPhase,
@@ -2033,6 +2034,12 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
   router.put('/api/projects/:projectId/board/epics/:epicId', (req: Request, res: Response) => {
     const epic = stmts.getKanbanEpic.get(req.params.epicId) as KanbanEpicRow | undefined;
     if (!epic) return res.status(404).json({ error: 'Epic not found' });
+    // Epic IDs are global and project access is checked on the URL's project,
+    // so refuse an epic from another project's board before any write.
+    const { board: epicBoard } = getOrCreateBoard(stmts, req.params.projectId as string);
+    if (epic.board_id !== epicBoard.id) {
+      return res.status(404).json({ error: 'Epic not found' });
+    }
     const parsedEpic = parseBody(UpdateEpicRequestSchema, req, res);
     if (!parsedEpic) return;
     const {
@@ -2102,6 +2109,11 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       const enablerId = resolveOwnerUserId(req as AuthenticatedRequest);
       if (enablerId) {
         stmts.setEpicAutonomousEnabledBy.run(enablerId, req.params.epicId);
+        ensureOrchestratedEpicManager(
+          req.params.projectId as string,
+          req.params.epicId as string,
+          enablerId,
+        );
         handOverEpicManager(req.params.epicId as string, enablerId);
       }
     }

@@ -26,7 +26,7 @@ import {
   isColumnDone,
   isColumnCancelled,
 } from './kanban-blockers.js';
-import { pickAgentForCard, pickLead } from './routing.js';
+import { pickAgentForCard, pickLead, pickMainDevAgent } from './routing.js';
 import { agentAcceptsAutonomousTickets } from './agent-autonomy.js';
 import { hasHoldLabel } from './epic-manager-events.js';
 import { orchestratedEpicsEnabled } from './project-orchestrated-epics.js';
@@ -49,6 +49,7 @@ import { enrichSessionForClient } from './session-checkpoint-rewind.js';
 import { cardNeedsDevHubKey, getDevHubApiKey } from './secrets.js';
 import { autoGitChildEnv, resolveOrgOwnerGithubToken } from './auto-git.js';
 import { markSessionAutoShipOnComplete, markSessionFinalizeAutomation } from './session-ship.js';
+import { OrchestrateLaunchStore } from './orchestrate-launch-store.js';
 import {
   assignedFinalizeAutomationLevel,
   type FinalizeAutomationLevel,
@@ -2294,6 +2295,89 @@ export async function runAutonomousLoopForPhase(projectId: string, phaseId: stri
   await dispatchPhaseGated(projectId, phase);
 }
 
+/**
+ * Create the epic's Orchestrate manager when a person turns the epic or a
+ * phase on and none is linked yet. Boot restore does not call this: a
+ * restart must not open a new chat for an epic that was already running.
+ * Returns the manager session id, or null when the project is not
+ * orchestrated or it has no Dev agent to host the chat.
+ */
+export function ensureOrchestratedEpicManager(
+  projectId: string,
+  epicId: string,
+  ownerUserId: string,
+): string | null {
+  const d = getDeps();
+  if (!d.epicManager || !ownerUserId) return null;
+  const project = d.findProject(projectId);
+  if (!project || !orchestratedEpicsEnabled(project)) return null;
+  const epic = d.stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined;
+  if (!epic) return null;
+  // The epic must sit on this project's board: the session is created on this
+  // project's agent and is briefed with the epic's spec and cards.
+  const board = getOrCreateBoard(d.stmts, projectId)?.board;
+  if (!board || epic.board_id !== board.id) return null;
+  if (d.epicManager.hasLiveManager(epic.id)) {
+    d.epicManager.kickoff(projectId, epic, ownerUserId);
+    return null;
+  }
+  const agent = pickMainDevAgent(project);
+  if (!agent || !agentAcceptsAutonomousTickets(agent)) return null;
+
+  let engine = agent.engine || 'claude-code';
+  let model: string | null = agent.model ?? null;
+  try {
+    const resolved = resolveAgentSpawnEngineAndModel(d.getConfig(), agent, ownerUserId, {
+      projectMode: project.mode ?? null,
+    });
+    engine = resolved.engine;
+    model = resolved.model;
+  } catch (err) {
+    console.error(`[EpicManager] engine resolve failed for ${agent.id}: ${(err as Error).message}`);
+  }
+
+  const sessionId = uuidv4();
+  const name = `Epic: ${epic.name}`.slice(0, 120);
+  d.stmts.createSession.run(sessionId, agent.id, name, engine, model, 0, 0, 1);
+  d.stmts.updateSessionMode.run('orchestrate', sessionId);
+  d.stmts.updateSessionLinkedEpic.run(epic.id, sessionId);
+  markSessionFinalizeAutomation(d.stmts, sessionId, 'manual');
+  setSessionOwner(sessionId, ownerUserId);
+  d.stmts.setEpicManagerSession.run(sessionId, epic.id);
+  try {
+    new OrchestrateLaunchStore(d.getDb()).setSettings(sessionId, {
+      mode: 'manual',
+      autoStart: true,
+    });
+  } catch (err) {
+    console.error(
+      `[EpicManager] Auto start was not enabled for ${sessionId}: ${(err as Error).message}`,
+    );
+  }
+
+  const created = d.stmts.getSession.get(sessionId) as SessionRow | undefined;
+  d.broadcast({
+    type: 'session_created',
+    agentId: agent.id,
+    session: created
+      ? enrichSessionForClient(created)
+      : {
+          id: sessionId,
+          agent_id: agent.id,
+          name,
+          engine,
+          model,
+          session_mode: 'orchestrate',
+          linked_epic_id: epic.id,
+        },
+  });
+
+  const linked = (d.stmts.getKanbanEpic.get(epic.id) as KanbanEpicRow | undefined) ?? epic;
+  d.epicManager.kickoff(projectId, linked, ownerUserId);
+  console.log(`[EpicManager] Started manager ${sessionId} on ${agent.id} for epic ${epic.id}`);
+  return sessionId;
+}
+
 /** Start autonomous dispatch for a phase — only runs after explicit operator action. */
 export async function startAutonomousPhase(
   projectId: string,
@@ -2337,6 +2421,7 @@ export async function startAutonomousPhase(
     );
   }
   d.stmts.setPhaseAutonomousEnabledBy.run(operatorUserId, phaseId);
+  ensureOrchestratedEpicManager(projectId, epic.id, operatorUserId);
   handOverEpicManager(epic.id, operatorUserId);
 
   d.stmts.setPhaseAutonomousRunning.run(1, phaseId);

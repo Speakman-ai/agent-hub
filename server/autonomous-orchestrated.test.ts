@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
+import Database from 'better-sqlite3';
 import type { Project, KanbanCardRow, KanbanEpicRow, KanbanPhaseRow } from './types.js';
 import type { EpicManagerPort, ReadyCardOffer } from './autonomous.js';
 
@@ -68,7 +69,9 @@ const {
   autonomousEpicsByProject,
   lastDispatchedReviewId,
   lastBlockerSkipSignature,
+  ensureOrchestratedEpicManager,
 } = await import('./autonomous.js');
+const { OrchestrateLaunchStore } = await import('./orchestrate-launch-store.js');
 
 const { getOrCreateBoard } = await import('./routes/board.js');
 const mockGetOrCreateBoard = getOrCreateBoard as Mock;
@@ -593,6 +596,75 @@ describe('autonomous tick with an epic manager', () => {
     epicRegistry.set(stopped.id, stopped);
     scheduleAutonomousEpic('proj-1', stopped);
     expect(manager.pause).toHaveBeenCalledWith('epic-1');
+  });
+
+  it('running a phase creates an Orchestrate manager when the epic has none', async () => {
+    const { stmts, deps } = epicDeps([]);
+    const phase = {
+      id: 'phase-1',
+      epic_id: 'epic-1',
+      board_id: 'board-1',
+      name: 'Phase 1',
+      autonomous: 1,
+      autonomous_running: 1,
+    };
+    stmts.getKanbanPhase = { get: vi.fn(() => phase) };
+    stmts.setPhaseAutonomousEnabledBy = { run: vi.fn() };
+    stmts.setPhaseAutonomousRunning = { run: vi.fn() };
+    stmts.updateSessionMode = { run: vi.fn() };
+    stmts.updateSessionLinkedEpic = { run: vi.fn() };
+    const setEpicManagerSession = { run: vi.fn() };
+    (stmts as unknown as Record<string, unknown>).setEpicManagerSession = setEpicManagerSession;
+    let live = false;
+    const manager = recordingManager({ hasLiveManager: vi.fn(() => live) });
+    const db = new Database(':memory:');
+    deps.getDb.mockReturnValue(db);
+    initAutonomous({ ...deps, epicManager: manager } as never);
+
+    await startAutonomousPhase('proj-1', 'phase-1', 'kicker');
+
+    expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
+    const args = stmts.createSession.run.mock.calls[0] as unknown[];
+    expect(args[1]).toBe('dev-1');
+    expect(args[2]).toBe('Epic: Sprint 1');
+    expect(args[5]).toBe(0);
+    expect(stmts.updateSessionMode.run).toHaveBeenCalledWith('orchestrate', args[0]);
+    expect(stmts.updateSessionLinkedEpic.run).toHaveBeenCalledWith('epic-1', args[0]);
+    expect(setEpicManagerSession.run).toHaveBeenCalledWith(args[0], 'epic-1');
+    expect(new OrchestrateLaunchStore(db).getSettings(args[0] as string)).toMatchObject({
+      mode: 'manual',
+      autoStart: true,
+      configured: true,
+    });
+    expect(manager.kickoff).toHaveBeenCalledWith(
+      'proj-1',
+      expect.objectContaining({ id: 'epic-1' }),
+      'kicker',
+    );
+    expect(deps.broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'session_created', agentId: 'dev-1' }),
+    );
+
+    live = true;
+    await startAutonomousPhase('proj-1', 'phase-1', 'kicker');
+    expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
+    expect(manager.kickoff).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not create a manager for an epic on another project board', () => {
+    const { stmts, deps } = epicDeps([]);
+    const setEpicManagerSession = { run: vi.fn() };
+    (stmts as unknown as Record<string, unknown>).setEpicManagerSession = setEpicManagerSession;
+    stmts.getKanbanEpic = {
+      get: vi.fn(() => ({ ...ACTIVE_EPIC, board_id: 'foreign-board' })),
+    };
+    const manager = recordingManager({ hasLiveManager: vi.fn(() => false) });
+    initAutonomous({ ...deps, epicManager: manager } as never);
+
+    expect(ensureOrchestratedEpicManager('proj-1', 'epic-1', 'kicker')).toBeNull();
+    expect(stmts.createSession.run).not.toHaveBeenCalled();
+    expect(setEpicManagerSession.run).not.toHaveBeenCalled();
+    expect(manager.kickoff).not.toHaveBeenCalled();
   });
 
   it('an epic with no live manager offers nothing and logs that once, not every tick', async () => {
