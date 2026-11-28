@@ -64,7 +64,6 @@ import { ensureUserNotificationPrefsSchema } from './migrations/user-notificatio
 import { ensureSessionFoldersSchema } from './migrations/session-folders.js';
 import { ensureOrganizationDispatchSchema } from './organization-dispatch-schema.js';
 import { repairCardSessionLinks } from './migrations/repair-card-session-links.js';
-import { archiveAutoEpicManagers } from './migrations/archive-auto-epic-managers.js';
 import { repairPushCiSucceededRuns } from './migrations/repair-push-ci-succeeded-runs.js';
 import {
   deriveCardPrefix,
@@ -4262,21 +4261,6 @@ function initDb(dataDir: string): void {
     if (r.ran && r.updated > 0) {
       console.log(`[migration] backfill-epic-states: corrected ${r.updated} epic state(s).`);
     }
-  }
-
-  // Archive the epic manager sessions the server created on its own and nobody
-  // wrote to, and stop their epics. Runs before boot restore reads which epics
-  // are autonomous. See migrations/archive-auto-epic-managers.ts.
-  try {
-    const r = archiveAutoEpicManagers({ db, dataDir });
-    if (r.ran && r.archived + r.kept > 0) {
-      console.log(
-        `[migration] archive-auto-epic-managers: archived ${r.archived} manager session(s), ` +
-          `stopped ${r.epicsStopped} epic(s), kept ${r.kept} a person had messaged.`,
-      );
-    }
-  } catch (e) {
-    console.error('[migration] archive-auto-epic-managers failed:', (e as Error).message);
   }
 
   // Collapse doubled card session links and release In Progress cards whose

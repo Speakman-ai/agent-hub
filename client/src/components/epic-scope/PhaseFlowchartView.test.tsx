@@ -202,3 +202,31 @@ describe('PhaseFlowchartView model selector', () => {
     expect(onPhaseFormChange).toHaveBeenCalledWith('p1', { autonomous_model: 'gpt-5.4' });
   });
 });
+
+describe('PhaseFlowchartView Run phase copy follows the project setting', () => {
+  const armed = { p1: { autonomous: 1 }, p2: {} };
+
+  it('describes per-ticket dispatch when orchestrated epics are off', () => {
+    render(
+      <PhaseFlowchartView phases={phases} tickets={[]} columns={columns} phaseForms={armed} />,
+    );
+    const col = screen.getByTestId('phase-column-p1');
+    expect(col.textContent).toContain('Run phase dispatches implementation tickets');
+    expect(col.textContent).not.toContain('manager thread');
+  });
+
+  it("describes the epic's manager thread when orchestrated epics are on", () => {
+    render(
+      <PhaseFlowchartView
+        phases={phases}
+        tickets={[]}
+        columns={columns}
+        phaseForms={armed}
+        orchestratedEpics
+      />,
+    );
+    expect(screen.getByTestId('phase-column-p1').textContent).toContain(
+      "Run phase starts the epic's manager thread",
+    );
+  });
+});

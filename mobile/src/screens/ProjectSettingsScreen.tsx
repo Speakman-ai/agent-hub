@@ -188,6 +188,26 @@ export default function ProjectSettingsScreen({ route, navigation }: any) {
         </View>
 
         {project.mode !== 'workflow' && (
+          <View style={styles.toggleRow}>
+            <View style={styles.toggleTextCol}>
+              <Text style={styles.toggleTitle}>Run epics through a manager thread</Text>
+              <Text style={styles.toggleDesc}>
+                Ready tickets go to the epic&apos;s manager, an Orchestrate chat that writes each
+                worker&apos;s brief and starts it. Off by default: the server starts a session for
+                each ready ticket itself.
+              </Text>
+            </View>
+            <Switch
+              testID={`project-orchestrated-epics-${projectId}`}
+              value={project.orchestratedEpics === true}
+              disabled={saving}
+              onValueChange={(next: boolean) => saveField({ orchestratedEpics: next })}
+              trackColor={{ true: colors.emerald600, false: colors.gray600 }}
+            />
+          </View>
+        )}
+
+        {project.mode !== 'workflow' && (
           <PrePushHookSection project={project} saving={saving} saveField={saveField} />
         )}
 

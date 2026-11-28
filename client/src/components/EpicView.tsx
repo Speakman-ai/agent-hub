@@ -1258,6 +1258,7 @@ export default function EpicView({
                 onPhaseFormChange={handlePhaseFormChange}
                 onSavePhase={handleSavePhaseAutonomous}
                 autoSavePhaseSettings
+                orchestratedEpics={project?.orchestratedEpics === true}
                 phaseSavingId={phaseSavingId}
                 onAddTicket={handleAddTicketToPhase}
                 addingTicketPhaseId={addingTicketPhaseId}
@@ -1279,7 +1280,10 @@ export default function EpicView({
                 onPausePlanning={handlePausePlanning}
                 pausingPlanning={pausingPlanning}
                 onOpenManager={
-                  onNavigateToSession && epic?.manager_session_id && epic?.manager_agent_id
+                  project?.orchestratedEpics === true &&
+                  onNavigateToSession &&
+                  epic?.manager_session_id &&
+                  epic?.manager_agent_id
                     ? () => onNavigateToSession(epic.manager_agent_id, epic.manager_session_id)
                     : undefined
                 }

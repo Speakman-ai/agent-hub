@@ -33,7 +33,9 @@ export type EpicForwardResolution =
   | { kind: 'card'; epic: KanbanEpicRow; card: KanbanCardRow };
 
 /**
- * What a dispatch from this calling session is. An epic manager may only
+ * What a dispatch from this calling session is. Only projects with
+ * orchestrated epics have managers; elsewhere a forward's `cardId` is ignored
+ * and the dispatch is an ordinary session. An epic manager may only
  * start workers for cards on its own epic, through its own forward cards;
  * anything else it asks for is refused rather than started as an untracked
  * session outside the epic's pause, hold, cap, and Finalize rules.
@@ -48,8 +50,10 @@ export function resolveEpicForwardTarget(
   >,
   callingSession: Pick<SessionRow, 'id'> | null | undefined,
   dispatchKey: string | null | undefined,
+  /** The project runs orchestrated epics; otherwise every dispatch is ordinary. */
+  orchestrated: boolean,
 ): EpicForwardResolution {
-  if (!callingSession?.id) return { kind: 'none' };
+  if (!orchestrated || !callingSession?.id) return { kind: 'none' };
   // Optional: partial statement sets (route tests) have no epic managers.
   const epic = stmts.getEpicByManagerSession?.get(callingSession.id) as KanbanEpicRow | undefined;
   if (!epic) return { kind: 'none' };

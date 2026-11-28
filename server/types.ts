@@ -3898,6 +3898,14 @@ export interface Project {
    */
   deleteBranchOnMerge?: boolean | null;
   /**
+   * Run autonomous epics through one Orchestrate manager thread per epic
+   * (`server/epic-manager.ts`): the tick offers ready cards to the manager,
+   * which starts each worker from a forward card. Off (default) keeps the
+   * per-card dispatch, where the tick starts a worker for each ready card.
+   * See `orchestratedEpicsEnabled` in `server/project-orchestrated-epics.ts`.
+   */
+  orchestratedEpics?: boolean | null;
+  /**
    * Auto-resolve for native PRs: when an open PR conflicts with its base, a
    * PR CI job fails, or a review requests changes, start a `[Resolve PR #N]`
    * session on the first bad signal and let its Finalize push back to the PR.

@@ -36,6 +36,7 @@ function epicCreatedMs(epic: any): number {
 export default function SessionScopingModePane({
   sessionId,
   projectId,
+  orchestratedEpics = false,
   linkedEpicId,
   agent,
   sessionEngine,
@@ -427,6 +428,7 @@ export default function SessionScopingModePane({
             modelConfig={modelConfig}
             onPhaseFormChange={handlePhaseFormChange}
             onSavePhase={handleSavePhase}
+            orchestratedEpics={orchestratedEpics}
             phaseSavingId={phaseSavingId}
             onAddTicket={handleAddTicket}
             addingTicketPhaseId={addingTicketPhaseId}

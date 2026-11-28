@@ -15197,6 +15197,10 @@ components:
           $ref: "#/components/schemas/TestSelectionSettings"
         baseDrift:
           $ref: "#/components/schemas/BaseDriftSettings"
+        orchestratedEpics:
+          type: boolean
+          nullable: true
+          description: "Run autonomous epics through one Orchestrate manager thread per epic: ready cards are offered to the manager, which starts each worker from a forward card. Off (default) starts a worker for each ready card directly. `null` clears it."
       required:
         - id
         - name
@@ -59692,6 +59696,10 @@ paths:
                     enabled:
                       type: boolean
                   description: "Allows the No Guardrails session mode, where the agent may `git push` / `gh pr create` directly. Default off; `null` clears it. Requires an Admin or Owner signed in as a person: every API key (global, personal, or session spawn key) gets `403`."
+                orchestratedEpics:
+                  type: boolean
+                  nullable: true
+                  description: "Run autonomous epics through one Orchestrate manager thread per epic: ready cards are offered to the manager, which starts each worker from a forward card. Off (default) starts a worker for each ready card directly. `null` clears it."
                 commitAsOwner:
                   type: object
                   nullable: true
@@ -60317,6 +60325,10 @@ paths:
                     enabled:
                       type: boolean
                   description: "Allows the No Guardrails session mode, where the agent may `git push` / `gh pr create` directly. Default off; `null` clears it. Requires an Admin or Owner signed in as a person: every API key (global, personal, or session spawn key) gets `403`."
+                orchestratedEpics:
+                  type: boolean
+                  nullable: true
+                  description: "Run autonomous epics through one Orchestrate manager thread per epic: ready cards are offered to the manager, which starts each worker from a forward card. Off (default) starts a worker for each ready card directly. `null` clears it."
                 commitAsOwner:
                   type: object
                   nullable: true

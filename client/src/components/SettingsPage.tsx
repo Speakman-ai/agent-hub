@@ -29,6 +29,7 @@ import { orderServerLogsNewestFirst } from '../utils/serverLogs';
 import ProjectSecretsEditor from './ProjectSecretsEditor';
 import GitHostSettingsSection from './GitHostSettingsSection';
 import CommitIdentitySection from './CommitIdentitySection';
+import OrchestratedEpicsSection from './OrchestratedEpicsSection';
 import PrePushHookSection from './PrePushHookSection';
 import ProjectDefaultAutomationSection from './finalize/ProjectDefaultAutomationSection';
 import ProjectMembersSection from './ProjectMembersSection';
@@ -1614,6 +1615,14 @@ export function ProjectsSection({
         showToast={showToast}
         onProjectsChange={onProjectsChange}
       />
+
+      {p.mode !== 'workflow' && (
+        <OrchestratedEpicsSection
+          project={p}
+          showToast={showToast}
+          onProjectsChange={onProjectsChange}
+        />
+      )}
 
       {p.mode !== 'workflow' && (
         <PrePushHookSection project={p} showToast={showToast} onProjectsChange={onProjectsChange} />

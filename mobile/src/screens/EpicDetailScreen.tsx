@@ -283,6 +283,7 @@ export function PhaseCard({
   onStop,
   onAddTicket,
   onOpenCard,
+  orchestratedEpics = false,
 }: any) {
   const [ticketTitle, setTicketTitle] = useState('');
   const [showAdd, setShowAdd] = useState(false);
@@ -345,7 +346,7 @@ export function PhaseCard({
             <Text style={styles.runBtnText}>{specReady ? 'Run phase' : 'Lock spec to run'}</Text>
           </TouchableOpacity>
         ) : null}
-        {!running && autonomous ? (
+        {!running && autonomous && orchestratedEpics ? (
           <Text style={styles.runHint}>
             Run phase starts the epic&apos;s manager thread, which starts a session for each ready
             ticket.
@@ -509,12 +510,16 @@ export function PhaseCard({
 export default function EpicDetailScreen({ route, navigation }: any) {
   const { projectId, project, epicId } = route.params || {};
   const {
+    projects,
     setActiveAgentId,
     setActiveSessionId,
     kanbanRefreshKey,
     kanbanRefreshProjectIds,
     acknowledgeKanbanRefresh,
   } = useApp();
+  // Read live so a settings change applies without reopening the epic.
+  const orchestratedEpics =
+    (projects?.find((p: any) => p.id === projectId) ?? project)?.orchestratedEpics === true;
   const pendingRefreshProjectsRef = useRef<Set<string> | undefined>(kanbanRefreshProjectIds);
   pendingRefreshProjectsRef.current = kanbanRefreshProjectIds;
   const [board, setBoard] = useState<any>(null);
@@ -828,11 +833,15 @@ export default function EpicDetailScreen({ route, navigation }: any) {
                 setPausingPlanning(false);
               }
             }}
-            onOpenManager={(agentId: string, sessionId: string) => {
-              setActiveAgentId(agentId);
-              setActiveSessionId(sessionId);
-              navigation.navigate('Chat');
-            }}
+            onOpenManager={
+              orchestratedEpics
+                ? (agentId: string, sessionId: string) => {
+                    setActiveAgentId(agentId);
+                    setActiveSessionId(sessionId);
+                    navigation.navigate('Chat');
+                  }
+                : undefined
+            }
           />
 
           <View style={styles.actionRow}>
@@ -982,6 +991,7 @@ export default function EpicDetailScreen({ route, navigation }: any) {
             phases.map((p: any, i: number) => (
               <PhaseCard
                 key={p.id}
+                orchestratedEpics={orchestratedEpics}
                 phase={p}
                 index={i}
                 tickets={tickets}

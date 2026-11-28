@@ -33,6 +33,7 @@ import { SESSION_FORWARD_STARTED_EVENT } from '../../shared/utils/orchestrateLau
 import { publishSessionNeedsInput } from '../session-needs-input.js';
 import { orchestrateParentLinkError, orchestrateSpawnParentId } from '../session-mode.js';
 import { getEpicWorkerStarter, resolveEpicForwardTarget } from '../epic-worker-dispatch.js';
+import { orchestratedEpicsEnabled } from '../project-orchestrated-epics.js';
 
 const MAX_PROMPT_CHARS = 50_000;
 const MAX_NAME_CHARS = 120;
@@ -376,7 +377,12 @@ export function dispatchProjectSession(
   }
   // A forward card from an epic manager that names a card starts that card's
   // worker: claimed, linked to the card, and parented to the manager.
-  const epicTarget = resolveEpicForwardTarget(deps.stmts, callingSession, idempotencyKey);
+  const epicTarget = resolveEpicForwardTarget(
+    deps.stmts,
+    callingSession,
+    idempotencyKey,
+    orchestratedEpicsEnabled(project),
+  );
   if (epicTarget.kind === 'invalid') {
     if (idempotencyKey) deps.stmts.releaseSessionDispatchKey.run(ownerUserId, idempotencyKey);
     return reply(409, { error: epicTarget.error, code: 'epic_forward_invalid' });

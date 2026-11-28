@@ -1,4 +1,6 @@
 import { ProjectIconSchema } from '../openapi/schemas/project-icon.js';
+import { orchestratedEpicsEnabled } from '../project-orchestrated-epics.js';
+import { noteOrchestratedEpicsChanged } from '../autonomous.js';
 import { DEFAULT_PROJECT_ICON } from '../../shared/utils/project-icons.js';
 import { Router, Request, Response } from 'express';
 import cron from 'node-cron';
@@ -2929,6 +2931,16 @@ This workspace has no git repo and no PR automation — your job is planning, or
         (project as Record<string, unknown>).deleteBranchOnMerge = rawDel;
       }
     }
+    // Applied with the save below, so a later 400 leaves it untouched.
+    const orchestratedBefore = orchestratedEpicsEnabled(project);
+    let pendingOrchestrated: boolean | null | undefined;
+    if (Object.prototype.hasOwnProperty.call(req.body as object, 'orchestratedEpics')) {
+      const raw = (req.body as Record<string, unknown>).orchestratedEpics;
+      if (raw !== null && typeof raw !== 'boolean') {
+        return res.status(400).json({ error: 'orchestratedEpics must be a boolean or null' });
+      }
+      pendingOrchestrated = raw;
+    }
     if (Object.prototype.hasOwnProperty.call(req.body as object, 'autoResolvePr')) {
       const rawAr = (req.body as Record<string, unknown>).autoResolvePr;
       if (rawAr === null) {
@@ -3170,6 +3182,11 @@ This workspace has no git repo and no PR automation — your job is planning, or
       if (err) return res.status(400).json({ error: err });
     }
     if (icon.data !== undefined) project.icon = icon.data || null;
+    if (pendingOrchestrated === null) {
+      delete (project as Record<string, unknown>).orchestratedEpics;
+    } else if (pendingOrchestrated !== undefined) {
+      project.orchestratedEpics = pendingOrchestrated;
+    }
     saveProjects();
     if (icon.data !== undefined)
       broadcast({ type: 'projects_updated', reason: 'project-icon-updated' });
@@ -3178,6 +3195,9 @@ This workspace has no git repo and no PR automation — your job is planning, or
     // Only when this PATCH actually touched backgroundAgents — avoids
     // needless stop/restart churn on unrelated project edits.
     if (backgroundAgentsTouched) rescheduleProjectBackgroundAgents(project);
+    if (orchestratedEpicsEnabled(project) !== orchestratedBefore) {
+      noteOrchestratedEpicsChanged(project.id);
+    }
     res.json(project);
   });
 

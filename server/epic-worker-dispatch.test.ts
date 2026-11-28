@@ -22,11 +22,15 @@ const { setEpicWorkerStarter, resolveEpicForwardTarget } =
   await import('./epic-worker-dispatch.js');
 
 const OWNER = 'owner-1';
+// These tests run with the project's orchestrated epics on; the last block
+// turns it off.
 const project = {
   id: 'shop',
   name: 'Shop',
+  orchestratedEpics: true,
   agents: [{ id: 'dev-1', name: 'Dev', role: 'dev', engine: 'claude-code' }],
 } as unknown as Project;
+const perCardProject = { ...project, orchestratedEpics: false } as Project;
 
 function forwardBlock(fields: Record<string, string>): string {
   return ['Starting the ready card.', '```agenthub:forward', JSON.stringify(fields), '```'].join(
@@ -176,7 +180,7 @@ describe('epic manager forward → worker', () => {
 
   it('refuses a manager forward whose cardId is not on its epic, without a generic dispatch', () => {
     const { stmts, manager, key } = seed({ cardId: 'foreign' });
-    expect(resolveEpicForwardTarget(stmts, manager, key).kind).toBe('invalid');
+    expect(resolveEpicForwardTarget(stmts, manager, key, true).kind).toBe('invalid');
     const result = dispatchProjectSession(
       { stmts },
       {
@@ -225,7 +229,7 @@ describe('epic manager forward → worker', () => {
 
   it('is an ordinary Orchestrate forward when the chat manages no epic', () => {
     const { stmts, manager, key } = seed({ managed: false });
-    expect(resolveEpicForwardTarget(stmts, manager, key).kind).toBe('none');
+    expect(resolveEpicForwardTarget(stmts, manager, key, true).kind).toBe('none');
     mocks.background.mockReturnValue({
       sessionId: 'plain',
       agentId: 'dev-1',
@@ -237,6 +241,52 @@ describe('epic manager forward → worker', () => {
       {
         project,
         body: { prompt: 'Build the payment form.', agentId: 'dev-1', idempotencyKey: key },
+        ownerUserId: OWNER,
+        callingSession: manager,
+      },
+    );
+    expect(result.status).toBe(201);
+    expect(starter).not.toHaveBeenCalled();
+  });
+});
+
+describe('epic manager forward on a project without orchestrated epics', () => {
+  it('ignores the cardId and starts an ordinary session', () => {
+    const { stmts, manager, key } = seed();
+    expect(resolveEpicForwardTarget(stmts, manager, key, false).kind).toBe('none');
+    mocks.background.mockReturnValue({
+      sessionId: 'plain',
+      agentId: 'dev-1',
+      mode: 'merge',
+      skippedSkills: [],
+    });
+    const result = dispatchProjectSession(
+      { stmts },
+      {
+        project: perCardProject,
+        body: { prompt: 'Build the payment form.', agentId: 'dev-1', idempotencyKey: key },
+        ownerUserId: OWNER,
+        callingSession: manager,
+      },
+    );
+    expect(result.status).toBe(201);
+    expect(starter).not.toHaveBeenCalled();
+    expect(mocks.background).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not refuse a plain dispatch from a session linked as a manager', () => {
+    const { stmts, manager } = seed();
+    mocks.background.mockReturnValue({
+      sessionId: 'plain',
+      agentId: 'dev-1',
+      mode: 'merge',
+      skippedSkills: [],
+    });
+    const result = dispatchProjectSession(
+      { stmts },
+      {
+        project: perCardProject,
+        body: { prompt: 'Do something else.', agentId: 'dev-1' },
         ownerUserId: OWNER,
         callingSession: manager,
       },

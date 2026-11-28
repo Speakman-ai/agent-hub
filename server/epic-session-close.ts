@@ -13,6 +13,8 @@
 import type { Database } from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import { stopEpicDispatchRows } from './epic-dispatch-stop.js';
+import { findProject } from './project-model.js';
+import { orchestratedEpicsEnabled } from './project-orchestrated-epics.js';
 import type {
   BroadcastFn,
   KanbanBoardRow,
@@ -37,6 +39,27 @@ type EpicStmts = Pick<
 >;
 
 const WORKER_COLUMNS = new Set(['in progress', 'review']);
+
+export type IsProjectOrchestrated = (projectId: string) => boolean;
+
+const projectRunsOrchestratedEpics: IsProjectOrchestrated = (projectId) =>
+  orchestratedEpicsEnabled(findProject(projectId));
+
+/**
+ * The epic this session manages, on a project that runs orchestrated epics.
+ * Elsewhere a leftover manager link is ignored, so closing the session stops
+ * nothing.
+ */
+function managedEpic(
+  stmts: EpicStmts,
+  sessionId: string,
+  isProjectOrchestrated: IsProjectOrchestrated,
+): KanbanEpicRow | null {
+  const epic = stmts.getEpicByManagerSession.get(sessionId) as KanbanEpicRow | undefined;
+  if (!epic) return null;
+  const board = stmts.getKanbanBoardById.get(epic.board_id) as KanbanBoardRow | undefined;
+  return board?.project_id && isProjectOrchestrated(board.project_id) ? epic : null;
+}
 
 export interface EpicWorker {
   session: SessionRow;
@@ -81,8 +104,9 @@ export function epicCloseImpact(
   stmts: EpicStmts,
   sessionId: string,
   isSessionRunning: (sessionId: string) => boolean,
+  isProjectOrchestrated: IsProjectOrchestrated = projectRunsOrchestratedEpics,
 ): EpicCloseImpact {
-  const epic = stmts.getEpicByManagerSession.get(sessionId) as KanbanEpicRow | undefined;
+  const epic = managedEpic(stmts, sessionId, isProjectOrchestrated);
   if (!epic) return { epic: null, runningWorkers: [] };
   const runningWorkers = listEpicWorkers(stmts, epic)
     .filter((w) => isSessionRunning(w.session.id))
@@ -111,6 +135,8 @@ export interface EpicSessionCloseDeps extends EpicDispatchControlDeps {
   isSessionRunning: (sessionId: string) => boolean;
   /** Stop the session's in-flight turn (same path as the Stop button). */
   interruptSession: (sessionId: string) => void;
+  /** Defaults to the project's `orchestratedEpics` setting. */
+  isProjectOrchestrated?: IsProjectOrchestrated;
 }
 
 function stopDispatch(
@@ -169,7 +195,11 @@ export function closeEpicManagedBySession(
   deps: EpicSessionCloseDeps,
   sessionId: string,
 ): EpicSessionCloseResult | null {
-  const epic = deps.stmts.getEpicByManagerSession.get(sessionId) as KanbanEpicRow | undefined;
+  const epic = managedEpic(
+    deps.stmts,
+    sessionId,
+    deps.isProjectOrchestrated ?? projectRunsOrchestratedEpics,
+  );
   if (!epic) return null;
   const workers = listEpicWorkers(deps.stmts, epic);
   const projectId = stopDispatch(deps, epic, true);

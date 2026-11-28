@@ -64,6 +64,12 @@ const MAX_DETAIL_CHARS = 300;
 export interface EpicManagerDeps {
   stmts: Stmts;
   db: Database;
+  /**
+   * Whether the project runs orchestrated epics (`Project.orchestratedEpics`).
+   * For any other project the manager does nothing: no wakes, offers, stall
+   * notices, or re-evaluations, even when an epic still has a linked session.
+   */
+  isProjectOrchestrated: (projectId: string) => boolean;
   setSessionOwner: (sessionId: string, ownerUserId: string) => void;
   /** Cancel the manager's running Auto start countdowns (pause). */
   cancelAutoStarts: (sessionId: string) => void;
@@ -248,8 +254,20 @@ export class EpicManager implements EpicManagerPort {
 
   // Manager session
 
-  /** The epic's live manager session, if it has one. */
-  managerFor(epic: Pick<KanbanEpicRow, 'manager_session_id'>): SessionRow | null {
+  /** Whether the epic's project runs orchestrated epics. */
+  private orchestrated(epic: Pick<KanbanEpicRow, 'board_id'>): boolean {
+    const projectId = this.projectIdForEpic(epic);
+    return !!projectId && this.deps.isProjectOrchestrated(projectId);
+  }
+
+  /** The epic's live manager session, if it has one and its project runs orchestrated epics. */
+  managerFor(epic: Pick<KanbanEpicRow, 'manager_session_id' | 'board_id'>): SessionRow | null {
+    if (!this.orchestrated(epic)) return null;
+    return this.linkedSession(epic);
+  }
+
+  /** The live Orchestrate session linked to the epic, whatever the project setting. */
+  private linkedSession(epic: Pick<KanbanEpicRow, 'manager_session_id'>): SessionRow | null {
     const id = epic.manager_session_id;
     if (!id) return null;
     const session = this.deps.stmts.getSession.get(id) as SessionRow | undefined;
@@ -259,9 +277,10 @@ export class EpicManager implements EpicManagerPort {
 
   /** The epic a manager session runs, if it is one. */
   epicForManager(sessionId: string): KanbanEpicRow | null {
-    return (
-      (this.deps.stmts.getEpicByManagerSession.get(sessionId) as KanbanEpicRow | undefined) ?? null
-    );
+    const epic = this.deps.stmts.getEpicByManagerSession.get(sessionId) as
+      | KanbanEpicRow
+      | undefined;
+    return epic && this.orchestrated(epic) ? epic : null;
   }
 
   /**
@@ -405,6 +424,7 @@ export class EpicManager implements EpicManagerPort {
     cards: KanbanCardRow[],
     columnNameById: Record<string, string>,
   ): void {
+    if (!this.orchestrated(epic)) return;
     // The last look is persisted, so moves made while the server was down
     // still reach the manager after a restart.
     const seen = this.deps.db
@@ -442,7 +462,9 @@ export class EpicManager implements EpicManagerPort {
    */
   pause(epicId: string): void {
     const epic = this.deps.stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined;
-    const manager = epic ? this.managerFor(epic) : null;
+    // Ungated: turning the project setting off pauses its managers, and their
+    // pending Auto starts must still be cancelled.
+    const manager = epic ? this.linkedSession(epic) : null;
     if (manager) this.deps.cancelAutoStarts(manager.id);
     this.deps.db
       .prepare('UPDATE epic_manager_offers SET offered_at = NULL WHERE epic_id = ?')
@@ -530,7 +552,9 @@ export class EpicManager implements EpicManagerPort {
     if (typeof type !== 'string') return;
     if (type === 'kanban_update') {
       const projectId = typeof data.projectId === 'string' ? data.projectId : '';
-      if (projectId) this.deps.requestReevaluation?.(projectId);
+      if (projectId && this.deps.isProjectOrchestrated(projectId)) {
+        this.deps.requestReevaluation?.(projectId);
+      }
       return;
     }
     const sessionId =
@@ -790,7 +814,7 @@ export class EpicManager implements EpicManagerPort {
     return rows.length > 0;
   }
 
-  private projectIdForEpic(epic: KanbanEpicRow): string | null {
+  private projectIdForEpic(epic: Pick<KanbanEpicRow, 'board_id'>): string | null {
     const board = this.deps.stmts.getKanbanBoardById?.get(epic.board_id) as
       | { project_id?: string }
       | undefined;

@@ -551,6 +551,7 @@ import {
   spawnEpicWorkerForCard,
 } from './autonomous.js';
 import { EpicManager, setEpicManager } from './epic-manager.js';
+import { orchestratedEpicsEnabled } from './project-orchestrated-epics.js';
 import { setSessionOwner } from './session-ownership.js';
 import { setEpicWorkerStarter } from './epic-worker-dispatch.js';
 
@@ -2034,6 +2035,7 @@ const epicReevaluationTimers = new Map<string, NodeJS.Timeout>();
 const epicManager = new EpicManager({
   stmts: stmts!,
   db: getDb(),
+  isProjectOrchestrated: (projectId) => orchestratedEpicsEnabled(findProject(projectId)),
   setSessionOwner,
   cancelAutoStarts: (sessionId) => {
     const prefix = `session-forward:${sessionId}:`;

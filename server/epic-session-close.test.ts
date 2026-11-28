@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb, getStmts } from './db.js';
 import {
   closeEpicManagedBySession,
+  epicCloseImpact,
   pauseEpicDispatch,
   type EpicSessionCloseDeps,
 } from './epic-session-close.js';
@@ -55,6 +56,7 @@ function seed() {
     }),
     isSessionRunning: (id) => id === worker,
     interruptSession: vi.fn(),
+    isProjectOrchestrated: () => true,
   };
   const epic = () => stmts.getKanbanEpic.get(epicId) as KanbanEpicRow;
   return { deps, calls, epicId, phaseId, manager, worker, projectId, epic };
@@ -90,6 +92,30 @@ describe('closeEpicManagedBySession', () => {
     expect(s.calls[0]).toBe(`pause:${s.manager}`);
     expect(s.epic()).toMatchObject({ autonomous: 0, manager_session_id: null });
     expect(s.deps.interruptSession).toHaveBeenCalledWith(s.worker);
+  });
+
+  it('stops nothing on a project without orchestrated epics', () => {
+    const s = seed();
+    const deps = { ...s.deps, isProjectOrchestrated: () => false };
+    expect(closeEpicManagedBySession(deps, s.manager)).toBeNull();
+    expect(s.epic()).toMatchObject({ autonomous: 1, manager_session_id: s.manager });
+    expect(s.deps.interruptSession).not.toHaveBeenCalled();
+    expect(
+      epicCloseImpact(
+        s.deps.stmts,
+        s.manager,
+        () => true,
+        () => false,
+      ).epic,
+    ).toBeNull();
+    expect(
+      epicCloseImpact(
+        s.deps.stmts,
+        s.manager,
+        () => true,
+        () => true,
+      ).epic?.id,
+    ).toBe(s.epicId);
   });
 
   it('does nothing for a session that manages no epic', () => {

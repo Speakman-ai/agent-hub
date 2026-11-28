@@ -151,6 +151,10 @@ export const ProjectDetailComponent = registerComponent(
       ciOnPush: CiOnPushSettingsSchema.optional(),
       testSelection: TestSelectionSettingsSchema.optional(),
       baseDrift: BaseDriftSettingsSchema.optional(),
+      orchestratedEpics: z.boolean().nullable().optional().openapi({
+        description:
+          'Run autonomous epics through one Orchestrate manager thread per epic: ready cards are offered to the manager, which starts each worker from a forward card. Off (default) starts a worker for each ready card directly. `null` clears it.',
+      }),
     })
     .passthrough()
     .openapi({
@@ -848,6 +852,10 @@ export const ProjectUpdateRequestSchema = z
     noGuardrails: z.object({ enabled: z.boolean().optional() }).nullable().optional().openapi({
       description:
         'Allows the No Guardrails session mode, where the agent may `git push` / `gh pr create` directly. Default off; `null` clears it. Requires an Admin or Owner signed in as a person: every API key (global, personal, or session spawn key) gets `403`.',
+    }),
+    orchestratedEpics: z.boolean().nullable().optional().openapi({
+      description:
+        'Run autonomous epics through one Orchestrate manager thread per epic: ready cards are offered to the manager, which starts each worker from a forward card. Off (default) starts a worker for each ready card directly. `null` clears it.',
     }),
     commitAsOwner: z.object({ enabled: z.boolean().optional() }).nullable().optional().openapi({
       description:

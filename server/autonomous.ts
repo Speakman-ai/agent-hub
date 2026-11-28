@@ -29,6 +29,7 @@ import {
 import { pickAgentForCard, pickLead } from './routing.js';
 import { agentAcceptsAutonomousTickets } from './agent-autonomy.js';
 import { hasHoldLabel } from './epic-manager-events.js';
+import { orchestratedEpicsEnabled } from './project-orchestrated-epics.js';
 import type {
   Stmts,
   Project,
@@ -604,6 +605,28 @@ export function attachEpicManager(manager: EpicManagerPort | null): void {
   getDeps().epicManager = manager ?? undefined;
 }
 
+/**
+ * The epic manager, when the epic's project runs orchestrated epics. Every
+ * manager hook in this module goes through here, so a project with the
+ * setting off dispatches per card and never touches the manager's tables.
+ */
+function epicManagerForEpic(
+  epic: Pick<KanbanEpicRow, 'board_id'> | null | undefined,
+): EpicManagerPort | undefined {
+  const d = getDeps();
+  if (!d.epicManager || !epic) return undefined;
+  const board = d.stmts.getKanbanBoardById?.get(epic.board_id) as
+    | { project_id?: string }
+    | undefined;
+  const project = board?.project_id ? d.findProject(board.project_id) : undefined;
+  return orchestratedEpicsEnabled(project) ? d.epicManager : undefined;
+}
+
+function epicManagerForEpicId(epicId: string): EpicManagerPort | undefined {
+  const epic = getDeps().stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined;
+  return epicManagerForEpic(epic);
+}
+
 // Getters for shared state (used by index.ts)
 
 export {
@@ -941,6 +964,7 @@ export function cardStartRefusal(
   todoColId: string | undefined,
 ): { code: SpawnEpicWorkerRefusal; error: string } | null {
   const d = getDeps();
+  const manager = epicManagerForEpic(epic);
   if (!card || card.epic_id !== epic.id) {
     return { code: 'not_found', error: 'The card is gone or no longer on this epic' };
   }
@@ -950,10 +974,10 @@ export function cardStartRefusal(
   ) {
     return { code: 'ineligible', error: `"${card.title}" is no longer in To Do and unassigned` };
   }
-  if (d.epicManager?.isAtRetryCap(card.id)) {
+  if (manager?.isAtRetryCap(card.id)) {
     return { code: 'retry_cap', error: `"${card.title}" reached its worker retry limit` };
   }
-  if (hasHoldLabel(card.labels) || d.epicManager?.isHeld(card.id)) {
+  if (manager && (hasHoldLabel(card.labels) || manager.isHeld(card.id))) {
     return { code: 'held', error: `"${card.title}" is on hold` };
   }
   if (card.phase_id && findIncompletePredecessor(epic, card.phase_id)) {
@@ -985,6 +1009,10 @@ async function runAutonomousLoopInner(
   const d = getDeps();
   const project = d.findProject(projectId);
   if (!project) return;
+  // The branch point between the two dispatch models: with the project's
+  // orchestrated epics on, ready cards go to the epic's manager thread;
+  // otherwise this tick starts a worker for each ready card itself.
+  const epicManager = orchestratedEpicsEnabled(project) ? d.epicManager : undefined;
 
   const boardData = getOrCreateBoard(d.stmts, projectId);
   if (!boardData?.board) return;
@@ -1020,15 +1048,7 @@ async function runAutonomousLoopInner(
 
   const settings = phase ?? epic;
   const scopeLabel = phase ? `phase "${phase.name}"` : `epic "${epic.name}"`;
-  const dispatchEpic: KanbanEpicRow = phase
-    ? {
-        ...epic,
-        autonomous_model: phase.autonomous_model,
-        autonomous_send_it: phase.autonomous_send_it ?? 0,
-        autonomous_max_concurrent: phase.autonomous_max_concurrent,
-        autonomous_enabled_by: phase.autonomous_enabled_by ?? null,
-      }
-    : epic;
+  const dispatchEpic = scopedDispatchEpic(epic, phase ?? null);
 
   const colsForDoneCheck = d.stmts.getKanbanColumns.all(boardData.board.id) as KanbanColumnRow[];
   const colNameByIdForEpic = Object.fromEntries(colsForDoneCheck.map((c) => [c.id, c.name]));
@@ -1046,7 +1066,7 @@ async function runAutonomousLoopInner(
 
   // Done / Cancelled / requeued moves, however they happened (merge, manual
   // move, the manager's own override), reach the manager from here.
-  d.epicManager?.observeCards(
+  epicManager?.observeCards(
     epic,
     phase ? (d.stmts.getKanbanCardsByEpic.all(epic.id) as KanbanCardRow[]) : allScopeCards,
     colNameByIdForEpic,
@@ -1076,7 +1096,7 @@ async function runAutonomousLoopInner(
       scheduleAutonomousPhase(projectId, clearedPhase);
       d.broadcast({ type: 'kanban_update', projectId });
       console.log(`[Autonomous] ${scopeLabel} — all cards are Done; autonomous mode disabled`);
-      d.epicManager?.noteWorkerEvent(epic.id, {
+      epicManager?.noteWorkerEvent(epic.id, {
         kind: 'phase_complete',
         phaseId: phase.id,
         detail: `phase "${phase.name}" is complete`,
@@ -1102,7 +1122,7 @@ async function runAutonomousLoopInner(
       );
       // Tell the manager before the epic stops, so the wrap-up is not dropped
       // as a paused epic's wake.
-      d.epicManager?.noteWorkerEvent(epic.id, {
+      epicManager?.noteWorkerEvent(epic.id, {
         kind: 'epic_complete',
         detail: 'every card is Done or Cancelled',
       });
@@ -1116,7 +1136,7 @@ async function runAutonomousLoopInner(
 
   // The server never creates an epic's manager. Without a live one there is
   // nobody to hand ready cards to, so the tick stops here.
-  if (d.epicManager && !epicHasManager(d.epicManager, epic, scopeLabel)) return;
+  if (epicManager && !epicHasManager(epicManager, epic, scopeLabel)) return;
 
   const rawEligible = (
     phase
@@ -1320,31 +1340,6 @@ async function runAutonomousLoopInner(
     return;
   }
 
-  // Cards already offered to the manager hold a slot until the manager's
-  // forward claims them (or the offer lapses), so the next tick does not
-  // offer more work than the cap allows.
-  const manager = d.epicManager;
-  if (!manager) {
-    console.error(`[Autonomous] No epic manager wired; ${scopeLabel} cannot hand out ready cards`);
-    return;
-  }
-  // Reconcile live offers against the same readiness check a worker start
-  // uses: an offered card that was held, deleted, moved out of the epic, or
-  // otherwise became unstartable releases its slot now, not when it lapses.
-  const todoColId = findColumnByName(cols, 'To Do')?.id;
-  let outstanding = 0;
-  for (const cardId of manager.liveOffers(epic.id)) {
-    const offered = d.stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined;
-    if (cardStartRefusal(offered, epic, todoColId)) {
-      manager.withdrawOffer(cardId);
-      continue;
-    }
-    if (phase && offered?.phase_id !== phase.id) continue;
-    outstanding++;
-  }
-  const offerSlots = Math.max(0, slotsAvailable - outstanding);
-  if (offerSlots === 0) return;
-
   // Routing pool for `pickAgentForCard`:
   //   - The project lead is treated as fallback-only; it never matches as a
   //     specialist. Even when the dispatcher's `assignableAgents` includes
@@ -1363,6 +1358,54 @@ async function runAutonomousLoopInner(
   if (lead && !slotsByAgentId.has(lead.id)) {
     slotsByAgentId.set(lead.id, perAgentLimit);
   }
+  const takeAgentSlot = (agentId: string, delta: number): void => {
+    const poolIdx = agentSlotsCopy.findIndex((s) => s.agent.id === agentId);
+    if (poolIdx >= 0) agentSlotsCopy[poolIdx].slots += delta;
+    slotsByAgentId.set(agentId, (slotsByAgentId.get(agentId) ?? (delta < 0 ? 1 : 0)) + delta);
+  };
+
+  if (!epicManager) {
+    await dispatchReadyCardsDirectly({
+      projectId,
+      project,
+      boardId: boardData.board.id,
+      epic,
+      phase: phase ?? null,
+      todoColId: findColumnByName(cols, 'To Do')?.id,
+      eligible,
+      slotsAvailable,
+      pickAgent: (card) =>
+        pickAgentForCard({
+          card,
+          assignableAgents: routingPool,
+          lead: lead ?? null,
+          ctx: { slotsByAgentId },
+        }) ?? null,
+      takeAgentSlot,
+    });
+    return;
+  }
+
+  // Cards already offered to the manager hold a slot until the manager's
+  // forward claims them (or the offer lapses), so the next tick does not
+  // offer more work than the cap allows.
+  const manager = epicManager;
+  // Reconcile live offers against the same readiness check a worker start
+  // uses: an offered card that was held, deleted, moved out of the epic, or
+  // otherwise became unstartable releases its slot now, not when it lapses.
+  const todoColId = findColumnByName(cols, 'To Do')?.id;
+  let outstanding = 0;
+  for (const cardId of manager.liveOffers(epic.id)) {
+    const offered = d.stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined;
+    if (cardStartRefusal(offered, epic, todoColId)) {
+      manager.withdrawOffer(cardId);
+      continue;
+    }
+    if (phase && offered?.phase_id !== phase.id) continue;
+    outstanding++;
+  }
+  const offerSlots = Math.max(0, slotsAvailable - outstanding);
+  if (offerSlots === 0) return;
 
   // The manager's workers run as the person who kicked the epic (or phase)
   // off; scheduled kickoffs fall back to the card-level owner chain.
@@ -1410,9 +1453,7 @@ async function runAutonomousLoopInner(
       ctx: { slotsByAgentId },
     });
     if (!picked) break;
-    const poolIdx = agentSlotsCopy.findIndex((s) => s.agent.id === picked.id);
-    if (poolIdx >= 0) agentSlotsCopy[poolIdx].slots--;
-    slotsByAgentId.set(picked.id, (slotsByAgentId.get(picked.id) ?? 1) - 1);
+    takeAgentSlot(picked.id, -1);
     ready.push({ card, agentId: picked.id, phaseId: card.phase_id ?? null });
   }
   if (ready.length === 0) return;
@@ -1421,6 +1462,131 @@ async function runAutonomousLoopInner(
   console.log(
     `[Autonomous] Offered ${ready.length} ready card(s) for ${scopeLabel} to the epic manager`,
   );
+}
+
+/**
+ * Per-card dispatch, for projects without orchestrated epics: start a worker
+ * for each ready card in priority order until the scope's free slots run out.
+ * A card with no resolvable owner is skipped before it takes a slot, so it
+ * cannot starve later cards under a small cap.
+ */
+async function dispatchReadyCardsDirectly(args: {
+  projectId: string;
+  project: Project;
+  boardId: string;
+  epic: KanbanEpicRow;
+  /** The phase this tick dispatches, when it dispatches one. */
+  phase: KanbanPhaseRow | null;
+  todoColId: string | undefined;
+  eligible: KanbanCardRow[];
+  slotsAvailable: number;
+  pickAgent: (card: KanbanCardRow) => Agent | null;
+  takeAgentSlot: (agentId: string, delta: number) => void;
+}): Promise<void> {
+  const d = getDeps();
+  const { projectId, eligible, slotsAvailable } = args;
+  let assigned = 0;
+  for (const queued of eligible) {
+    if (assigned >= slotsAvailable) break;
+    // Each worker's first turn is awaited, so the board and the project can
+    // change between starts. Re-read before every claim.
+    if (orchestratedEpicsEnabled(d.findProject(projectId))) {
+      console.log(
+        `[Autonomous] Orchestrated epics turned on for "${projectId}"; the epic manager takes the remaining cards`,
+      );
+      break;
+    }
+    const epic =
+      (d.stmts.getKanbanEpic.get(args.epic.id) as KanbanEpicRow | undefined) ?? args.epic;
+    const card = d.stmts.getKanbanCard.get(queued.id) as KanbanCardRow | undefined;
+    const refusal = queuedCardStartRefusal(card, epic, args.todoColId, queued.phase_id ?? null);
+    if (!card || refusal) {
+      console.log(`[Autonomous] Skipping "${queued.title}" — ${refusal?.error ?? 'card is gone'}`);
+      continue;
+    }
+    const phase = args.phase
+      ? ((d.stmts.getKanbanPhase?.get(args.phase.id) as KanbanPhaseRow | undefined) ?? args.phase)
+      : null;
+    const dispatchEpic = scopedDispatchEpic(epic, phase);
+    const ownerUserId = resolveAutonomousOwnerUserId(card, dispatchEpic);
+    if (!ownerUserId) {
+      console.log(
+        `[Autonomous] Skipping "${card.title}" — no authenticated owner for credential resolution (run phase while logged in)`,
+      );
+      try {
+        d.stmts.createKanbanCardComment.run(
+          uuidv4(),
+          card.id,
+          'system',
+          `⚠️ **Autonomous dispatch skipped — no session owner**\n\nRun phase while logged in so your account credentials are used, or assign the spike manually from the card.`,
+        );
+        d.broadcast({ type: 'kanban_update', projectId });
+      } catch (_) {
+        /* best-effort */
+      }
+      continue;
+    }
+    const agent = args.pickAgent(card);
+    if (!agent) break;
+    args.takeAgentSlot(agent.id, -1);
+    const started = startWorkerForCard({
+      projectId,
+      project: args.project,
+      boardId: args.boardId,
+      cardId: card.id,
+      card,
+      epic,
+      agentId: agent.id,
+      ownerUserId,
+      queuedPhaseId: queued.phase_id ?? null,
+    });
+    if (started.status === 'refused') {
+      if (started.code === 'cap') break;
+      // A concurrent loop or a manual move took the card: hand the slot back
+      // and try the next card rather than starting a duplicate session.
+      args.takeAgentSlot(agent.id, 1);
+      console.log(`[Autonomous] Skipping "${card.title}" — ${started.error}`);
+      continue;
+    }
+    assigned++;
+    await started.turn;
+  }
+  if (assigned > 0) {
+    console.log(`[Autonomous] Dispatched ${assigned} card(s) for epic "${args.epic.name}"`);
+  }
+}
+
+/**
+ * Readiness for a card the per-card tick queued, judged on its current row.
+ * The same rules a manager's forward gets (`cardStartRefusal`: epic, To Do and
+ * unassigned, phase order, blockers, open spec decisions), plus the queued
+ * phase: a card moved to another phase would otherwise start under this
+ * scope's cap, model and Auto Merge settings.
+ */
+function queuedCardStartRefusal(
+  card: KanbanCardRow | undefined,
+  epic: KanbanEpicRow,
+  todoColId: string | undefined,
+  queuedPhaseId: string | null,
+): { code: SpawnEpicWorkerRefusal; error: string } | null {
+  const refusal = cardStartRefusal(card, epic, todoColId);
+  if (refusal) return refusal;
+  if ((card?.phase_id ?? null) !== queuedPhaseId) {
+    return { code: 'ineligible', error: `"${card?.title}" moved to another phase` };
+  }
+  return null;
+}
+
+/** The epic row carrying the phase's run settings when a phase is dispatched. */
+function scopedDispatchEpic(epic: KanbanEpicRow, phase: KanbanPhaseRow | null): KanbanEpicRow {
+  if (!phase) return epic;
+  return {
+    ...epic,
+    autonomous_model: phase.autonomous_model,
+    autonomous_send_it: phase.autonomous_send_it ?? 0,
+    autonomous_max_concurrent: phase.autonomous_max_concurrent,
+    autonomous_enabled_by: phase.autonomous_enabled_by ?? null,
+  };
 }
 
 /** The epic or phase whose run settings (cap, model, Auto Merge) govern a card. */
@@ -1433,17 +1599,7 @@ function dispatchScopeForCard(
     ? ((d.stmts.getKanbanPhase?.get(card.phase_id) as KanbanPhaseRow | undefined) ?? null)
     : null;
   if (phase?.autonomous_running) {
-    return {
-      phase,
-      dispatchEpic: {
-        ...epic,
-        autonomous_model: phase.autonomous_model,
-        autonomous_send_it: phase.autonomous_send_it ?? 0,
-        autonomous_max_concurrent: phase.autonomous_max_concurrent,
-        autonomous_enabled_by: phase.autonomous_enabled_by ?? null,
-      },
-      running: true,
-    };
+    return { phase, dispatchEpic: scopedDispatchEpic(epic, phase), running: true };
   }
   return { phase: null, dispatchEpic: epic, running: !!epic.autonomous };
 }
@@ -1528,7 +1684,7 @@ export function spawnEpicWorkerForCard(args: SpawnEpicWorkerArgs): SpawnEpicWork
     code,
     error,
   });
-  const { projectId, ownerUserId } = args;
+  const { projectId } = args;
   const project = d.findProject(projectId);
   if (!project) return refuse('not_found', 'Project not found');
   const boardData = getOrCreateBoard(d.stmts, projectId);
@@ -1537,8 +1693,34 @@ export function spawnEpicWorkerForCard(args: SpawnEpicWorkerArgs): SpawnEpicWork
   if (!card || !card.epic_id) return refuse('not_found', 'Card not found on an epic');
   const epic = d.stmts.getKanbanEpic.get(card.epic_id) as KanbanEpicRow | undefined;
   if (!epic || epic.board_id !== boardData.board.id) return refuse('not_found', 'Epic not found');
+  return startWorkerForCard({ ...args, project, boardId: boardData.board.id, card, epic });
+}
+
+/** `spawnEpicWorkerForCard` once the card, its epic, and the project are resolved. */
+function startWorkerForCard(
+  args: SpawnEpicWorkerArgs & {
+    project: Project;
+    boardId: string;
+    card: KanbanCardRow;
+    epic: KanbanEpicRow;
+    /**
+     * Per-card dispatch: the phase the tick queued the card under. The claim
+     * also refuses the card once it has moved to another phase.
+     */
+    queuedPhaseId?: string | null;
+  },
+): SpawnEpicWorkerResult {
+  const d = getDeps();
+  const refuse = (code: SpawnEpicWorkerRefusal, error: string): SpawnEpicWorkerResult => ({
+    status: 'refused',
+    code,
+    error,
+  });
+  const { projectId, ownerUserId, project, epic } = args;
+  let card = args.card;
   const { phase, dispatchEpic, running } = dispatchScopeForCard(epic, card);
   if (!running) return refuse('paused', `Epic "${epic.name}" is not running`);
+  const manager = epicManagerForEpic(epic);
 
   const isIntegrationBranch = !!epic.pr_base_branch && epic.pr_base_branch.trim().length > 0;
   const effectiveMaxConcurrent = isIntegrationBranch ? 1 : dispatchEpic.autonomous_max_concurrent;
@@ -1550,7 +1732,7 @@ export function spawnEpicWorkerForCard(args: SpawnEpicWorkerArgs): SpawnEpicWork
     return refuse('agent_busy', `No agent has room for "${card.title}" right now`);
   }
 
-  const cols = d.stmts.getKanbanColumns.all(boardData.board.id) as Array<{
+  const cols = d.stmts.getKanbanColumns.all(args.boardId) as Array<{
     id: string;
     name: string;
   }>;
@@ -1572,10 +1754,15 @@ export function spawnEpicWorkerForCard(args: SpawnEpicWorkerArgs): SpawnEpicWork
   // check runs on the freshly read row inside the transaction, so a hold, a
   // move, or a new blocker that landed after the offer refuses the start.
   let refusal: { code: SpawnEpicWorkerRefusal; error: string } | null = null;
+  let claimedRow: KanbanCardRow | undefined;
   const claimSlot = db.transaction((cardId: string): 'claimed' | 'cap' | 'refused' => {
     const fresh = d.stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined;
-    refusal = cardStartRefusal(fresh, epic, todoColId);
+    refusal =
+      args.queuedPhaseId === undefined
+        ? cardStartRefusal(fresh, epic, todoColId)
+        : queuedCardStartRefusal(fresh, epic, todoColId, args.queuedPhaseId);
     if (refusal) return 'refused';
+    claimedRow = fresh;
     const scopeCardsNow = (
       phase
         ? d.stmts.getKanbanCardsByPhase.all(phase.id)
@@ -1592,7 +1779,7 @@ export function spawnEpicWorkerForCard(args: SpawnEpicWorkerArgs): SpawnEpicWork
   const claimResult = claimSlot.immediate(card.id);
   if (claimResult === 'cap') {
     console.log(
-      `[Autonomous] Slot claim refused for "${card.title}" — ${effectiveMaxConcurrent} active${isIntegrationBranch ? ' (integration branch serial cap)' : ''}`,
+      `[Autonomous] Slot claim aborted for "${card.title}" — cap reached during dispatch (${effectiveMaxConcurrent} active${isIntegrationBranch ? ', integration branch serial cap' : ''})`,
     );
     return refuse(
       'cap',
@@ -1601,9 +1788,13 @@ export function spawnEpicWorkerForCard(args: SpawnEpicWorkerArgs): SpawnEpicWork
   }
   if (claimResult === 'refused' && refusal) {
     const { code, error } = refusal as { code: SpawnEpicWorkerRefusal; error: string };
-    if (code === 'retry_cap') d.epicManager?.noteRetryCapRefusal(epic.id, card.id);
+    if (code === 'retry_cap') manager?.noteRetryCapRefusal(epic.id, card.id);
     return refuse(code, error);
   }
+  // The worker and the stamps below use the row as claimed, not as queued:
+  // a title or description edited while earlier turns started must not be
+  // written back over.
+  if (claimedRow) card = claimedRow;
   console.log(`[Autonomous] Assigning "${card.title}" to ${agent.name}`);
 
   const rollbackCard = (err: unknown): void => {
@@ -1633,7 +1824,7 @@ export function spawnEpicWorkerForCard(args: SpawnEpicWorkerArgs): SpawnEpicWork
     console.error(
       `[Autonomous] Dispatch failed for card "${card.title}" (${card.id}) on agent ${agent.name}: ${reason}`,
     );
-    d.epicManager?.noteWorkerEvent(epic.id, {
+    manager?.noteWorkerEvent(epic.id, {
       kind: 'error',
       cardId: card.id,
       detail: `the worker could not start: ${reason}`,
@@ -1715,7 +1906,7 @@ export function spawnEpicWorkerForCard(args: SpawnEpicWorkerArgs): SpawnEpicWork
     rollbackCard(err);
     return refuse('ineligible', err instanceof Error ? err.message : String(err));
   }
-  d.epicManager?.noteWorkerStarted(card.id, epic.id);
+  manager?.noteWorkerStarted(card.id, epic.id);
 
   d.broadcast({
     type: 'autonomous_assigned',
@@ -1736,6 +1927,7 @@ export function spawnEpicWorkerForCard(args: SpawnEpicWorkerArgs): SpawnEpicWork
     spikeAssign,
     linkedSpecItem,
     managerPrompt: args.prompt?.trim() || null,
+    fromManager: !!manager,
     rollbackCard,
   });
   return {
@@ -1804,6 +1996,8 @@ async function startEpicWorkerTurn(args: {
   spikeAssign: boolean;
   linkedSpecItem: ReturnType<typeof getSpecItemForSpikeCard>;
   managerPrompt: string | null;
+  /** Started from the epic manager's forward card, not by the per-card tick. */
+  fromManager: boolean;
   rollbackCard: (err: unknown) => void;
 }): Promise<void> {
   const d = getDeps();
@@ -1840,7 +2034,9 @@ async function startEpicWorkerTurn(args: {
       );
       if (replayContext) contextLines.push(`\n${replayContext}`);
       contextLines.push(
-        `\n---\nYou have been assigned this task by the epic's manager thread. Review the brief above and begin working on it.`,
+        args.fromManager
+          ? `\n---\nYou have been assigned this task by the epic's manager thread. Review the brief above and begin working on it.`
+          : `\n---\nYou have been assigned this task by the autonomous dispatch system. Review the description above and begin working on it.`,
         ``,
         `**This session is linked to kanban card \`${card.id}\`.** Do **NOT** create a new card for this work. Comment and update this card via the board API as you progress, but do **not** move it to Done yourself — Done means merged, and the platform closes the card automatically when your change lands.`,
       );
@@ -1887,10 +2083,10 @@ async function startEpicWorkerTurn(args: {
  * than the manager's owner hands the manager to them. No-op without a manager.
  */
 export function handOverEpicManager(epicId: string, userId: string | null | undefined): void {
-  const d = getDeps();
-  if (!d.epicManager || !userId) return;
+  const manager = epicManagerForEpicId(epicId);
+  if (!manager || !userId) return;
   try {
-    d.epicManager.handOver(epicId, userId);
+    manager.handOver(epicId, userId);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[Autonomous] Could not hand over the manager for epic ${epicId}:`, msg);
@@ -1934,6 +2130,34 @@ function pauseEpicManagerIfIdle(epicId: string): void {
   const phases = (d.stmts.getKanbanPhasesByEpic?.all(epicId) as KanbanPhaseRow[] | undefined) ?? [];
   if (phases.some((p) => p.autonomous_running)) return;
   d.epicManager.pause(epicId);
+}
+
+/**
+ * The project's orchestrated-epics setting flipped. Turning it off pauses
+ * every epic manager on the board (offers lapse, queued wakes and pending
+ * Auto starts are dropped); either way the next tick runs now, so a running
+ * epic carries on under the other dispatch model without a restart.
+ */
+export function noteOrchestratedEpicsChanged(projectId: string): void {
+  const d = getDeps();
+  const project = d.findProject(projectId);
+  const board = d.stmts.getKanbanBoard.get(projectId) as { id: string } | undefined;
+  if (!board) return;
+  if (d.epicManager && !orchestratedEpicsEnabled(project)) {
+    for (const epic of d.stmts.getKanbanEpics.all(board.id) as KanbanEpicRow[]) {
+      try {
+        d.epicManager.pause(epic.id);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[Autonomous] Could not pause the manager for epic ${epic.id}:`, msg);
+      }
+    }
+  }
+  if (!autonomousProjects.has(projectId)) return;
+  runAutonomousLoop(projectId).catch((err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[Autonomous] Dispatch error for "${projectId}":`, msg);
+  });
 }
 
 export function tryAutonomousDispatch(): void {

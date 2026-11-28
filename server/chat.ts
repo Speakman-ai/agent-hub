@@ -202,6 +202,7 @@ import {
   buildOrchestrateModePreamble,
 } from './orchestrate-mode-prompt.js';
 import { EPIC_MANAGER_HOLD_LABEL, EPIC_MANAGER_MAX_WORKER_ATTEMPTS } from './epic-manager.js';
+import { orchestratedEpicsEnabled } from './project-orchestrated-epics.js';
 import { buildSessionForwardGuidance } from './session-forward-prompt.js';
 import { buildQaModePreamble } from './qa-mode-prompt.js';
 import { qaBorrowedPreviewStartRefusal, qaRunPreviewOwnerSessionId } from './qa-run-kickoff.js';
@@ -3742,9 +3743,11 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           project: project as Project,
           agentId: agent?.id ?? null,
         });
-        const managedEpic = (stmts as Stmts).getEpicByManagerSession?.get(sessionId) as
-          | KanbanEpicRow
-          | undefined;
+        // Only projects with orchestrated epics give a linked session the
+        // manager rules; elsewhere it is an ordinary Orchestrate chat.
+        const managedEpic = orchestratedEpicsEnabled(project as Project)
+          ? ((stmts as Stmts).getEpicByManagerSession?.get(sessionId) as KanbanEpicRow | undefined)
+          : undefined;
         if (managedEpic) {
           orchestratePreamble += `\n${buildEpicManagerPreamble({
             project: project as Project,

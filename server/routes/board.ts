@@ -62,6 +62,7 @@ import { normalizeTemplatePriority, templateRowToClient } from '../kanban-card-t
 import { getDb } from '../db.js';
 import { getEpicManager } from '../epic-manager.js';
 import { pauseEpicDispatch } from '../epic-session-close.js';
+import { presentEpicManagerFields } from '../project-orchestrated-epics.js';
 import { readAll } from '../db-async/read-facade.js';
 import {
   handOverEpicManager,
@@ -908,6 +909,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       ).map(templateRowToClient);
       const body: Record<string, unknown> = {
         ...data,
+        epics: presentEpicManagerFields(project, data.epics),
         board: { ...data.board, card_prefix: cardPrefix },
         cards: enrichCards(req, stmts, data.board.id, cards),
         counts,

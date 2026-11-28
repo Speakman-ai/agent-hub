@@ -9612,6 +9612,7 @@ export default function App({ initialView }: any = {}) {
                       <SessionScopingModePane
                         sessionId={activeSessionId}
                         projectId={activeChatProject?.id}
+                        orchestratedEpics={activeChatProject?.orchestratedEpics === true}
                         linkedEpicId={activeSession?.linked_epic_id ?? null}
                         agent={chatAgent}
                         sessionEngine={sessionEngine}

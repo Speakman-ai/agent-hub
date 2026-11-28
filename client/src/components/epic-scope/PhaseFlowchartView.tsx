@@ -156,6 +156,7 @@ function PhaseColumn({
   onPhaseFormChange,
   onSavePhase,
   autoSavePhaseSettings,
+  orchestratedEpics,
   saving,
   onAddTicket,
   addingTicketPhaseId,
@@ -304,7 +305,11 @@ function PhaseColumn({
             <button
               type="button"
               onClick={() => onRunPhase?.(phase.id)}
-              title="Starts the epic's manager thread, which starts a session for each ready ticket"
+              title={
+                orchestratedEpics
+                  ? "Starts the epic's manager thread, which starts a session for each ready ticket"
+                  : 'Starts a build session for each ready ticket'
+              }
               className="inline-flex items-center gap-1 text-[10px] font-medium text-emerald-300 hover:text-emerald-200 bg-emerald-500/10 hover:bg-emerald-500/15 px-2 py-1 rounded-md transition-colors"
             >
               <Play size={10} fill="currentColor" />
@@ -386,9 +391,9 @@ function PhaseColumn({
         )}
         {!running && autonomous && (
           <p className="text-[10px] text-gray-600 leading-snug">
-            Run phase starts the epic&apos;s manager thread, which starts a build session for each
-            ready ticket once spec decisions are locked, each at Auto Merge so the next phase starts
-            automatically when this one finishes.{' '}
+            {orchestratedEpics
+              ? "Run phase starts the epic's manager thread, which starts a build session for each ready ticket once spec decisions are locked, each at Auto Merge so the next phase starts automatically when this one finishes. "
+              : 'Run phase dispatches implementation tickets as build sessions after all spec decisions are locked, each at Auto Merge so the next phase starts automatically when this one finishes. '}
             {autoSavePhaseSettings ? 'Changes save automatically. ' : 'Save settings first, then '}
             click Run phase.
           </p>
@@ -467,6 +472,7 @@ export default function PhaseFlowchartView({
   onPhaseFormChange,
   onSavePhase,
   autoSavePhaseSettings,
+  orchestratedEpics,
   phaseSavingId,
   onAddTicket,
   addingTicketPhaseId,
@@ -571,6 +577,7 @@ export default function PhaseFlowchartView({
               onPhaseFormChange={(patch: any) => onPhaseFormChange?.(phase.id, patch)}
               onSavePhase={() => onSavePhase?.(phase, phaseForms?.[phase.id])}
               autoSavePhaseSettings={autoSavePhaseSettings}
+              orchestratedEpics={orchestratedEpics}
               saving={phaseSavingId === phase.id}
               onAddTicket={onAddTicket}
               addingTicketPhaseId={addingTicketPhaseId}

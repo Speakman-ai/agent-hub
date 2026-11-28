@@ -116,6 +116,7 @@ function setup(
   const manager = new EpicManager({
     stmts,
     db,
+    isProjectOrchestrated: () => true,
     setSessionOwner: (sessionId, owner) =>
       db.prepare('UPDATE sessions SET owner_user_id = ? WHERE id = ?').run(owner, sessionId),
     cancelAutoStarts,
@@ -850,6 +851,7 @@ describe('EpicManager wake delivery', () => {
     const after = new EpicManager({
       stmts: getStmts(),
       db: getDb(),
+      isProjectOrchestrated: () => true,
       setSessionOwner: () => {},
       cancelAutoStarts: () => {},
       dispatchChat,
@@ -890,6 +892,7 @@ describe('EpicManager card diff across restarts', () => {
     const after = new EpicManager({
       stmts: getStmts(),
       db: getDb(),
+      isProjectOrchestrated: () => true,
       setSessionOwner: () => {},
       cancelAutoStarts: () => {},
       dispatchChat,
@@ -944,5 +947,59 @@ describe('EpicManager phase completions', () => {
     }
     expect(content).toContain('phase "Data model" is complete');
     expect(content).toContain('phase "UI" is complete');
+  });
+});
+
+describe('EpicManager on a project without orchestrated epics', () => {
+  it('does nothing for a linked session: no wakes, offers, events, or re-evaluations', async () => {
+    const h = setup({ isProjectOrchestrated: () => false });
+    const card = h.card('Ready card');
+
+    expect(h.manager.kickoff(h.projectId, h.epic(), OWNER)).toBeNull();
+    expect(h.manager.hasLiveManager(h.epic().id)).toBe(false);
+    expect(h.manager.epicForManager(h.managerId!)).toBeNull();
+
+    h.manager.offerReady({
+      projectId: h.projectId,
+      epic: h.epic(),
+      phase: null,
+      ready: [{ card, agentId: 'dev-1', phaseId: null }],
+      ownerUserId: OWNER,
+    });
+    expect(h.manager.isOffered(card.id)).toBe(false);
+
+    h.manager.observeCards(h.epic(), epicCards(h), columnNames(h));
+    h.moveCard(card.id, 'Done');
+    h.manager.observeCards(h.epic(), epicCards(h), columnNames(h));
+    h.manager.noteWorkerEvent(h.epic().id, { kind: 'epic_complete', detail: 'done' });
+    h.manager.noteBroadcast({ type: 'kanban_update', projectId: h.projectId });
+    h.manager.noteBroadcast({ type: 'awaiting_input', sessionId: h.managerId });
+    h.manager.noteRetryCapRefusal(h.epic().id, card.id);
+    await h.runTimers();
+
+    expect(h.dispatchChat).not.toHaveBeenCalled();
+    expect(h.persistSystemMessage).not.toHaveBeenCalled();
+    expect(h.requestReevaluation).not.toHaveBeenCalled();
+    expect(h.broadcast).not.toHaveBeenCalled();
+    const recorded = getDb()
+      .prepare('SELECT COUNT(*) AS n FROM epic_manager_card_columns WHERE epic_id = ?')
+      .get(h.epic().id) as { n: number };
+    expect(recorded.n).toBe(0);
+  });
+
+  it("pausing still cancels the linked session's pending Auto starts", () => {
+    const h = setup({ isProjectOrchestrated: () => false });
+    h.manager.pause(h.epic().id);
+    expect(h.cancelAutoStarts).toHaveBeenCalledWith(h.managerId);
+  });
+
+  it('a project that turns the setting on gets its linked manager back', async () => {
+    let orchestrated = false;
+    const h = setup({ isProjectOrchestrated: () => orchestrated });
+    expect(h.manager.hasLiveManager(h.epic().id)).toBe(false);
+    orchestrated = true;
+    expect(h.manager.hasLiveManager(h.epic().id)).toBe(true);
+    h.manager.noteBroadcast({ type: 'kanban_update', projectId: h.projectId });
+    expect(h.requestReevaluation).toHaveBeenCalledWith(h.projectId);
   });
 });

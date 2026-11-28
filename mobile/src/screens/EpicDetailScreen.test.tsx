@@ -344,3 +344,33 @@ describe('EpicDetailScreen — PhaseCard', () => {
     expect(html).toContain('sonnet');
   });
 });
+
+describe('EpicDetailScreen — PhaseCard manager hint', () => {
+  const phase = { id: 'p1', name: 'Foundation', autonomous: 1 };
+  const card = (orchestratedEpics: boolean) =>
+    renderToStaticMarkup(
+      <PhaseCard
+        phase={phase}
+        index={0}
+        tickets={[]}
+        columns={columns}
+        form={{ autonomous: 1, autonomous_max_concurrent: 1, autonomous_model: '' }}
+        modelConfig={null}
+        specReady
+        running={false}
+        stopping={false}
+        addingTicket={false}
+        onFormChange={noop}
+        onRun={noop}
+        onStop={noop}
+        onAddTicket={noop}
+        onOpenCard={noop}
+        orchestratedEpics={orchestratedEpics}
+      />,
+    );
+
+  it('mentions the manager thread only when the project runs orchestrated epics', () => {
+    expect(card(true)).toContain('manager thread');
+    expect(card(false)).not.toContain('manager thread');
+  });
+});

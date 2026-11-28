@@ -21,6 +21,8 @@ beforeAll(async () => {
   request = await getRequest();
   projectId = `epic-stop-${Date.now().toString(36)}`;
   await createProject({ id: projectId, name: 'Epic stop', cwd: '/tmp' });
+  // Closing an epic session only stops epics on projects that run orchestrated epics.
+  await request.patch(`/api/projects/${projectId}`).send({ orchestratedEpics: true }).expect(200);
   const agent = await createAgent({ projectId, id: `${projectId}-dev`, name: 'Epic stop dev' });
   agentId = agent.id as string;
 });
