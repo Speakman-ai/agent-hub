@@ -4,9 +4,11 @@ import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import createDesktopRuntimeRoutes, { type DesktopRuntimeRouteDeps } from './desktop-runtime.js';
 
+const ROOTFS = { path: '/fc/rootfs-desktop.ext4', present: true };
+
 function app(deps: DesktopRuntimeRouteDeps) {
   const a = express();
-  a.use(createDesktopRuntimeRoutes(deps));
+  a.use(createDesktopRuntimeRoutes({ desktopRootfs: () => ROOTFS, ...deps }));
   return a;
 }
 
@@ -44,5 +46,22 @@ describe('GET /api/desktop/runtime', () => {
     expect(res.body.available).toBe(false);
     expect(res.body.kind).toBeNull();
     expect(res.body.reason).toMatch(/not registered/);
+  });
+
+  it('reports the container fallback when the desktop rootfs is missing', async () => {
+    const res = await request(
+      app({
+        configured: () => 'auto',
+        firecrackerRegistered: () => true,
+        desktopRootfs: () => ({ path: '/fc/rootfs-desktop.ext4', present: false }),
+      }),
+    ).get('/api/desktop/runtime');
+    expect(res.body).toMatchObject({
+      available: true,
+      kind: 'container',
+      firecrackerRegistered: true,
+      desktopRootfs: { path: '/fc/rootfs-desktop.ext4', present: false },
+    });
+    expect(res.body.reason).toMatch(/desktop rootfs is missing \(\/fc\/rootfs-desktop\.ext4/);
   });
 });

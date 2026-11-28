@@ -2,7 +2,7 @@
  * Pick the DesktopRuntime backend for this host.
  *
  * `auto` prefers Firecracker (stronger isolation) when its backend is
- * registered and falls back to the container backend, which works on every
+ * registered and the desktop rootfs is staged, and falls back to the container backend, which works on every
  * deployment. An explicit `firecracker` never degrades: it fails closed with
  * an operator-facing error, matching the isolated session mode rule.
  */
@@ -14,8 +14,15 @@ export type DesktopContainerPlacement = 'runner-fleet' | 'hub-docker';
 export interface DesktopRuntimeHostState {
   configured: DesktopRuntimeMode;
   firecrackerRegistered: boolean;
+  /** The Firecracker desktop rootfs; the session backend can be registered without it. */
+  desktopRootfs: DesktopRootfsStatus;
   /** Value of FINALIZE_RUNNER_BACKEND; `remote` sends containers to the runner fleet. */
   finalizeRunnerBackend?: string | null;
+}
+
+export interface DesktopRootfsStatus {
+  path: string;
+  present: boolean;
 }
 
 export type DesktopRuntimeSelection =
@@ -40,6 +47,16 @@ export const FIRECRACKER_DESKTOP_UNAVAILABLE_REASON =
   '(needs Linux with /dev/kvm, the firecracker binary, and staged guest artifacts). ' +
   'Fix the host or set desktopRuntime to auto or container.';
 
+const BUILD_DESKTOP_ROOTFS_HINT =
+  'build it with server/session-env/firecracker/build/build-guest-artifacts.sh --variant desktop';
+
+export function firecrackerDesktopRootfsMissingReason(path: string): string {
+  return (
+    `desktopRuntime is set to firecracker, but the desktop rootfs is missing: ${path} ` +
+    `(${BUILD_DESKTOP_ROOTFS_HINT}). Stage it or set desktopRuntime to auto or container.`
+  );
+}
+
 export class DesktopRuntimeUnavailableError extends Error {
   readonly code = 'desktop_runtime_unavailable';
   constructor(message: string) {
@@ -62,10 +79,11 @@ function containerWhere(placement: DesktopContainerPlacement): string {
 export function describeDesktopRuntimeSelection(
   host: DesktopRuntimeHostState,
 ): DesktopRuntimeSelection {
-  const { configured, firecrackerRegistered } = host;
+  const { configured, firecrackerRegistered, desktopRootfs } = host;
+  const firecrackerUsable = firecrackerRegistered && desktopRootfs.present;
 
   if (configured === 'firecracker') {
-    if (firecrackerRegistered) {
+    if (firecrackerUsable) {
       return {
         available: true,
         configured,
@@ -79,11 +97,13 @@ export function describeDesktopRuntimeSelection(
       configured,
       kind: null,
       containerPlacement: null,
-      reason: FIRECRACKER_DESKTOP_UNAVAILABLE_REASON,
+      reason: firecrackerRegistered
+        ? firecrackerDesktopRootfsMissingReason(desktopRootfs.path)
+        : FIRECRACKER_DESKTOP_UNAVAILABLE_REASON,
     };
   }
 
-  if (configured === 'auto' && firecrackerRegistered) {
+  if (configured === 'auto' && firecrackerUsable) {
     return {
       available: true,
       configured,
@@ -98,7 +118,9 @@ export function describeDesktopRuntimeSelection(
   const reason =
     configured === 'container'
       ? `desktopRuntime is set to container; desktops run ${containerWhere(placement)}.`
-      : `auto: the Firecracker backend is not registered, so desktops run in containers ${containerWhere(placement)}.`;
+      : firecrackerRegistered
+        ? `auto: the Firecracker backend is registered but the desktop rootfs is missing (${desktopRootfs.path}; ${BUILD_DESKTOP_ROOTFS_HINT}), so desktops run in containers ${containerWhere(placement)}.`
+        : `auto: the Firecracker backend is not registered, so desktops run in containers ${containerWhere(placement)}.`;
   return {
     available: true,
     configured,

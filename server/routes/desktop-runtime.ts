@@ -6,13 +6,18 @@
 import { Router } from 'express';
 import config from '../config.js';
 import { isFirecrackerBackendRegistered } from '../session-env/firecracker/firecracker-backend-status.js';
-import { describeDesktopRuntimeSelection } from '../desktop/desktop-runtime-selection.js';
+import {
+  describeDesktopRuntimeSelection,
+  type DesktopRootfsStatus,
+} from '../desktop/desktop-runtime-selection.js';
+import { firecrackerDesktopRootfsStatus } from '../desktop/desktop-rootfs-status.js';
 import { DESKTOP_SCREEN, type DesktopRuntimeMode } from '../desktop/desktop-runtime.js';
 
 export interface DesktopRuntimeRouteDeps {
   configured?: () => DesktopRuntimeMode;
   firecrackerRegistered?: () => boolean;
   finalizeRunnerBackend?: () => string | null | undefined;
+  desktopRootfs?: () => DesktopRootfsStatus;
 }
 
 export default function createDesktopRuntimeRoutes(deps: DesktopRuntimeRouteDeps = {}): Router {
@@ -22,16 +27,21 @@ export default function createDesktopRuntimeRoutes(deps: DesktopRuntimeRouteDeps
     deps.firecrackerRegistered ?? (() => isFirecrackerBackendRegistered());
   const finalizeRunnerBackend =
     deps.finalizeRunnerBackend ?? (() => process.env.FINALIZE_RUNNER_BACKEND);
+  const desktopRootfs = deps.desktopRootfs ?? (() => firecrackerDesktopRootfsStatus());
 
   router.get('/api/desktop/runtime', (_req, res) => {
+    const registered = firecrackerRegistered();
+    const rootfs = desktopRootfs();
     const selection = describeDesktopRuntimeSelection({
       configured: configured(),
-      firecrackerRegistered: firecrackerRegistered(),
+      firecrackerRegistered: registered,
+      desktopRootfs: rootfs,
       finalizeRunnerBackend: finalizeRunnerBackend(),
     });
     res.json({
       ...selection,
-      firecrackerRegistered: firecrackerRegistered(),
+      firecrackerRegistered: registered,
+      desktopRootfs: rootfs,
       screen: DESKTOP_SCREEN,
     });
   });

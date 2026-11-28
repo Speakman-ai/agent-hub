@@ -14,9 +14,11 @@ import config from '../config.js';
 import { createHomeSpools, type HomeSpools } from './desktop-home-spool.js';
 import { getActiveOrgId } from '../orgs.js';
 import { isFirecrackerBackendRegistered } from '../session-env/firecracker/firecracker-backend-status.js';
+import { firecrackerDesktopRootfsStatus } from './desktop-rootfs-status.js';
 import {
   DesktopRuntimeUnavailableError,
   describeDesktopRuntimeSelection,
+  type DesktopRuntimeHostState,
   selectDesktopRuntime,
   type DesktopContainerPlacement,
 } from './desktop-runtime-selection.js';
@@ -36,6 +38,16 @@ import {
   unregisterDesktopRuntime,
 } from './desktop-runtime-registry.js';
 import type { DesktopRuntime } from './desktop-runtime.js';
+
+/** This host's inputs to the desktop runtime selection rules. */
+export function desktopHostState(): DesktopRuntimeHostState {
+  return {
+    configured: config.desktopRuntime,
+    firecrackerRegistered: isFirecrackerBackendRegistered(),
+    desktopRootfs: firecrackerDesktopRootfsStatus(),
+    finalizeRunnerBackend: process.env.FINALIZE_RUNNER_BACKEND,
+  };
+}
 
 let homeStore: Promise<DesktopHomeStore> | null = null;
 let runtime: ContainerDesktopRuntime | null = null;
@@ -83,13 +95,7 @@ export function getContainerDesktopRuntime(
   placement?: DesktopContainerPlacement,
 ): ContainerDesktopRuntime {
   if (runtime) return runtime;
-  const resolved =
-    placement ??
-    selectDesktopRuntime({
-      configured: config.desktopRuntime,
-      firecrackerRegistered: isFirecrackerBackendRegistered(),
-      finalizeRunnerBackend: process.env.FINALIZE_RUNNER_BACKEND,
-    }).containerPlacement;
+  const resolved = placement ?? selectDesktopRuntime(desktopHostState()).containerPlacement;
   if (!resolved) {
     throw new DesktopRuntimeUnavailableError(
       'Desktops on this host run in Firecracker microVMs, not containers.',
@@ -119,11 +125,7 @@ export function getContainerDesktopRuntime(
  * not usable (an explicit firecracker that is not registered).
  */
 export function getActiveDesktopRuntime(): DesktopRuntime {
-  const selection = selectDesktopRuntime({
-    configured: config.desktopRuntime,
-    firecrackerRegistered: isFirecrackerBackendRegistered(),
-    finalizeRunnerBackend: process.env.FINALIZE_RUNNER_BACKEND,
-  });
+  const selection = selectDesktopRuntime(desktopHostState());
   if (selection.kind === 'firecracker') {
     const fc = getDesktopRuntime('firecracker');
     if (!fc) {
@@ -144,6 +146,7 @@ function placementForThisHost(): DesktopContainerPlacement {
   return describeDesktopRuntimeSelection({
     configured: 'container',
     firecrackerRegistered: false,
+    desktopRootfs: { path: '', present: false },
     finalizeRunnerBackend: process.env.FINALIZE_RUNNER_BACKEND,
   }).containerPlacement!;
 }
@@ -157,11 +160,7 @@ function placementForThisHost(): DesktopContainerPlacement {
  */
 export async function registerContainerDesktopRuntimeOnBoot(): Promise<void> {
   try {
-    const selection = describeDesktopRuntimeSelection({
-      configured: config.desktopRuntime,
-      firecrackerRegistered: isFirecrackerBackendRegistered(),
-      finalizeRunnerBackend: process.env.FINALIZE_RUNNER_BACKEND,
-    });
+    const selection = describeDesktopRuntimeSelection(desktopHostState());
     const placement =
       selection.kind === 'container' && selection.containerPlacement
         ? selection.containerPlacement
@@ -229,10 +228,6 @@ export function __resetDesktopRuntimeForTests(): void {
  * must not start the idle sweep.
  */
 export function getLiveViewDesktopRuntime(): DesktopRuntime | null {
-  const selection = describeDesktopRuntimeSelection({
-    configured: config.desktopRuntime,
-    firecrackerRegistered: isFirecrackerBackendRegistered(),
-    finalizeRunnerBackend: process.env.FINALIZE_RUNNER_BACKEND,
-  });
+  const selection = describeDesktopRuntimeSelection(desktopHostState());
   return selection.kind ? getDesktopRuntimeForLiveView(selection.kind) : null;
 }

@@ -21,6 +21,9 @@ export const DesktopRuntimeStatusSchema = registerComponent(
       }),
       reason: z.string().openapi({ description: 'Why this backend was chosen, or why none was.' }),
       firecrackerRegistered: z.boolean(),
+      desktopRootfs: z
+        .object({ path: z.string(), present: z.boolean() })
+        .openapi({ description: 'The Firecracker desktop rootfs and whether it is staged.' }),
       screen: z.object({ width: z.number().int(), height: z.number().int() }),
     })
     .openapi({ description: 'Agent desktop runtime backend for this host.' }),

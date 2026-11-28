@@ -5717,6 +5717,17 @@ components:
           description: Why this backend was chosen, or why none was.
         firecrackerRegistered:
           type: boolean
+        desktopRootfs:
+          type: object
+          properties:
+            path:
+              type: string
+            present:
+              type: boolean
+          required:
+            - path
+            - present
+          description: The Firecracker desktop rootfs and whether it is staged.
         screen:
           type: object
           properties:
@@ -5734,6 +5745,7 @@ components:
         - containerPlacement
         - reason
         - firecrackerRegistered
+        - desktopRootfs
         - screen
       description: Agent desktop runtime backend for this host.
     DevServerWizardErrorResponse:

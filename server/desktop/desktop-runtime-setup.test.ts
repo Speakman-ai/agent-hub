@@ -6,6 +6,13 @@ let firecracker = false;
 vi.mock('../session-env/firecracker/firecracker-backend-status.js', () => ({
   isFirecrackerBackendRegistered: () => firecracker,
 }));
+let rootfsPresent = true;
+vi.mock('./desktop-rootfs-status.js', () => ({
+  firecrackerDesktopRootfsStatus: () => ({
+    path: '/fc/rootfs-desktop.ext4',
+    present: rootfsPresent,
+  }),
+}));
 let containersExist = false;
 vi.mock('./desktop-containers-store.js', async (orig) => ({
   ...(await orig<typeof import('./desktop-containers-store.js')>()),
@@ -34,6 +41,7 @@ afterEach(() => {
   __resetDesktopRuntimeForTests();
   resetDesktopRuntimesForTests();
   firecracker = false;
+  rootfsPresent = true;
   containersExist = false;
   cfg.desktopRuntime = 'auto';
   delete process.env.FINALIZE_RUNNER_BACKEND;
@@ -92,5 +100,17 @@ describe('container desktop runtime setup', () => {
     expect(() => getActiveDesktopRuntime()).toThrow(DesktopRuntimeUnavailableError);
     firecracker = false;
     expect(() => getActiveDesktopRuntime()).toThrow(DesktopRuntimeUnavailableError);
+  });
+
+  it('uses containers when firecracker is registered but the desktop rootfs is missing', async () => {
+    firecracker = true;
+    rootfsPresent = false;
+    registerDesktopRuntime({ kind: 'firecracker' } as Parameters<typeof registerDesktopRuntime>[0]);
+    await registerContainerDesktopRuntimeOnBoot();
+    expect(getDesktopRuntime('container')?.kind).toBe('container');
+    expect(getActiveDesktopRuntime().kind).toBe('container');
+
+    cfg.desktopRuntime = 'firecracker';
+    expect(() => getActiveDesktopRuntime()).toThrow(/rootfs-desktop\.ext4.*--variant desktop/);
   });
 });
