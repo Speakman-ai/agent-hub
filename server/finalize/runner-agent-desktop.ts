@@ -166,24 +166,47 @@ function raceStop<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
 }
 
 /**
+ * Docker failures a retry can't fix: the registry refused the pull outright.
+ * `Unable to find image ... locally` alone is not one: docker prints it before
+ * every pull, including pulls that then fail on a passing network or registry
+ * outage. Exported for tests.
+ */
+export function isPermanentDockerError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /pull access denied|manifest unknown|manifest for \S+ not found|repository does not exist|invalid reference format/i.test(
+    msg,
+  );
+}
+
+/**
  * Retry a teardown step until it succeeds, backing off to `capMs`. There is
  * deliberately no attempt limit: giving up would report the desktop gone (or
- * its home saved) when it isn't.
+ * its home saved) when it isn't. `permanent` errors are rethrown instead, for
+ * steps whose caller can finish safely without them. Each failure goes to
+ * `report` so the Hub can say what a runner that hasn't let go is stuck on.
  */
 async function untilDone<T>(
   what: string,
   fn: () => Promise<T>,
   firstDelayMs: number,
   capMs: number,
+  opts: { permanent?: (err: unknown) => boolean; report?: (line: string) => void } = {},
 ): Promise<T> {
   let delay = firstDelayMs;
   for (let attempt = 1; ; attempt++) {
     try {
       return await fn();
     } catch (err) {
-      console.error(
-        `[runner-agent] ${what} failed (attempt ${attempt}): ${(err as Error).message}; retrying in ${delay}ms`,
-      );
+      const msg = (err as Error).message;
+      if (opts.permanent?.(err)) {
+        const line = `${what} failed for good: ${msg}`;
+        console.error(`[runner-agent] ${line}`);
+        opts.report?.(line);
+        throw err;
+      }
+      const line = `${what} failed (attempt ${attempt}): ${msg}; retrying in ${delay}ms`;
+      console.error(`[runner-agent] ${line}`);
+      opts.report?.(line);
       await new Promise((r) => setTimeout(r, delay));
       delay = Math.min(delay * 2, capMs);
     }
@@ -341,6 +364,14 @@ export async function runAgentDesktop(args: {
     lostContact
       ? `lost contact with the Hub for ${Math.round(selfStopMs / 60_000)} minutes`
       : 'stopped';
+  // Teardown progress, as job log frames: the Hub reads the latest one to
+  // tell a user waiting on this desktop what its runner is stuck on.
+  let logSeq = 0;
+  const reportTeardown = (line: string) => {
+    void transport
+      .postLogs(jobId, [{ seq: ++logSeq, stepIndex: 0, stream: 'stderr', data: line }])
+      .catch(() => {});
+  };
   /** Poll the Hub until it decides what to do with a refused home. */
   const awaitHomeDecision = async (): Promise<'retry' | 'discard'> => {
     for (;;) {
@@ -383,6 +414,8 @@ export async function runAgentDesktop(args: {
   let volumeCreated = false;
   let homeOk = false;
   let containerStarted = false;
+  /** `docker run` succeeded: the desktop ran on the home, so it may hold changes. */
+  let desktopRan = false;
   let ready = false;
   let error: string | null = null;
   let home: 'accepted' | 'discarded' | 'not-saved' = 'not-saved';
@@ -431,6 +464,7 @@ export async function runAgentDesktop(args: {
       }),
       desktop.controlToken,
     );
+    desktopRan = true;
     throwIfStopped();
     const port = await docker.hostPort(name, DESKTOP_CONTROL_PORT);
     const host = await (args.resolveHost ?? (() => resolveAdvertiseHost()))();
@@ -498,28 +532,76 @@ export async function runAgentDesktop(args: {
   } finally {
     // Heartbeats keep running through teardown: they keep the Hub holding
     // this desktop's slot until the finish below.
+    const report = { report: reportTeardown };
     if (containerStarted) {
       await untilDone(
         `removing desktop container ${name}`,
         () => docker.removeContainer(name),
         retryFirstMs,
         retryCapMs,
+        report,
       );
     }
-    if (volumeCreated && homeOk) {
+    // A home the desktop never ran on holds nothing new: a fresh one is empty
+    // and a restored one is the Hub's own snapshot. Saving it would also run
+    // the desktop image, which is often exactly what failed to start.
+    if (volumeCreated && homeOk && desktopRan) {
       const file = spoolFile('snapshot.tar.gz');
-      for (;;) {
+      /**
+       * Park on a home that can't be saved: the container is gone, the volume
+       * stays as the only copy, and the job stays held so the Hub keeps owning
+       * it (it blocks starts on an older home, and a profile delete waits for
+       * us to remove this copy). True when the Hub says discard.
+       */
+      const park = async (detail: string): Promise<boolean> => {
+        console.error(`[runner-agent] desktop ${jobId}: ${detail}`);
         await untilDone(
-          `snapshotting desktop home ${volume}`,
-          () => docker.snapshotHome(volume, spec.image, file),
+          `reporting rejected desktop home (job=${jobId})`,
+          () => transport.reportDesktopHomeRejected(jobId, detail),
           retryFirstMs,
           retryCapMs,
+          report,
         );
+        const decision = await awaitHomeDecision();
+        if (decision === 'discard') {
+          console.log(`[runner-agent] desktop ${jobId}: discarding the unsaved home`);
+          home = 'discarded';
+          return true;
+        }
+        return false;
+      };
+      for (;;) {
+        try {
+          await untilDone(
+            `snapshotting desktop home ${volume}`,
+            () => docker.snapshotHome(volume, spec.image, file),
+            retryFirstMs,
+            retryCapMs,
+            { ...report, permanent: isPermanentDockerError },
+          );
+        } catch (err) {
+          // The registry refused the image the snapshot runs on, so retrying
+          // here can't succeed. Park instead of deleting the run's changes.
+          const before: { error: string | null; ready: boolean } = { error, ready };
+          error = `could not snapshot the desktop home: ${(err as Error).message}`;
+          ready = false;
+          if (
+            await park(
+              `home snapshot failed (${(err as Error).message}); kept on the runner as docker volume ${volume}`,
+            )
+          ) {
+            break;
+          }
+          // `retry`: an operator made the image available again.
+          ({ error, ready } = before);
+          continue;
+        }
         const upload = await untilDone(
           `uploading desktop home (job=${jobId})`,
           () => transport.uploadDesktopHome(jobId, file),
           retryFirstMs,
           retryCapMs,
+          report,
         );
         if (upload.outcome === 'accepted') {
           home = 'accepted';
@@ -530,22 +612,12 @@ export async function runAgentDesktop(args: {
           home = 'discarded';
           break;
         }
-        // Refused for good (413): resending can't help. Park: the container is
-        // gone, the volume stays as the only copy, and the job stays held so
-        // the Hub keeps owning it (it blocks starts on an older home, and a
-        // profile delete waits for us to remove this copy). The Hub decides.
-        const detail = `home snapshot refused by the Hub (${upload.detail}); kept on the runner as docker volume ${volume}`;
-        console.error(`[runner-agent] desktop ${jobId}: ${detail}`);
-        await untilDone(
-          `reporting rejected desktop home (job=${jobId})`,
-          () => transport.reportDesktopHomeRejected(jobId, detail),
-          retryFirstMs,
-          retryCapMs,
-        );
-        const decision = await awaitHomeDecision();
-        if (decision === 'discard') {
-          console.log(`[runner-agent] desktop ${jobId}: discarding the refused home`);
-          home = 'discarded';
+        // Refused for good (413): resending can't help. The Hub decides.
+        if (
+          await park(
+            `home snapshot refused by the Hub (${upload.detail}); kept on the runner as docker volume ${volume}`,
+          )
+        ) {
           break;
         }
         // `retry`: snapshot and upload again (an operator raised the cap).
@@ -560,6 +632,7 @@ export async function runAgentDesktop(args: {
         () => docker.removeVolume(volume),
         retryFirstMs,
         retryCapMs,
+        report,
       );
     }
     // The spool holds a copy of the home; finishing lets the Hub treat this
@@ -571,6 +644,7 @@ export async function runAgentDesktop(args: {
         () => removeDir(spool),
         retryFirstMs,
         retryCapMs,
+        report,
       );
     }
     // The finish is the Hub's only confirmation that this desktop is gone

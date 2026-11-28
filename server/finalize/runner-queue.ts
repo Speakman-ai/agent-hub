@@ -210,6 +210,14 @@ export function cancelRunnerJob(args: { jobId: string; detail?: string; now: num
   return res.changes === 1;
 }
 
+/** The newest log frame's text for a job, or null when it has none. */
+export function latestRunnerJobLog(jobId: string): string | null {
+  const row = getRunnerJobLogsDb()
+    .prepare(`SELECT data FROM runner_job_logs WHERE job_id=? ORDER BY seq DESC LIMIT 1`)
+    .get(jobId) as { data: string } | undefined;
+  return row?.data ?? null;
+}
+
 /** Log frames of one job after `afterSeq`, oldest first. */
 export function readRunnerJobLogs(args: {
   jobId: string;

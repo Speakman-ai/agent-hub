@@ -18,6 +18,7 @@ import {
   cancelRunnerJob,
   enqueueRunnerJob,
   getRunnerJobStatus,
+  latestRunnerJobLog,
   type RunnerJobStatus,
 } from '../finalize/runner-queue.js';
 import { reconcileFleetCapacity } from '../finalize/runner-fleet-scaler.js';
@@ -146,13 +147,37 @@ export function createFleetDesktopHost(deps: FleetDesktopHostDeps): DesktopConta
         log(`desktop job ${ref}: its Spot host was reclaimed; container gone with it`);
         return { confirmed: true };
       }
-      return { confirmed: false };
+      return { confirmed: false, detail: describeHeldDesktop(ref, holder.lastSeenAt, now()) };
     },
     async deleteHome(computerId) {
       const store = await deps.homeStore();
       await store.deletePrefix(`${computerId}/`);
     },
   };
+}
+
+/**
+ * What a runner that hasn't finished a stopped desktop job is doing: its
+ * latest teardown report (the agent posts each failed teardown attempt as a
+ * job log), and how recently it was heard from.
+ */
+export function describeHeldDesktop(
+  jobId: string,
+  lastSeenAt: number | null,
+  nowMs: number,
+): string {
+  const seen =
+    lastSeenAt === null
+      ? 'has not been heard from'
+      : `was last heard from ${Math.max(0, Math.round((nowMs - lastSeenAt) / 1000))}s ago`;
+  let report: string | null = null;
+  try {
+    report = latestRunnerJobLog(jobId);
+  } catch {
+    // The log store is best-effort; the liveness part still helps.
+  }
+  const last = report ? `; its last report: ${report.trim().slice(0, 500)}` : '';
+  return `The runner ${seen}${last}`;
 }
 
 /**

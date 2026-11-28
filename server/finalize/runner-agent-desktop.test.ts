@@ -13,6 +13,7 @@ import {
   writeFileSync,
 } from 'fs';
 import {
+  isPermanentDockerError,
   runAgentDesktop,
   runDocker,
   type SpawnFn,
@@ -663,6 +664,179 @@ describe('runAgentDesktop start failures', () => {
     });
     expect(res.error).toMatch(/exited 125/);
     expect(docker.removeContainer).toHaveBeenCalled();
+  });
+});
+
+describe('runAgentDesktop when the desktop image is missing', () => {
+  const MISSING =
+    "docker run exited 125: Unable to find image 'agent-hub/desktop:test' locally\n" +
+    'docker: Error response from daemon: pull access denied for agent-hub/desktop';
+  const missing = () =>
+    vi.fn(async () => {
+      throw new Error(MISSING);
+    });
+  /** Fails the test instead of hanging it when teardown never finishes. */
+  function within<T>(p: Promise<T>, ms = 2_000): Promise<T> {
+    return Promise.race([
+      p,
+      new Promise<T>((_, reject) =>
+        setTimeout(() => reject(new Error(`run did not return within ${ms}ms`)), ms),
+      ),
+    ]);
+  }
+
+  it('finishes a fresh home the desktop never ran on without snapshotting it', async () => {
+    const { docker } = fakeDocker({ startDesktop: missing(), snapshotHome: missing() });
+    const transport = fakeTransport({});
+    const res = await within(
+      runAgentDesktop({
+        jobId: 'job-img-1',
+        spec: { ...SPEC, desktop: { ...SPEC.desktop!, restoreHome: false } },
+        transport,
+        docker,
+        retryCapMs: 5,
+        ...FAST,
+      }),
+    );
+    expect(res).toMatchObject({ ready: false, home: 'not-saved' });
+    expect(res.error).toMatch(/Unable to find image/);
+    expect(docker.snapshotHome).not.toHaveBeenCalled();
+    expect(transport.uploads).toEqual([]);
+    expect(docker.removeContainer).toHaveBeenCalled();
+    expect(docker.removeVolume).toHaveBeenCalled();
+    expect(transport.postFinish).toHaveBeenCalledWith('job-img-1', 1, null);
+  });
+
+  it('does not snapshot a restored home the desktop never ran on', async () => {
+    const { docker } = fakeDocker({ startDesktop: missing(), snapshotHome: missing() });
+    const transport = fakeTransport({ home: 'old-home' });
+    const res = await within(
+      runAgentDesktop({
+        jobId: 'job-img-2',
+        spec: SPEC,
+        transport,
+        docker,
+        retryCapMs: 5,
+        ...FAST,
+      }),
+    );
+    expect(res.home).toBe('not-saved');
+    expect(docker.snapshotHome).not.toHaveBeenCalled();
+    expect(transport.uploads).toEqual([]);
+    expect(transport.postFinish).toHaveBeenCalledWith('job-img-2', 1, null);
+  });
+
+  it('parks a home whose snapshot image the registry refuses, keeping the volume until told to discard', async () => {
+    const { docker, events } = fakeDocker({ snapshotHome: missing() });
+    const transport = fakeTransport({ home: 'old-home' });
+    const decisions = ['hold', 'discard'] as const;
+    let asked = 0;
+    let finishedWhileParked = false;
+    let volumeGoneWhileParked = false;
+    transport.getDesktopHomeDecision = vi.fn(async () => {
+      finishedWhileParked ||= vi.mocked(transport.postFinish).mock.calls.length > 0;
+      volumeGoneWhileParked ||= events.includes('rmvolume');
+      return decisions[Math.min(asked++, decisions.length - 1)];
+    });
+    const run = runAgentDesktop({
+      jobId: 'job-img-3',
+      spec: SPEC,
+      transport,
+      docker,
+      resolveHost: async () => 'h',
+      retryCapMs: 5,
+      decisionPollMs: 1,
+      ...FAST,
+    });
+    await vi.waitFor(() => expect(transport.reports).toHaveLength(1));
+    transport.stop();
+    const res = await within(run);
+    // Not retried: the registry refused the pull.
+    expect(docker.snapshotHome).toHaveBeenCalledTimes(1);
+    expect(transport.reportDesktopHomeRejected).toHaveBeenCalledWith(
+      'job-img-3',
+      expect.stringMatching(
+        /home snapshot failed .*pull access denied.*docker volume agent-hub-desktop-home-c1-jobimg3/s,
+      ),
+    );
+    expect(asked).toBe(2);
+    expect(finishedWhileParked).toBe(false);
+    expect(volumeGoneWhileParked).toBe(false);
+    expect(res.home).toBe('discarded');
+    expect(res.error).toMatch(/could not snapshot the desktop home.*pull access denied/s);
+    expect(transport.uploads).toEqual([]);
+    expect(events.at(-1)).toBe('rmvolume');
+    expect(transport.postFinish).toHaveBeenCalledWith('job-img-3', 1, null);
+  });
+
+  it('keeps retrying a snapshot whose pull failed on a passing outage, then saves the home', async () => {
+    let failures = 3;
+    const { docker, events } = fakeDocker();
+    const snapshot = docker.snapshotHome;
+    docker.snapshotHome = vi.fn(async (v, i, file) => {
+      if (failures-- > 0) {
+        throw new Error(
+          "docker run exited 125: Unable to find image 'agent-hub/desktop:test' locally\n" +
+            'docker: Error response from daemon: Get "https://registry/v2/": net/http: TLS handshake timeout',
+        );
+      }
+      return snapshot(v, i, file);
+    });
+    const transport = fakeTransport({ home: 'old-home' });
+    const run = runAgentDesktop({
+      jobId: 'job-img-5',
+      spec: SPEC,
+      transport,
+      docker,
+      resolveHost: async () => 'h',
+      retryCapMs: 5,
+      ...FAST,
+    });
+    await vi.waitFor(() => expect(transport.reports).toHaveLength(1));
+    transport.stop();
+    const res = await within(run);
+    expect(docker.snapshotHome).toHaveBeenCalledTimes(4);
+    expect(transport.reportDesktopHomeRejected).not.toHaveBeenCalled();
+    expect(res).toEqual({ ready: true, error: 'stopped', home: 'accepted' });
+    expect(transport.uploads).toEqual(['snapshot']);
+    expect(events.at(-1)).toBe('rmvolume');
+    expect(transport.postFinish).toHaveBeenCalledWith('job-img-5', 0, null);
+  });
+
+  it('classifies only a refused pull as permanent', () => {
+    expect(isPermanentDockerError(new Error(MISSING))).toBe(true);
+    expect(
+      isPermanentDockerError(
+        new Error("Unable to find image 'x:1' locally\nnet/http: TLS handshake timeout"),
+      ),
+    ).toBe(false);
+    expect(isPermanentDockerError(new Error("Unable to find image 'x:1' locally"))).toBe(false);
+    expect(isPermanentDockerError(new Error('manifest unknown'))).toBe(true);
+  });
+
+  it('reports what teardown is retrying to the Hub as job logs', async () => {
+    let failures = 2;
+    const { docker } = fakeDocker({
+      startDesktop: missing(),
+      removeVolume: vi.fn(async () => {
+        if (failures-- > 0) throw new Error('volume is in use');
+      }),
+    });
+    const transport = fakeTransport({});
+    await within(
+      runAgentDesktop({
+        jobId: 'job-img-4',
+        spec: { ...SPEC, desktop: { ...SPEC.desktop!, restoreHome: false } },
+        transport,
+        docker,
+        retryCapMs: 5,
+        ...FAST,
+      }),
+    );
+    const posted = vi
+      .mocked(transport.postLogs)
+      .mock.calls.flatMap(([, frames]) => frames.map((f) => f.data));
+    expect(posted.some((d) => /removing desktop volume .*volume is in use/.test(d))).toBe(true);
   });
 });
 

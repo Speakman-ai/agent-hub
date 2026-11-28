@@ -561,6 +561,21 @@ describe('container desktop runtime', () => {
     expect(getDesktopComputer(KEY)).not.toBeNull();
   });
 
+  it('names what the old runner is stuck on when it never confirms', async () => {
+    const host = fakeHost('runner-fleet', { confirmStops: false });
+    const stop = host.stop.bind(host);
+    host.stop = async (ref, id) => ({
+      ...(await stop(ref, id)),
+      detail: 'The runner was last heard from 3s ago; its last report: snapshotting failed',
+    });
+    const rt = makeRuntime(host, fakeClient(), { stopConfirmTimeoutMs: 10_000, pollMs: 1_000 });
+    await rt.ensureStarted(KEY);
+    await rt.stop(KEY);
+    await expect(rt.ensureStarted(KEY)).rejects.toThrow(
+      /still shutting down on its runner .*The runner was last heard from 3s ago; its last report: snapshotting failed\. Try again/,
+    );
+  });
+
   it('records the ref before creating anything, and keeps it when create and cleanup both fail', async () => {
     const host = fakeHost();
     host.allocateRef = (id) => `agent-hub-desktop-${id}`;

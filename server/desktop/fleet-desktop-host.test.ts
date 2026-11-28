@@ -193,7 +193,7 @@ describe('fleet desktop host', () => {
     });
 
     // Cancelling is only a request: the runner still holds the job.
-    expect(await host.stop(jobId, id)).toEqual({ confirmed: false });
+    expect(await host.stop(jobId, id)).toMatchObject({ confirmed: false });
     expect(getRunnerJobStatus(jobId)?.state).toBe('cancelled');
     expect(
       (await request(app).post(`/api/runners/jobs/${jobId}/heartbeat`).set(auth).send({})).status,
@@ -316,16 +316,49 @@ describe('fleet desktop host', () => {
     const { id, jobId } = await startComputer(host);
     const token = await register(['desktop']);
     await claim(token);
-    expect(await host.stop(jobId, id)).toEqual({ confirmed: false });
+    expect(await host.stop(jobId, id)).toMatchObject({ confirmed: false });
     // A day of silence: the runner may be stuck in Docker with the desktop alive.
     getOrgsDb()
       .prepare('UPDATE runner_agents SET last_seen_at=?')
       .run(Date.now() - DAY_MS);
     clock = Date.now() + DAY_MS;
-    expect(await host.stop(jobId, id)).toEqual({ confirmed: false });
+    expect(await host.stop(jobId, id)).toMatchObject({ confirmed: false });
     // Only the runner's finish confirms it.
     await finish(token, jobId);
     expect(await host.stop(jobId, id)).toEqual({ confirmed: true });
+  });
+
+  it("says what a runner that hasn't let go is stuck on", async () => {
+    const host = makeHost();
+    const { id, jobId } = await startComputer(host);
+    const token = await register(['desktop']);
+    await claim(token);
+    expect((await host.stop(jobId, id)).detail).toMatch(
+      /^The runner was last heard from \d+s ago$/,
+    );
+    await request(app)
+      .post(`/api/runners/jobs/${jobId}/logs`)
+      .set({ Authorization: `Bearer ${token}` })
+      .send({
+        frames: [
+          {
+            seq: 1,
+            stepIndex: 0,
+            stream: 'stderr',
+            data: 'removing desktop volume v failed (attempt 1): in use',
+          },
+          {
+            seq: 2,
+            stepIndex: 0,
+            stream: 'stderr',
+            data: 'removing desktop volume v failed (attempt 2): in use',
+          },
+        ],
+      })
+      .expect(204);
+    const res = await host.stop(jobId, id);
+    expect(res.confirmed).toBe(false);
+    expect(res.detail).toMatch(/its last report: removing desktop volume v failed \(attempt 2\)/);
   });
 
   it('confirms once a Spot-reclaimed host has been silent past the grace', async () => {
@@ -337,7 +370,7 @@ describe('fleet desktop host', () => {
     getOrgsDb().prepare('UPDATE runner_jobs SET spot_interruption_at=? WHERE id=?').run(t0, jobId);
     getOrgsDb().prepare('UPDATE runner_agents SET last_seen_at=?').run(t0);
     clock = t0 + SPOT_GRACE_MS - 1;
-    expect(await host.stop(jobId, id)).toEqual({ confirmed: false });
+    expect(await host.stop(jobId, id)).toMatchObject({ confirmed: false });
     clock = t0 + SPOT_GRACE_MS;
     expect(await host.stop(jobId, id)).toEqual({ confirmed: true });
   });
@@ -347,7 +380,7 @@ describe('fleet desktop host', () => {
     const { id, jobId } = await startComputer(host);
     const token = await register(['desktop']);
     await claim(token);
-    expect(await host.stop(jobId, id)).toEqual({ confirmed: false });
+    expect(await host.stop(jobId, id)).toMatchObject({ confirmed: false });
     getOrgsDb().prepare("UPDATE runner_agents SET state='dead'").run();
     expect(await host.stop(jobId, id)).toEqual({ confirmed: true });
   });
@@ -364,7 +397,7 @@ describe('fleet desktop host', () => {
       .set(auth)
       .send({ status: 'lost', detail: 'the desktop container stopped' })
       .expect(204);
-    expect(await host.stop(jobId, id)).toEqual({ confirmed: false });
+    expect(await host.stop(jobId, id)).toMatchObject({ confirmed: false });
     await request(app)
       .put(`/api/runners/jobs/${jobId}/desktop-home`)
       .set(auth)
@@ -439,7 +472,7 @@ describe('fleet desktop host', () => {
     const token = await register(['desktop']);
     await claim(token);
     const auth = { Authorization: `Bearer ${token}` };
-    expect(await host.stop(jobId, id)).toEqual({ confirmed: false });
+    expect(await host.stop(jobId, id)).toMatchObject({ confirmed: false });
 
     // Attempt A stalls inside store.put; the runner times out and retries (B).
     const realPut = store.put.bind(store);
@@ -558,7 +591,7 @@ describe('fleet desktop host', () => {
       const token = await register(['desktop']);
       await claim(token);
       const auth = { Authorization: `Bearer ${token}` };
-      expect(await host.stop(jobId, id)).toEqual({ confirmed: false });
+      expect(await host.stop(jobId, id)).toMatchObject({ confirmed: false });
       const big = await request(app)
         .put(`/api/runners/jobs/${jobId}/desktop-home`)
         .set(auth)

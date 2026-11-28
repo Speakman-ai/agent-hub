@@ -172,6 +172,8 @@ interface Entry {
   lock: Promise<void>;
   /** Transitions queued or running under `lock`. */
   busy: number;
+  /** Why the host hasn't confirmed the last stop (fleet: what the runner is stuck on). */
+  stopDetail?: string | null;
   /**
    * Bumped whenever a container becomes this computer's (each start, each
    * adoption). Refs alone can't tell incarnations apart: the Hub-docker host
@@ -336,7 +338,8 @@ export function createContainerDesktopRuntime(
    * can't be asked. Returns whether the stop is confirmed.
    */
   async function release(e: Entry, ref: string): Promise<boolean> {
-    const { confirmed } = await hostOf(e).stop(ref, e.id);
+    const { confirmed, detail } = await hostOf(e).stop(ref, e.id);
+    e.stopDetail = confirmed ? null : (detail ?? null);
     if (confirmed) {
       markStopped(e);
       // A parked runner told to discard its kept home has done so: the
@@ -399,7 +402,9 @@ export function createContainerDesktopRuntime(
       if (now() >= deadline) {
         throw new DesktopStartError(
           'Your previous desktop is still shutting down on its runner (it saves your home before ' +
-            'it lets go). Try again in a few minutes.',
+            'it lets go).' +
+            (e.stopDetail ? ` ${e.stopDetail.replace(/\.?$/, '.')}` : '') +
+            ' Try again in a few minutes.',
         );
       }
       await sleep(pollMs);

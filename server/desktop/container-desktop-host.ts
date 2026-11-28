@@ -67,9 +67,13 @@ export interface DesktopContainerHost {
   /**
    * Ask the container to stop, keeping the home. Idempotent. `confirmed` is
    * true only once the container is known to be gone; until then the caller
-   * keeps the ref (and its capacity slot) and asks again later.
+   * keeps the ref (and its capacity slot) and asks again later. `detail`,
+   * when unconfirmed, is what the host knows the container is waiting on.
    */
-  stop(runnerRef: string, computerId: string): Promise<{ confirmed: boolean }>;
+  stop(
+    runnerRef: string,
+    computerId: string,
+  ): Promise<{ confirmed: boolean; detail?: string | null }>;
   /** Remove the persistent home. The container must already be stopped. */
   deleteHome(computerId: string): Promise<void>;
 }
