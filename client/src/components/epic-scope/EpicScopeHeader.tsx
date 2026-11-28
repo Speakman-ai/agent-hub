@@ -1,4 +1,4 @@
-import { MessagesSquare } from 'lucide-react';
+import { MessagesSquare, PauseCircle } from 'lucide-react';
 import { countDoneTickets, columnNameById, specProgress } from '../../utils/epicScopeStats';
 
 /** Epic banner with ticket + spec progress — top of the epic page. */
@@ -10,6 +10,8 @@ export default function EpicScopeHeader({
   specItems = [],
   compact = false,
   onOpenManager,
+  onPausePlanning,
+  pausingPlanning = false,
 }: any) {
   if (!epic) return null;
 
@@ -54,6 +56,19 @@ export default function EpicScopeHeader({
             >
               <MessagesSquare size={12} />
               Open manager
+            </button>
+          ) : null}
+          {onPausePlanning && epic.manager_state === 'orchestrating' ? (
+            <button
+              type="button"
+              onClick={onPausePlanning}
+              disabled={pausingPlanning}
+              data-testid="epic-pause-planning"
+              title="Stop starting new tickets. The manager and workers already running keep going."
+              className="mb-1.5 ml-1.5 inline-flex items-center gap-1 text-[11px] font-medium text-amber-300 hover:text-amber-200 bg-amber-500/10 hover:bg-amber-500/15 px-2 py-1 rounded-md transition-colors disabled:opacity-50"
+            >
+              <PauseCircle size={12} />
+              {pausingPlanning ? 'Pausing…' : 'Pause (Planning)'}
             </button>
           ) : null}
           {epic.description ? (

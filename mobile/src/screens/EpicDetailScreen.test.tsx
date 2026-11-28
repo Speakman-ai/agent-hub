@@ -85,6 +85,29 @@ describe('EpicDetailScreen — EpicSummary', () => {
     expect(without).not.toContain('Open manager');
   });
 
+  it('offers Pause (Planning) only while orchestrating', () => {
+    const base = {
+      id: 'e1',
+      name: 'Mobile parity',
+      manager_session_id: 's1',
+      manager_agent_id: 'lead',
+    };
+    const render = (manager_state: string) =>
+      renderToStaticMarkup(
+        <EpicSummary
+          epic={{ ...base, manager_state }}
+          phases={[]}
+          tickets={[]}
+          columns={columns}
+          specItems={[]}
+          onPausePlanning={noop}
+        />,
+      );
+    expect(render('orchestrating')).toContain('Pause (Planning)');
+    expect(render('planning')).not.toContain('Pause (Planning)');
+    expect(render('none')).not.toContain('Pause (Planning)');
+  });
+
   it('renders nothing without an epic', () => {
     const html = renderToStaticMarkup(
       <EpicSummary epic={null} phases={[]} tickets={[]} columns={columns} specItems={[]} />,

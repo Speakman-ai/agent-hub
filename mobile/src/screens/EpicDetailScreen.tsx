@@ -57,7 +57,16 @@ function ProgressBar({ pct, tone = 'emerald' }: { pct: number; tone?: 'emerald' 
 }
 
 /** Epic banner with spec + ticket progress. Mirrors web EpicScopeHeader. */
-export function EpicSummary({ epic, phases, tickets, columns, specItems, onOpenManager }: any) {
+export function EpicSummary({
+  epic,
+  phases,
+  tickets,
+  columns,
+  specItems,
+  onOpenManager,
+  onPausePlanning,
+  pausingPlanning = false,
+}: any) {
   if (!epic) return null;
   const colMap = columnNameById(columns);
   const done = countDoneTickets(tickets, colMap);
@@ -88,6 +97,18 @@ export function EpicSummary({ epic, phases, tickets, columns, specItems, onOpenM
           onPress={() => onOpenManager(epic.manager_agent_id, epic.manager_session_id)}
         >
           <Text style={styles.secondaryBtnText}>Open manager</Text>
+        </TouchableOpacity>
+      ) : null}
+      {onPausePlanning && epic.manager_state === 'orchestrating' ? (
+        <TouchableOpacity
+          style={[styles.secondaryBtn, pausingPlanning && { opacity: 0.5 }]}
+          testID="epic-pause-planning"
+          disabled={pausingPlanning}
+          onPress={onPausePlanning}
+        >
+          <Text style={styles.secondaryBtnText}>
+            {pausingPlanning ? 'Pausing…' : 'Pause (Planning)'}
+          </Text>
         </TouchableOpacity>
       ) : null}
 
@@ -510,6 +531,7 @@ export default function EpicDetailScreen({ route, navigation }: any) {
   const [showSpecForm, setShowSpecForm] = useState(false);
   const [newSpec, setNewSpec] = useState({ tag: '', title: '' });
   const [savingSpec, setSavingSpec] = useState(false);
+  const [pausingPlanning, setPausingPlanning] = useState(false);
 
   const loadBoard = useCallback(async () => {
     try {
@@ -793,6 +815,19 @@ export default function EpicDetailScreen({ route, navigation }: any) {
             tickets={tickets}
             columns={columns}
             specItems={specItems}
+            pausingPlanning={pausingPlanning}
+            onPausePlanning={async () => {
+              if (pausingPlanning) return;
+              setPausingPlanning(true);
+              try {
+                await api.pauseEpicForPlanning(projectId, epic.id);
+                await loadBoard();
+              } catch (err: any) {
+                Alert.alert('Pause failed', err?.message || 'Failed to pause epic');
+              } finally {
+                setPausingPlanning(false);
+              }
+            }}
             onOpenManager={(agentId: string, sessionId: string) => {
               setActiveAgentId(agentId);
               setActiveSessionId(sessionId);

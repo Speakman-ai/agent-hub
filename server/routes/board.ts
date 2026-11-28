@@ -60,6 +60,8 @@ import { prsForEpicFeatureBranch } from '../native-pr/epic-branch-link.js';
 import { loadAssignableUsers, normalizeAssignedUserId } from '../kanban-assigned-user.js';
 import { normalizeTemplatePriority, templateRowToClient } from '../kanban-card-templates.js';
 import { getDb } from '../db.js';
+import { getEpicManager } from '../epic-manager.js';
+import { pauseEpicDispatch } from '../epic-session-close.js';
 import { readAll } from '../db-async/read-facade.js';
 import {
   handOverEpicManager,
@@ -2267,6 +2269,34 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     broadcast({ type: 'kanban_update', projectId: req.params.projectId });
     res.json({ ok: true });
   });
+
+  // Planning: no new cards start. The manager stays linked and workers already
+  // running keep going; Run phase (or turning the epic on) resumes dispatch.
+  router.post(
+    '/api/projects/:projectId/board/epics/:epicId/planning',
+    (req: Request, res: Response) => {
+      const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
+      const epic = stmts.getKanbanEpic.get(req.params.epicId) as KanbanEpicRow | undefined;
+      if (!epic || epic.board_id !== board.id) {
+        return res.status(404).json({ error: 'Epic not found' });
+      }
+      pauseEpicDispatch(
+        {
+          stmts,
+          db: getDb(),
+          broadcast,
+          rescheduleEpic: scheduleAutonomousEpic,
+          reschedulePhase: scheduleAutonomousPhase,
+          pauseManager: (epicId) => getEpicManager()?.pause(epicId),
+        },
+        epic.id,
+      );
+      const updated = (stmts.getKanbanEpics.all(board.id) as KanbanEpicRow[]).find(
+        (e) => e.id === epic.id,
+      );
+      res.json(updated ?? stmts.getKanbanEpic.get(epic.id));
+    },
+  );
 
   router.get('/api/projects/:projectId/board/phases', (req: Request, res: Response) => {
     const { board } = getOrCreateBoard(stmts, req.params.projectId as string);

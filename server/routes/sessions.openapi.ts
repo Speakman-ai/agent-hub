@@ -864,6 +864,71 @@ registerPath({
   },
 });
 
+export const EpicCloseImpactResponseSchema = z.object({
+  epic: z
+    .object({ id: z.string(), name: z.string() })
+    .nullable()
+    .describe('The epic this session manages, or null when it manages none.'),
+  runningWorkers: z
+    .array(
+      z.object({
+        sessionId: z.string(),
+        sessionName: z.string(),
+        cardId: z.string(),
+        cardTitle: z.string(),
+      }),
+    )
+    .describe("Worker sessions on the epic's In Progress / Review cards with a turn in flight."),
+  runningWorkerCount: z.number().int().nonnegative(),
+});
+
+export const BulkEpicCloseImpactResponseSchema = z.object({
+  epics: z
+    .array(z.object({ id: z.string(), name: z.string() }))
+    .describe('Epics managed by sessions the bulk archive would take.'),
+  runningWorkers: EpicCloseImpactResponseSchema.shape.runningWorkers,
+  runningWorkerCount: z.number().int().nonnegative(),
+});
+
+// GET /api/agents/:agentId/sessions/epic-close-impact
+registerPath({
+  method: 'get',
+  path: '/api/agents/{agentId}/sessions/epic-close-impact',
+  tags: ['Sessions'],
+  summary: 'What a bulk archive would stop',
+  description:
+    'Runs the same selection as `DELETE /api/agents/{agentId}/sessions` (`scope=all`), `/sessions/pushed` or `/sessions/merged`, and sums the epic-close impact of every selected session that manages an epic: the epics that would stop and the workers with a turn in flight that would be interrupted.',
+  request: {
+    params: agentIdParams,
+    query: z.object({ scope: z.enum(['all', 'pushed', 'merged']).optional() }),
+  },
+  responses: {
+    200: {
+      description: 'Epics and running workers the bulk archive would stop.',
+      content: jsonContent(BulkEpicCloseImpactResponseSchema),
+    },
+    400: errorResponse('Unknown scope.'),
+  },
+});
+
+// GET /api/sessions/:sessionId/epic-close-impact
+registerPath({
+  method: 'get',
+  path: '/api/sessions/{sessionId}/epic-close-impact',
+  tags: ['Sessions'],
+  summary: 'What archiving this session would stop',
+  description:
+    'Archiving an epic manager session turns the epic and its phases off, unlinks the manager and interrupts every worker on the epic with a turn in flight. This read reports that epic and those workers so clients can confirm first. Sessions that manage no epic return `epic: null` and no workers.',
+  request: { params: sessionIdParams },
+  responses: {
+    200: {
+      description: 'The managed epic (if any) and the workers archiving would stop.',
+      content: jsonContent(EpicCloseImpactResponseSchema),
+    },
+    404: errorResponse('Session not found (or hidden by ownership).'),
+  },
+});
+
 // GET /api/sessions/:sessionId
 registerPath({
   method: 'get',
@@ -1264,7 +1329,7 @@ registerPath({
   tags: ['Sessions'],
   summary: 'Archive (soft-delete) a single session',
   description:
-    'Kills any in-flight CLI process, closes the browser session best-effort, and marks the row with `deleted_at`. Recoverable for 24h via `POST /api/sessions/{sessionId}/restore`.',
+    'Kills any in-flight CLI process, closes the browser session best-effort, and marks the row with `deleted_at`. Recoverable for 24h via `POST /api/sessions/{sessionId}/restore`. When the session manages an epic, the epic stops too: epic and phase dispatch go off, the manager link is cleared (restore does not relink it) and workers with a turn in flight are interrupted, their cards left in place with a comment. `GET /api/sessions/{sessionId}/epic-close-impact` previews that.',
   request: { params: sessionIdParams },
   responses: {
     200: {

@@ -33,6 +33,7 @@ import type {
   ReadyCardOffer,
 } from './autonomous.js';
 import { isOrchestrateModeActive } from './session-mode.js';
+import { listEpicWorkers } from './epic-session-close.js';
 import {
   EPIC_MANAGER_HOLD_LABEL,
   EPIC_MANAGER_STALLED_EVENT,
@@ -279,22 +280,7 @@ export class EpicManager implements EpicManagerPort {
 
   /** Live sessions linked to the epic's In Progress / Review cards. */
   private runningWorkers(epic: KanbanEpicRow): SessionRow[] {
-    const { stmts } = this.deps;
-    const columns = stmts.getKanbanColumns.all(epic.board_id) as KanbanColumnRow[];
-    const active = new Set(
-      columns
-        .filter((c) => ['in progress', 'review'].includes(c.name.trim().toLowerCase()))
-        .map((c) => c.id),
-    );
-    const out: SessionRow[] = [];
-    for (const card of stmts.getKanbanCardsByEpic.all(epic.id) as KanbanCardRow[]) {
-      if (!active.has(card.column_id) || !card.session_id) continue;
-      const session = stmts.getSession.get(card.session_id) as SessionRow | undefined;
-      if (session && !session.deleted_at && session.id !== epic.manager_session_id) {
-        out.push(session);
-      }
-    }
-    return out;
+    return listEpicWorkers(this.deps.stmts, epic).map((w) => w.session);
   }
 
   // Kickoff, offers, events

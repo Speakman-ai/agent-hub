@@ -17,6 +17,7 @@
 import type BetterSqlite3 from 'better-sqlite3';
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import path from 'path';
+import { stopEpicDispatchRows } from '../epic-dispatch-stop.js';
 
 export const ARCHIVE_AUTO_EPIC_MANAGERS_MARKER = '.archive-auto-epic-managers-v1.done';
 
@@ -66,12 +67,6 @@ export function archiveAutoEpicManagers(opts: {
     const archiveSession = db.prepare(
       "UPDATE sessions SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND deleted_at IS NULL",
     );
-    const stopEpic = db.prepare(
-      "UPDATE kanban_epics SET autonomous = 0, manager_session_id = NULL, updated_at = datetime('now') WHERE id = ?",
-    );
-    const stopPhases = db.prepare(
-      'UPDATE kanban_phases SET autonomous_running = 0 WHERE epic_id = ? AND autonomous_running = 1',
-    );
 
     let archived = 0;
     let kept = 0;
@@ -83,8 +78,7 @@ export function archiveAutoEpicManagers(opts: {
         continue;
       }
       archived += archiveSession.run(session_id).changes;
-      stopEpic.run(epic_id);
-      stopPhases.run(epic_id);
+      stopEpicDispatchRows(db, epic_id, { clearManager: true });
       stopped.add(epic_id);
     }
     return { archived, kept, epicsStopped: stopped.size };

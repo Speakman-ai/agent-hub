@@ -11,6 +11,7 @@ import {
   resolveComputerToolEnabled,
 } from '@shared/utils/computerTool';
 import { organizationComputerOwnerLabel } from '@shared/utils/organizationComputer';
+import { epicCloseConfirmMessage } from '@shared/utils/epicCloseConfirm';
 import {
   createNavigationIntent,
   openSpawnedSessionWhenCurrent,
@@ -2544,6 +2545,26 @@ export function AppProvider({ children }: any) {
       // meant to prevent. We also snapshot the row up-front so the archived
       // list can carry the real message_count rather than a placeholder.
       const deletedRow = sessionsRef.current?.find((s: any) => s.id === sessionId) || null;
+      // Archiving an epic manager stops the epic and its running workers, so
+      // ask first. A failed lookup falls through to the archive as before.
+      if (deletedRow?.session_mode === 'orchestrate') {
+        const impact = await api.getEpicCloseImpact(sessionId).catch(() => null);
+        const message = epicCloseConfirmMessage(impact as any);
+        if (message) {
+          const confirmed = await new Promise<boolean>((resolve) =>
+            Alert.alert(
+              'Archive epic session?',
+              message,
+              [
+                { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+                { text: 'Archive', style: 'destructive', onPress: () => resolve(true) },
+              ],
+              { cancelable: true, onDismiss: () => resolve(false) },
+            ),
+          );
+          if (!confirmed) return;
+        }
+      }
       try {
         await api.deleteSession(sessionId);
         setBrowserScreensBySession((prev: any) => {

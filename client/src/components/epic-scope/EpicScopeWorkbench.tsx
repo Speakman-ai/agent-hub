@@ -72,6 +72,8 @@ export default function EpicScopeWorkbench({
   assigningTicketId,
   modelConfig,
   onOpenManager,
+  onPausePlanning,
+  pausingPlanning,
   variant = 'page',
   defaultTab = 'flowchart',
   showManageTab = true,
@@ -123,6 +125,8 @@ export default function EpicScopeWorkbench({
           columns={columns}
           specItems={epicSpecItems}
           onOpenManager={onOpenManager}
+          onPausePlanning={onPausePlanning}
+          pausingPlanning={pausingPlanning}
         />
 
         <div>
@@ -255,6 +259,8 @@ export default function EpicScopeWorkbench({
           columns={columns}
           specItems={epicSpecItems}
           onOpenManager={onOpenManager}
+          onPausePlanning={onPausePlanning}
+          pausingPlanning={pausingPlanning}
           compact
         />
       )}

@@ -243,6 +243,10 @@ export const api = {
   extractSkillFromSession: (sessionId: any) =>
     fetchJSON(`/sessions/${sessionId}/extract-skill`, { method: 'POST' }),
   deleteSession: (sessionId: any) => fetchJSON(`/sessions/${sessionId}`, { method: 'DELETE' }),
+  // The epic this session manages and the workers archiving it would stop.
+  getEpicCloseImpact: (sessionId: any) => fetchJSON(`/sessions/${sessionId}/epic-close-impact`),
+  getBulkEpicCloseImpact: (agentId: any, scope: 'all' | 'pushed' | 'merged') =>
+    fetchJSON(`/agents/${agentId}/sessions/epic-close-impact?scope=${scope}`),
   // Soft-delete recovery — rows within the 7-day window, newest first.
   getArchivedSessions: (agentId: any) => fetchJSON(`/agents/${agentId}/archived-sessions`),
   restoreSession: (sessionId: any) =>
@@ -2327,6 +2331,9 @@ export const api = {
     fetchJSON(`/projects/${projectId}/board/phases/${phaseId}/run`, { method: 'POST' }),
   stopPhase: (projectId: any, phaseId: any) =>
     fetchJSON(`/projects/${projectId}/board/phases/${phaseId}/stop`, { method: 'POST' }),
+  // Planning: dispatch off, manager and running workers kept.
+  pauseEpicForPlanning: (projectId: any, epicId: any) =>
+    fetchJSON(`/projects/${projectId}/board/epics/${epicId}/planning`, { method: 'POST' }),
   // Reorder an epic's phases. Pass `phaseIds` for an explicit order, or
   // `sortByDependencies: true` to derive the order from the card blocker graph.
   reorderPhases: (

@@ -26100,6 +26100,40 @@ paths:
                       - true
                 required:
                   - ok
+  /api/projects/{projectId}/board/epics/{epicId}/planning:
+    post:
+      tags:
+        - Board
+      summary: Put a feature into Planning
+      description: "Pauses dispatch: the epic `autonomous` flag and every running phase go off, so no new cards start. The manager session stays linked (`manager_state` reads `planning`) and workers already running keep going. Run phase or turning the epic on resumes dispatch."
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban epic UUID.
+          required: true
+          description: Kanban epic UUID.
+          name: epicId
+          in: path
+      responses:
+        "200":
+          description: The feature after the pause.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KanbanEpic"
+        "404":
+          description: Feature not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
   /api/projects/{projectId}/board/epics/{epicId}/assign-lead-to-cards:
     post:
       tags:
@@ -27577,6 +27611,148 @@ paths:
                   - deleted
                   - failed
                   - archivedIds
+  /api/agents/{agentId}/sessions/epic-close-impact:
+    get:
+      tags:
+        - Sessions
+      summary: What a bulk archive would stop
+      description: "Runs the same selection as `DELETE /api/agents/{agentId}/sessions` (`scope=all`), `/sessions/pushed` or `/sessions/merged`, and sums the epic-close impact of every selected session that manages an epic: the epics that would stop and the workers with a turn in flight that would be interrupted."
+      parameters:
+        - schema:
+            type: string
+            description: Agent ID.
+          required: true
+          description: Agent ID.
+          name: agentId
+          in: path
+        - schema:
+            type: string
+            enum:
+              - all
+              - pushed
+              - merged
+          required: false
+          name: scope
+          in: query
+      responses:
+        "200":
+          description: Epics and running workers the bulk archive would stop.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  epics:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                      required:
+                        - id
+                        - name
+                    description: Epics managed by sessions the bulk archive would take.
+                  runningWorkers:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        sessionId:
+                          type: string
+                        sessionName:
+                          type: string
+                        cardId:
+                          type: string
+                        cardTitle:
+                          type: string
+                      required:
+                        - sessionId
+                        - sessionName
+                        - cardId
+                        - cardTitle
+                    description: Worker sessions on the epic's In Progress / Review cards with a turn in flight.
+                  runningWorkerCount:
+                    type: integer
+                    minimum: 0
+                required:
+                  - epics
+                  - runningWorkers
+                  - runningWorkerCount
+        "400":
+          description: Unknown scope.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/epic-close-impact:
+    get:
+      tags:
+        - Sessions
+      summary: What archiving this session would stop
+      description: "Archiving an epic manager session turns the epic and its phases off, unlinks the manager and interrupts every worker on the epic with a turn in flight. This read reports that epic and those workers so clients can confirm first. Sessions that manage no epic return `epic: null` and no workers."
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: The managed epic (if any) and the workers archiving would stop.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  epic:
+                    type: object
+                    nullable: true
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                    required:
+                      - id
+                      - name
+                    description: The epic this session manages, or null when it manages none.
+                  runningWorkers:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        sessionId:
+                          type: string
+                        sessionName:
+                          type: string
+                        cardId:
+                          type: string
+                        cardTitle:
+                          type: string
+                      required:
+                        - sessionId
+                        - sessionName
+                        - cardId
+                        - cardTitle
+                    description: Worker sessions on the epic's In Progress / Review cards with a turn in flight.
+                  runningWorkerCount:
+                    type: integer
+                    minimum: 0
+                required:
+                  - epic
+                  - runningWorkers
+                  - runningWorkerCount
+        "404":
+          description: Session not found (or hidden by ownership).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
   /api/sessions/{sessionId}:
     get:
       tags:
@@ -27682,7 +27858,7 @@ paths:
       tags:
         - Sessions
       summary: Archive (soft-delete) a single session
-      description: Kills any in-flight CLI process, closes the browser session best-effort, and marks the row with `deleted_at`. Recoverable for 24h via `POST /api/sessions/{sessionId}/restore`.
+      description: "Kills any in-flight CLI process, closes the browser session best-effort, and marks the row with `deleted_at`. Recoverable for 24h via `POST /api/sessions/{sessionId}/restore`. When the session manages an epic, the epic stops too: epic and phase dispatch go off, the manager link is cleared (restore does not relink it) and workers with a turn in flight are interrupted, their cards left in place with a comment. `GET /api/sessions/{sessionId}/epic-close-impact` previews that."
       parameters:
         - schema:
             type: string

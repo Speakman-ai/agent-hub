@@ -70,6 +70,10 @@ import { markSessionTermination } from '../process-termination.js';
 import { closeSidebars } from '../session-sidebar.js';
 import { clearEphemeralBackgroundBash } from '../ephemeral-background-bash.js';
 import { getDb } from '../db.js';
+import { scheduleAutonomousEpic, scheduleAutonomousPhase } from '../autonomous.js';
+import { getEpicManager } from '../epic-manager.js';
+import { closeEpicManagedBySession, epicCloseImpact } from '../epic-session-close.js';
+import { cancelSessionChatRun } from '../session-chat-cancel.js';
 import { readAll } from '../db-async/read-facade.js';
 import {
   buildSessionRunSnapshot,
@@ -566,6 +570,34 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         deps.drainSessionQueue?.(sessionId);
       }
     });
+  }
+
+  /**
+   * Archiving an epic's manager session stops the epic: dispatch off, manager
+   * unlinked, workers with a turn in flight interrupted. Must run before the
+   * soft delete, while the manager link still resolves.
+   */
+  function closeManagedEpicBestEffort(sessionId: string): void {
+    try {
+      closeEpicManagedBySession(
+        {
+          stmts,
+          db: getDb(),
+          broadcast,
+          rescheduleEpic: scheduleAutonomousEpic,
+          reschedulePhase: scheduleAutonomousPhase,
+          pauseManager: (epicId) => getEpicManager()?.pause(epicId),
+          isSessionRunning: (id) => activeProcesses.has(id),
+          interruptSession: (id) => cancelSessionChatRun({ sessionId: id, activeProcesses }),
+        },
+        sessionId,
+      );
+    } catch (err) {
+      console.warn(
+        `[sessions] stopping the managed epic failed (${sessionId}):`,
+        (err as Error).message,
+      );
+    }
   }
 
   /** Keep a linked kanban card aligned with session archive / restore state. */
@@ -1577,14 +1609,40 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     res.json(events);
   });
 
+  type BulkArchiveScope = 'all' | 'pushed' | 'merged';
+
+  /** The sessions a bulk archive of `scope` would take, in the order it takes them. */
+  function selectBulkArchiveSessions(req: Request, scope: BulkArchiveScope): SessionRow[] {
+    return (stmts.getAllSessionsByAgent.all(req.params.agentId) as SessionRow[]).filter((s) => {
+      if (!userOwnsSession(req as AuthenticatedRequest, s.id) || s.deleted_at) return false;
+      if (scope === 'all') return true;
+      if (activeProcesses.has(s.id)) return false;
+      return computeSessionState(stmts, s.id) === scope;
+    });
+  }
+
+  // Aggregate of `epic-close-impact` over what a bulk archive would take.
+  router.get('/api/agents/:agentId/sessions/epic-close-impact', (req: Request, res: Response) => {
+    const raw = String(req.query.scope ?? 'all');
+    if (raw !== 'all' && raw !== 'pushed' && raw !== 'merged') {
+      return res.status(400).json({ error: 'scope must be one of: all, pushed, merged' });
+    }
+    const epics: Array<{ id: string; name: string }> = [];
+    const runningWorkers: ReturnType<typeof epicCloseImpact>['runningWorkers'] = [];
+    for (const session of selectBulkArchiveSessions(req, raw)) {
+      const impact = epicCloseImpact(stmts, session.id, (id) => activeProcesses.has(id));
+      if (!impact.epic) continue;
+      epics.push(impact.epic);
+      runningWorkers.push(...impact.runningWorkers);
+    }
+    res.json({ epics, runningWorkers, runningWorkerCount: runningWorkers.length });
+  });
+
   router.delete('/api/agents/:agentId/sessions', async (req: Request, res: Response) => {
-    const sessions = (stmts.getAllSessionsByAgent.all(req.params.agentId) as SessionRow[]).filter(
-      (s) => userOwnsSession(req as AuthenticatedRequest, s.id),
-    );
+    const sessions = selectBulkArchiveSessions(req, 'all');
     const archivedIds: string[] = [];
     let failed = 0;
     for (const session of sessions) {
-      if (session.deleted_at) continue;
       const proc = activeProcesses.get(session.id);
       if (proc) {
         try {
@@ -1609,6 +1667,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         );
         continue;
       }
+      closeManagedEpicBestEffort(session.id);
       syncSessionCardBestEffort(session.id, 'closed');
       stmts.softDeleteSession.run(session.id);
       closeSidebarsBestEffort(session.id);
@@ -1639,13 +1698,11 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   // keep the explicit guard as defence-in-depth so a racing process is never
   // archived out from under itself.
   router.delete('/api/agents/:agentId/sessions/pushed', async (req: Request, res: Response) => {
-    const sessions = (stmts.getAllSessionsByAgent.all(req.params.agentId) as SessionRow[]).filter(
-      (s) => userOwnsSession(req as AuthenticatedRequest, s.id),
-    );
+    const sessions = selectBulkArchiveSessions(req, 'pushed');
     const archivedIds: string[] = [];
     let failed = 0;
     for (const session of sessions) {
-      if (session.deleted_at) continue;
+      // Re-check: a session can start a turn while earlier ones tear down.
       if (activeProcesses.has(session.id)) continue;
       if (computeSessionState(stmts, session.id) !== 'pushed') continue;
       closeBrowserBestEffort(session.id);
@@ -1659,6 +1716,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         );
         continue;
       }
+      closeManagedEpicBestEffort(session.id);
       syncSessionCardBestEffort(session.id, 'closed');
       stmts.softDeleteSession.run(session.id);
       closeSidebarsBestEffort(session.id);
@@ -1690,13 +1748,11 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   // merged marker), but we keep the explicit guard as defence-in-depth so a
   // racing process is never archived out from under itself.
   router.delete('/api/agents/:agentId/sessions/merged', async (req: Request, res: Response) => {
-    const sessions = (stmts.getAllSessionsByAgent.all(req.params.agentId) as SessionRow[]).filter(
-      (s) => userOwnsSession(req as AuthenticatedRequest, s.id),
-    );
+    const sessions = selectBulkArchiveSessions(req, 'merged');
     const archivedIds: string[] = [];
     let failed = 0;
     for (const session of sessions) {
-      if (session.deleted_at) continue;
+      // Re-check: a session can start a turn while earlier ones tear down.
       if (activeProcesses.has(session.id)) continue;
       if (computeSessionState(stmts, session.id) !== 'merged') continue;
       closeBrowserBestEffort(session.id);
@@ -1710,6 +1766,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         );
         continue;
       }
+      closeManagedEpicBestEffort(session.id);
       syncSessionCardBestEffort(session.id, 'closed');
       stmts.softDeleteSession.run(session.id);
       closeSidebarsBestEffort(session.id);
@@ -1728,6 +1785,16 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       failed,
       archivedIds,
     });
+  });
+
+  // What archiving this session would stop: the epic it manages and the
+  // workers on that epic with a turn in flight. Clients confirm with it.
+  router.get('/api/sessions/:sessionId/epic-close-impact', (req: Request, res: Response) => {
+    const sessionId = req.params.sessionId as string;
+    const session = stmts.getSession.get(sessionId) as SessionRow | undefined;
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    const impact = epicCloseImpact(stmts, sessionId, (id) => activeProcesses.has(id));
+    res.json({ ...impact, runningWorkerCount: impact.runningWorkers.length });
   });
 
   // Single-session DELETE is a *soft* delete (archive). The row is marked with
@@ -1769,6 +1836,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       });
     }
 
+    closeManagedEpicBestEffort(sessionId);
     syncSessionCardBestEffort(sessionId, 'closed');
     stmts.softDeleteSession.run(sessionId);
     closeSidebarsBestEffort(sessionId);

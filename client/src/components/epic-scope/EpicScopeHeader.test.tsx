@@ -32,3 +32,36 @@ describe('EpicScopeHeader manager link', () => {
     expect(screen.queryByTestId('epic-open-manager')).toBeNull();
   });
 });
+
+describe('EpicScopeHeader Planning pause', () => {
+  it('offers Pause (Planning) while the manager is orchestrating', () => {
+    const onPausePlanning = vi.fn();
+    render(
+      <EpicScopeHeader
+        epic={{ ...epic, manager_state: 'orchestrating' }}
+        phases={[]}
+        tickets={[]}
+        columns={[]}
+        onPausePlanning={onPausePlanning}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('epic-pause-planning'));
+    expect(onPausePlanning).toHaveBeenCalledTimes(1);
+  });
+
+  it('hides it when the epic is already planning or has no manager', () => {
+    for (const state of ['planning', 'none']) {
+      const { unmount } = render(
+        <EpicScopeHeader
+          epic={{ ...epic, manager_state: state }}
+          phases={[]}
+          tickets={[]}
+          columns={[]}
+          onPausePlanning={vi.fn()}
+        />,
+      );
+      expect(screen.queryByTestId('epic-pause-planning')).toBeNull();
+      unmount();
+    }
+  });
+});

@@ -17,6 +17,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { FolderInput, Pin, PinOff } from 'lucide-react-native';
 import { isSessionPinned, pinnedSessionsFirst } from '@shared/utils/sessionPins';
 import { groupSessionsByFolder } from '@shared/utils/sessionFolders';
+import { bulkEpicCloseConfirmMessage } from '@shared/utils/epicCloseConfirm';
 import { createUseSessionFolders } from '@shared/hooks/useSessionFolders';
 import { FolderNameField, MoveToFolderPicker, SessionFolderGroup } from './SessionFolderControls';
 import { useApp } from '../context/AppContext';
@@ -427,6 +428,30 @@ export default function DrawerContent({ navigation }: any) {
     }
   };
   const runClear = async (agentId: string, action: 'clear-all' | 'clear-merged') => {
+    // A bulk archive that takes an epic manager stops that epic and its
+    // running workers; ask first. A failed lookup falls through to the archive.
+    const impact = await api
+      .getBulkEpicCloseImpact(agentId, action === 'clear-all' ? 'all' : 'merged')
+      .catch(() => null);
+    const message = bulkEpicCloseConfirmMessage(impact as any);
+    if (message) {
+      const confirmed = await new Promise<boolean>((resolve) =>
+        Alert.alert(
+          'Stop epics?',
+          message,
+          [
+            { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+            { text: 'Archive', style: 'destructive', onPress: () => resolve(true) },
+          ],
+          { cancelable: true, onDismiss: () => resolve(false) },
+        ),
+      );
+      if (!confirmed) {
+        setConfirmAction(null);
+        setConfirmAgentId(null);
+        return;
+      }
+    }
     setClearingBulk(true);
     try {
       if (action === 'clear-all') await api.clearAllSessions(agentId);

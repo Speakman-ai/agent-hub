@@ -11,6 +11,10 @@ import OrganizationsPage from './components/OrganizationsPage';
 import OrganizationComputerBar from './components/OrganizationComputerBar';
 import type { OrganizationChatTarget } from './components/OrganizationAgentsPanel';
 import { isOrganizationAgentId } from '@shared/utils/organization-agents';
+import {
+  bulkEpicCloseConfirmMessage,
+  epicCloseConfirmMessage,
+} from '@shared/utils/epicCloseConfirm';
 import { isSessionVisibleInOwnSidebar } from '@shared/utils/sessionSidebarOwnership';
 import {
   useState,
@@ -5788,6 +5792,14 @@ export default function App({ initialView }: any = {}) {
   };
 
   const handleDeleteSession = async (sessionId: any) => {
+    // Archiving an epic manager stops the epic and its running workers, so ask
+    // first. A failed lookup falls through to the archive as before.
+    const row = sessions.find((s: any) => s.id === sessionId);
+    if (row?.session_mode === 'orchestrate') {
+      const impact = await api.getEpicCloseImpact(sessionId).catch(() => null);
+      const message = epicCloseConfirmMessage(impact);
+      if (message && !window.confirm(message)) return false;
+    }
     setDeletingSessionIds((prev: any) => new Set(prev).add(sessionId));
     tearDownSessionPreview(sessionId);
     // Capture the row before the filter so we can optimistically add it to
@@ -5872,9 +5884,18 @@ export default function App({ initialView }: any = {}) {
     }
   };
 
+  // A bulk archive that takes an epic manager stops that epic and its running
+  // workers; ask first. A failed lookup falls through to the archive.
+  const confirmBulkEpicClose = async (agentId: any, scope: 'all' | 'merged') => {
+    const impact = await api.getBulkEpicCloseImpact(agentId, scope).catch(() => null);
+    const message = bulkEpicCloseConfirmMessage(impact);
+    return !message || window.confirm(message);
+  };
+
   const handleClearAllSessions = async (agentIdOverride?: any) => {
     const agentId = agentIdOverride || activeAgentId;
     if (!agentId) return;
+    if (!(await confirmBulkEpicClose(agentId, 'all'))) return;
     const agentSessions = agentId === activeAgentId ? sessions : sessionsByAgentId[agentId] || [];
     setDeletingBulk('all');
     for (const s of agentSessions) tearDownSessionPreview(s.id);
@@ -5913,6 +5934,7 @@ export default function App({ initialView }: any = {}) {
   const handleClearMergedSessions = async (agentIdOverride?: any) => {
     const agentId = agentIdOverride || activeAgentId;
     if (!agentId) return;
+    if (!(await confirmBulkEpicClose(agentId, 'merged'))) return;
     const agentSessions = agentId === activeAgentId ? sessions : sessionsByAgentId[agentId] || [];
     setDeletingBulk('merged');
     // Resolve which sessions the server will archive (state === 'merged') using

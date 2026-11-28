@@ -1239,6 +1239,21 @@ registerPath({
   },
 });
 
+// POST /board/epics/:epicId/planning
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/board/epics/{epicId}/planning',
+  tags: ['Board'],
+  summary: 'Put a feature into Planning',
+  description:
+    'Pauses dispatch: the epic `autonomous` flag and every running phase go off, so no new cards start. The manager session stays linked (`manager_state` reads `planning`) and workers already running keep going. Run phase or turning the epic on resumes dispatch.',
+  request: { params: projectEpicIdParams },
+  responses: {
+    200: { description: 'The feature after the pause.', content: jsonContent(KanbanEpicComponent) },
+    404: errorResponse('Feature not found.'),
+  },
+});
+
 // POST /board/epics/:epicId/assign-lead-to-cards
 registerPath({
   method: 'post',

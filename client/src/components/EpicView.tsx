@@ -123,6 +123,7 @@ export default function EpicView({
   const phaseSaveQueuesRef = useRef<Record<string, Promise<void>>>({});
   const [specSavingId, setSpecSavingId] = useState<any>(null);
   const [phaseRunError, setPhaseRunError] = useState<string | null>(null);
+  const [pausingPlanning, setPausingPlanning] = useState(false);
   const [phaseStoppingId, setPhaseStoppingId] = useState<string | null>(null);
   const [assigningTicketId, setAssigningTicketId] = useState<string | null>(null);
 
@@ -662,6 +663,21 @@ export default function EpicView({
     } catch (err: any) {
       console.error('Failed to run phase:', err);
       setPhaseRunError(err?.message || 'Failed to run phase');
+    }
+  };
+
+  const handlePausePlanning = async () => {
+    if (!epic?.id || pausingPlanning) return;
+    setPhaseRunError(null);
+    setPausingPlanning(true);
+    try {
+      await api.pauseEpicForPlanning(projectId, epic.id);
+      await fetchBoard();
+    } catch (err: any) {
+      console.error('Failed to pause epic:', err);
+      setPhaseRunError(err?.message || 'Failed to pause epic');
+    } finally {
+      setPausingPlanning(false);
     }
   };
 
@@ -1260,6 +1276,8 @@ export default function EpicView({
                 onDecideForMe={handleDecideForMe}
                 specSavingId={specSavingId}
                 onOpenCard={cardDetail.openDetail}
+                onPausePlanning={handlePausePlanning}
+                pausingPlanning={pausingPlanning}
                 onOpenManager={
                   onNavigateToSession && epic?.manager_session_id && epic?.manager_agent_id
                     ? () => onNavigateToSession(epic.manager_agent_id, epic.manager_session_id)
