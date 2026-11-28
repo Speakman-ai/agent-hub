@@ -1,7 +1,9 @@
-import { execFileSync } from 'child_process';
-import { readdirSync, readFileSync } from 'fs';
+import { execFileSync, spawnSync } from 'child_process';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import os from 'os';
 import path from 'path';
 import { describe, expect, it } from 'vitest';
+import YAML from 'yaml';
 
 const repoRoot = path.join(__dirname, '..');
 const workflowsDir = path.join(repoRoot, '.github', 'workflows');
@@ -395,5 +397,142 @@ describe('workflow infra-id hygiene (publishable surface)', () => {
   it('parameterizes the ECR registry base via vars.ECR_REGISTRY', () => {
     const yml = readFileSync(ecrPublishWorkflowPath, 'utf8');
     expect(yml).toMatch(/vars\.ECR_REGISTRY\s*\|\|\s*'public\.ecr\.aws\/h9t4v7h0'/);
+  });
+});
+
+// Host run scripts are written once at first boot. A host bootstrapped before
+// the agent desktop image existed never pulls it, so the computer tool falls
+// back to a dev tag no deployed host has. The rollout step must patch such a
+// script in place, the same way it backfills the image-tag override.
+describe('rollout backfills the desktop image into a stale host run script', () => {
+  const STALE_FIXTURE = path.join(__dirname, 'test', 'fixtures', 'stale-agenthub-server-run.sh');
+  const REPO = 'public.ecr.aws/example/agent-hub-desktop';
+
+  /** The run-script patch helpers exactly as SSM receives them (jq drops blank lines). */
+  function ensureHelpers(): string {
+    const doc = YAML.parse(readFileSync(ecrPublishWorkflowPath, 'utf8'));
+    const steps: Array<{ name?: string; run?: string }> = doc.jobs['deploy-dev-sandbox'].steps;
+    const run = steps.find((s) => s.run?.includes('ENSURE_EOF'))?.run ?? '';
+    const m = run.match(/<<'ENSURE_EOF'\n([\s\S]*?)\nENSURE_EOF\n/);
+    expect(m, 'ENSURE_EOF heredoc in the deploy step').toBeTruthy();
+    return m![1]
+      .split('\n')
+      .filter((l) => l.length > 0)
+      .join('\n');
+  }
+
+  function setup(imageTag: string | null) {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'run-script-'));
+    const script = path.join(dir, 'agenthub-server-run.sh');
+    const tagFile = path.join(dir, 'image-tag');
+    writeFileSync(script, readFileSync(STALE_FIXTURE, 'utf8'));
+    if (imageTag !== null) writeFileSync(tagFile, `${imageTag}\n`);
+    const helpers = ensureHelpers()
+      .replaceAll('/usr/local/bin/agenthub-server-run.sh', script)
+      .replaceAll('/etc/agent-hub/image-tag', tagFile);
+    const patch = () =>
+      spawnSync(
+        'bash',
+        ['-c', `set -euo pipefail\nsudo() { "$@"; }\n${helpers}\nensure_desktop_image`],
+        { encoding: 'utf8', env: { ...process.env, DESKTOP_IMAGE_REPO: REPO } },
+      );
+    return { dir, script, tagFile, patch };
+  }
+
+  /** Run the patched script with docker/sleep stubbed; `pullable` lists images that pull. */
+  function runScript(script: string, tagFile: string, dir: string, pullable: string[]) {
+    const bin = path.join(dir, 'bin');
+    const log = path.join(dir, 'docker.log');
+    execFileSync('mkdir', ['-p', bin]);
+    writeFileSync(
+      path.join(bin, 'docker'),
+      `#!/bin/bash\necho "$*" >> "${log}"\nif [ "$1" = pull ]; then\n  for ok in ${pullable.map((p) => `"${p}"`).join(' ')}; do [ "\${@: -1}" = "$ok" ] && exit 0; done\n  exit 1\nfi\nexit 0\n`,
+      { mode: 0o755 },
+    );
+    writeFileSync(path.join(bin, 'sleep'), '#!/bin/bash\nexit 0\n', { mode: 0o755 });
+    const body = readFileSync(script, 'utf8').replaceAll('/etc/agent-hub/image-tag', tagFile);
+    const res = spawnSync('bash', ['-c', body], {
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+    });
+    const calls = readFileSync(log, 'utf8').trim().split('\n');
+    return { res, calls, run: calls.find((c) => c.startsWith('run ')) ?? '' };
+  }
+
+  it('reproduces the bug: the stale script never pulls or passes the desktop image', () => {
+    const { dir, script, tagFile } = setup('main');
+    try {
+      const { run, calls } = runScript(script, tagFile, dir, [
+        'public.ecr.aws/h9t4v7h0/agent-hub:main',
+      ]);
+      expect(run).not.toContain('AGENT_HUB_DESKTOP_IMAGE');
+      expect(calls.some((c) => c.includes('agent-hub-desktop'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('pulls <repo>:<deploy tag> and passes AGENT_HUB_DESKTOP_IMAGE after the patch', () => {
+    const { dir, script, tagFile, patch } = setup('main');
+    try {
+      const first = patch();
+      expect(first.status, first.stderr).toBe(0);
+      expect(first.stdout).toContain('Patching');
+      const once = readFileSync(script, 'utf8');
+      const second = patch();
+      expect(second.status, second.stderr).toBe(0);
+      expect(readFileSync(script, 'utf8'), 'patch is idempotent').toBe(once);
+
+      const { res, calls, run } = runScript(script, tagFile, dir, [
+        'public.ecr.aws/h9t4v7h0/agent-hub:main',
+        'public.ecr.aws/h9t4v7h0/agent-hub-finalize-runner:main',
+        `${REPO}:main`,
+      ]);
+      expect(res.status, res.stderr).toBe(0);
+      expect(calls).toContain(`pull --quiet ${REPO}:main`);
+      expect(run).toContain(`-e AGENT_HUB_DESKTOP_IMAGE=${REPO}:main`);
+      // The pre-existing env and image arg survive untouched.
+      expect(run).toContain('FINALIZE_RUNNER_IMAGE_UBUNTU_24_04=');
+      expect(run.trim().endsWith('public.ecr.aws/h9t4v7h0/agent-hub:main')).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to :main when the deploy tag has no desktop build', () => {
+    const { dir, script, tagFile, patch } = setup('v9.9.9');
+    try {
+      expect(patch().status).toBe(0);
+      const { calls, run } = runScript(script, tagFile, dir, [
+        'public.ecr.aws/h9t4v7h0/agent-hub:v9.9.9',
+        `${REPO}:main`,
+      ]);
+      expect(calls).toContain(`pull --quiet ${REPO}:v9.9.9`);
+      expect(run).toContain(`-e AGENT_HUB_DESKTOP_IMAGE=${REPO}:main`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('starts the Hub without the desktop image when no desktop tag pulls', () => {
+    const { dir, script, tagFile, patch } = setup('main');
+    try {
+      expect(patch().status).toBe(0);
+      const { res, run } = runScript(script, tagFile, dir, [
+        'public.ecr.aws/h9t4v7h0/agent-hub:main',
+      ]);
+      expect(res.status, res.stderr).toBe(0);
+      expect(res.stderr).toMatch(/WARN: .*WITHOUT the agent desktop image/);
+      expect(run).not.toContain('AGENT_HUB_DESKTOP_IMAGE');
+      expect(run.trim().endsWith('public.ecr.aws/h9t4v7h0/agent-hub:main')).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('is called from both deploy paths with the desktop repo', () => {
+    const yml = readFileSync(ecrPublishWorkflowPath, 'utf8');
+    expect(yml.match(/^\s*ensure_desktop_image$/gm)?.length).toBe(2);
+    expect(yml.match(/DESKTOP_IMAGE_REPO="\$ECR_PUBLIC_DESKTOP_URI"/g)?.length).toBe(2);
   });
 });

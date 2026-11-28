@@ -456,6 +456,82 @@ jobs:
           print("patched", path)
           PY
           }
+          # Scripts written before the agent desktop image existed never pull it, so
+          # the Hub container has no AGENT_HUB_DESKTOP_IMAGE and the computer tool
+          # falls back to a local-only dev tag. Insert the same pull/pass-through the
+          # user-data template renders. A failed desktop pull never blocks the Hub.
+          ensure_desktop_image() {
+            local script=/usr/local/bin/agenthub-server-run.sh
+            if [ ! -f "$script" ]; then
+              echo "WARN: $script missing; cannot ensure desktop image" >&2
+              return 0
+            fi
+            if grep -q 'AGENT_HUB_DESKTOP_IMAGE' "$script"; then
+              return 0
+            fi
+            if [ -z "${DESKTOP_IMAGE_REPO:-}" ]; then
+              echo "WARN: DESKTOP_IMAGE_REPO unset; cannot ensure desktop image" >&2
+              return 0
+            fi
+            echo "Patching $script to pull the agent desktop image (stale host script)"
+            sudo env AGENTHUB_RUN_SCRIPT="$script" DESKTOP_IMAGE_REPO="$DESKTOP_IMAGE_REPO" python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+          path = Path(os.environ["AGENTHUB_RUN_SCRIPT"])
+          repo = os.environ["DESKTOP_IMAGE_REPO"].strip()
+          text = path.read_text()
+          if "AGENT_HUB_DESKTOP_IMAGE" in text:
+              raise SystemExit(0)
+          block = """# Agent desktop (computer tool) image. Tracks /etc/agent-hub/image-tag like
+          # the server image; falls back to the default tag when that tag has no desktop
+          # build, and starts the Hub without it when neither pulls.
+          DESKTOP_DEFAULT_URI="@@REPO@@:main"
+          DESKTOP_IMAGE_URI="$DESKTOP_DEFAULT_URI"
+          if [ -f /etc/agent-hub/image-tag ]; then
+            DESKTOP_TAG="$(tr -d '[:space:]' < /etc/agent-hub/image-tag)"
+            if [ -n "$DESKTOP_TAG" ]; then
+              DESKTOP_IMAGE_URI="${DESKTOP_DEFAULT_URI%:*}:$DESKTOP_TAG"
+            fi
+          fi
+          DESKTOP_PULL_OK=0
+          for DESKTOP_CANDIDATE in "$DESKTOP_IMAGE_URI" "$DESKTOP_DEFAULT_URI"; do
+            for i in 1 2 3; do
+              if docker pull --quiet "$DESKTOP_CANDIDATE"; then
+                DESKTOP_PULL_OK=1
+                break
+              fi
+              echo "desktop image pull failed for $DESKTOP_CANDIDATE (attempt $i); retrying in 10s..." >&2
+              sleep 10
+            done
+            if [ "$DESKTOP_PULL_OK" = "1" ]; then
+              DESKTOP_IMAGE_URI="$DESKTOP_CANDIDATE"
+              break
+            fi
+            [ "$DESKTOP_CANDIDATE" = "$DESKTOP_DEFAULT_URI" ] && break
+          done
+          if [ "$DESKTOP_PULL_OK" != "1" ]; then
+            echo "WARN: docker pull $DESKTOP_IMAGE_URI failed — starting WITHOUT the agent desktop image." >&2
+            DESKTOP_IMAGE_URI=""
+          fi
+
+          """.replace("@@REPO@@", repo)
+          m = re.search(r"^docker rm -f agenthub-server\b.*$", text, re.M)
+          if not m:
+              raise SystemExit("could not find docker rm insertion point in agenthub-server-run.sh")
+          text = text[: m.start()] + block + text[m.start() :]
+          env_line = '  ${DESKTOP_IMAGE_URI:+-e "AGENT_HUB_DESKTOP_IMAGE=$DESKTOP_IMAGE_URI"} \\\n'
+          m = re.search(r"^\s*--env-file\b.*$", text, re.M) or re.search(
+              r'^\s*"\$IMAGE_URI"\s*$', text, re.M
+          )
+          if not m:
+              raise SystemExit("could not find docker run insertion point in agenthub-server-run.sh")
+          text = text[: m.start()] + env_line + text[m.start() :]
+          path.write_text(text)
+          path.chmod(0o755)
+          print("patched", path)
+          PY
+          }
           ENSURE_EOF
           )
           if [[ "$BOOL_RESET" == "true" ]]; then
@@ -464,6 +540,7 @@ jobs:
           DATA_ROOT="$DATA_ROOT"
           EXPECTED_DIGEST="$EXPECTED_DIGEST"
           DEPLOY_TAG="$DEPLOY_TAG"
+          DESKTOP_IMAGE_REPO="$ECR_PUBLIC_DESKTOP_URI"
           ${ENSURE_IMAGE_TAG_OVERRIDE}
           if [ -f "\$DATA_ROOT/data/config.json" ]; then
             sudo cp -a "\$DATA_ROOT/data/config.json" /tmp/agent-hub-config.json
@@ -479,6 +556,7 @@ jobs:
           sudo install -d -m 0755 /etc/agent-hub
           printf '%s\n' "\$DEPLOY_TAG" | sudo tee /etc/agent-hub/image-tag >/dev/null
           ensure_image_tag_override
+          ensure_desktop_image
           sudo systemctl start agenthub-server
           sudo systemctl is-active agenthub-server
 
@@ -548,10 +626,12 @@ jobs:
           set -euo pipefail
           EXPECTED_DIGEST="$EXPECTED_DIGEST"
           DEPLOY_TAG="$DEPLOY_TAG"
+          DESKTOP_IMAGE_REPO="$ECR_PUBLIC_DESKTOP_URI"
           ${ENSURE_IMAGE_TAG_OVERRIDE}
           sudo install -d -m 0755 /etc/agent-hub
           printf '%s\n' "\$DEPLOY_TAG" | sudo tee /etc/agent-hub/image-tag >/dev/null
           ensure_image_tag_override
+          ensure_desktop_image
           sudo systemctl restart agenthub-server
           sudo systemctl is-active agenthub-server
 

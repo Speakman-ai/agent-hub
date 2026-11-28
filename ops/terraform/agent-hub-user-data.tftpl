@@ -321,6 +321,8 @@ set -e
 IMAGE_URI="$IMAGE_URI"
 RUNNER_IMAGE_URI="$RUNNER_IMAGE_URI"
 DESKTOP_IMAGE_URI="$DESKTOP_IMAGE_URI"
+# Fallback when the deploy tag has no desktop build (releases can skip it).
+DESKTOP_DEFAULT_URI="$DESKTOP_IMAGE_URI"
 REPO_DIR="$REPO_DIR"
 DATA_ROOT="$DATA_ROOT"
 APP_PORT="${app_port}"
@@ -390,13 +392,20 @@ fi
 
 if [ -n "\$DESKTOP_IMAGE_URI" ]; then
   DESKTOP_PULL_OK=0
-  for i in 1 2 3; do
-    if docker pull --quiet "\$DESKTOP_IMAGE_URI"; then
-      DESKTOP_PULL_OK=1
+  for DESKTOP_CANDIDATE in "\$DESKTOP_IMAGE_URI" "\$DESKTOP_DEFAULT_URI"; do
+    for i in 1 2 3; do
+      if docker pull --quiet "\$DESKTOP_CANDIDATE"; then
+        DESKTOP_PULL_OK=1
+        break
+      fi
+      echo "desktop image pull failed for \$DESKTOP_CANDIDATE (attempt \$i); retrying in 10s..." >&2
+      sleep 10
+    done
+    if [ "\$DESKTOP_PULL_OK" = "1" ]; then
+      DESKTOP_IMAGE_URI="\$DESKTOP_CANDIDATE"
       break
     fi
-    echo "desktop image pull failed (attempt \$i); retrying in 10s..." >&2
-    sleep 10
+    [ "\$DESKTOP_CANDIDATE" = "\$DESKTOP_DEFAULT_URI" ] && break
   done
   if [ "\$DESKTOP_PULL_OK" != "1" ]; then
     # Optional like the runner image: the computer tool reports the desktop

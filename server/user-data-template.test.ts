@@ -391,8 +391,15 @@ describe('agent-hub-user-data.tftpl', () => {
         expect(withDesktop).toMatch(/DESKTOP_IMAGE_URI="\\\$DESKTOP_BASE:\\\$DEPLOY_TAG"/);
       });
 
+      it('falls back to the baked tag when the deploy tag has no desktop build', () => {
+        expect(withDesktop).toContain('DESKTOP_DEFAULT_URI="$DESKTOP_IMAGE_URI"');
+        expect(withDesktop).toMatch(
+          /for DESKTOP_CANDIDATE in "\\\$DESKTOP_IMAGE_URI" "\\\$DESKTOP_DEFAULT_URI"; do/,
+        );
+      });
+
       it('never blocks the Hub on a failed desktop pull', () => {
-        expect(withDesktop).toMatch(/docker pull --quiet "\\\$DESKTOP_IMAGE_URI"/);
+        expect(withDesktop).toMatch(/docker pull --quiet "\\\$DESKTOP_CANDIDATE"/);
         expect(withDesktop).toMatch(
           /if \[ "\\\$DESKTOP_PULL_OK" != "1" \][\s\S]*?DESKTOP_IMAGE_URI=""\n\s*fi/,
         );
