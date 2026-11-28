@@ -443,6 +443,8 @@ export interface EpicManagerPort {
     ready: ReadyCardOffer[];
     ownerUserId: string;
   }): void | Promise<void>;
+  /** Whether the epic has a live manager session. The server never creates one. */
+  hasLiveManager(epicId: string): boolean;
   /** Cards with an offer the manager has not acted on yet (they hold a slot). */
   liveOffers(epicId: string): string[];
   withdrawOffer(cardId: string): void;
@@ -454,7 +456,7 @@ export interface EpicManagerPort {
   /** An explicit kickoff by a different person makes the manager theirs. */
   handOver(epicId: string, ownerUserId: string): boolean;
   noteWorkerEvent(epicId: string, event: EpicWorkerEvent): void;
-  /** Create or reuse the manager on kickoff; a new one gets its brief. */
+  /** Brief the epic's live manager if it has not been briefed. Never creates a session. */
   kickoff(projectId: string, epic: KanbanEpicRow, ownerUserId: string): unknown;
   /** The epic stopped: no more wakes, offers lapse, pending Auto starts cancelled. */
   pause(epicId: string): void;
@@ -1111,6 +1113,10 @@ async function runAutonomousLoopInner(
     console.log(`[Autonomous] ${scopeLabel} — all cards are Done; autonomous mode disabled`);
     return;
   }
+
+  // The server never creates an epic's manager. Without a live one there is
+  // nobody to hand ready cards to, so the tick stops here.
+  if (d.epicManager && !epicHasManager(d.epicManager, epic, scopeLabel)) return;
 
   const rawEligible = (
     phase
@@ -1877,34 +1883,6 @@ async function startEpicWorkerTurn(args: {
 }
 
 /**
- * Start (or reuse) the epic's manager thread. The kicker owns it; a scheduled
- * kickoff with no recorded kicker falls back to the card-level owner chain.
- */
-function kickoffEpicManager(
-  projectId: string,
-  epic: KanbanEpicRow,
-  kickedBy: string | null | undefined,
-): void {
-  const d = getDeps();
-  if (!d.epicManager) return;
-  try {
-    let owner = resolveAutonomousOwnerUserId(null, { autonomous_enabled_by: kickedBy ?? null });
-    if (!owner) {
-      const cards = d.stmts.getKanbanCardsByEpic.all(epic.id) as KanbanCardRow[];
-      owner = cards.map((card) => resolveAutonomousOwnerUserId(card, epic)).find(Boolean) ?? null;
-    }
-    if (!owner) {
-      console.log(`[Autonomous] Epic "${epic.name}" has no resolvable owner for its manager`);
-      return;
-    }
-    d.epicManager.kickoff(projectId, epic, owner);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[Autonomous] Could not start the manager for epic "${epic.name}":`, msg);
-  }
-}
-
-/**
  * An explicit kickoff (Run phase, or turning the epic on) by a person other
  * than the manager's owner hands the manager to them. No-op without a manager.
  */
@@ -1917,6 +1895,33 @@ export function handOverEpicManager(epicId: string, userId: string | null | unde
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[Autonomous] Could not hand over the manager for epic ${epicId}:`, msg);
   }
+}
+
+/** Epics last seen with no live manager, so the tick logs that once per change. */
+const epicsWithoutManager = new Set<string>();
+
+/** Whether the epic has a live manager; logs once when it goes missing. */
+function epicHasManager(
+  manager: EpicManagerPort,
+  epic: KanbanEpicRow,
+  scopeLabel: string,
+): boolean {
+  if (manager.hasLiveManager(epic.id)) {
+    epicsWithoutManager.delete(epic.id);
+    return true;
+  }
+  if (!epicsWithoutManager.has(epic.id)) {
+    epicsWithoutManager.add(epic.id);
+    console.log(
+      `[Autonomous] No epic session for ${scopeLabel}; no cards offered until a person starts one`,
+    );
+  }
+  return false;
+}
+
+/** Test hook: forget which epics were logged as having no manager. */
+export function resetEpicManagerPresenceForTest(): void {
+  epicsWithoutManager.clear();
 }
 
 /** Pause the manager once neither the epic nor any of its phases is running. */
@@ -1967,7 +1972,6 @@ export function scheduleAutonomousEpic(projectId: string, epic: KanbanEpicRow): 
     console.log(`[Autonomous] Stopped for epic "${epic.name}"`);
     return;
   }
-  kickoffEpicManager(projectId, epic, epic.autonomous_enabled_by);
 
   let liveEpics = autonomousEpicsByProject.get(projectId);
   if (!liveEpics) {
@@ -2022,10 +2026,6 @@ export function scheduleAutonomousPhase(projectId: string, phase: KanbanPhaseRow
     pauseEpicManagerIfIdle(phase.epic_id);
     console.log(`[Autonomous] Stopped phase "${phase.name}"`);
     return;
-  }
-  {
-    const phaseEpic = getDeps().stmts.getKanbanEpic.get(phase.epic_id) as KanbanEpicRow | undefined;
-    if (phaseEpic) kickoffEpicManager(projectId, phaseEpic, phase.autonomous_enabled_by);
   }
 
   autonomousProjects.add(projectId);

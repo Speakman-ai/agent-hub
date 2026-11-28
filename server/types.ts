@@ -1319,6 +1319,9 @@ export interface KanbanBlockerLink {
   done: boolean;
 }
 
+/** `none`: no live manager. `planning`: a manager, nothing running. `orchestrating`: a manager and the epic or a phase running. */
+export type EpicManagerState = 'none' | 'planning' | 'orchestrating';
+
 export interface KanbanEpicRow {
   id: string;
   board_id: string;
@@ -1367,6 +1370,8 @@ export interface KanbanEpicRow {
   manager_session_id?: string | null;
   /** Agent of the manager session; only on the board's epic list (`getKanbanEpics`). */
   manager_agent_id?: string | null;
+  /** Whether a live manager exists and is dispatching; only on the board's epic list. */
+  manager_state?: EpicManagerState;
   position: number;
   created_at: string;
   updated_at: string;

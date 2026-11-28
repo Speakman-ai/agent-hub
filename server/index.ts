@@ -2028,17 +2028,13 @@ const orchestrateAutoStarter = new OrchestrateAutoStarter({
 });
 setOrchestrateAutoStarter(orchestrateAutoStarter);
 
-// Epic manager threads: kicking off an epic starts one Orchestrate session that
+// Epic manager threads: the Orchestrate session a person linked to an epic
 // forwards each ready card to a worker. Readiness stays in the autonomous tick.
 const epicReevaluationTimers = new Map<string, NodeJS.Timeout>();
 const epicManager = new EpicManager({
   stmts: stmts!,
   db: getDb(),
-  findProject: (projectId) => findProject(projectId) ?? undefined,
-  getConfig: () => config,
   setSessionOwner,
-  enableAutoStart: (sessionId) =>
-    orchestrateLaunchStore.setSettings(sessionId, { autoStart: true, mode: 'merge' }),
   cancelAutoStarts: (sessionId) => {
     const prefix = `session-forward:${sessionId}:`;
     for (const key of orchestrateAutoStarter.pendingKeys()) {

@@ -64,6 +64,7 @@ import { ensureUserNotificationPrefsSchema } from './migrations/user-notificatio
 import { ensureSessionFoldersSchema } from './migrations/session-folders.js';
 import { ensureOrganizationDispatchSchema } from './organization-dispatch-schema.js';
 import { repairCardSessionLinks } from './migrations/repair-card-session-links.js';
+import { archiveAutoEpicManagers } from './migrations/archive-auto-epic-managers.js';
 import { repairPushCiSucceededRuns } from './migrations/repair-push-ci-succeeded-runs.js';
 import {
   deriveCardPrefix,
@@ -4263,6 +4264,21 @@ function initDb(dataDir: string): void {
     }
   }
 
+  // Archive the epic manager sessions the server created on its own and nobody
+  // wrote to, and stop their epics. Runs before boot restore reads which epics
+  // are autonomous. See migrations/archive-auto-epic-managers.ts.
+  try {
+    const r = archiveAutoEpicManagers({ db, dataDir });
+    if (r.ran && r.archived + r.kept > 0) {
+      console.log(
+        `[migration] archive-auto-epic-managers: archived ${r.archived} manager session(s), ` +
+          `stopped ${r.epicsStopped} epic(s), kept ${r.kept} a person had messaged.`,
+      );
+    }
+  } catch (e) {
+    console.error('[migration] archive-auto-epic-managers failed:', (e as Error).message);
+  }
+
   // Collapse doubled card session links and release In Progress cards whose
   // session was hard-deleted. See migrations/repair-card-session-links.ts.
   try {
@@ -6675,9 +6691,17 @@ function initDb(dataDir: string): void {
 
     // Kanban epics
     // manager_agent_id lets clients open the epic's manager thread; null once
-    // that session is archived.
+    // that session is archived. manager_state follows EpicManager.managerFor:
+    // a live manager is an unarchived Orchestrate session.
     getKanbanEpics: db.prepare(
-      `SELECT e.*, s.agent_id AS manager_agent_id
+      `SELECT e.*, s.agent_id AS manager_agent_id,
+              CASE
+                WHEN s.id IS NULL OR s.session_mode IS NOT 'orchestrate' THEN 'none'
+                WHEN e.autonomous = 1 OR EXISTS (
+                  SELECT 1 FROM kanban_phases p WHERE p.epic_id = e.id AND p.autonomous_running = 1
+                ) THEN 'orchestrating'
+                ELSE 'planning'
+              END AS manager_state
          FROM kanban_epics e
          LEFT JOIN sessions s ON s.id = e.manager_session_id AND s.deleted_at IS NULL
         WHERE e.board_id = ?

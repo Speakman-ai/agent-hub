@@ -273,11 +273,15 @@ export const KanbanEpicComponent = registerComponent(
       pr_base_branch: z.string().nullable().optional(),
       manager_session_id: z.string().nullable().optional().openapi({
         description:
-          "The epic's manager thread: the Orchestrate session that starts a worker for each ready card. Set on the first kickoff.",
+          "The epic's manager thread: the Orchestrate session that starts a worker for each ready card. A person starts it; the server never creates one.",
       }),
       manager_agent_id: z.string().nullable().optional().openapi({
         description:
           "Agent of the manager thread, for opening it. Null when the manager was archived. Only on the board's epic list.",
+      }),
+      manager_state: z.enum(['none', 'planning', 'orchestrating']).optional().openapi({
+        description:
+          "Manager session state. `none`: no live manager session, so no cards are offered. `planning`: a live manager while neither the epic nor a phase is running. `orchestrating`: a live manager and the epic or one of its phases running. The server never creates a manager. Only on the board's epic list.",
       }),
       position: z.number().int(),
       created_at: z.string(),

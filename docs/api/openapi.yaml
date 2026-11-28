@@ -2320,11 +2320,18 @@ components:
         manager_session_id:
           type: string
           nullable: true
-          description: "The epic's manager thread: the Orchestrate session that starts a worker for each ready card. Set on the first kickoff."
+          description: "The epic's manager thread: the Orchestrate session that starts a worker for each ready card. A person starts it; the server never creates one."
         manager_agent_id:
           type: string
           nullable: true
           description: Agent of the manager thread, for opening it. Null when the manager was archived. Only on the board's epic list.
+        manager_state:
+          type: string
+          enum:
+            - none
+            - planning
+            - orchestrating
+          description: "Manager session state. `none`: no live manager session, so no cards are offered. `planning`: a live manager while neither the epic nor a phase is running. `orchestrating`: a live manager and the epic or one of its phases running. The server never creates a manager. Only on the board's epic list."
         position:
           type: integer
         created_at:

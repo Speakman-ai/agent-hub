@@ -1,8 +1,9 @@
 /**
  * Epic manager threads.
  *
- * Kicking off an epic (or one of its phases) starts one Orchestrate session
- * that manages the epic. The autonomous tick still decides which cards are
+ * An epic is managed by one Orchestrate session a person started and linked
+ * (`kanban_epics.manager_session_id`). The server never creates it: an epic
+ * with no live manager gets no ready cards offered. The autonomous tick still decides which cards are
  * ready (phase order, blockers, routing, open spec decisions). Instead of
  * spawning workers itself, it hands the ready set to the manager, which writes
  * each worker's brief and starts it from an `agenthub:forward` card carrying
@@ -14,18 +15,14 @@
  * finished turns) wake the manager too. Wakes are batched per epic and never
  * sent while the manager's own turn is running; they wait for it to end.
  */
-import crypto from 'crypto';
 import type { Database } from 'better-sqlite3';
 import type {
-  Agent,
-  AppConfig,
   BroadcastFn,
   KanbanCardRow,
   KanbanColumnRow,
   KanbanEpicRow,
   KanbanPhaseRow,
   MessageRow,
-  Project,
   SessionRow,
   Stmts,
 } from './types.js';
@@ -43,7 +40,6 @@ import {
 } from './epic-manager-events.js';
 import { SESSION_NEEDS_INPUT_EVENT } from './session-needs-input.js';
 import { formatEpicSpecDecisionsForContext, loadChosenSpecItemsForEpic } from './epic-spec.js';
-import { resolveAgentSpawnEngineAndModel } from './effective-model.js';
 import { isColumnCancelled, isColumnDone } from './kanban-blockers.js';
 import { formatHubChatRefToken } from '../shared/utils/hubChatRefTokens.js';
 
@@ -67,11 +63,7 @@ const MAX_DETAIL_CHARS = 300;
 export interface EpicManagerDeps {
   stmts: Stmts;
   db: Database;
-  findProject: (projectId: string) => Project | undefined;
-  getConfig: () => AppConfig;
   setSessionOwner: (sessionId: string, ownerUserId: string) => void;
-  /** Turn on Orchestrate Auto start for the manager so its forward cards start themselves. */
-  enableAutoStart: (sessionId: string) => void;
   /** Cancel the manager's running Auto start countdowns (pause). */
   cancelAutoStarts: (sessionId: string) => void;
   dispatchChat: (msg: Record<string, unknown>) => Promise<void> | void;
@@ -138,16 +130,6 @@ function epicIsRunning(stmts: Stmts, epic: KanbanEpicRow): boolean {
   if (epic.autonomous) return true;
   const phases = (stmts.getKanbanPhasesByEpic?.all(epic.id) as KanbanPhaseRow[] | undefined) ?? [];
   return phases.some((p) => p.autonomous_running);
-}
-
-function pickManagerAgent(project: Project): Agent | null {
-  const agents = (project.agents ?? []) as Agent[];
-  return (
-    agents.find((a) => a.role === 'lead') ??
-    agents.find((a) => a.role !== 'docs' && a.role !== 'reviewer' && a.role !== 'qa') ??
-    agents[0] ??
-    null
-  );
 }
 
 const EVENT_LABEL: Record<EpicWorkerEventKind, string> = {
@@ -282,80 +264,17 @@ export class EpicManager implements EpicManagerPort {
   }
 
   /**
-   * Create the epic's manager or return the one it has. A manager the person
-   * archived or switched out of Orchestrate is replaced, not revived.
+   * The epic's manager, read fresh: the caller's epic row can be stale
+   * (overlapping epic and phase ticks hold their own copies). Nothing here
+   * creates a session; a person starts the manager.
    */
-  ensureManager(projectId: string, epic: KanbanEpicRow, ownerUserId: string): SessionRow | null {
-    // The caller's epic row can be stale (overlapping epic and phase ticks
-    // hold their own copies), so the decision reads the current link inside
-    // one BEGIN IMMEDIATE transaction: reuse the live manager or create and
-    // link exactly one.
-    const created = this.deps.db
-      .transaction((): { session: SessionRow | null; created: boolean } => {
-        const current = this.deps.stmts.getKanbanEpic.get(epic.id) as KanbanEpicRow | undefined;
-        if (!current) return { session: null, created: false };
-        const existing = this.managerFor(current);
-        if (existing) return { session: existing, created: false };
-        return { session: this.createManager(projectId, current, ownerUserId), created: true };
-      })
-      .immediate();
-    if (created.created && created.session) {
-      this.deps.broadcast({
-        type: 'session_created',
-        agentId: created.session.agent_id,
-        session: this.deps.enrichSession
-          ? this.deps.enrichSession(created.session)
-          : created.session,
-      });
-      this.deps.broadcast({ type: 'kanban_update', projectId });
-      console.log(`[epic-manager] started manager ${created.session.id} for epic "${epic.name}"`);
-    }
-    return created.session;
+  private currentManager(epicId: string): SessionRow | null {
+    const current = this.deps.stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined;
+    return current ? this.managerFor(current) : null;
   }
 
-  /** Create and link the manager. Runs inside ensureManager's transaction. */
-  private createManager(
-    projectId: string,
-    epic: KanbanEpicRow,
-    ownerUserId: string,
-  ): SessionRow | null {
-    const project = this.deps.findProject(projectId);
-    if (!project) return null;
-    const agent = pickManagerAgent(project);
-    if (!agent) {
-      console.warn(`[epic-manager] project "${projectId}" has no agent to run a manager`);
-      return null;
-    }
-    const sessionId = crypto.randomUUID();
-    const { engine, model } = resolveAgentSpawnEngineAndModel(
-      this.deps.getConfig(),
-      agent,
-      ownerUserId,
-    );
-    const name = clip(`Epic: ${epic.name}`, 120);
-    const { stmts } = this.deps;
-    stmts.createSession.run(sessionId, agent.id, name, engine, model, 0, 0, 1);
-    stmts.updateSessionMode.run('orchestrate', sessionId);
-    stmts.updateSessionLinkedEpic.run(epic.id, sessionId);
-    this.deps.setSessionOwner(sessionId, ownerUserId);
-    this.deps.enableAutoStart(sessionId);
-    stmts.setEpicManagerSession.run(sessionId, epic.id);
-    this.adoptRunningWorkers({ ...epic, manager_session_id: sessionId }, sessionId, ownerUserId);
-    return (stmts.getSession.get(sessionId) as SessionRow | undefined) ?? null;
-  }
-
-  /**
-   * Workers an epic already had running when it got its manager (an epic in
-   * flight on deploy) move under the manager's rail. Nothing is stopped.
-   * A worker owned by someone else stays in its owner's list.
-   */
-  private adoptRunningWorkers(epic: KanbanEpicRow, managerId: string, ownerUserId: string): void {
-    const { stmts } = this.deps;
-    for (const session of this.runningWorkers(epic)) {
-      if (session.spawned_from_session_id) continue;
-      if ((session.owner_user_id ?? null) !== ownerUserId) continue;
-      stmts.markSessionSpawnedFrom.run(managerId, session.id);
-    }
+  hasLiveManager(epicId: string): boolean {
+    return this.currentManager(epicId) !== null;
   }
 
   /** Live sessions linked to the epic's In Progress / Review cards. */
@@ -380,10 +299,6 @@ export class EpicManager implements EpicManagerPort {
 
   // Kickoff, offers, events
 
-  /**
-   * Kicking off (or again) targets the same manager. A new manager gets its
-   * brief right away, with whatever the first tick finds ready.
-   */
   /**
    * A different person explicitly kicked the epic (or one of its phases) off:
    * the manager becomes theirs, so its forwards start workers under their
@@ -417,8 +332,12 @@ export class EpicManager implements EpicManagerPort {
     return true;
   }
 
-  kickoff(projectId: string, epic: KanbanEpicRow, ownerUserId: string): SessionRow | null {
-    const manager = this.ensureManager(projectId, epic, ownerUserId);
+  /**
+   * Kicking off targets the epic's live manager; one that has not been
+   * briefed yet gets its brief. Without a live manager this does nothing.
+   */
+  kickoff(_projectId: string, epic: KanbanEpicRow, _ownerUserId: string): SessionRow | null {
+    const manager = this.currentManager(epic.id);
     if (!manager) return null;
     if (!this.hasMessages(manager.id) && !this.queued(epic.id).some((r) => r.kind === 'kickoff')) {
       this.enqueue(epic.id, { kind: 'kickoff' });
@@ -434,8 +353,8 @@ export class EpicManager implements EpicManagerPort {
     ready: ReadyCardOffer[];
     ownerUserId: string;
   }): void {
-    const { projectId, epic, ready, ownerUserId } = args;
-    const manager = this.ensureManager(projectId, epic, ownerUserId);
+    const { epic, ready } = args;
+    const manager = this.currentManager(epic.id);
     if (!manager) return;
     let queuedAny = false;
     // offer_count counts offers that lapsed unanswered, the only sign the

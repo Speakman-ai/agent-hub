@@ -62,6 +62,8 @@ const {
   startAutonomousPhase,
   tryAutonomousDispatch,
   scheduleAutonomousEpic,
+  scheduleAutonomousPhase,
+  resetEpicManagerPresenceForTest,
   autonomousProjects,
   autonomousCrons,
   autonomousEpicsByProject,
@@ -109,6 +111,7 @@ function instantForwardManager(): EpicManagerPort & { offered: ReadyCardOffer[][
         else if (result.code === 'cap') break;
       }
     },
+    hasLiveManager: () => true,
     liveOffers: () => [],
     withdrawOffer: () => {},
     isOffered: () => false,
@@ -4015,6 +4018,7 @@ describe('runAutonomousLoop — prepareSessionEnv before first chat', () => {
 function recordingManager(overrides: Partial<Record<keyof EpicManagerPort, Mock>> = {}) {
   return {
     offerReady: vi.fn(),
+    hasLiveManager: vi.fn(() => true),
     liveOffers: vi.fn((): string[] => []),
     withdrawOffer: vi.fn(),
     isOffered: vi.fn(() => false),
@@ -4127,23 +4131,62 @@ describe('autonomous tick with an epic manager', () => {
     );
   });
 
-  it('kicks the manager off when the epic starts and pauses it when it stops', async () => {
-    const { deps } = epicDeps([]);
-    const manager = recordingManager();
+  it('starting an epic or phase (boot restore included) never starts a manager', async () => {
+    const { stmts, deps } = epicDeps([]);
+    const manager = recordingManager({ hasLiveManager: vi.fn(() => false) });
     initAutonomous({ ...deps, epicManager: manager } as never);
     const epic = { ...ACTIVE_EPIC, autonomous_enabled_by: 'kicker' } as KanbanEpicRow;
 
+    // index.ts restores every autonomous epic and running phase through these.
     scheduleAutonomousEpic('proj-1', epic);
-    expect(manager.kickoff).toHaveBeenCalledWith('proj-1', epic, 'test-operator');
-    const ownership = await import('./session-ownership.js');
-    expect(ownership.resolveAutonomousOwnerUserId).toHaveBeenCalledWith(null, {
+    scheduleAutonomousPhase('proj-1', {
+      id: 'phase-1',
+      epic_id: 'epic-1',
+      board_id: 'board-1',
+      name: 'Phase 1',
+      autonomous: 1,
+      autonomous_running: 1,
       autonomous_enabled_by: 'kicker',
-    });
+    } as unknown as KanbanPhaseRow);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(manager.kickoff).not.toHaveBeenCalled();
+    expect(manager.offerReady).not.toHaveBeenCalled();
+    expect(stmts.createSession.run).not.toHaveBeenCalled();
 
     const stopped = { ...epic, autonomous: 0 } as KanbanEpicRow;
     epicRegistry.set(stopped.id, stopped);
     scheduleAutonomousEpic('proj-1', stopped);
     expect(manager.pause).toHaveBeenCalledWith('epic-1');
+  });
+
+  it('an epic with no live manager offers nothing and logs that once, not every tick', async () => {
+    const card = makeCard({ id: 'ready-1', title: 'Ready card' });
+    const { stmts, deps } = epicDeps([card]);
+    let live = false;
+    const manager = recordingManager({ hasLiveManager: vi.fn(() => live) });
+    initAutonomous({ ...deps, epicManager: manager } as never);
+    resetEpicManagerPresenceForTest();
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const noSessionLines = () =>
+      log.mock.calls.filter((c) => String(c[0]).includes('No epic session')).length;
+
+    await runAutonomousLoop('proj-1');
+    await runAutonomousLoop('proj-1');
+    await runAutonomousLoop('proj-1');
+
+    expect(manager.offerReady).not.toHaveBeenCalled();
+    expect(stmts.createSession.run).not.toHaveBeenCalled();
+    expect(noSessionLines()).toBe(1);
+
+    // A person links a manager: offers resume. Losing it again logs again.
+    live = true;
+    await runAutonomousLoop('proj-1');
+    expect(manager.offerReady).toHaveBeenCalledTimes(1);
+    live = false;
+    await runAutonomousLoop('proj-1');
+    expect(noSessionLines()).toBe(2);
+    log.mockRestore();
   });
 
   it('wakes the manager when the epic completes', async () => {

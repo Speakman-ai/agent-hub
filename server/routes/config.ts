@@ -1190,8 +1190,12 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
         ).map(({ session_id: _session_id, ...rest }) => rest);
         // Sessions do not travel with an export, so neither does the manager link.
         const epics = (stmts.getKanbanEpics.all(board.id) as Array<Record<string, unknown>>).map(
-          ({ manager_session_id: _managerSession, manager_agent_id: _managerAgent, ...rest }) =>
-            rest,
+          ({
+            manager_session_id: _managerSession,
+            manager_agent_id: _managerAgent,
+            manager_state: _managerState,
+            ...rest
+          }) => rest,
         );
         const comments: Record<string, unknown[]> = {};
         for (const card of cards) {

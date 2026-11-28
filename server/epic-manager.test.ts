@@ -9,7 +9,7 @@ import {
   EpicManager,
   type EpicManagerDeps,
 } from './epic-manager.js';
-import type { KanbanCardRow, KanbanEpicRow, Project, SessionRow } from './types.js';
+import type { KanbanCardRow, KanbanEpicRow, SessionRow } from './types.js';
 
 const OWNER = 'owner-user';
 
@@ -27,13 +27,39 @@ interface Harness {
   runTimers: () => Promise<void>;
   broadcast: ReturnType<typeof vi.fn>;
   cancelAutoStarts: ReturnType<typeof vi.fn>;
-  enableAutoStart: ReturnType<typeof vi.fn>;
+  /** The manager session a person started and linked (null with `noManager`). */
+  managerId: string | null;
   requestReevaluation: ReturnType<typeof vi.fn>;
   persistSystemMessage: ReturnType<typeof vi.fn>;
   now: { value: number };
 }
 
-function setup(overrides: Partial<EpicManagerDeps> = {}): Harness {
+/** A person's Orchestrate session, linked as the epic's manager. */
+function linkManager(epicId: string, name = 'Epic: Checkout rewrite'): string {
+  const stmts = getStmts();
+  const id = uuidv4();
+  stmts.createSession.run(id, 'lead-1', name, 'claude-code', 'm', 0, 0, 1);
+  stmts.updateSessionMode.run('orchestrate', id);
+  stmts.updateSessionLinkedEpic.run(epicId, id);
+  getDb().prepare('UPDATE sessions SET owner_user_id = ? WHERE id = ?').run(OWNER, id);
+  stmts.setEpicManagerSession.run(id, epicId);
+  return id;
+}
+
+function liveOrchestrateSessions(epicId: string): number {
+  return (
+    getDb()
+      .prepare(
+        "SELECT COUNT(*) AS n FROM sessions WHERE linked_epic_id = ? AND session_mode = 'orchestrate' AND deleted_at IS NULL",
+      )
+      .get(epicId) as { n: number }
+  ).n;
+}
+
+function setup(
+  overrides: Partial<EpicManagerDeps> = {},
+  opts: { noManager?: boolean } = {},
+): Harness {
   const stmts = getStmts();
   const db = getDb();
   const projectId = `proj-${uuidv4()}`;
@@ -63,14 +89,7 @@ function setup(overrides: Partial<EpicManagerDeps> = {}): Harness {
     null,
   );
   db.prepare('UPDATE kanban_epics SET autonomous = 1 WHERE id = ?').run(epicId);
-  const project = {
-    id: projectId,
-    name: 'Shop',
-    agents: [
-      { id: 'lead-1', name: 'Lead', role: 'lead', engine: 'claude-code' },
-      { id: 'dev-1', name: 'Dev', role: 'dev', engine: 'claude-code' },
-    ],
-  } as unknown as Project;
+  const managerId = opts.noManager ? null : linkManager(epicId);
   const timers: Harness['timers'] = [];
   const now = { value: 1_000_000 };
   const busy = new Set<string>();
@@ -92,17 +111,13 @@ function setup(overrides: Partial<EpicManagerDeps> = {}): Harness {
   });
   const broadcast = vi.fn();
   const cancelAutoStarts = vi.fn();
-  const enableAutoStart = vi.fn();
   const requestReevaluation = vi.fn();
   const persistSystemMessage = vi.fn();
   const manager = new EpicManager({
     stmts,
     db,
-    findProject: (id) => (id === projectId ? project : undefined),
-    getConfig: () => ({}) as never,
     setSessionOwner: (sessionId, owner) =>
       db.prepare('UPDATE sessions SET owner_user_id = ? WHERE id = ?').run(owner, sessionId),
-    enableAutoStart,
     cancelAutoStarts,
     dispatchChat,
     isSessionBusy: (id) => busy.has(id),
@@ -158,7 +173,7 @@ function setup(overrides: Partial<EpicManagerDeps> = {}): Harness {
     },
     broadcast,
     cancelAutoStarts,
-    enableAutoStart,
+    managerId,
     requestReevaluation,
     persistSystemMessage,
     now,
@@ -190,21 +205,19 @@ beforeEach(() => {
 });
 
 describe('EpicManager kickoff', () => {
-  it('creates exactly one Orchestrate manager per epic and reuses it on a second kickoff', async () => {
+  it('kickoff never creates a session; it returns the manager a person linked', async () => {
+    const none = setup({}, { noManager: true });
+    expect(none.manager.kickoff(none.projectId, none.epic(), OWNER)).toBeNull();
+    expect(none.manager.hasLiveManager(none.epic().id)).toBe(false);
+    expect(liveOrchestrateSessions(none.epic().id)).toBe(0);
+    expect(none.epic().manager_session_id ?? null).toBeNull();
+
     const h = setup();
     const first = h.manager.kickoff(h.projectId, h.epic(), OWNER)!;
-    const second = h.manager.kickoff(h.projectId, h.epic(), OWNER)!;
-
-    expect(second.id).toBe(first.id);
-    const row = session(first.id);
-    expect(row.session_mode).toBe('orchestrate');
-    expect(row.owner_user_id).toBe(OWNER);
-    expect(row.agent_id).toBe('lead-1');
-    expect(row.name).toBe('Epic: Checkout rewrite');
-    expect((row as { linked_epic_id?: string }).linked_epic_id).toBe(h.epic().id);
-    expect(h.epic().manager_session_id).toBe(first.id);
+    expect(first.id).toBe(h.managerId);
+    expect(h.manager.kickoff(h.projectId, h.epic(), OWNER)!.id).toBe(first.id);
     expect(h.manager.epicForManager(first.id)?.id).toBe(h.epic().id);
-    expect(h.enableAutoStart).toHaveBeenCalledTimes(1);
+    expect(liveOrchestrateSessions(h.epic().id)).toBe(1);
   });
 
   it("exposes the manager's agent on the board's epic list until it is archived", async () => {
@@ -214,11 +227,25 @@ describe('EpicManager kickoff', () => {
       (getStmts().getKanbanEpics.all(h.epic().board_id) as KanbanEpicRow[]).find(
         (e) => e.id === h.epic().id,
       )!;
-    expect(listed()).toMatchObject({ manager_session_id: manager.id, manager_agent_id: 'lead-1' });
+    expect(listed()).toMatchObject({
+      manager_session_id: manager.id,
+      manager_agent_id: 'lead-1',
+      manager_state: 'orchestrating',
+    });
+    getDb().prepare('UPDATE kanban_epics SET autonomous = 0 WHERE id = ?').run(h.epic().id);
+    expect(listed().manager_state).toBe('planning');
+    getDb()
+      .prepare(
+        `INSERT INTO kanban_phases (id, epic_id, board_id, name, position, autonomous_running)
+         VALUES (?, ?, ?, 'P1', 0, 1)`,
+      )
+      .run(uuidv4(), h.epic().id, h.epic().board_id);
+    expect(listed().manager_state).toBe('orchestrating');
     getDb()
       .prepare("UPDATE sessions SET deleted_at = datetime('now') WHERE id = ?")
       .run(manager.id);
     expect(listed().manager_agent_id).toBeNull();
+    expect(listed().manager_state).toBe('none');
   });
 
   it('hands the manager to a different person who kicks the epic off explicitly', async () => {
@@ -242,33 +269,31 @@ describe('EpicManager kickoff', () => {
     expect(h.manager.handOver(h.epic().id, 'second-user')).toBe(false);
   });
 
-  it('two stale epic snapshots replacing an archived manager create exactly one', async () => {
+  it('archiving the manager while the epic is autonomous does not bring up a new one', async () => {
     const h = setup();
-    const first = h.manager.kickoff(h.projectId, h.epic(), OWNER)!;
+    const first = await briefed(h);
     getDb().prepare("UPDATE sessions SET deleted_at = datetime('now') WHERE id = ?").run(first.id);
-    // Overlapping epic and phase ticks each read the epic before either acts.
-    const snapshotA = h.epic();
-    const snapshotB = h.epic();
-    const a = h.manager.ensureManager(h.projectId, snapshotA, OWNER)!;
-    const b = h.manager.ensureManager(h.projectId, snapshotB, OWNER)!;
+    const card = h.card('Payment form');
 
-    expect(b.id).toBe(a.id);
-    expect(h.epic().manager_session_id).toBe(a.id);
-    const live = getDb()
-      .prepare(
-        "SELECT COUNT(*) AS n FROM sessions WHERE linked_epic_id = ? AND session_mode = 'orchestrate' AND deleted_at IS NULL",
-      )
-      .get(h.epic().id) as { n: number };
-    expect(live.n).toBe(1);
-  });
+    // What the next tick calls: a kickoff and a ready offer.
+    expect(h.manager.kickoff(h.projectId, h.epic(), OWNER)).toBeNull();
+    h.manager.offerReady({
+      projectId: h.projectId,
+      epic: h.epic(),
+      phase: null,
+      ready: [{ card, agentId: 'dev-1', phaseId: null }],
+      ownerUserId: OWNER,
+    });
+    await h.runTimers();
 
-  it('replaces a manager the person archived', async () => {
-    const h = setup();
-    const first = h.manager.kickoff(h.projectId, h.epic(), OWNER)!;
-    getDb().prepare("UPDATE sessions SET deleted_at = datetime('now') WHERE id = ?").run(first.id);
-    const next = h.manager.kickoff(h.projectId, h.epic(), OWNER)!;
-    expect(next.id).not.toBe(first.id);
-    expect(h.epic().manager_session_id).toBe(next.id);
+    expect(h.manager.hasLiveManager(h.epic().id)).toBe(false);
+    expect(liveOrchestrateSessions(h.epic().id)).toBe(0);
+    expect(h.epic().manager_session_id).toBe(first.id);
+    expect(h.manager.isOffered(card.id)).toBe(false);
+    expect(h.dispatchChat).not.toHaveBeenCalled();
+    expect(h.broadcast).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'session_created' }),
+    );
   });
 
   it('sends the brief once, listing every card in the epic', async () => {
@@ -290,36 +315,45 @@ describe('EpicManager kickoff', () => {
     expect(msg.content).toContain('[Done] Receipt email');
   });
 
-  it('adopts running workers onto the rail without stopping them (in-flight migration)', async () => {
+  it('lists workers already running in the brief without moving or stopping them', async () => {
     const h = setup();
     const stmts = getStmts();
-    const mine = h.card('Running mine', 'In Progress');
-    const theirs = h.card('Running theirs', 'In Progress');
-    const workerA = uuidv4();
-    const workerB = uuidv4();
-    for (const [id, owner, card] of [
-      [workerA, OWNER, mine],
-      [workerB, 'someone-else', theirs],
-    ] as const) {
-      stmts.createSession.run(id, 'dev-1', card.title, 'claude-code', 'm', 1, 0, 1);
-      getDb().prepare('UPDATE sessions SET owner_user_id = ? WHERE id = ?').run(owner, id);
-      getDb().prepare('UPDATE kanban_cards SET session_id = ? WHERE id = ?').run(id, card.id);
-    }
+    const card = h.card('Running mine', 'In Progress');
+    const worker = uuidv4();
+    stmts.createSession.run(worker, 'dev-1', card.title, 'claude-code', 'm', 1, 0, 1);
+    getDb().prepare('UPDATE kanban_cards SET session_id = ? WHERE id = ?').run(worker, card.id);
 
-    const manager = h.manager.kickoff(h.projectId, h.epic(), OWNER)!;
+    h.manager.kickoff(h.projectId, h.epic(), OWNER);
     await h.runTimers();
 
-    expect(session(workerA).spawned_from_session_id).toBe(manager.id);
-    // Someone else's worker stays in their own list.
-    expect(session(workerB).spawned_from_session_id ?? null).toBeNull();
-    expect(session(workerA).deleted_at ?? null).toBeNull();
+    expect(session(worker).spawned_from_session_id ?? null).toBeNull();
+    expect(session(worker).deleted_at ?? null).toBeNull();
     const brief = (h.dispatchChat.mock.calls[0][0] as { content: string }).content;
     expect(brief).toContain('## Workers already running');
-    expect(brief).toContain(mine.id);
+    expect(brief).toContain(card.id);
   });
 });
 
 describe('EpicManager ready offers', () => {
+  it('offers nothing and creates nothing when the epic has no manager', async () => {
+    const h = setup({}, { noManager: true });
+    const card = h.card('Payment form');
+
+    h.manager.offerReady({
+      projectId: h.projectId,
+      epic: h.epic(),
+      phase: null,
+      ready: [{ card, agentId: 'dev-1', phaseId: null }],
+      ownerUserId: OWNER,
+    });
+    await h.runTimers();
+
+    expect(h.manager.isOffered(card.id)).toBe(false);
+    expect(h.manager.liveOffers(h.epic().id)).toEqual([]);
+    expect(h.dispatchChat).not.toHaveBeenCalled();
+    expect(liveOrchestrateSessions(h.epic().id)).toBe(0);
+  });
+
   it('wakes the manager with the ready cards and their card ids', async () => {
     const h = setup();
     const manager = await briefed(h);
@@ -816,10 +850,7 @@ describe('EpicManager wake delivery', () => {
     const after = new EpicManager({
       stmts: getStmts(),
       db: getDb(),
-      findProject: () => undefined,
-      getConfig: () => ({}) as never,
       setSessionOwner: () => {},
-      enableAutoStart: () => {},
       cancelAutoStarts: () => {},
       dispatchChat,
       isSessionBusy: () => false,
@@ -859,10 +890,7 @@ describe('EpicManager card diff across restarts', () => {
     const after = new EpicManager({
       stmts: getStmts(),
       db: getDb(),
-      findProject: () => undefined,
-      getConfig: () => ({}) as never,
       setSessionOwner: () => {},
-      enableAutoStart: () => {},
       cancelAutoStarts: () => {},
       dispatchChat,
       isSessionBusy: () => false,
